@@ -10,7 +10,9 @@ set(ENABLE_CCACHE TRUE)
 set(TT_UNITY_BUILDS ON)
 set(WITH_PYTHON_BINDINGS OFF)
 set(CPM_SOURCE_CACHE "${CMAKE_SOURCE_DIR}/third-party/tt-metal/.cpmcache" CACHE STRING "Path to CPM source cache")
-
+set(TT_METAL_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
+set(TT_METAL_BUILD_SCALEOUT OFF CACHE BOOL "" FORCE)
+set(TT_METAL_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 
 add_subdirectory(third-party/tt-metal)
 
