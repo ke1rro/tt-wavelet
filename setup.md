@@ -43,20 +43,11 @@ git commit -m "Update tt-metal to different branch"
 # Compilation
 
 ```bash
-git lfs install
 git submodule update --init --recursive
 
 mkdir -p build && cd build
 
-cmake .. \
-    -G Ninja \
-    -DCMAKE_BUILD_TYPE=Debug \
-    -DCMAKE_C_COMPILER=clang-20 \
-    -DCMAKE_CXX_COMPILER=clang++-20 \
-    -DTT_METAL_BUILD_TESTS=OFF \
-    -DBUILD_PROGRAMMING_EXAMPLES=OFF \
-    -DWITH_PYTHON_BINDINGS=OFF \
-    -DENABLE_CCACHE=ON
+cmake .. -G Ninja -DCMAKE_BUILD_TYPE=RELEASE -DCMAKE_C_COMPILER=clang-20 -DCMAKE_CXX_COMPILER=clang++-20 -DTT_METAL_BUILD_TESTS=OFF -DBUILD_PROGRAMMING_EXAMPLES=OFF -DWITH_PYTHON_BINDINGS=OFF -DENABLE_CCACHE=ON
 
 ninja tt_metal
 ninja tt_wavelet_test
