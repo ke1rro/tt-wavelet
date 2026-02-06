@@ -1,5 +1,5 @@
 
-# Setup enviroment
+# Setup environment
 
 ```bash
 python3 -m venv .venv
@@ -24,15 +24,17 @@ git submodule update --remote
 git submodule status
 ```
 
+The tt-metal submodule is pinned to the `stable` branch in `.gitmodules`.
+
 >[!WARNING]
 >Destruction alert! The following commands will change the structure and all team members will need to use `git submodule update --remote` to update their local submodule to the new branch. Make sure to inform your team about the change.
 
 ```bash
 # Change submodule branch
-cd fwt_lib/third-party/tt-metal
+cd third-party/tt-metal
 git checkout <other-branch>
-cd ..
-git add fwt_lib/third-party/tt-metal
+cd ../..
+git add third-party/tt-metal
 git commit -m "Update tt-metal to different branch"
 ```
 
