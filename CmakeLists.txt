@@ -5,23 +5,15 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-# ============================================================================
-# 1. Налаштування для tt-metal
-# ============================================================================
 set(CMAKE_DISABLE_PRECOMPILE_HEADERS TRUE)
 set(ENABLE_CCACHE TRUE)
 set(TT_UNITY_BUILDS ON)
-set(WITH_PYTHON_BINDINGS ON)
+set(WITH_PYTHON_BINDINGS OFF)
 set(CPM_SOURCE_CACHE "${CMAKE_SOURCE_DIR}/third-party/tt-metal/.cpmcache" CACHE STRING "Path to CPM source cache")
 
-# ============================================================================
-# 2. Додаємо tt-metal як підпроєкт
-# ============================================================================
+
 add_subdirectory(third-party/tt-metal)
 
-# ============================================================================
-# 3. Адаптер Metalium - створює цілі Metalium::Metal та Metalium::TTNN
-# ============================================================================
 set(METALIUM_INCLUDE_DIRS
     ${CMAKE_SOURCE_DIR}/third-party/tt-metal/ttnn
     ${CMAKE_SOURCE_DIR}/third-party/tt-metal/ttnn/cpp
@@ -74,9 +66,6 @@ else()
     message(STATUS "Metalium targets already exist")
 endif()
 
-# ============================================================================
-# 4. Додаємо нашу бібліотеку tt-wavelet
-# ============================================================================
 add_subdirectory(tt-wavelet)
 
 message(STATUS "")
