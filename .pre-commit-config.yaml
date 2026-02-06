@@ -5,11 +5,21 @@ repos:
       - id: black
         language_version: python3
         args: ["--line-length=100"]
+        exclude: (^|/)third_party/
+
+  - repo: https://github.com/pycqa/isort
+    rev: 5.13.2
+    hooks:
+      - id: isort
+        args: ["--profile=black", "--line-length=100"]
+        exclude: (^|/)third_party/
 
   - repo: https://github.com/cpp-linter/cpp-linter-hooks
     rev: v1.1.12
     hooks:
       - id: clang-format
         args: [--style=file, --version=20]
+        exclude: (^|/)third_party/
       - id: clang-tidy
         args: [--checks='bugprone-*,performance-*', --version=17]
+        exclude: (^|/)third_party/
