@@ -1,0 +1,15 @@
+repos:
+  - repo: https://github.com/psf/black-pre-commit-mirror
+    rev: 23.10.1
+    hooks:
+      - id: black
+        language_version: python3
+        args: ["--line-length=100"]
+
+  - repo: https://github.com/cpp-linter/cpp-linter-hooks
+    rev: v1.1.12
+    hooks:
+      - id: clang-format
+        args: [--style=file, --version=20]
+      - id: clang-tidy
+        args: [--checks='bugprone-*,performance-*', --version=17]
