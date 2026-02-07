@@ -1,4 +1,10 @@
 
+# Clone the repository
+
+```bash
+git clone --recurse-submodules 
+```
+
 # Setup environment
 
 ```bash
