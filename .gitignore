@@ -82,7 +82,7 @@ infra/machine_setup/inventory/
 *.so
 .installed.cfg
 *.egg
-
+!build_tt_metal.sh
 # exclude MNIST etc model downloads
 data/
 hf_data/
