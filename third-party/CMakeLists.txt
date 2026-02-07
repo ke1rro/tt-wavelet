@@ -10,11 +10,23 @@ if (BUILD_TT_WAVELET)
   # Some flags for tt-metal -- ccache + unity build + make sure that cpm cache stays in tt-metal dir
   set(CPM_SOURCE_CACHE "${CMAKE_SOURCE_DIR}/third-party/tt-metal/.cpmcache" CACHE STRING "Path to CPM source cache")
 
+  # Create runtime directories required by tt-metal build (workaround for tt-metal bug)
+  # tt-metal's CMakeLists.txt has a bug where it creates directories with relative paths
+  # but writes output to absolute paths
+  file(MAKE_DIRECTORY "${CMAKE_SOURCE_DIR}/third-party/tt-metal/runtime")
+  file(MAKE_DIRECTORY "${CMAKE_SOURCE_DIR}/third-party/tt-metal/runtime/hw")
+  file(MAKE_DIRECTORY "${CMAKE_SOURCE_DIR}/third-party/tt-metal/runtime/hw/toolchain")
+  file(MAKE_DIRECTORY "${CMAKE_SOURCE_DIR}/third-party/tt-metal/runtime/hw/toolchain/wormhole")
+  file(MAKE_DIRECTORY "${CMAKE_SOURCE_DIR}/third-party/tt-metal/runtime/hw/toolchain/blackhole")
+  file(MAKE_DIRECTORY "${CMAKE_SOURCE_DIR}/third-party/tt-metal/runtime/hw/toolchain/quasar")
+  file(MAKE_DIRECTORY "${CMAKE_SOURCE_DIR}/third-party/tt-metal/runtime/hw/toolchain/grayskull")
+
   add_subdirectory(tt-metal)
 
   # Restore previous CMake CXX flags
   set(CMAKE_CXX_FLAGS "${_PREV_CMAKE_CXX_FLAGS}")
   unset(_PREV_CMAKE_CXX_FLAGS)
+
 
   set(METALIUM_INCLUDE_DIRS
       ${CMAKE_SOURCE_DIR}/third-party/tt-metal/ttnn
