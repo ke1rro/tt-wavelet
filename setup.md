@@ -1,8 +1,18 @@
 
+## Table of Contents
+
+- [Clone the repository](#clone-the-repository)
+- [Setup environment](#setup-environment)
+- [Run pre-commit hooks manually](#run-pre-commit-hooks-manually)
+- [Submodule commands](#submodule-commands)
+- [Compilation](#compilation)
+- [Check](#check)
+- [Koyeb ssh](#koyeb-ssh)
+
 # Clone the repository
 
 ```bash
-git clone --recurse-submodules 
+git clone --recurse-submodules https://github.com/ke1rro/tt-wavelet.git
 ```
 
 # Setup environment
@@ -51,20 +61,19 @@ git commit -m "Update tt-metal to different branch"
 # Compilation
 
 ```bash
-git submodule update --init --recursive
-
-mkdir -p build && cd build
-
-cmake .. -G Ninja -DCMAKE_BUILD_TYPE=RELEASE -DCMAKE_C_COMPILER=clang-20 -DCMAKE_CXX_COMPILER=clang++-20 -DTT_METAL_BUILD_TESTS=OFF -DBUILD_PROGRAMMING_EXAMPLES=OFF -DWITH_PYTHON_BINDINGS=OFF -DENABLE_CCACHE=ON
-
-ninja tt_metal
-ninja tt_wavelet_test
+-
 ```
 
 ## Check
 
 ```bash
-export TT_METAL_RUNTIME_ROOT=/work/third-party/tt-metal
-export TT_METAL_HOME=/work/third-party/tt-metal
-./tt-wavelet/tt_wavelet_test
+-
+```
+
+# Koyeb ssh
+
+<https://github.com/koyeb/tenstorrent-examples/tree/main/tt-ssh>
+
+```bash
+ssh -p <PORT> root@<IP_ADDRESS>
 ```
