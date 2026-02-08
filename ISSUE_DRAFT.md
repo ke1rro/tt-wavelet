@@ -34,7 +34,7 @@ The in-place property is especially valuable for TT-Metal architecture where L1 
 **Phase 1 - Core 2D Implementation (Lifting Scheme)**
 
 - Implement the core **2D Discrete Wavelet Transform (DWT)** and **Inverse DWT (IDWT)** using the Lifting Scheme, optimized for Tenstorrent's 2D torus mesh topology
-- The 2D core is designed to work efficiently for **any dimensionality** (1D, 2D, 3D) — the API will expose all variants, but the underlying engine targets 2D as the primary compute path
+- The 2D core is designed to work efficiently for **any dimensionality** (1D, 2D, 3D) - the API will expose all variants, but the underlying engine targets 2D as the primary compute path
 - Support for standard wavelet families:
   - **Haar** (simplest, good baseline and building block)
   - **Daubechies** (db2, db4 - widely used in signal processing and compression)
@@ -65,9 +65,9 @@ FWT has **O(N) complexity** compared to FFT's O(N log N). For large-scale signal
 
 ### References
 
-- Sweldens, W. (1996). "The Lifting Scheme: A Custom-Design Construction of Biorthogonal Wavelets" — [Paper](https://doi.org/10.1006/acha.1996.0015)
-- Bhatnagar et al. (2024). "WaveKAN: Wavelet Kolmogorov-Arnold Networks" — [arXiv:2405.12832](https://arxiv.org/abs/2405.12832)
-- FFT Feature Request on tt-metal — [#21412](https://github.com/tenstorrent/tt-metal/issues/21412)
+- Sweldens, W. (1996). "The Lifting Scheme: A Custom-Design Construction of Biorthogonal Wavelets" - [Paper](https://doi.org/10.1006/acha.1996.0015)
+- Bhatnagar et al. (2024). "WaveKAN: Wavelet Kolmogorov-Arnold Networks" - [arXiv:2405.12832](https://arxiv.org/abs/2405.12832)
+- FFT Feature Request on tt-metal - [#21412](https://github.com/tenstorrent/tt-metal/issues/21412)
 - SIGGRAPH Course: "Wavelets in Computer Graphics"
 
 Our team is interested in working on this as part of the bounty program. We have already started prototyping the Lifting Scheme approach.
