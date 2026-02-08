@@ -4,7 +4,7 @@
 
 While work on Fast Fourier Transform (FFT) is currently in progress within the tt-metal ecosystem ([#21412](https://github.com/tenstorrent/tt-metal/issues/21412)), FFT alone is insufficient for modern signal processing tasks dealing with **non-stationary signals**. FFT provides frequency information but completely loses temporal localization - it cannot tell _when_ a particular frequency event occurred.
 
-The Fast Wavelet Transform applicaiontions are vast and critical for many domains:
+The Fast Wavelet Transform applications are vast and critical for many domains:
 
 - **Advanced DSP**: Processing audio, biosignals, radar, and seismic data where _when_ a frequency occurs is as important as _which_ frequency. Short-Time Fourier Transform (STFT) attempts to solve this but suffers from fixed resolution (Heisenberg uncertainty principle) and higher computational cost.
 - **Next-Gen AI Models**: Emerging architectures like **WaveKAN** (Wavelet Kolmogorov-Arnold Networks) replace standard activation functions with wavelet bases to improve convergence, interpretability, and function approximation. Currently, there are no native ops to accelerate these models on Wormhole/Blackhole.
@@ -13,9 +13,9 @@ The Fast Wavelet Transform applicaiontions are vast and critical for many domain
 
 ## Describe the solution you'd like
 
-I propose implementing **Fast Wavelet Transform (FWT)** and **Inverse FWT** as a logical extension to the DSP capabilities being built around FFT.
+We propose implementing **Fast Wavelet Transform (FWT)** and **Inverse FWT** as a logical extension to the DSP capabilities being built around FFT.
 
-Unlike a convolution-based approach, I suggest implementing the **Lifting Scheme** (Sweldens, 1996). This is crucial for hardware efficiency on Tenstorrent chips:
+Our team has been exploring the **Lifting Scheme** (Sweldens, 1996) as the implementation approach. We believe this is the right fit for Tenstorrent hardware for the following reasons:
 
 ### Why Lifting Scheme?
 
@@ -34,7 +34,7 @@ The in-place property is especially valuable for TT-Metal architecture where L1 
 **Phase 1 - Core 2D Implementation (Lifting Scheme)**
 
 - Implement the core **2D Discrete Wavelet Transform (DWT)** and **Inverse DWT (IDWT)** using the Lifting Scheme, optimized for Tenstorrent's 2D torus mesh topology
-- The 2D core is designed to work efficiently for **any dimensionality** (1D, 2D, 3D) — the API will expose all variants, but the underlying engine targets 2D as the primary compute path
+- The 2D core is designed to work efficiently for **any dimensionality** (1D, 2D, 3D) - the API will expose all variants, but the underlying engine targets 2D as the primary compute path
 - Support for standard wavelet families:
   - **Haar** (simplest, good baseline and building block)
   - **Daubechies** (db2, db4 - widely used in signal processing and compression)
@@ -65,7 +65,9 @@ FWT has **O(N) complexity** compared to FFT's O(N log N). For large-scale signal
 
 ### References
 
-- Sweldens, W. (1996). "The Lifting Scheme: A Custom-Design Construction of Biorthogonal Wavelets" — [Paper](https://doi.org/10.1006/acha.1996.0015)
-- Bhatnagar et al. (2024). "WaveKAN: Wavelet Kolmogorov-Arnold Networks" — [arXiv:2405.12832](https://arxiv.org/abs/2405.12832)
-- FFT Feature Request on tt-metal — [#21412](https://github.com/tenstorrent/tt-metal/issues/21412)
+- Sweldens, W. (1996). "The Lifting Scheme: A Custom-Design Construction of Biorthogonal Wavelets" - [Paper](https://doi.org/10.1006/acha.1996.0015)
+- Bhatnagar et al. (2024). "WaveKAN: Wavelet Kolmogorov-Arnold Networks" - [arXiv:2405.12832](https://arxiv.org/abs/2405.12832)
+- FFT Feature Request on tt-metal - [#21412](https://github.com/tenstorrent/tt-metal/issues/21412)
 - SIGGRAPH Course: "Wavelets in Computer Graphics"
+
+Our team is interested in working on this as part of the bounty program. We have already started prototyping the Lifting Scheme approach.
