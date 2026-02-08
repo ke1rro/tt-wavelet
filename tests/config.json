@@ -1,0 +1,20 @@
+{
+  "tests": [
+    {
+      "name": "Haar_1D",
+      "kernel_path": "kernels/compute/haar_1d.cpp",
+      "wavelet": "haar",
+      "dim": "1d",
+      "shape": [1, 1, 32, 32],
+      "atol": 0.01
+    },
+    {
+      "name": "CDF_5_3",
+      "kernel_path": "kernels/compute/cdf_lifting.cpp",
+      "wavelet": "bior2.2",
+      "dim": "2d",
+      "shape": [1, 1, 32, 32],
+      "atol": 0.05
+    }
+  ]
+}
