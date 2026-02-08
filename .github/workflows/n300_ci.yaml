@@ -55,7 +55,7 @@ jobs:
         uses: appleboy/ssh-action@master
         with:
           host: 01.proxy.koyeb.app
-          port: 11111
+          port: 12045
           username: root
           key: ${{ secrets.KOYEB_SSH_KEY }}
           command_timeout: 25m

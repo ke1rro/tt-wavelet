@@ -14,7 +14,7 @@
       "wavelet": "bior2.2",
       "dim": "2d",
       "shape": [1, 1, 32, 32],
-      "atol": 0.05
+      "atol": 0.01
     }
   ]
 }
