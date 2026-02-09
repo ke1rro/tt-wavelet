@@ -30,7 +30,7 @@ jobs:
         run: |
           python3 -c "
           import json
-          with open('tests/test_config.json') as f:
+          with open('tests/config.json') as f:
               config = json.load(f)
           assert 'tests' in config, 'Missing tests array'
           for test in config['tests']:
@@ -106,7 +106,7 @@ jobs:
 
             echo -e "${YELLOW}Running tests...${NC}"
             cd tests
-            python3 test_runner.py --config test_config.json --verbose
+            python3 test_runner.py --config config.json --verbose
             
             TEST_EXIT_CODE=$?
             
