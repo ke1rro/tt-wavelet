@@ -12,7 +12,7 @@ option(BUILD_TT_WAVELET "Build with TT-Metal (Wormhole) support" OFF)
 # be placed at the repository root in the `tt-metal` directory.
 if(BUILD_TT_WAVELET)
     if(EXISTS "${CMAKE_SOURCE_DIR}/tt-metal/CMakeLists.txt")
-        add_subdirectory("${CMAKE_SOURCE_DIR}/tt-metal" "${CMAKE_BINARY_DIR}/tt-metal")
+        include("${CMAKE_SOURCE_DIR}/cmake/tt-metal.cmake")
     else()
         message(FATAL_ERROR "BUILD_TT_WAVELET is ON but tt-metal not found at ${CMAKE_SOURCE_DIR}/tt-metal")
     endif()
