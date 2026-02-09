@@ -98,7 +98,7 @@ venv/
 
 # exclude serialized tensor binaries
 *.tensorbin
-
+.DS_Store
 # releases
 dist
 
