@@ -49,6 +49,7 @@ These scripts live in the repo root and keep tt-metal patched with fixed CMake f
 | `./build.sh [Debug\|Release]` | Full build (tt-metal deps + tt-wavelet) | Runs `tt-metal/install_dependencies.sh`, ensures clang-20, sets env vars, applies CMake fixes, configures & builds, installs tt-metal Python bindings into `.venv`. |
 | `./update.sh [Debug\|Release] [target]` | Fast rebuild of tt-wavelet only | Still re-applies CMake fixes and env; default target `tt_wavelet_test`. Skips rebuilding tt-metal binaries unless dependencies demand it. |
 | `./scripts/revert_tt_metal_cmake.sh` | Restore tt-metal CMakeLists to submodule state | Use before committing if you want a clean submodule. |
+| `source ./scripts/set_env.sh` | Persist env vars in current shell | Exports TT_METAL_ROOT/TT_METAL_HOME/TT_METAL_RUNTIME_ROOT and CC/CXX=clang-20. |
 
 Common behavior:
 - Exports `TT_METAL_ROOT`, `TT_METAL_HOME`, `TT_METAL_RUNTIME_ROOT` to `$(pwd)/tt-metal`, and `CC/CXX=clang-20/clang++-20`.
@@ -90,6 +91,12 @@ export TT_METAL_HOME=$(pwd)/tt-metal
 export TT_METAL_RUNTIME_ROOT=$(pwd)/tt-metal
 export CC=clang-20
 export CXX=clang++-20
+```
+
+Quick way to set them in your shell:
+
+```bash
+source ./scripts/set_env.sh
 ```
 
 # Running

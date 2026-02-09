@@ -101,7 +101,7 @@ venv/
 .DS_Store
 # releases
 dist
-
+.venv
 #exclude reports dir
 .reports/*
 
