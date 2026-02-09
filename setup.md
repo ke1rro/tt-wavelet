@@ -3,9 +3,9 @@
 
 - [Clone the repository](#clone-the-repository)
 - [Prerequisites](#prerequisites)
-- [Setup environment](#setup-environment)
-- [Build dependencies](#build-dependencies)
-- [Compilation](#compilation)
+- [Environment setup](#environment-setup)
+- [Build & update scripts](#build--update-scripts)
+- [Manual compilation (optional)](#manual-compilation-optional)
 - [Environment variables](#environment-variables)
 - [Running](#running)
 - [Run pre-commit hooks manually](#run-pre-commit-hooks-manually)
@@ -17,16 +17,21 @@
 ```bash
 git clone --recurse-submodules https://github.com/ke1rro/tt-wavelet.git
 cd tt-wavelet
+
+or
+git clone https://github.com/ke1rro/tt-wavelet.git
+cd tt-wavelet
+git submodule update --init --recursive
 ```
 
 # Prerequisites
 
-- g++ (with C++20 support)
+- clang-20 / clang++-20 (used for all builds)
+- lld-20 (linker) and ninja (preferred generator) if available
 - CMake 3.20+
 - Python 3.9.6+
-- Tenstorrent Wormhole hardware (for running on device)
 
-# Setup environment
+# Environment setup
 
 ```bash
 python3 -m venv .venv
@@ -35,7 +40,22 @@ pip install -r requirements.txt
 pre-commit install
 ```
 
-# Build dependencies
+# Build & update scripts
+
+These scripts live in the repo root and keep tt-metal patched with fixed CMake files during every run.
+
+| Script | Purpose | Notes |
+| --- | --- | --- |
+| `./build.sh [Debug\|Release]` | Full build (tt-metal deps + tt-wavelet) | Runs `tt-metal/install_dependencies.sh`, ensures clang-20, sets env vars, applies CMake fixes, configures & builds, installs tt-metal Python bindings into `.venv`. |
+| `./update.sh [Debug\|Release] [target]` | Fast rebuild of tt-wavelet only | Still re-applies CMake fixes and env; default target `tt_wavelet_test`. Skips rebuilding tt-metal binaries unless dependencies demand it. |
+| `./scripts/revert_tt_metal_cmake.sh` | Restore tt-metal CMakeLists to submodule state | Use before committing if you want a clean submodule. |
+
+Common behavior:
+- Exports `TT_METAL_ROOT`, `TT_METAL_HOME`, `TT_METAL_RUNTIME_ROOT` to `$(pwd)/tt-metal`, and `CC/CXX=clang-20/clang++-20`.
+- Auto-creates `.venv`, upgrades `pip/setuptools/wheel`, installs `requirements.txt`.
+- Applies patched CMake files: `CMAKE_FABRIC.txt -> tt-metal/tt_metal/fabric/CMakeLists.txt`, `CMAKE_SCALEOUT.txt -> tt-metal/tools/scaleout/CMakeLists.txt`.
+
+# Manual compilation (optional)
 
 Initialize and update submodules including tt-metal and its dependencies:
 
@@ -44,9 +64,7 @@ git submodule update --init --recursive
 git submodule foreach --recursive 'git lfs fetch --all && git lfs pull'
 ```
 
-# Compilation
-
-## Build without TT-Metal (for development/testing)
+# Compilation without helper scripts (not recommended)
 
 ```bash
 mkdir build && cd build
@@ -54,7 +72,7 @@ cmake -DCMAKE_BUILD_TYPE=Release ../
 make -j$(nproc)
 ```
 
-## Build with TT-Metal (Wormhole) support
+## With TT-Metal (Wormhole) support
 
 ```bash
 mkdir build && cd build
@@ -64,10 +82,14 @@ make -j$(nproc)
 
 # Environment variables
 
-Export these environment variables before running TT-Metal code:
+Export these environment variables before running TT-Metal code (scripts set them automatically):
 
 ```bash
-export TT_METAL_HOME=$(realpath ./third-party/tt-metal/)
+export TT_METAL_ROOT=$(pwd)/tt-metal
+export TT_METAL_HOME=$(pwd)/tt-metal
+export TT_METAL_RUNTIME_ROOT=$(pwd)/tt-metal
+export CC=clang-20
+export CXX=clang++-20
 ```
 
 # Running
