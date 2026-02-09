@@ -3,23 +3,24 @@ set(CMAKE_DISABLE_PRECOMPILE_HEADERS TRUE)
 set(ENABLE_CCACHE TRUE)
 set(TT_UNITY_BUILDS ON)
 set(WITH_PYTHON_BINDINGS ON)
-set(CPM_SOURCE_CACHE "${CMAKE_SOURCE_DIR}/third-party/tt-metal/.cpmcache" CACHE STRING "Path to CPM source cache")
+set(CPM_SOURCE_CACHE "${CMAKE_SOURCE_DIR}/tt-metal/.cpmcache" CACHE STRING "Path to CPM source cache")
 
-add_subdirectory(tt-metal)
+# Add tt-metal from repository root (use an absolute source and separate binary dir)
+add_subdirectory("${CMAKE_SOURCE_DIR}/tt-metal" "${CMAKE_BINARY_DIR}/tt-metal")
 
 set(METALIUM_INCLUDE_DIRS
-    ${CMAKE_SOURCE_DIR}/third-party/tt-metal/ttnn
-    ${CMAKE_SOURCE_DIR}/third-party/tt-metal/ttnn/cpp
-    ${CMAKE_SOURCE_DIR}/third-party/tt-metal/ttnn/cpp/ttnn/deprecated
-    ${CMAKE_SOURCE_DIR}/third-party/tt-metal/tt_metal/api
-    ${CMAKE_SOURCE_DIR}/third-party/tt-metal/tt_metal
-    ${CMAKE_SOURCE_DIR}/third-party/tt-metal/tt_metal/include
-    ${CMAKE_SOURCE_DIR}/third-party/tt-metal/tt_metal/hostdevcommon/api
-    ${CMAKE_SOURCE_DIR}/third-party/tt-metal/tt_metal/third_party/umd
-    ${CMAKE_SOURCE_DIR}/third-party/tt-metal/tt_metal/third_party/umd/device/api
-    ${CMAKE_SOURCE_DIR}/third-party/tt-metal/tt_metal/hw/inc
-    ${CMAKE_SOURCE_DIR}/third-party/tt-metal/tt_stl
-    ${CMAKE_SOURCE_DIR}/third-party/tt-metal/tt_stl/tt_stl
+    ${CMAKE_SOURCE_DIR}/tt-metal/ttnn
+    ${CMAKE_SOURCE_DIR}/tt-metal/ttnn/cpp
+    ${CMAKE_SOURCE_DIR}/tt-metal/ttnn/cpp/ttnn/deprecated
+    ${CMAKE_SOURCE_DIR}/tt-metal/tt_metal/api
+    ${CMAKE_SOURCE_DIR}/tt-metal/tt_metal
+    ${CMAKE_SOURCE_DIR}/tt-metal/tt_metal/include
+    ${CMAKE_SOURCE_DIR}/tt-metal/tt_metal/hostdevcommon/api
+    ${CMAKE_SOURCE_DIR}/tt-metal/tt_metal/third_party/umd
+    ${CMAKE_SOURCE_DIR}/tt-metal/tt_metal/third_party/umd/device/api
+    ${CMAKE_SOURCE_DIR}/tt-metal/tt_metal/hw/inc
+    ${CMAKE_SOURCE_DIR}/tt-metal/tt_stl
+    ${CMAKE_SOURCE_DIR}/tt-metal/tt_stl/tt_stl
 )
 
 # Now wrap all the headers and .so files nicely into one target

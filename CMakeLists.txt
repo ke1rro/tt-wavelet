@@ -7,9 +7,15 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # Option to build with TT-Metal (Wormhole) support
 option(BUILD_TT_WAVELET "Build with TT-Metal (Wormhole) support" OFF)
 
-# Add third-party dependencies (includes tt-metal when BUILD_TT_WAVELET is ON)
+# Add tt-metal located at the repository root when BUILD_TT_WAVELET is ON
+# Previously tt-metal was expected under `third-party/tt-metal`. Now it should
+# be placed at the repository root in the `tt-metal` directory.
 if(BUILD_TT_WAVELET)
-    add_subdirectory(third-party)
+    if(EXISTS "${CMAKE_SOURCE_DIR}/tt-metal/CMakeLists.txt")
+        add_subdirectory("${CMAKE_SOURCE_DIR}/tt-metal" "${CMAKE_BINARY_DIR}/tt-metal")
+    else()
+        message(FATAL_ERROR "BUILD_TT_WAVELET is ON but tt-metal not found at ${CMAKE_SOURCE_DIR}/tt-metal")
+    endif()
 endif()
 
 # Add main project
