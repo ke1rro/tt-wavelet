@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Export TT-Metal env vars relative to repo root, regardless of current directory.
 # Usage:
-#   source scripts/set_env.sh            # just export
+#   source scripts/set_env.sh            # export into current shell
 #   scripts/set_env.sh --print           # print exports
 #   scripts/set_env.sh <cmd> [args...]   # run command with env set
 
@@ -35,8 +35,13 @@ ENV
   exit 0
 fi
 
+# If executed with a command, run it with env set (does not modify parent shell).
 if (( $# > 0 )); then
   "$@"
 else
+  # If script is sourced, vars persist; if executed directly, this only affects child shell.
   printf "TT env set. TT_METAL_HOME=%s\n" "$TT_METAL_HOME"
+  if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    printf "Note: to persist in your shell, run: source scripts/set_env.sh\n" >&2
+  fi
 fi
