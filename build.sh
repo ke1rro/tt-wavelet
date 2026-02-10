@@ -6,14 +6,16 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/scripts/common.sh"
 
 BUILD_TYPE=${1:-Release}
+# Parallel jobs; default to nproc if not provided
+JOBS=${2:-$(nproc)}
 
-log INFO "Starting full build (tt-metal + tt-wavelet)"
+log INFO "Starting full build (tt-metal + tt-wavelet) with -j${JOBS}"
 export_tt_env
 ensure_base_deps
 run_tt_metal_install_deps
 apply_cmake_fixes
 configure_project "$BUILD_TYPE"
-cmake --build "$BUILD_DIR" -j"$(nproc)"
+cmake --build "$BUILD_DIR" -j"${JOBS}"
 
 log INFO "Installing tt-metal Python bindings into the venv"
 activate_venv
