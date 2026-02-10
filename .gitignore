@@ -83,7 +83,7 @@ infra/machine_setup/inventory/
 *.so
 .installed.cfg
 *.egg
-
+!build_tt_metal.sh
 # exclude MNIST etc model downloads
 data/
 hf_data/
@@ -99,10 +99,10 @@ venv/
 
 # exclude serialized tensor binaries
 *.tensorbin
-
+.DS_Store
 # releases
 dist
-
+.venv
 #exclude reports dir
 .reports/*
 
@@ -140,6 +140,10 @@ ttnn/ttnn/runtime
 
 # exclude packages brough in from CPM
 .cpmcache
+
+# Exclude generated protobuf files (should only be in build directory)
+*.pb.h
+*.pb.cc
 
 ClangBuildAnalyzer.ini
 ttnn/ttnn/.rpath_checked__ttnn
