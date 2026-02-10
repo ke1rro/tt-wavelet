@@ -11,7 +11,6 @@ TARGET=${2:-tt_wavelet_test}
 log INFO "Updating tt-wavelet only (target: $TARGET)"
 export_tt_env
 ensure_base_deps
-run_tt_metal_install_deps
 apply_cmake_fixes
 configure_project "$BUILD_TYPE"
 build_tt_wavelet_target "$TARGET"
