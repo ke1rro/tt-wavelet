@@ -47,8 +47,17 @@ run_tt_metal_install_deps() {
     log ERROR "tt-metal install_dependencies.sh not found at $TT_METAL_DIR/install_dependencies.sh" >&2
     exit 1
   fi
-  log INFO "Running tt-metal/install_dependencies.sh"
-  bash "$TT_METAL_DIR/install_dependencies.sh"
+  local arch
+  arch="$(dpkg --print-architecture 2>/dev/null || uname -m)"
+  local args=()
+  # Skip distributed deps (ULFM) on non-amd64 to avoid incompatible debs
+  if [[ "$arch" != "amd64" ]]; then
+    args+=(--no-distributed)
+    log INFO "Running tt-metal/install_dependencies.sh (arch=$arch, adding --no-distributed to skip ULFM)"
+  else
+    log INFO "Running tt-metal/install_dependencies.sh"
+  fi
+  bash "$TT_METAL_DIR/install_dependencies.sh" "${args[@]}"
 }
 
 apply_cmake_fixes() {
