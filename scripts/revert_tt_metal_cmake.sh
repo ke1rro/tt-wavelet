@@ -12,12 +12,18 @@ if ! git -C "$TT_METAL_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; the
   exit 1
 fi
 
+restore_file() {
+  local rel="$1"
+  local dst="$TT_METAL_DIR/$rel"
+  if ! git -C "$TT_METAL_DIR" show "HEAD:$rel" > "$dst"; then
+    log ERROR "Failed to restore $rel from HEAD" >&2
+    exit 1
+  fi
+}
+
 log INFO "Reverting tt-metal CMakeLists.txt files to submodule HEAD"
-# Prefer git restore (newer) with staged+worktree; fallback to checkout
-if ! git -C "$TT_METAL_DIR" restore --staged --worktree \
-  tt_metal/fabric/CMakeLists.txt tools/scaleout/CMakeLists.txt 2>/dev/null; then
-  git -C "$TT_METAL_DIR" checkout -- tt_metal/fabric/CMakeLists.txt tools/scaleout/CMakeLists.txt
-fi
+restore_file "tt_metal/fabric/CMakeLists.txt"
+restore_file "tools/scaleout/CMakeLists.txt"
 
 # Confirm files now match HEAD
 if git -C "$TT_METAL_DIR" diff --quiet -- tt_metal/fabric/CMakeLists.txt tools/scaleout/CMakeLists.txt; then

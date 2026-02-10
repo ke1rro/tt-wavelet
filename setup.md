@@ -146,3 +146,13 @@ git commit -m "Update tt-metal to different branch"
 ```bash
 ssh -p <PORT> root@<IP_ADDRESS>
 ```
+
+# TT-Metal environment helper
+
+Set the required TT_METAL_* vars from any working directory inside the repo:
+
+- `source scripts/set_env.sh` — exports `TT_METAL_ROOT`, `TT_METAL_HOME`, `TT_METAL_RUNTIME_ROOT`, `CC`, `CXX` (repo root auto-detected via git). Use once per shell/session.
+- `scripts/set_env.sh --print` — prints the export lines.
+- `scripts/set_env.sh <command>` — runs `<command>` with env pre-set.
+
+Tip: add `source /path/to/repo/scripts/set_env.sh` to your shell rc so the vars are ready in every shell under the repo.
