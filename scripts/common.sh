@@ -121,3 +121,7 @@ ensure_base_deps() {
   export_tt_env
   ensure_python_packages
 }
+
+ensure_upd_deps (){
+  export_tt_env
+}
