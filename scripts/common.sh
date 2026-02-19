@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-TT_METAL_DIR="$ROOT_DIR/tt-metal"
+TT_METAL_DIR="$ROOT_DIR/third-party/tt-metal"
 VENV_DIR="$ROOT_DIR/.venv"
 BUILD_DIR="$ROOT_DIR/build"
 
