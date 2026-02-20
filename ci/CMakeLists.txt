@@ -16,6 +16,7 @@ else()
 endif()
 
 set(METALIUM_INCLUDE_DIRS
+    ${TT_METAL_INCLUDE_ROOT}
     ${TT_METAL_INCLUDE_ROOT}/ttnn
     ${TT_METAL_INCLUDE_ROOT}/ttnn/cpp
     ${TT_METAL_INCLUDE_ROOT}/ttnn/cpp/ttnn/deprecated
@@ -28,6 +29,22 @@ set(METALIUM_INCLUDE_DIRS
     ${TT_METAL_INCLUDE_ROOT}/tt_stl
     ${TT_METAL_INCLUDE_ROOT}/tt_stl/tt_stl
 )
+
+set(REFLECT_CANDIDATES
+    ${TT_METAL_INCLUDE_ROOT}
+    ${TT_METAL_SOURCE_ROOT}/build/_deps/reflect-src
+)
+file(GLOB CPM_REFLECT_CANDIDATES
+    "${TT_METAL_SOURCE_ROOT}/.cpmcache/reflect/*"
+)
+list(APPEND REFLECT_CANDIDATES ${CPM_REFLECT_CANDIDATES})
+
+foreach(REFLECT_DIR IN LISTS REFLECT_CANDIDATES)
+    if(EXISTS "${REFLECT_DIR}/reflect")
+        list(APPEND METALIUM_INCLUDE_DIRS "${REFLECT_DIR}")
+        break()
+    endif()
+endforeach()
 
 set(NLOHMANN_CANDIDATES
     ${TT_METAL_INCLUDE_ROOT}

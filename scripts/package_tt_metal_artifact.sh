@@ -85,6 +85,17 @@ for rel_dir in "${INCLUDE_DIRS[@]}"; do
 done
 
 shopt -s nullglob
+REFLECT_CANDIDATES=(
+  "${TT_METAL_DIR}/build/_deps/reflect-src"
+  "${TT_METAL_DIR}/.cpmcache/reflect"/*
+)
+for candidate in "${REFLECT_CANDIDATES[@]}"; do
+  if [[ -f "${candidate}/reflect" ]]; then
+    cp "${candidate}/reflect" "${OUT_DIR}/include/reflect"
+    break
+  fi
+done
+
 NLOHMANN_CANDIDATES=(
   "${TT_METAL_DIR}/build/_deps/nlohmann_json-src/include"
   "${TT_METAL_DIR}/build/_deps/nlohmann_json-src/single_include"

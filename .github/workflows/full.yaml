@@ -6,6 +6,10 @@ on:
     - cron: '0 3 * * *'
   workflow_dispatch:
 
+permissions:
+  contents: read
+  actions: read
+
 jobs:
   scope:
     runs-on: ubuntu-latest
@@ -63,9 +67,58 @@ jobs:
             echo "run_full=false" >> "${GITHUB_OUTPUT}"
           fi
 
-  build-tt-metal-artifact:
+  resolve-existing-artifact:
     needs: scope
     if: needs.scope.outputs.run_full == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      found: ${{ steps.find.outputs.found }}
+      run_id: ${{ steps.find.outputs.run_id }}
+      artifact_name: ${{ steps.find.outputs.artifact_name }}
+    steps:
+      - name: Find existing tt-metal artifact
+        id: find
+        uses: actions/github-script@v7
+        env:
+          TT_METAL_SHA: ${{ needs.scope.outputs.tt_metal_sha }}
+        with:
+          script: |
+            const artifactName = `tt-metal-${process.env.TT_METAL_SHA}`;
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const workflowId = "full.yaml";
+
+            const runs = await github.paginate(github.rest.actions.listWorkflowRuns, {
+              owner,
+              repo,
+              workflow_id: workflowId,
+              status: "completed",
+              per_page: 100,
+            });
+
+            for (const run of runs) {
+              if (run.conclusion !== "success") continue;
+              const artifacts = await github.rest.actions.listWorkflowRunArtifacts({
+                owner,
+                repo,
+                run_id: run.id,
+                per_page: 100,
+              });
+              const hit = artifacts.data.artifacts.find((artifact) => artifact.name === artifactName && !artifact.expired);
+              if (hit) {
+                core.setOutput("found", "true");
+                core.setOutput("run_id", String(run.id));
+                core.setOutput("artifact_name", artifactName);
+                return;
+              }
+            }
+
+            core.setOutput("found", "false");
+            core.setOutput("artifact_name", artifactName);
+
+  build-tt-metal-artifact:
+    needs: [scope, resolve-existing-artifact]
+    if: needs.scope.outputs.run_full == 'true' && needs.resolve-existing-artifact.outputs.found != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 120
     outputs:
@@ -116,8 +169,8 @@ jobs:
           retention-days: 14
 
   full:
-    needs: [scope, build-tt-metal-artifact]
-    if: needs.scope.outputs.run_full == 'true'
+    needs: [scope, resolve-existing-artifact, build-tt-metal-artifact]
+    if: always() && needs.scope.outputs.run_full == 'true' && (needs.resolve-existing-artifact.outputs.found == 'true' || needs.build-tt-metal-artifact.result == 'success')
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -126,11 +179,37 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Download tt-metal artifact
+      - name: Download existing tt-metal artifact
+        if: needs.resolve-existing-artifact.outputs.found == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.resolve-existing-artifact.outputs.artifact_name }}
+          path: third_party/tt-metal-prebuilt
+          run-id: ${{ needs.resolve-existing-artifact.outputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download freshly built tt-metal artifact
+        if: needs.resolve-existing-artifact.outputs.found != 'true'
         uses: actions/download-artifact@v4
         with:
           name: ${{ needs.build-tt-metal-artifact.outputs.artifact_name }}
           path: third_party/tt-metal-prebuilt
+
+      - name: Ensure reflect header in prebuilt package
+        run: |
+          if [[ -f "third_party/tt-metal-prebuilt/include/reflect" ]]; then
+            echo "reflect header already exists in artifact"
+            exit 0
+          fi
+
+          echo "reflect header missing in artifact, fetching from tt-metal source cache"
+          git submodule update --init --depth 1 tt-metal
+          REFLECT_PATH="$(find tt-metal/.cpmcache/reflect -type f -name reflect | head -n 1 || true)"
+          if [[ -z "${REFLECT_PATH}" ]]; then
+            echo "reflect header was not found under tt-metal/.cpmcache/reflect" >&2
+            exit 1
+          fi
+          cp "${REFLECT_PATH}" third_party/tt-metal-prebuilt/include/reflect
 
       - name: Set up Python
         uses: actions/setup-python@v5
