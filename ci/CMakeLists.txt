@@ -65,6 +65,63 @@ foreach(NLOHMANN_DIR IN LISTS NLOHMANN_CANDIDATES)
     endif()
 endforeach()
 
+set(FMT_CANDIDATES
+    ${TT_METAL_INCLUDE_ROOT}
+    ${TT_METAL_SOURCE_ROOT}/build/_deps/fmt-src/include
+)
+file(GLOB CPM_FMT_CANDIDATES "${TT_METAL_SOURCE_ROOT}/.cpmcache/fmt/*/include")
+list(APPEND FMT_CANDIDATES ${CPM_FMT_CANDIDATES})
+foreach(FMT_DIR IN LISTS FMT_CANDIDATES)
+    if(EXISTS "${FMT_DIR}/fmt/format.h")
+        list(APPEND METALIUM_INCLUDE_DIRS "${FMT_DIR}")
+        break()
+    endif()
+endforeach()
+
+set(SPDLOG_CANDIDATES
+    ${TT_METAL_INCLUDE_ROOT}
+    ${TT_METAL_SOURCE_ROOT}/build/_deps/spdlog-src/include
+)
+file(GLOB CPM_SPDLOG_CANDIDATES "${TT_METAL_SOURCE_ROOT}/.cpmcache/spdlog/*/include")
+list(APPEND SPDLOG_CANDIDATES ${CPM_SPDLOG_CANDIDATES})
+foreach(SPDLOG_DIR IN LISTS SPDLOG_CANDIDATES)
+    if(EXISTS "${SPDLOG_DIR}/spdlog/spdlog.h")
+        list(APPEND METALIUM_INCLUDE_DIRS "${SPDLOG_DIR}")
+        break()
+    endif()
+endforeach()
+
+set(TT_LOGGER_CANDIDATES
+    ${TT_METAL_INCLUDE_ROOT}
+    ${TT_METAL_SOURCE_ROOT}/build/_deps/tt-logger-src/include
+)
+file(GLOB CPM_TT_LOGGER_CANDIDATES "${TT_METAL_SOURCE_ROOT}/.cpmcache/tt-logger/*/include")
+list(APPEND TT_LOGGER_CANDIDATES ${CPM_TT_LOGGER_CANDIDATES})
+foreach(TT_LOGGER_DIR IN LISTS TT_LOGGER_CANDIDATES)
+    if(EXISTS "${TT_LOGGER_DIR}/tt-logger/tt-logger.hpp")
+        list(APPEND METALIUM_INCLUDE_DIRS "${TT_LOGGER_DIR}")
+        break()
+    endif()
+endforeach()
+
+set(ENCHANTUM_CANDIDATES
+    ${TT_METAL_INCLUDE_ROOT}
+    ${TT_METAL_SOURCE_ROOT}/build/_deps/enchantum-src/enchantum/include
+    ${TT_METAL_SOURCE_ROOT}/build/_deps/enchantum-src/include
+)
+file(GLOB CPM_ENCHANTUM_CANDIDATES
+    "${TT_METAL_SOURCE_ROOT}/.cpmcache/enchantum/*/enchantum/include"
+    "${TT_METAL_SOURCE_ROOT}/.cpmcache/enchantum/*/include"
+    "${TT_METAL_SOURCE_ROOT}/.cpmcache/enchantum/*/single_include"
+)
+list(APPEND ENCHANTUM_CANDIDATES ${CPM_ENCHANTUM_CANDIDATES})
+foreach(ENCHANTUM_DIR IN LISTS ENCHANTUM_CANDIDATES)
+    if(EXISTS "${ENCHANTUM_DIR}/enchantum/enchantum.hpp")
+        list(APPEND METALIUM_INCLUDE_DIRS "${ENCHANTUM_DIR}")
+        break()
+    endif()
+endforeach()
+
 if(TT_METAL_PREBUILT_ROOT)
     set(TT_METAL_LIB_ROOT "${TT_METAL_PREBUILT_ROOT}/lib")
     function(find_prebuilt_shared_lib out_var base_name)
