@@ -1,6 +1,7 @@
 #ifndef TTWVT_SIGNAL_HPP
 #define TTWVT_SIGNAL_HPP
 #include <memory>
+#include <initializer_list>
 
 namespace ttwvt {
     template<typename T>

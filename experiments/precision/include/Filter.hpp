@@ -11,8 +11,8 @@ namespace ttwvt {
         Filter(const uint32_t length, const int32_t shift = 0)
             : m_length(length), m_shift(shift), m_coeffs(new T[length]()) {}
 
-        Filter(const uint32_t length, const int32_t shift, const std::initializer_list<T>& coeffs)
-            : m_length(length), m_shift(shift), m_coeffs(new T[length]()) {
+        Filter(const std::initializer_list<T>& coeffs, const int32_t shift = 0)
+            : m_length(coeffs.size()), m_shift(shift), m_coeffs(new T[m_length]()) {
             std::copy(coeffs.begin(), coeffs.end(), m_coeffs.get());
         }
         

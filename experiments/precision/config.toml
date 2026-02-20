@@ -1,0 +1,241 @@
+# 16
+[[inputs]]
+name = "s16_m001"
+shape = [16]
+magnitude = 0.01
+
+[[inputs]]
+name = "s16_m1"
+shape = [16]
+magnitude = 1
+
+[[inputs]]
+name = "s16_m100"
+shape = [16]
+magnitude = 100
+
+[[inputs]]
+name = "s16_m10000"
+shape = [16]
+magnitude = 10000
+
+# 256
+[[inputs]]
+name = "s256_m001"
+shape = [256]
+magnitude = 0.01
+
+[[inputs]]
+name = "s256_m1"
+shape = [256]
+magnitude = 1
+
+[[inputs]]
+name = "s256_m100"
+shape = [256]
+magnitude = 100
+
+[[inputs]]
+name = "s256_m10000"
+shape = [256]
+magnitude = 10000
+
+# 521
+[[inputs]]
+name = "s521_m001"
+shape = [521]
+magnitude = 0.01
+
+[[inputs]]
+name = "s521_m1"
+shape = [521]
+magnitude = 1
+
+[[inputs]]
+name = "s521_m100"
+shape = [521]
+magnitude = 100
+
+[[inputs]]
+name = "s521_m10000"
+shape = [521]
+magnitude = 10000
+
+
+# 32384
+[[inputs]]
+name = "s32384_m001"
+shape = [32384]
+magnitude = 0.01
+
+[[inputs]]
+name = "s32384_m1"
+shape = [32384]
+magnitude = 1
+
+[[inputs]]
+name = "s32384_m100"
+shape = [32384]
+magnitude = 100
+
+[[inputs]]
+name = "s32384_m10000"
+shape = [32384]
+magnitude = 10000
+
+
+# 16x16
+[[inputs]]
+name = "s16x16_m001"
+shape = [16, 16]
+magnitude = 0.01
+
+[[inputs]]
+name = "s16x16_m1"
+shape = [16, 16]
+magnitude = 1
+
+[[inputs]]
+name = "s16x16_m100"
+shape = [16, 16]
+magnitude = 100
+
+[[inputs]]
+name = "s16x16_m10000"
+shape = [16, 16]
+magnitude = 10000
+
+# 16x5
+[[inputs]]
+name = "s16x5_m001"
+shape = [16, 5]
+magnitude = 0.01
+
+[[inputs]]
+name = "s16x5_m1"
+shape = [16, 5]
+magnitude = 1
+
+[[inputs]]
+name = "s16x5_m100"
+shape = [16, 5]
+magnitude = 100
+
+[[inputs]]
+name = "s16x5_m10000"
+shape = [16, 5]
+magnitude = 10000
+
+# 521x521
+[[inputs]]
+name = "s521x521_m001"
+shape = [521, 521]
+magnitude = 0.01
+
+[[inputs]]
+name = "s521x521_m1"
+shape = [521, 521]
+magnitude = 1
+
+[[inputs]]
+name = "s521x521_m100"
+shape = [521, 521]
+magnitude = 100
+
+[[inputs]]
+name = "s521x521_m10000"
+shape = [521, 521]
+magnitude = 10000
+
+# 521x256
+[[inputs]]
+name = "s521x256_m001"
+shape = [521, 256]
+magnitude = 0.01
+
+[[inputs]]
+name = "s521x256_m1"
+shape = [521, 256]
+magnitude = 1
+
+[[inputs]]
+name = "s521x256_m100"
+shape = [521, 256]
+magnitude = 100
+
+[[inputs]]
+name = "s521x256_m10000"
+shape = [521, 256]
+magnitude = 10000
+
+# 4096x4096
+[[inputs]]
+name = "s4096x4096_m001"
+shape = [4096, 4096]
+magnitude = 0.01
+
+[[inputs]]
+name = "s4096x4096_m1"
+shape = [4096, 4096]
+magnitude = 1
+
+[[inputs]]
+name = "s4096x4096_m100"
+shape = [4096, 4096]
+magnitude = 100
+
+[[inputs]]
+name = "s4096x4096_m10000"
+shape = [4096, 4096]
+magnitude = 10000
+
+
+[[wavelets]]
+name = "haar-z"
+id = "haar"
+mode = "zero"
+
+[[wavelets]]
+name = "haar-c"
+id = "haar"
+mode = "constant"
+
+[[wavelets]]
+name = "haar-s"
+id = "haar"
+mode = "symmetric"
+
+[[wavelets]]
+name = "db2-z"
+id = "db2"
+mode = "zero"
+
+[[wavelets]]
+name = "db2-s"
+id = "db2"
+mode = "symmetric"
+
+[[wavelets]]
+name = "db2-c"
+id = "db2"
+mode = "constant"
+
+[[wavelets]]
+name = "db8"
+id = "db8"
+mode = "symmetric"
+
+[[wavelets]]
+name = "sym2"
+id = "sym2"
+mode = "symmetric"
+
+[[wavelets]]
+name = "bior2-2"
+id = "bior2.2"
+mode = "symmetric"
+
+[[wavelets]]
+name = "bior4-4"
+id = "bior4.4"
+mode = "symmetric"
