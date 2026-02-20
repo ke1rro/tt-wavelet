@@ -67,12 +67,48 @@ endforeach()
 
 if(TT_METAL_PREBUILT_ROOT)
     set(TT_METAL_LIB_ROOT "${TT_METAL_PREBUILT_ROOT}/lib")
-    find_library(TT_METAL_LIBRARY NAMES "tt_metal" PATHS "${TT_METAL_LIB_ROOT}" NO_DEFAULT_PATH)
-    find_library(DEVICE_LIBRARY NAMES "device" PATHS "${TT_METAL_LIB_ROOT}" NO_DEFAULT_PATH)
+    function(find_prebuilt_shared_lib out_var base_name)
+        find_library(_direct_match NAMES "${base_name}" PATHS "${TT_METAL_LIB_ROOT}" NO_DEFAULT_PATH)
+        if(_direct_match)
+            set(${out_var} "${_direct_match}" PARENT_SCOPE)
+            return()
+        endif()
+
+        file(GLOB _versioned_candidates "${TT_METAL_LIB_ROOT}/lib${base_name}.so*")
+        if(_versioned_candidates)
+            list(SORT _versioned_candidates)
+            list(GET _versioned_candidates 0 _fallback_match)
+            set(${out_var} "${_fallback_match}" PARENT_SCOPE)
+            return()
+        endif()
+
+        set(${out_var} "" PARENT_SCOPE)
+    endfunction()
+
+    find_prebuilt_shared_lib(TT_METAL_LIBRARY "tt_metal")
+    find_prebuilt_shared_lib(DEVICE_LIBRARY "device")
+    find_prebuilt_shared_lib(TT_STL_LIBRARY "tt_stl")
+    find_prebuilt_shared_lib(TRACY_LIBRARY "tracy")
+    find_prebuilt_shared_lib(FMT_LIBRARY "fmt")
+    find_prebuilt_shared_lib(SPDLOG_LIBRARY "spdlog")
 
     if(NOT TT_METAL_LIBRARY)
         message(FATAL_ERROR "libtt_metal.so not found in ${TT_METAL_LIB_ROOT}")
     endif()
+
+    if(NOT TT_STL_LIBRARY)
+        message(FATAL_ERROR "libtt_stl.so not found in ${TT_METAL_LIB_ROOT}")
+    endif()
+
+    if(NOT TRACY_LIBRARY)
+        message(FATAL_ERROR "libtracy.so not found in ${TT_METAL_LIB_ROOT}")
+    endif()
+
+    if(NOT FMT_LIBRARY)
+        message(FATAL_ERROR "libfmt.so not found in ${TT_METAL_LIB_ROOT}")
+    endif()
+
+    find_library(HWLOC_LIBRARY NAMES "hwloc")
 
     add_library(Metalium::Metal SHARED IMPORTED GLOBAL)
     set_target_properties(Metalium::Metal PROPERTIES
@@ -80,8 +116,18 @@ if(TT_METAL_PREBUILT_ROOT)
         INTERFACE_INCLUDE_DIRECTORIES "${METALIUM_INCLUDE_DIRS}"
     )
 
+    target_link_libraries(Metalium::Metal INTERFACE ${TT_STL_LIBRARY} ${TRACY_LIBRARY} ${FMT_LIBRARY})
+
+    if(SPDLOG_LIBRARY)
+        target_link_libraries(Metalium::Metal INTERFACE ${SPDLOG_LIBRARY})
+    endif()
+
     if(DEVICE_LIBRARY)
         target_link_libraries(Metalium::Metal INTERFACE ${DEVICE_LIBRARY})
+    endif()
+
+    if(HWLOC_LIBRARY)
+        target_link_libraries(Metalium::Metal INTERFACE ${HWLOC_LIBRARY})
     endif()
 else()
     add_library(Metalium::Metal INTERFACE IMPORTED GLOBAL)

@@ -54,7 +54,7 @@ jobs:
           TT_METAL_SHA: ${{ steps.tt-metal.outputs.sha }}
         with:
           script: |
-            const artifactName = `tt-metal-v2-${process.env.TT_METAL_SHA}`;
+            const artifactName = `tt-metal-v3-${process.env.TT_METAL_SHA}`;
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             const workflowId = "full.yaml";
@@ -101,7 +101,7 @@ jobs:
       - name: Install build tooling
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang-20 lld-20 ninja-build
+          sudo apt-get install -y clang-20 lld-20 ninja-build libhwloc-dev
 
       - name: Cache pre-commit
         uses: actions/cache@v4

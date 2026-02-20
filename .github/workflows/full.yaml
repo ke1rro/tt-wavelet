@@ -33,7 +33,7 @@ jobs:
             exit 1
           fi
           echo "tt_metal_sha=${TT_METAL_SHA}" >> "${GITHUB_OUTPUT}"
-          echo "artifact_name=tt-metal-v2-${TT_METAL_SHA}" >> "${GITHUB_OUTPUT}"
+          echo "artifact_name=tt-metal-v3-${TT_METAL_SHA}" >> "${GITHUB_OUTPUT}"
 
           if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" || "${GITHUB_EVENT_NAME}" == "schedule" ]]; then
             echo "run_full=true" >> "${GITHUB_OUTPUT}"
@@ -139,7 +139,7 @@ jobs:
       - name: Install build tooling
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang-20 lld-20 ninja-build
+          sudo apt-get install -y clang-20 lld-20 ninja-build libhwloc-dev
 
       - name: Install tt-metal dependencies
         run: sudo bash ./tt-metal/install_dependencies.sh --no-distributed
@@ -221,7 +221,7 @@ jobs:
       - name: Install build tooling
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang-20 lld-20 ninja-build
+          sudo apt-get install -y clang-20 lld-20 ninja-build libhwloc-dev
 
       - name: Configure full build
         env:

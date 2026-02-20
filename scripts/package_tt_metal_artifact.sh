@@ -39,6 +39,22 @@ find_in_build() {
   return 1
 }
 
+copy_matching_build_libs() {
+  local pattern="$1"
+  local found=0
+
+  while IFS= read -r lib_path; do
+    cp "${lib_path}" "${OUT_DIR}/lib/$(basename "${lib_path}")"
+    found=1
+  done < <(find "${BUILD_DIR}" \( -type f -o -type l \) -name "${pattern}" | sort -u)
+
+  if [[ "${found}" -eq 1 ]]; then
+    return 0
+  fi
+
+  return 1
+}
+
 copy_header_tree() {
   local header_dir="$1"
   shift
@@ -100,6 +116,12 @@ TTNN_SO="$(find_in_build "_ttnn.so" \
 if [[ -n "${TTNN_SO}" ]]; then
   cp "${TTNN_SO}" "${OUT_DIR}/lib/"
 fi
+
+# Runtime dependencies needed by libtt_metal/libdevice during consumer linking.
+copy_matching_build_libs "libtt_stl.so*" || true
+copy_matching_build_libs "libtracy.so*" || true
+copy_matching_build_libs "libfmt.so*" || true
+copy_matching_build_libs "libspdlog.so*" || true
 
 INCLUDE_DIRS=(
   "ttnn"
