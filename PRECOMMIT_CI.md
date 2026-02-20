@@ -24,7 +24,7 @@ Workflow: `fast.yaml`
 
 Що робить:
 1. Визначає hash сабмодуля `tt-metal` у поточному коміті.
-2. Шукає артефакт `tt-metal-<hash>` у успішних запусках `full.yaml`.
+2. Шукає артефакт `tt-metal-v2-<hash>` у успішних запусках `full.yaml`.
 3. Завантажує артефакт у `third_party/tt-metal-prebuilt`.
 4. Конфігурує CI CMake (`ci/CMakeLists.txt`) і білдить тільки `tt_wavelet_test`.
 5. Запускає `pre-commit run --all-files --show-diff-on-failure`.
@@ -43,7 +43,7 @@ Workflow: `full.yaml`
 2. Якщо треба, job `build-tt-metal-artifact`:
 - будує `tt-metal`;
 - пакує `headers + libs` у артефакт;
-- публікує артефакт з імʼям `tt-metal-<submodule_sha>`.
+- публікує артефакт з імʼям `tt-metal-v2-<submodule_sha>`.
 3. Job `full`:
 - завантажує щойно зібраний артефакт;
 - конфігурує і білдить `tt-wavelet` через `ci/CMakeLists.txt`;
@@ -65,7 +65,7 @@ Workflow: `full.yaml`
 
 1. Відкрий GitHub Actions.
 2. Запусти вручну `Full CI (tt-metal + tt-wavelet)` (`full.yaml`).
-3. Переконайся, що з’явився артефакт `tt-metal-<hash>`.
+3. Переконайся, що з’явився артефакт `tt-metal-v2-<hash>`.
 4. Після цього Fast CI зможе працювати для PR/комітів у `tt-wavelet`.
 
 Без цього fast workflow впаде на кроці пошуку артефакта.
@@ -79,7 +79,7 @@ Workflow: `full.yaml`
 ## Якщо оновився `tt-metal` API
 
 1. Робиш push зі змінами в API/інтерфейсних шляхах `tt-metal`.
-2. Full CI автоматично збере новий артефакт `tt-metal-<new_hash>`.
+2. Full CI автоматично збере новий артефакт `tt-metal-v2-<new_hash>`.
 3. Наступні Fast CI для цього hash використовують вже новий prebuilt артефакт.
 
 ## Локальний запуск pre-commit (рекомендовано перед push)

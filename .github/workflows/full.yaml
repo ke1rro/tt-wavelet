@@ -16,6 +16,7 @@ jobs:
     outputs:
       run_full: ${{ steps.scope.outputs.run_full }}
       tt_metal_sha: ${{ steps.scope.outputs.tt_metal_sha }}
+      artifact_name: ${{ steps.scope.outputs.artifact_name }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -32,6 +33,7 @@ jobs:
             exit 1
           fi
           echo "tt_metal_sha=${TT_METAL_SHA}" >> "${GITHUB_OUTPUT}"
+          echo "artifact_name=tt-metal-v2-${TT_METAL_SHA}" >> "${GITHUB_OUTPUT}"
 
           if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" || "${GITHUB_EVENT_NAME}" == "schedule" ]]; then
             echo "run_full=true" >> "${GITHUB_OUTPUT}"
@@ -80,10 +82,10 @@ jobs:
         id: find
         uses: actions/github-script@v7
         env:
-          TT_METAL_SHA: ${{ needs.scope.outputs.tt_metal_sha }}
+          ARTIFACT_NAME: ${{ needs.scope.outputs.artifact_name }}
         with:
           script: |
-            const artifactName = `tt-metal-${process.env.TT_METAL_SHA}`;
+            const artifactName = process.env.ARTIFACT_NAME;
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             const workflowId = "full.yaml";
@@ -132,7 +134,7 @@ jobs:
 
       - name: Set artifact metadata
         id: meta
-        run: echo "artifact_name=tt-metal-${{ needs.scope.outputs.tt_metal_sha }}" >> "${GITHUB_OUTPUT}"
+        run: echo "artifact_name=${{ needs.scope.outputs.artifact_name }}" >> "${GITHUB_OUTPUT}"
 
       - name: Install build tooling
         run: |

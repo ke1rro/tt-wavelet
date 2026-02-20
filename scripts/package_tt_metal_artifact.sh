@@ -39,6 +39,46 @@ find_in_build() {
   return 1
 }
 
+copy_header_tree() {
+  local header_dir="$1"
+  shift
+
+  for candidate_root in "$@"; do
+    if [[ -d "${candidate_root}/${header_dir}" ]]; then
+      mkdir -p "$(dirname "${OUT_DIR}/include/${header_dir}")"
+      cp -R "${candidate_root}/${header_dir}" "${OUT_DIR}/include/${header_dir}"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+require_header_tree() {
+  local header_dir="$1"
+  shift
+
+  if ! copy_header_tree "${header_dir}" "$@"; then
+    echo "Required header directory '${header_dir}' was not found for packaging" >&2
+    exit 1
+  fi
+}
+
+require_header_file() {
+  local header_name="$1"
+  shift
+
+  for candidate_root in "$@"; do
+    if [[ -f "${candidate_root}/${header_name}" ]]; then
+      cp "${candidate_root}/${header_name}" "${OUT_DIR}/include/${header_name}"
+      return 0
+    fi
+  done
+
+  echo "Required header file '${header_name}' was not found for packaging" >&2
+  exit 1
+}
+
 TT_METAL_LIB="$(find_in_build "libtt_metal.so" \
   "${BUILD_DIR}/lib/libtt_metal.so" \
   "${BUILD_DIR}/tt_metal/libtt_metal.so")" || {
@@ -89,25 +129,42 @@ REFLECT_CANDIDATES=(
   "${TT_METAL_DIR}/build/_deps/reflect-src"
   "${TT_METAL_DIR}/.cpmcache/reflect"/*
 )
-for candidate in "${REFLECT_CANDIDATES[@]}"; do
-  if [[ -f "${candidate}/reflect" ]]; then
-    cp "${candidate}/reflect" "${OUT_DIR}/include/reflect"
-    break
-  fi
-done
+require_header_file "reflect" "${REFLECT_CANDIDATES[@]}"
 
-NLOHMANN_CANDIDATES=(
+FMT_INCLUDE_ROOTS=(
+  "${TT_METAL_DIR}/build/_deps/fmt-src/include"
+  "${TT_METAL_DIR}/.cpmcache/fmt"/*/include
+)
+require_header_tree "fmt" "${FMT_INCLUDE_ROOTS[@]}"
+
+SPDLOG_INCLUDE_ROOTS=(
+  "${TT_METAL_DIR}/build/_deps/spdlog-src/include"
+  "${TT_METAL_DIR}/.cpmcache/spdlog"/*/include
+)
+require_header_tree "spdlog" "${SPDLOG_INCLUDE_ROOTS[@]}"
+
+TT_LOGGER_INCLUDE_ROOTS=(
+  "${TT_METAL_DIR}/build/_deps/tt-logger-src/include"
+  "${TT_METAL_DIR}/.cpmcache/tt-logger"/*/include
+)
+require_header_tree "tt-logger" "${TT_LOGGER_INCLUDE_ROOTS[@]}"
+
+ENCHANTUM_INCLUDE_ROOTS=(
+  "${TT_METAL_DIR}/build/_deps/enchantum-src/enchantum/include"
+  "${TT_METAL_DIR}/build/_deps/enchantum-src/include"
+  "${TT_METAL_DIR}/.cpmcache/enchantum"/*/enchantum/include
+  "${TT_METAL_DIR}/.cpmcache/enchantum"/*/include
+  "${TT_METAL_DIR}/.cpmcache/enchantum"/*/single_include
+)
+require_header_tree "enchantum" "${ENCHANTUM_INCLUDE_ROOTS[@]}"
+
+NLOHMANN_INCLUDE_ROOTS=(
   "${TT_METAL_DIR}/build/_deps/nlohmann_json-src/include"
   "${TT_METAL_DIR}/build/_deps/nlohmann_json-src/single_include"
   "${TT_METAL_DIR}/.cpmcache/nlohmann_json"/*/include
   "${TT_METAL_DIR}/.cpmcache/nlohmann_json"/*/single_include
 )
-for candidate in "${NLOHMANN_CANDIDATES[@]}"; do
-  if [[ -d "${candidate}/nlohmann" ]]; then
-    cp -R "${candidate}/nlohmann" "${OUT_DIR}/include/nlohmann"
-    break
-  fi
-done
+require_header_tree "nlohmann" "${NLOHMANN_INCLUDE_ROOTS[@]}"
 shopt -u nullglob
 
 echo "Packaged tt-metal artifact at ${OUT_DIR}"

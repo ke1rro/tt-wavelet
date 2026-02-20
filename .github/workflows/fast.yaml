@@ -54,7 +54,7 @@ jobs:
           TT_METAL_SHA: ${{ steps.tt-metal.outputs.sha }}
         with:
           script: |
-            const artifactName = `tt-metal-${process.env.TT_METAL_SHA}`;
+            const artifactName = `tt-metal-v2-${process.env.TT_METAL_SHA}`;
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             const workflowId = "full.yaml";
