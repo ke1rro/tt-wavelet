@@ -3,34 +3,62 @@ set -euo pipefail
 
 TT_METAL_DIR="${1:-tt-metal}"
 OUT_DIR="${2:-tt-metal-package}"
-LIB_DIR="${TT_METAL_DIR}/build/lib"
+BUILD_DIR="${TT_METAL_DIR}/build"
 
 if [[ ! -d "${TT_METAL_DIR}" ]]; then
   echo "tt-metal directory not found: ${TT_METAL_DIR}" >&2
   exit 1
 fi
 
-if [[ ! -d "${LIB_DIR}" ]]; then
-  echo "tt-metal library directory not found: ${LIB_DIR}" >&2
+if [[ ! -d "${BUILD_DIR}" ]]; then
+  echo "tt-metal build directory not found: ${BUILD_DIR}" >&2
   exit 1
 fi
 
 rm -rf "${OUT_DIR}"
 mkdir -p "${OUT_DIR}/lib" "${OUT_DIR}/include"
 
-if [[ ! -f "${LIB_DIR}/libtt_metal.so" ]]; then
-  echo "libtt_metal.so not found in ${LIB_DIR}" >&2
+find_in_build() {
+  local filename="$1"
+  shift
+
+  for candidate in "$@"; do
+    if [[ -f "${candidate}" ]]; then
+      echo "${candidate}"
+      return 0
+    fi
+  done
+
+  local found
+  found="$(find "${BUILD_DIR}" -type f -name "${filename}" | head -n 1 || true)"
+  if [[ -n "${found}" ]]; then
+    echo "${found}"
+    return 0
+  fi
+
+  return 1
+}
+
+TT_METAL_LIB="$(find_in_build "libtt_metal.so" \
+  "${BUILD_DIR}/lib/libtt_metal.so" \
+  "${BUILD_DIR}/tt_metal/libtt_metal.so")" || {
+  echo "libtt_metal.so not found under ${BUILD_DIR}" >&2
   exit 1
+}
+cp "${TT_METAL_LIB}" "${OUT_DIR}/lib/"
+
+DEVICE_LIB="$(find_in_build "libdevice.so" \
+  "${BUILD_DIR}/lib/libdevice.so" \
+  "${BUILD_DIR}/tt_metal/third_party/umd/device/libdevice.so" || true)"
+if [[ -n "${DEVICE_LIB}" ]]; then
+  cp "${DEVICE_LIB}" "${OUT_DIR}/lib/"
 fi
 
-cp "${LIB_DIR}/libtt_metal.so" "${OUT_DIR}/lib/"
-
-if [[ -f "${LIB_DIR}/libdevice.so" ]]; then
-  cp "${LIB_DIR}/libdevice.so" "${OUT_DIR}/lib/"
-fi
-
-if [[ -f "${LIB_DIR}/_ttnn.so" ]]; then
-  cp "${LIB_DIR}/_ttnn.so" "${OUT_DIR}/lib/"
+TTNN_SO="$(find_in_build "_ttnn.so" \
+  "${BUILD_DIR}/lib/_ttnn.so" \
+  "${BUILD_DIR}/ttnn/_ttnn.so" || true)"
+if [[ -n "${TTNN_SO}" ]]; then
+  cp "${TTNN_SO}" "${OUT_DIR}/lib/"
 fi
 
 INCLUDE_DIRS=(
