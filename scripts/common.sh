@@ -57,7 +57,7 @@ run_tt_metal_install_deps() {
   else
     log INFO "Running tt-metal/install_dependencies.sh"
   fi
-  bash "$TT_METAL_DIR/install_dependencies.sh" "${args[@]}"
+  sudo bash "$TT_METAL_DIR/install_dependencies.sh" "${args[@]}"
 }
 
 apply_cmake_fixes() {
