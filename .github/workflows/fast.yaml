@@ -1,0 +1,133 @@
+name: Fast CI (tt-wavelet)
+
+on:
+  push:
+    paths:
+      - 'tt-wavelet/**'
+      - 'CMakeLists.txt'
+      - 'tt-wavelet/CMakeLists.txt'
+      - 'cmake/tt-metal.cmake'
+      - 'ci/CMakeLists.txt'
+      - '.pre-commit-config.yaml'
+      - 'scripts/generate_compile_db.sh'
+      - '.github/workflows/fast.yaml'
+  pull_request:
+    branches: [ main, dev ]
+    paths:
+      - 'tt-wavelet/**'
+      - 'CMakeLists.txt'
+      - 'tt-wavelet/CMakeLists.txt'
+      - 'cmake/tt-metal.cmake'
+      - 'ci/CMakeLists.txt'
+      - '.pre-commit-config.yaml'
+      - 'scripts/generate_compile_db.sh'
+      - '.github/workflows/fast.yaml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  fast:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Resolve tt-metal submodule hash
+        id: tt-metal
+        run: |
+          SHA=$(git ls-tree HEAD tt-metal | awk '{print $3}')
+          if [ -z "$SHA" ]; then
+            echo "Unable to resolve tt-metal submodule hash" >&2
+            exit 1
+          fi
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Find prebuilt tt-metal artifact
+        id: find-artifact
+        uses: actions/github-script@v7
+        env:
+          TT_METAL_SHA: ${{ steps.tt-metal.outputs.sha }}
+        with:
+          script: |
+            const artifactName = `tt-metal-${process.env.TT_METAL_SHA}`;
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const workflowId = "full.yaml";
+
+            const runs = await github.paginate(github.rest.actions.listWorkflowRuns, {
+              owner,
+              repo,
+              workflow_id: workflowId,
+              status: "completed",
+              per_page: 100,
+            });
+
+            for (const run of runs) {
+              if (run.conclusion !== "success") continue;
+              const artifacts = await github.rest.actions.listWorkflowRunArtifacts({
+                owner,
+                repo,
+                run_id: run.id,
+                per_page: 100,
+              });
+              const hit = artifacts.data.artifacts.find((artifact) => artifact.name === artifactName && !artifact.expired);
+              if (hit) {
+                core.setOutput("run_id", String(run.id));
+                core.setOutput("artifact_name", artifactName);
+                return;
+              }
+            }
+
+            core.setFailed(`Prebuilt artifact '${artifactName}' was not found. Run the full workflow first.`);
+
+      - name: Download prebuilt tt-metal artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ steps.find-artifact.outputs.artifact_name }}
+          path: third_party/tt-metal-prebuilt
+          run-id: ${{ steps.find-artifact.outputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install build tooling
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-20 lld-20 ninja-build
+
+      - name: Cache pre-commit
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pre-commit
+          key: pre-commit-${{ runner.os }}-${{ hashFiles('.pre-commit-config.yaml') }}
+
+      - name: Install pre-commit
+        run: pip install pre-commit
+
+      - name: Configure tt-wavelet with prebuilt tt-metal
+        env:
+          TT_METAL_PREBUILT_ROOT: ${{ github.workspace }}/third_party/tt-metal-prebuilt
+        run: |
+          cmake -S ci -B build/fast \
+            -G Ninja \
+            -DTT_WAVELET_SOURCE_ROOT="${{ github.workspace }}" \
+            -DCI_BUILD_WAVELET_EXECUTABLE=ON \
+            -DCMAKE_C_COMPILER=clang-20 \
+            -DCMAKE_CXX_COMPILER=clang++-20 \
+            -DTT_METAL_PREBUILT_ROOT="${TT_METAL_PREBUILT_ROOT}"
+
+      - name: Build tt-wavelet only
+        run: cmake --build build/fast --target tt_wavelet_test -j"$(nproc)"
+
+      - name: Run pre-commit hooks
+        env:
+          TT_METAL_PREBUILT_ROOT: ${{ github.workspace }}/third_party/tt-metal-prebuilt
+        run: pre-commit run --all-files --show-diff-on-failure
