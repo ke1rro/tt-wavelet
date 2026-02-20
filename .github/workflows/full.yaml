@@ -1,0 +1,248 @@
+name: Full CI (tt-metal + tt-wavelet)
+
+on:
+  push:
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  scope:
+    runs-on: ubuntu-latest
+    outputs:
+      run_full: ${{ steps.scope.outputs.run_full }}
+      tt_metal_sha: ${{ steps.scope.outputs.tt_metal_sha }}
+      artifact_name: ${{ steps.scope.outputs.artifact_name }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Evaluate run scope
+        id: scope
+        shell: bash
+        run: |
+          TT_METAL_SHA=$(git ls-tree HEAD tt-metal | awk '{print $3}')
+          if [[ -z "${TT_METAL_SHA}" ]]; then
+            echo "Unable to resolve tt-metal submodule hash" >&2
+            exit 1
+          fi
+          echo "tt_metal_sha=${TT_METAL_SHA}" >> "${GITHUB_OUTPUT}"
+          echo "artifact_name=tt-metal-v3-${TT_METAL_SHA}" >> "${GITHUB_OUTPUT}"
+
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" || "${GITHUB_EVENT_NAME}" == "schedule" ]]; then
+            echo "run_full=true" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          # Force full run on specific branch (toggle by uncommenting).
+          # if [[ "${GITHUB_REF_NAME}" == "main" ]]; then
+          #   echo "run_full=true" >> "${GITHUB_OUTPUT}"
+          #   exit 0
+          # fi
+          #
+          # Optional temporary branch override:
+          # if [[ "${GITHUB_REF_NAME}" == "tt-wavelet/ci" ]]; then
+          #   echo "run_full=true" >> "${GITHUB_OUTPUT}"
+          #   exit 0
+          # fi
+
+          BASE_SHA="${{ github.event.before }}"
+          HEAD_SHA="${{ github.sha }}"
+
+          if [[ -z "${BASE_SHA}" || "${BASE_SHA}" == "0000000000000000000000000000000000000000" ]]; then
+            CHANGED_FILES=$(git diff-tree --no-commit-id --name-only -r "${HEAD_SHA}")
+          else
+            CHANGED_FILES=$(git diff --name-only "${BASE_SHA}" "${HEAD_SHA}")
+          fi
+
+          echo "Changed files:"
+          echo "${CHANGED_FILES}"
+
+          if echo "${CHANGED_FILES}" | grep -Eq '^tt-metal/(tt_metal/api|tt_metal/include|tt_metal/hostdevcommon/api|tt_metal/third_party/umd/device/api|ttnn/cpp|tt_stl)/'; then
+            echo "run_full=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "run_full=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+  resolve-existing-artifact:
+    needs: scope
+    if: needs.scope.outputs.run_full == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      found: ${{ steps.find.outputs.found }}
+      run_id: ${{ steps.find.outputs.run_id }}
+      artifact_name: ${{ steps.find.outputs.artifact_name }}
+    steps:
+      - name: Find existing tt-metal artifact
+        id: find
+        uses: actions/github-script@v7
+        env:
+          ARTIFACT_NAME: ${{ needs.scope.outputs.artifact_name }}
+        with:
+          script: |
+            const artifactName = process.env.ARTIFACT_NAME;
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const workflowId = "full.yaml";
+
+            const runs = await github.paginate(github.rest.actions.listWorkflowRuns, {
+              owner,
+              repo,
+              workflow_id: workflowId,
+              status: "completed",
+              per_page: 100,
+            });
+
+            for (const run of runs) {
+              if (run.conclusion !== "success") continue;
+              const artifacts = await github.rest.actions.listWorkflowRunArtifacts({
+                owner,
+                repo,
+                run_id: run.id,
+                per_page: 100,
+              });
+              const hit = artifacts.data.artifacts.find((artifact) => artifact.name === artifactName && !artifact.expired);
+              if (hit) {
+                core.setOutput("found", "true");
+                core.setOutput("run_id", String(run.id));
+                core.setOutput("artifact_name", artifactName);
+                return;
+              }
+            }
+
+            core.setOutput("found", "false");
+            core.setOutput("artifact_name", artifactName);
+
+  build-tt-metal-artifact:
+    needs: [scope, resolve-existing-artifact]
+    if: needs.scope.outputs.run_full == 'true' && needs.resolve-existing-artifact.outputs.found != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    outputs:
+      artifact_name: ${{ steps.meta.outputs.artifact_name }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Set artifact metadata
+        id: meta
+        run: echo "artifact_name=${{ needs.scope.outputs.artifact_name }}" >> "${GITHUB_OUTPUT}"
+
+      - name: Install build tooling
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-20 lld-20 ninja-build libhwloc-dev
+
+      - name: Install tt-metal dependencies
+        run: sudo bash ./tt-metal/install_dependencies.sh --no-distributed
+
+      - name: Build tt-metal
+        run: |
+          cmake -S tt-metal -B tt-metal/build \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=clang-20 \
+            -DCMAKE_CXX_COMPILER=clang++-20 \
+            -DCMAKE_DISABLE_PRECOMPILE_HEADERS=TRUE \
+            -DENABLE_CCACHE=TRUE \
+            -DENABLE_DISTRIBUTED=OFF \
+            -DTT_UNITY_BUILDS=ON \
+            -DWITH_PYTHON_BINDINGS=ON
+          cmake --build tt-metal/build -j"$(nproc)"
+
+      - name: Package tt-metal artifact
+        run: |
+          bash ./scripts/package_tt_metal_artifact.sh ./tt-metal ./tt-metal-package
+          echo "${{ needs.scope.outputs.tt_metal_sha }}" > ./tt-metal-package/TT_METAL_SHA
+
+      - name: Upload tt-metal artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.meta.outputs.artifact_name }}
+          path: ./tt-metal-package
+          retention-days: 14
+
+  full:
+    needs: [scope, resolve-existing-artifact, build-tt-metal-artifact]
+    if: always() && needs.scope.outputs.run_full == 'true' && (needs.resolve-existing-artifact.outputs.found == 'true' || needs.build-tt-metal-artifact.result == 'success')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Download existing tt-metal artifact
+        if: needs.resolve-existing-artifact.outputs.found == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.resolve-existing-artifact.outputs.artifact_name }}
+          path: third_party/tt-metal-prebuilt
+          run-id: ${{ needs.resolve-existing-artifact.outputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download freshly built tt-metal artifact
+        if: needs.resolve-existing-artifact.outputs.found != 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build-tt-metal-artifact.outputs.artifact_name }}
+          path: third_party/tt-metal-prebuilt
+
+      - name: Ensure reflect header in prebuilt package
+        run: |
+          if [[ -f "third_party/tt-metal-prebuilt/include/reflect" ]]; then
+            echo "reflect header already exists in artifact"
+            exit 0
+          fi
+
+          echo "reflect header missing in artifact, fetching from tt-metal source cache"
+          git submodule update --init --depth 1 tt-metal
+          REFLECT_PATH="$(find tt-metal/.cpmcache/reflect -type f -name reflect | head -n 1 || true)"
+          if [[ -z "${REFLECT_PATH}" ]]; then
+            echo "reflect header was not found under tt-metal/.cpmcache/reflect" >&2
+            exit 1
+          fi
+          cp "${REFLECT_PATH}" third_party/tt-metal-prebuilt/include/reflect
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install build tooling
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-20 lld-20 ninja-build libhwloc-dev
+
+      - name: Configure full build
+        env:
+          TT_METAL_PREBUILT_ROOT: ${{ github.workspace }}/third_party/tt-metal-prebuilt
+        run: |
+          cmake -S ci -B build/full \
+            -G Ninja \
+            -DTT_WAVELET_SOURCE_ROOT="${{ github.workspace }}" \
+            -DCI_BUILD_WAVELET_EXECUTABLE=ON \
+            -DCMAKE_C_COMPILER=clang-20 \
+            -DCMAKE_CXX_COMPILER=clang++-20 \
+            -DTT_METAL_PREBUILT_ROOT="${TT_METAL_PREBUILT_ROOT}"
+
+      - name: Build tt-wavelet
+        run: cmake --build build/full --target tt_wavelet_test -j"$(nproc)"
+
+      - name: Install pre-commit
+        run: pip install pre-commit
+
+      - name: Run pre-commit hooks
+        env:
+          TT_METAL_PREBUILT_ROOT: ${{ github.workspace }}/third_party/tt-metal-prebuilt
+        run: pre-commit run --all-files --show-diff-on-failure
