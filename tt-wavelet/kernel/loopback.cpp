@@ -1,12 +1,8 @@
-
-
 #include <cstdint>
 
-#include "../../tt-metal/tt_metal/api/tt-metalium/tensor_accessor_args.hpp"
-#include "../../tt-metal/tt_metal/hw/inc/api/dataflow/dataflow_api.h"
-#include "../../tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor.h"
-#include "../../tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h"
-#include "../../tt-metal/tt_metal/hw/inc/internal/tt-2xx/quasar/noc/noc_parameters.h"
+#include "api/dataflow/dataflow_api.h"
+#include "api/tensor/tensor_accessor.h"
+#include "api/tensor/tensor_accessor_args.h"
 
 void kernel_main() {
     uint32_t l1_buffer_addr = get_arg_val<uint32_t>(0);
@@ -22,11 +18,10 @@ void kernel_main() {
     const auto out0 = TensorAccessor(out0_args, dram_buffer_dst_addr, tile_size_bytes);
 
     for (uint32_t i{0}; i < num_tiles; ++i) {
-        noc_async_read(i, in0, l1_buffer_addr);
+        noc_async_read_tile(i, in0, l1_buffer_addr);
         noc_async_read_barrier();
 
-        noc_async_write(i, out0, l1_buffer_addr);
+        noc_async_write_tile(i, out0, l1_buffer_addr);
         noc_async_write_barrier();
     }
-
 }
