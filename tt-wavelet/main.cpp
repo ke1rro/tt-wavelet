@@ -82,8 +82,8 @@ int main() {
     std::vector<uint32_t> reader_args;
     std::vector<uint32_t> writer_args;
     tt::tt_metal::TensorAccessorArgs(src0_dram_buffer->get_backing_buffer()).append_to(reader_args);
-    tt::tt_metal::TensorAccessorArgs(src1_dram_buffer->get_backing_buffer()).append_to(writer_args);
-
+    tt::tt_metal::TensorAccessorArgs(src1_dram_buffer->get_backing_buffer()).append_to(reader_args);
+    tt::tt_metal::TensorAccessorArgs(dst_dram_buffer->get_backing_buffer()).append_to(writer_args);
     auto reader = tt::tt_metal::CreateKernel(
         program,
         reader_kernel_path,

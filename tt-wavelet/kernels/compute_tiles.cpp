@@ -28,7 +28,7 @@ void MAIN {
         tile_regs_wait();
 
         cb_reserve_back(cb_out0, 1);
-        pack_tile(dst_reg, cb_out0);  // copy result to out0
+        pack_tile(dst_reg_id, cb_out0);  // copy result to out0
         tile_regs_release();
 
         cb_push_back(cb_out0, 1);
