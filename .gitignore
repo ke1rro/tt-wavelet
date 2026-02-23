@@ -20,6 +20,9 @@ build_*
 CMakeUserPresets.json
 .session
 
+!scripts/build_with_tracy.sh
+!scripts/build_tracy_gui.sh
+
 /llk_out/
 /out/
 
