@@ -17,6 +17,9 @@ static constexpr uint32_t dram_buffer_size{tile_size_bytes * num_tiles};
 
 int main() {
     ZoneScoped;
+    std::cin.get();  // Wait for Tracy GUI to connect
+
+     // Initialize MeshDevice and CommandQueue
     bool pass = true;
     constexpr int device_id{0};
     
