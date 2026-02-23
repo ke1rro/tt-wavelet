@@ -27,7 +27,7 @@ int main() {
     tt::tt_metal::distributed::MeshCommandQueue& command_queue = mesh_device->mesh_command_queue();
     tt::tt_metal::Program program = tt::tt_metal::CreateProgram();
     std::cout << "program created\n";
-    TracyMessageC("Program created", 0x00FF00);
+    TracyMessageC("Program created", 15, 0x00FF00);
 
     const tt::tt_metal::distributed::DeviceLocalBufferConfig l1_config{
         .page_size = tile_size_bytes,
@@ -66,7 +66,7 @@ int main() {
     {
         ZoneScopedN("Write Input Buffer");
         tt::tt_metal::distributed::EnqueueWriteMeshBuffer(command_queue, input_dram_buffer, input_vec, false);
-        TracyMessageC("Input data written to DRAM", 0x0080FF);
+        TracyMessageC("Input data written to DRAM", 27, 0x0080FF);
     }
     constexpr tt::tt_metal::CoreCoord core{0, 0};
 
@@ -86,7 +86,7 @@ int main() {
                 .noc = tt::tt_metal::RISCV_0_default,
                 .compile_args = dram_copy_compile_time_arg});
         TracyPlot("Num Tiles", static_cast<int64_t>(num_tiles));
-        TracyMessageC("Kernel configured", 0xFFAA00);
+        TracyMessageC("Kernel configured", 17, 0xFFAA00);
     }
 
     const std::vector<uint32_t> runtime_args = {
@@ -104,16 +104,16 @@ int main() {
             tt::tt_metal::distributed::MeshCoordinateRange(mesh_device->shape());
         workload.add_program(device_range, std::move(program));
         tt::tt_metal::distributed::EnqueueMeshWorkload(command_queue, workload, /*blocking=*/false);
-        TracyMessageC("Workload enqueued", 0xFF8000);
+        TracyMessageC("Workload enqueued", 17, 0xFF8000);
         tt::tt_metal::distributed::Finish(command_queue);
-        TracyMessageC("Workload finished", 0x00FF00);
+        TracyMessageC("Workload finished", 17, 0x00FF00);
     }
 
     std::vector<bfloat16> result_vec;
     {
         ZoneScopedN("Read Output Buffer");
         tt::tt_metal::distributed::EnqueueReadMeshBuffer(command_queue, result_vec, output_dram_buffer, true);
-        TracyMessageC("Output data read from DRAM", 0x0080FF);
+        TracyMessageC("Output data read from DRAM", 27, 0x0080FF);
     }
 
     {
@@ -121,12 +121,12 @@ int main() {
         for (int i = 0; i < input_vec.size(); i++) {
             if (input_vec[i] != result_vec[i]) {
                 pass = false;
-                TracyMessageC("Validation failed!", 0xFF0000);
+                TracyMessageC("Validation failed!", 18, 0xFF0000);
                 break;
             }
         }
         if (pass) {
-            TracyMessageC("Validation passed!", 0x00FF00);
+            TracyMessageC("Validation passed!", 18, 0x00FF00);
         }
     }
 
