@@ -30,5 +30,5 @@ repos:
         args: [--style=file, --version=20]
         files: ^tt-wavelet/.*\.(c|cc|cpp|cxx|h|hpp)$
       - id: clang-tidy
-        args: ["--checks=bugprone-*,performance-*", "-p=build/ci-clang-tidy", --version=20]
+        args: [-p=build/ci-clang-tidy, --config-file=.clang-tidy, --version=20]
         files: ^tt-wavelet/.*\.(c|cc|cpp|cxx|h|hpp)$
