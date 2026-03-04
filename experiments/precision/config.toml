@@ -84,109 +84,25 @@ shape = [32384]
 magnitude = 10000
 
 
-# 16x16
+# 65536
 [[inputs]]
-name = "s16x16_m001"
-shape = [16, 16]
+name = "s65536_m001"
+shape = [65536]
 magnitude = 0.01
 
 [[inputs]]
-name = "s16x16_m1"
-shape = [16, 16]
+name = "s65536_m1"
+shape = [65536]
 magnitude = 1
 
 [[inputs]]
-name = "s16x16_m100"
-shape = [16, 16]
+name = "s65536_m100"
+shape = [65536]
 magnitude = 100
 
 [[inputs]]
-name = "s16x16_m10000"
-shape = [16, 16]
-magnitude = 10000
-
-# 16x5
-[[inputs]]
-name = "s16x5_m001"
-shape = [16, 5]
-magnitude = 0.01
-
-[[inputs]]
-name = "s16x5_m1"
-shape = [16, 5]
-magnitude = 1
-
-[[inputs]]
-name = "s16x5_m100"
-shape = [16, 5]
-magnitude = 100
-
-[[inputs]]
-name = "s16x5_m10000"
-shape = [16, 5]
-magnitude = 10000
-
-# 521x521
-[[inputs]]
-name = "s521x521_m001"
-shape = [521, 521]
-magnitude = 0.01
-
-[[inputs]]
-name = "s521x521_m1"
-shape = [521, 521]
-magnitude = 1
-
-[[inputs]]
-name = "s521x521_m100"
-shape = [521, 521]
-magnitude = 100
-
-[[inputs]]
-name = "s521x521_m10000"
-shape = [521, 521]
-magnitude = 10000
-
-# 521x256
-[[inputs]]
-name = "s521x256_m001"
-shape = [521, 256]
-magnitude = 0.01
-
-[[inputs]]
-name = "s521x256_m1"
-shape = [521, 256]
-magnitude = 1
-
-[[inputs]]
-name = "s521x256_m100"
-shape = [521, 256]
-magnitude = 100
-
-[[inputs]]
-name = "s521x256_m10000"
-shape = [521, 256]
-magnitude = 10000
-
-# 4096x4096
-[[inputs]]
-name = "s4096x4096_m001"
-shape = [4096, 4096]
-magnitude = 0.01
-
-[[inputs]]
-name = "s4096x4096_m1"
-shape = [4096, 4096]
-magnitude = 1
-
-[[inputs]]
-name = "s4096x4096_m100"
-shape = [4096, 4096]
-magnitude = 100
-
-[[inputs]]
-name = "s4096x4096_m10000"
-shape = [4096, 4096]
+name = "s65536_m10000"
+shape = [65536]
 magnitude = 10000
 
 
@@ -199,6 +115,11 @@ mode = "zero"
 name = "haar-c"
 id = "haar"
 mode = "constant"
+
+[[wavelets]]
+name = "haar-p"
+id = "haar"
+mode = "periodic"
 
 [[wavelets]]
 name = "haar-s"
@@ -219,6 +140,11 @@ mode = "symmetric"
 name = "db2-c"
 id = "db2"
 mode = "constant"
+
+[[wavelets]]
+name = "db2-p"
+id = "db2"
+mode = "periodic"
 
 [[wavelets]]
 name = "db8"

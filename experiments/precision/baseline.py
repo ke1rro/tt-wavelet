@@ -12,7 +12,7 @@ from tqdm import tqdm
 def save(path: Path, data: np.ndarray):
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "wb") as f:
-        f.write(data.astype("<f8").tobytes())
+        data.astype(np.float64).dump(f)
 
 
 def main(
@@ -47,14 +47,6 @@ def main(
             save(output_path / input_name / (wavelet_name + "_l_fwd"), l)
             save(output_path / input_name / (wavelet_name + "_h_fwd"), h)
             inv = pywt.idwt(l, h, pywvt_name, mode=mode)
-            save(output_path / input_name / (wavelet_name + "_inv"), inv)
-        elif len(shape) == 2:
-            ll, (lh, hl, hh) = pywt.dwt2(data, pywvt_name, mode=mode)
-            save(output_path / input_name / (wavelet_name + "_ll_fwd"), ll)
-            save(output_path / input_name / (wavelet_name + "_lh_fwd"), lh)
-            save(output_path / input_name / (wavelet_name + "_hl_fwd"), hl)
-            save(output_path / input_name / (wavelet_name + "_hh_fwd"), hh)
-            inv = pywt.idwt2((ll, (lh, hl, hh)), pywvt_name, mode=mode)
             save(output_path / input_name / (wavelet_name + "_inv"), inv)
         else:
             raise ValueError("Unsupported dimension.")
