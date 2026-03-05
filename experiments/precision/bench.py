@@ -11,6 +11,20 @@ class ComparisonResult:
     abs_mean: float
     rel_max: float
     rel_mean: float
+    rel_p99: float
+    rel_p999: float
+    pcc: float
+
+    def to_dict(self) -> dict:
+        return {
+            "abs_max": self.abs_max,
+            "abs_mean": self.abs_mean,
+            "rel_max": self.rel_max,
+            "rel_mean": self.rel_mean,
+            "rel_p99": self.rel_p99,
+            "rel_p999": self.rel_p999,
+            "pcc": self.pcc,
+        }
 
 
 def compare(
@@ -21,7 +35,8 @@ def compare(
         raise ValueError(f"Shape mismatch: {cmp.shape} vs {ref.shape}")
 
     diff = cmp - ref
-    mask = diff > 1e-12
+    threshold = 1e-8 * np.max(np.abs(ref))
+    mask = ref > threshold
     rel = np.abs(diff[mask] / ref[mask])
     abs_ = np.abs(diff[~mask])
 
@@ -30,6 +45,9 @@ def compare(
         abs_mean=np.mean(abs_) if abs_.size > 0 else 0,
         rel_max=np.max(rel) if rel.size > 0 else 0,
         rel_mean=np.mean(rel) if rel.size > 0 else 0,
+        rel_p99=np.percentile(rel, 99) if rel.size > 0 else 0,
+        rel_p999=np.percentile(rel, 99.9) if rel.size > 0 else 0,
+        pcc=np.corrcoef(cmp.flatten(), ref.flatten())[0, 1] if cmp.size > 0 else 0,
     )
 
 
@@ -39,12 +57,17 @@ def main(
     input_path: str = "data/input",
     cross_check: list[tuple[tuple[str, str], tuple[str, str]]] = [
         (("data/output-f32", "f32"), ("data/output-pywt", "pywt")),
-        (("data/output-bf16", "bf16"), ("data/output-f32", "f32")),
+        # (("data/output-bf16", "bf16"), ("data/output-pywt", "pywt")),
+        # (("data/output-tf32", "tf32"), ("data/output-pywt", "pywt")),
+        (("data/output-bf16xf32", "mixed_bf16xf32"), ("data/output-pywt", "pywt")),
+        (("data/output-tf32xf32", "mixed_tf32xf32"), ("data/output-pywt", "pywt")),
     ],
     inv_check: list[tuple[str, str]] = [
-        ("data/output-pywt", "pywt"),
         ("data/output-f32", "f32"),
-        ("data/output-bf16", "bf16"),
+        # ("data/output-bf16", "bf16"),
+        # ("data/output-tf32", "tf32"),
+        ("data/output-bf16xf32", "mixed_bf16xf32"),
+        ("data/output-tf32xf32", "mixed_tf32xf32"),
     ],
 ):
     with open(config_path, "rb") as f:
@@ -80,10 +103,7 @@ def main(
                             "type": type_,
                             "cmp": cmp_name,
                             "ref": ref_name,
-                            "abs_max": result.abs_max,
-                            "rel_max": result.rel_max,
-                            "rel_mean": result.rel_mean,
-                            "abs_mean": result.abs_mean,
+                            **result.to_dict(),
                         }
                     )
 
@@ -116,10 +136,7 @@ def main(
                         "type": "reconstruction",
                         "cmp": cmp_name,
                         "ref": "signal",
-                        "abs_max": result.abs_max,
-                        "rel_max": result.rel_max,
-                        "rel_mean": result.rel_mean,
-                        "abs_mean": result.abs_mean,
+                        **result.to_dict(),
                     }
                 )
 

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import numpy as np
 import pywt
-import torch
+import dtypes
 from tqdm import tqdm
 
 
@@ -29,32 +29,20 @@ def pad(data: np.ndarray, left: int, right: int, mode: str) -> np.ndarray:
     else:
         raise ValueError(f"Unsupported padding mode: {mode}")
 
-
 def dwt(
-    data: np.ndarray, wavelet: pywt.Wavelet, mode: str, dtype: torch.dtype
+    data: np.ndarray, wavelet: pywt.Wavelet, mode: str, dtype: dtypes.dtype
 ) -> tuple[np.ndarray, np.ndarray]:
     L = wavelet.dec_len
 
-    ldec = torch.asarray(wavelet.dec_lo[::-1]).to(dtype)
-    hdec = torch.asarray(wavelet.dec_hi[::-1]).to(dtype)
-
     data = pad(data, L - 1, L - 1, mode=mode)
-    data = torch.from_numpy(data).to(dtype)
 
-    approx = torch.nn.functional.conv1d(
-        data.view(1, 1, -1), ldec.view(1, 1, -1), padding="valid"
-    ).view(-1)
-    detail = torch.nn.functional.conv1d(
-        data.view(1, 1, -1), hdec.view(1, 1, -1), padding="valid"
-    ).view(-1)
+    approx = dtype.conv(data, wavelet.dec_lo)
+    detail = dtype.conv(data, wavelet.dec_hi)
 
     approx = approx[1::2]
     detail = detail[1::2]
 
-    return (
-        approx.to(torch.float64).numpy(),
-        detail.to(torch.float64).numpy(),
-    )
+    return approx, detail
 
 
 def idwt(
@@ -62,15 +50,12 @@ def idwt(
     detail: np.ndarray,
     wavelet: pywt.Wavelet,
     mode: str,
-    dtype: torch.dtype,
+    dtype: dtypes.dtype,
 ) -> np.ndarray:
     if approx.shape != detail.shape:
         raise ValueError(
             f"Shape mismatch for approx and detail coefficients: {approx.shape} vs {detail.shape}"
         )
-
-    lrec = torch.asarray(wavelet.rec_lo[::-1]).to(dtype)
-    hrec = torch.asarray(wavelet.rec_hi[::-1]).to(dtype)
 
     approx_up = np.zeros(len(approx) * 2 + 1)
     approx_up[1::2] = approx
@@ -78,25 +63,17 @@ def idwt(
     detail_up = np.zeros(len(detail) * 2 + 1)
     detail_up[1::2] = detail
 
-    approx_up = torch.from_numpy(approx_up).to(dtype)
-    detail_up = torch.from_numpy(detail_up).to(dtype)
+    rec_approx = dtype.conv(approx_up, wavelet.rec_lo)
+    rec_detail = dtype.conv(detail_up, wavelet.rec_hi)
 
-    rec_approx = torch.nn.functional.conv1d(
-        approx_up.view(1, 1, -1), lrec.view(1, 1, -1), padding="valid"
-    ).view(-1)
-
-    rec_detail = torch.nn.functional.conv1d(
-        detail_up.view(1, 1, -1), hrec.view(1, 1, -1), padding="valid"
-    ).view(-1)
-
-    return (rec_approx + rec_detail).to(torch.float64).numpy()
+    return dtype.add(rec_approx, rec_detail)
 
 
 def main(
     config_path: str = "config.toml",
     input_path: PathLike = "data/input",
     output_path: PathLike = "data/output-pywt",
-    dtype: torch.dtype = torch.float64,
+    dtype: dtypes.dtype = dtypes.float64,
 ):
     input_path = Path(input_path)
     output_path = Path(output_path)
@@ -165,13 +142,13 @@ if __name__ == "__main__":
     parser.add_argument(
         "--dtype",
         type=str,
-        choices=["float32", "float64", "bfloat16", "float16"],
-        default="float64",
+        choices=dtypes.map.keys(),
+        default=dtypes.map["float64"],
         help="Data type for computations.",
     )
     args = parser.parse_args()
 
-    dtype = getattr(torch, args.dtype)
+    dtype = dtypes.map[args.dtype]
     main(
         config_path=args.config,
         input_path=args.input,
