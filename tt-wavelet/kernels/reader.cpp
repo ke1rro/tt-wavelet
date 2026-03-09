@@ -1,6 +1,9 @@
 // tt_metal/programming_examples/eltwise_sfpu/kernels/dataflow/read_tile.cpp
 #include <cstdint>
 
+#include "api/dataflow/dataflow_api.h"
+#include "api/tensor/tensor_accessor.h"
+
 void kernel_main() {
     uint32_t in0_addr = get_arg_val<uint32_t>(0);
     uint32_t n_tiles = get_arg_val<uint32_t>(1);

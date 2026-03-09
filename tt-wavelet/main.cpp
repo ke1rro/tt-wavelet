@@ -22,7 +22,7 @@ struct Config {
 public:
     explicit Config(const uint32_t num_tiles) :
         num_tiles(num_tiles),
-        num_output_tiles(num_tiles * 2),
+        num_output_tiles(num_tiles),
         elems_per_tile(tt::constants::TILE_HEIGHT * tt::constants::TILE_WIDTH),
         size_tile_bytes(sizeof(T) * elems_per_tile) {}
 
@@ -48,6 +48,9 @@ inline tt::tt_metal::CBHandle create_circular_buffer(
 
 int main() {
     bool pass = true;
+    std::string reader_kernel_path = "tt-wavelet/kernels/reader.cpp";
+    std::string writer_kernel_path = "tt-wavelet/kernels/writer.cpp";
+    std::string compute_kernel_path = "tt-wavelet/kernels/compute.cpp";
     constexpr int device_id{0};
     constexpr uint32_t num_tiles{64};
     const Config<bfloat16> cfg{num_tiles};
@@ -85,22 +88,17 @@ int main() {
     for (bfloat16& v : src0_vec) {
         v = bfloat16(dist(rng));
     }
-    tt::tt_metal::CircularBufferConfig cb_src0_config =
-        tt::tt_metal::CircularBufferConfig(
-            num_input_tiles * cfg.size_tile_bytes, {{src0_cb_index, tt::DataFormat::Float16_b}})
-            .set_page_size(src0_cb_index, cfg.size_tile_bytes);
 
-    tt::tt_metal::CircularBufferConfig cb_out_config =
-        tt::tt_metal::CircularBufferConfig(
-            num_input_tiles * cfg.size_tile_bytes, {{output_cb_index, tt::DataFormat::Float16_b}})
-            .set_page_size(output_cb_index, cfg.size_tile_bytes);
+    create_circular_buffer(program, core, tt::CBIndex::c_0, num_input_tiles, cfg.size_tile_bytes);
+    create_circular_buffer(program, core, tt::CBIndex::c_16, num_input_tiles, cfg.size_tile_bytes);
+
     tt::tt_metal::distributed::EnqueueWriteMeshBuffer(command_queue, src_dram_buffer, src0_vec, false);
 
     std::vector<uint32_t> reader_args;
     tt::tt_metal::TensorAccessorArgs(src_dram_buffer->get_backing_buffer()).append_to(reader_args);
     tt::tt_metal::KernelHandle reader_kernel_id = tt::tt_metal::CreateKernel(
         program,
-        "tt-wavelet/kernels/reader.cpp",
+        reader_kernel_path,
         core,
         tt::tt_metal::DataMovementConfig{
             .processor = tt::tt_metal::DataMovementProcessor::RISCV_0,
@@ -111,7 +109,7 @@ int main() {
     tt::tt_metal::TensorAccessorArgs(dst_dram_buffer->get_backing_buffer()).append_to(writer_args_comp);
     tt::tt_metal::KernelHandle writer_kernel_id = tt::tt_metal::CreateKernel(
         program,
-        "tt-wavelet/kernels/writer.cpp",
+        writer_kernel_path,
         core,
         tt::tt_metal::DataMovementConfig{
             .processor = tt::tt_metal::DataMovementProcessor::RISCV_1,
@@ -120,7 +118,7 @@ int main() {
 
     tt::tt_metal::KernelHandle eltwise_sfpu_kernel_id = CreateKernel(
         program,
-        "eltwise_sfpu/kernels/compute/compute.cpp",
+        compute_kernel_path,
         core,
         tt::tt_metal::ComputeConfig{
             .math_approx_mode = false,
@@ -130,7 +128,7 @@ int main() {
     tt::tt_metal::SetRuntimeArgs(
         program, reader_kernel_id, core, {static_cast<uint32_t>(src_dram_buffer->address()), cfg.num_tiles});
     tt::tt_metal::SetRuntimeArgs(
-        program, writer_kernel_id, core, {static_cast<uint32_t>(dst_dram_buffer->address()), cfg.num_tiles});
+        program, writer_kernel_id, core, {static_cast<uint32_t>(dst_dram_buffer->address()), cfg.num_output_tiles});
 
     tt::tt_metal::distributed::MeshWorkload workload;
     auto device_range = tt::tt_metal::distributed::MeshCoordinateRange(mesh_device->shape());
@@ -142,6 +140,11 @@ int main() {
     tt::tt_metal::distributed::EnqueueReadMeshBuffer(command_queue, result_vec, dst_dram_buffer, true);
 
     constexpr float eps = 2e-2f;
+    if (result_vec.size() != src0_vec.size()) {
+        log_error(tt::LogTest, "Unexpected output size {} != {}", result_vec.size(), src0_vec.size());
+        pass = false;
+    }
+
     for (uint32_t i = 0; i < result_vec.size(); ++i) {
         const float expected = static_cast<float>(bfloat16(std::exp(static_cast<float>(src0_vec[i]))));
         const float result = static_cast<float>(result_vec[i]);
