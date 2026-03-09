@@ -120,7 +120,7 @@ int main() {
 
     tt::tt_metal::KernelHandle eltwise_sfpu_kernel_id = CreateKernel(
         program,
-        "eltwise_sfpu/kernels/compute.cpp",
+        "tt-wavelet/kernels/compute.cpp",
         core,
         tt::tt_metal::ComputeConfig{
             .math_approx_mode = false,
