@@ -153,12 +153,16 @@ class LiftingWaveletTransform:
     def remap_symmetric_index(self, length: int, logic_i: int) -> int:
         if length <= 0:
             raise ValueError("Cannot read samples from an empty branch")
+        if length == 1:
+            return 0
 
-        period = 2 * length
+        period = 2 * (length - 1)
         folded = logic_i % period
+        if folded < 0:
+            folded += period
         if folded < length:
             return folded
-        return period - 1 - folded
+        return period - folded
 
     def get_full_sample(
         self, even_src: ttnn.Tensor, odd_src: ttnn.Tensor, full_index: int
