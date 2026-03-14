@@ -1,0 +1,129 @@
+{
+    "tap_size": 24,
+    "l2": {
+        "fp64": 2.203954540449465e-12,
+        "qq": 2.2039987289933355e-12
+    },
+    "delay": {
+        "even": 5,
+        "odd": 6
+    },
+    "steps": [
+        {
+            "type": "predict",
+            "shift": 1,
+            "coefficients": [
+                0.10140405963084138
+            ]
+        },
+        {
+            "type": "update",
+            "shift": -1,
+            "coefficients": [
+                -0.10037195654646704,
+                -2.5832595909677805
+            ]
+        },
+        {
+            "type": "predict",
+            "shift": 0,
+            "coefficients": [
+                0.3375496144052601,
+                -0.12632885842676667
+            ]
+        },
+        {
+            "type": "update",
+            "shift": -1,
+            "coefficients": [
+                3.8647646844366808,
+                -1.9346817574143
+            ]
+        },
+        {
+            "type": "predict",
+            "shift": 0,
+            "coefficients": [
+                0.09972855763085353,
+                -0.0774446316892223
+            ]
+        },
+        {
+            "type": "update",
+            "shift": -1,
+            "coefficients": [
+                1.626999342758847,
+                -0.23153623815041766
+            ]
+        },
+        {
+            "type": "predict",
+            "shift": 0,
+            "coefficients": [
+                0.012573219973836012,
+                0.050086595080188236
+            ]
+        },
+        {
+            "type": "update",
+            "shift": -1,
+            "coefficients": [
+                -0.8840779893021575,
+                1.505403893786626
+            ]
+        },
+        {
+            "type": "predict",
+            "shift": 0,
+            "coefficients": [
+                -0.0786701740525009,
+                0.19817255488207172
+            ]
+        },
+        {
+            "type": "update",
+            "shift": -1,
+            "coefficients": [
+                -2.3221020107297856,
+                4.514855142139473
+            ]
+        },
+        {
+            "type": "predict",
+            "shift": 0,
+            "coefficients": [
+                -0.16903659620345493,
+                0.19570403010455636
+            ]
+        },
+        {
+            "type": "update",
+            "shift": -1,
+            "coefficients": [
+                -4.149191246205001,
+                -3.192779989742662
+            ]
+        },
+        {
+            "type": "predict",
+            "shift": 0,
+            "coefficients": [
+                0.22517009002128366
+            ]
+        },
+        {
+            "type": "scale-even",
+            "shift": 0,
+            "coefficients": [
+                -0.37522647240366713
+            ]
+        },
+        {
+            "type": "scale-odd",
+            "shift": 0,
+            "coefficients": [
+                -2.6650571682591844
+            ]
+        }
+    ]
+}

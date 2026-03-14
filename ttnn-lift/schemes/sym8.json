@@ -1,0 +1,97 @@
+{
+    "tap_size": 16,
+    "l2": {
+        "fp64": 3.103522380204629e-11,
+        "qq": 3.103528358540232e-11
+    },
+    "delay": {
+        "even": 3,
+        "odd": 4
+    },
+    "steps": [
+        {
+            "type": "predict",
+            "shift": 1,
+            "coefficients": [
+                -0.16027961662071794
+            ]
+        },
+        {
+            "type": "update",
+            "shift": -1,
+            "coefficients": [
+                0.1562652322345541,
+                1.3382929071132799
+            ]
+        },
+        {
+            "type": "predict",
+            "shift": 0,
+            "coefficients": [
+                -0.4881496179803273,
+                0.1318082941876172
+            ]
+        },
+        {
+            "type": "update",
+            "shift": -1,
+            "coefficients": [
+                -0.9163610852389372,
+                0.2561357813873697
+            ]
+        },
+        {
+            "type": "predict",
+            "shift": 0,
+            "coefficients": [
+                -0.041458570430051314,
+                -0.09188270926495899
+            ]
+        },
+        {
+            "type": "update",
+            "shift": -1,
+            "coefficients": [
+                0.5450220409516379,
+                -2.4150392490929495
+            ]
+        },
+        {
+            "type": "predict",
+            "shift": 0,
+            "coefficients": [
+                0.21060628706517054,
+                -0.3331798246399857
+            ]
+        },
+        {
+            "type": "update",
+            "shift": -1,
+            "coefficients": [
+                2.165474778408316,
+                -0.7517596935503702
+            ]
+        },
+        {
+            "type": "predict",
+            "shift": 0,
+            "coefficients": [
+                0.31649320335832104
+            ]
+        },
+        {
+            "type": "scale-even",
+            "shift": 0,
+            "coefficients": [
+                0.7526109024079533
+            ]
+        },
+        {
+            "type": "scale-odd",
+            "shift": 0,
+            "coefficients": [
+                1.328707831364831
+            ]
+        }
+    ]
+}

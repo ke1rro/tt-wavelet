@@ -1,0 +1,65 @@
+{
+    "tap_size": 8,
+    "l2": {
+        "fp64": 2.982917421429737e-16,
+        "qq": 8.466195262129329e-17
+    },
+    "delay": {
+        "even": 1,
+        "odd": 2
+    },
+    "steps": [
+        {
+            "type": "predict",
+            "shift": 1,
+            "coefficients": [
+                -3.0
+            ]
+        },
+        {
+            "type": "update",
+            "shift": -1,
+            "coefficients": [
+                0.375,
+                0.125
+            ]
+        },
+        {
+            "type": "predict",
+            "shift": -1,
+            "coefficients": [
+                0.75,
+                -3.9999999999999996,
+                -0.75
+            ]
+        },
+        {
+            "type": "swap",
+            "shift": 0,
+            "coefficients": [
+                0.0
+            ]
+        },
+        {
+            "type": "predict",
+            "shift": 0,
+            "coefficients": [
+                0.0
+            ]
+        },
+        {
+            "type": "scale-even",
+            "shift": 0,
+            "coefficients": [
+                -0.7071067811865476
+            ]
+        },
+        {
+            "type": "scale-odd",
+            "shift": 0,
+            "coefficients": [
+                1.4142135623730951
+            ]
+        }
+    ]
+}

@@ -1,0 +1,48 @@
+{
+    "tap_size": 2,
+    "l2": {
+        "fp64": 1.9229626863835638e-16,
+        "qq": 5.753469781991963e-17
+    },
+    "delay": {
+        "even": 0,
+        "odd": 0
+    },
+    "steps": [
+        {
+            "type": "predict",
+            "shift": 0,
+            "coefficients": [
+                1.0
+            ]
+        },
+        {
+            "type": "swap",
+            "shift": 0,
+            "coefficients": [
+                0.0
+            ]
+        },
+        {
+            "type": "predict",
+            "shift": 0,
+            "coefficients": [
+                -0.49999999999999994
+            ]
+        },
+        {
+            "type": "scale-even",
+            "shift": 0,
+            "coefficients": [
+                0.7071067811865475
+            ]
+        },
+        {
+            "type": "scale-odd",
+            "shift": 0,
+            "coefficients": [
+                -1.4142135623730951
+            ]
+        }
+    ]
+}

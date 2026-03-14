@@ -1,0 +1,144 @@
+{
+    "tap_size": 26,
+    "l2": {
+        "fp64": 1.1233534075182922e-06,
+        "qq": 1.1233533951701185e-06
+    },
+    "delay": {
+        "even": 6,
+        "odd": 6
+    },
+    "steps": [
+        {
+            "type": "predict",
+            "shift": 0,
+            "coefficients": [
+                9.00456872544866
+            ]
+        },
+        {
+            "type": "update",
+            "shift": 0,
+            "coefficients": [
+                -0.10970177220050904,
+                -0.004185954768710822
+            ]
+        },
+        {
+            "type": "predict",
+            "shift": -1,
+            "coefficients": [
+                25.2249697946562,
+                -44.86196932942749
+            ]
+        },
+        {
+            "type": "update",
+            "shift": 0,
+            "coefficients": [
+                0.00606048492839404,
+                -0.009436897897615662
+            ]
+        },
+        {
+            "type": "predict",
+            "shift": -1,
+            "coefficients": [
+                50.3523370923879,
+                -76.02632162350783
+            ]
+        },
+        {
+            "type": "update",
+            "shift": 0,
+            "coefficients": [
+                0.008860535046289671,
+                -0.01371245831862421
+            ]
+        },
+        {
+            "type": "predict",
+            "shift": -1,
+            "coefficients": [
+                60.656329024856085,
+                -101.02103244521902
+            ]
+        },
+        {
+            "type": "update",
+            "shift": 0,
+            "coefficients": [
+                0.009226081725525272,
+                -0.017445846601730604
+            ]
+        },
+        {
+            "type": "predict",
+            "shift": -1,
+            "coefficients": [
+                56.174486709096364,
+                -128.13692816901911
+            ]
+        },
+        {
+            "type": "update",
+            "shift": 0,
+            "coefficients": [
+                0.007773679163212023,
+                -0.02288226904075574
+            ]
+        },
+        {
+            "type": "predict",
+            "shift": -1,
+            "coefficients": [
+                43.682197370364285,
+                -180.0167367853543
+            ]
+        },
+        {
+            "type": "update",
+            "shift": 0,
+            "coefficients": [
+                0.0055548910595801465,
+                -0.03635770918744463
+            ]
+        },
+        {
+            "type": "predict",
+            "shift": -1,
+            "coefficients": [
+                27.504466054487615,
+                -382.34555165636345
+            ]
+        },
+        {
+            "type": "swap",
+            "shift": 0,
+            "coefficients": [
+                0.0
+            ]
+        },
+        {
+            "type": "predict",
+            "shift": 0,
+            "coefficients": [
+                0.0026154351540118863
+            ]
+        },
+        {
+            "type": "scale-even",
+            "shift": 0,
+            "coefficients": [
+                0.00038518061680364516
+            ]
+        },
+        {
+            "type": "scale-odd",
+            "shift": 0,
+            "coefficients": [
+                -2596.184637478197
+            ]
+        }
+    ]
+}

@@ -1,0 +1,73 @@
+{
+    "tap_size": 10,
+    "l2": {
+        "fp64": 1.0683015765249142e-11,
+        "qq": 1.068303690682052e-11
+    },
+    "delay": {
+        "even": 2,
+        "odd": 2
+    },
+    "steps": [
+        {
+            "type": "update",
+            "shift": -1,
+            "coefficients": [
+                -1.5861343419225902,
+                -1.5861343419225902
+            ]
+        },
+        {
+            "type": "predict",
+            "shift": 0,
+            "coefficients": [
+                -0.05298011857943651,
+                -0.05298011857943651
+            ]
+        },
+        {
+            "type": "update",
+            "shift": -1,
+            "coefficients": [
+                0.8829110754153519,
+                0.8829110754153519
+            ]
+        },
+        {
+            "type": "predict",
+            "shift": 0,
+            "coefficients": [
+                0.4435068520506709,
+                0.4435068520506709
+            ]
+        },
+        {
+            "type": "swap",
+            "shift": 0,
+            "coefficients": [
+                0.0
+            ]
+        },
+        {
+            "type": "predict",
+            "shift": 0,
+            "coefficients": [
+                0.0
+            ]
+        },
+        {
+            "type": "scale-even",
+            "shift": 0,
+            "coefficients": [
+                1.1496043988613913
+            ]
+        },
+        {
+            "type": "scale-odd",
+            "shift": 0,
+            "coefficients": [
+                -0.869864451623911
+            ]
+        }
+    ]
+}
