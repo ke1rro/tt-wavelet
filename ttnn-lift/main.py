@@ -1,3 +1,8 @@
+import os
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "tt-metal", "ttnn"))
+
 import torch
 import ttnn
 from tt_wavelet.lifting import BoundaryModes, LiftingWaveletTransform, load_lifting_scheme
