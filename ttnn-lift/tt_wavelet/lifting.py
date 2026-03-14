@@ -1,4 +1,5 @@
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
 
@@ -32,7 +33,7 @@ def map_type_step(step_type: str) -> StepType:
 @dataclass(frozen=True)
 class BoundaryMode:
     name: str
-    index_mapper: callable[[int, int], int]
+    index_mapper: Callable[[int, int], int]
 
 
 class BoundaryModes:
