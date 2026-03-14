@@ -255,7 +255,7 @@ class LiftingWaveletTransform:
 
         return even, odd, even_start, even_length, odd_start, odd_length
 
-    def aplpy_delay(self, x: ttnn.Tensor, delay: int) -> ttnn.Tensor:
+    def apply_delay(self, x: ttnn.Tensor, delay: int) -> ttnn.Tensor:
         if delay == 0:
             return x
         signal, length = x.shape
