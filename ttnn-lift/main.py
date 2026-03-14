@@ -17,19 +17,15 @@ try:
         load_lifting_scheme("schemes/db1.json"), device, BoundaryModes.SYMMETRIC
     ).forward(x)
     pywt_cA, pywt_cD = pywt.dwt(sig.data, "db1", mode="symmetric")
-    print(
-        "ttnn",
-        {
-            "cA": ttnn.to_torch(ttnn_out["cA"]).tolist(),
-            "cD": ttnn.to_torch(ttnn_out["cD"]).tolist(),
-        },
-    )
-    print("pywt", {"cA": pywt_cA.tolist(), "cD": pywt_cD.tolist()})
+    ttnn_cA = ttnn.to_torch(ttnn_out["cA"]).tolist()
+    ttnn_cD = ttnn.to_torch(ttnn_out["cD"]).tolist()
+    pywt_cA = pywt_cA.tolist()
+    pywt_cD = pywt_cD.tolist()
+    print("ttnn", {"cA": ttnn_cA, "cD": ttnn_cD})
+    print("pywt", {"cA": pywt_cA, "cD": pywt_cD})
 finally:
     ttnn.close_device(device)
 
 with open("output.txt", "w") as f:
-    f.write(
-        f"ttnn: {ttnn.to_torch(ttnn_out['cA']).tolist()}, {ttnn.to_torch(ttnn_out['cD']).tolist()}\n"
-    )
-    f.write(f"pywt: {pywt_cA.tolist()}, {pywt_cD.tolist()}\n")
+    f.write(f"ttnn: {ttnn_cA}, {ttnn_cD}\n")
+    f.write(f"pywt: {pywt_cA}, {pywt_cD}\n")
