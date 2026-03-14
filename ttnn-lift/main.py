@@ -14,9 +14,9 @@ device = ttnn.open_device(device_id=0)
 x = torch.from_numpy(sig.data).to(torch.float32).unsqueeze(0)
 try:
     ttnn_out = LiftingWaveletTransform(
-        load_lifting_scheme("schemes/db1.json"), device, BoundaryModes.SYMMETRIC
+        load_lifting_scheme("schemes/db13.json"), device, BoundaryModes.SYMMETRIC
     ).forward(x)
-    pywt_cA, pywt_cD = pywt.dwt(sig.data, "db1", mode="symmetric")
+    pywt_cA, pywt_cD = pywt.dwt(sig.data, "db13", mode="symmetric")
     ttnn_cA = ttnn.to_torch(ttnn_out["cA"]).tolist()
     ttnn_cD = ttnn.to_torch(ttnn_out["cD"]).tolist()
     pywt_cA = pywt_cA.tolist()
