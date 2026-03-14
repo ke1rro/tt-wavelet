@@ -150,9 +150,23 @@ class LiftingWaveletTransform:
             return folded
         return period - 1 - folded
 
-    def get_branch_sample(self, x: ttnn.Tensor, logic_i: int) -> ttnn.Tensor:
-        mapped_i = self.remap_symmetric_index(x.shape[1], logic_i)
-        return self.get_splited_sample(x, mapped_i)
+    def get_full_sample(
+        self, even_src: ttnn.Tensor, odd_src: ttnn.Tensor, full_index: int
+    ) -> ttnn.Tensor:
+        mapped_i = self.remap_symmetric_index(self.signal_length, full_index)
+        if mapped_i % 2 == 0:
+            return self.get_splited_sample(even_src, mapped_i // 2)
+        return self.get_splited_sample(odd_src, mapped_i // 2)
+
+    def get_branch_sample(
+        self,
+        even_src: ttnn.Tensor,
+        odd_src: ttnn.Tensor,
+        logic_i: int,
+        src_is_even: bool,
+    ) -> ttnn.Tensor:
+        full_index = 2 * logic_i if src_is_even else 2 * logic_i + 1
+        return self.get_full_sample(even_src, odd_src, full_index)
 
     def replace_core(self, x: ttnn.Tensor, start: int, core: ttnn.Tensor) -> ttnn.Tensor:
         _, length = x.shape
@@ -182,12 +196,14 @@ class LiftingWaveletTransform:
     def conv(
         self,
         dst: ttnn.Tensor,
-        src: ttnn.Tensor,
+        even_src: ttnn.Tensor,
+        odd_src: ttnn.Tensor,
         coefficients: list[float],
         shift: int,
         dst_start: int,
         dst_length: int,
         src_start: int,
+        src_is_even: bool,
     ) -> ttnn.Tensor:
         signal, length = dst.shape
         if dst_length == 0:
@@ -206,7 +222,7 @@ class LiftingWaveletTransform:
             )
             for j, coeff in enumerate(coefficients):
                 idx = src_start + n - j - shift
-                src_col = self.get_branch_sample(src, idx)
+                src_col = self.get_branch_sample(even_src, odd_src, idx, src_is_even)
                 term = self.mul_scalar_dev(src_col, coeff)
                 accum = self.add_dev(accum, term)
 
@@ -235,12 +251,32 @@ class LiftingWaveletTransform:
         odd_length: int,
     ) -> tuple[ttnn.Tensor, ttnn.Tensor, int, int, int, int]:
         if step.type == StepType.PREDICT:
+            even_src = ttnn.clone(even)
+            odd_src = ttnn.clone(odd)
             odd = self.conv(
-                odd, even, step.coefficients, step.shift, odd_start, odd_length, even_start
+                odd,
+                even_src,
+                odd_src,
+                step.coefficients,
+                step.shift,
+                odd_start,
+                odd_length,
+                even_start,
+                True,
             )
         elif step.type == StepType.UPDATE:
+            even_src = ttnn.clone(even)
+            odd_src = ttnn.clone(odd)
             even = self.conv(
-                even, odd, step.coefficients, step.shift, even_start, even_length, odd_start
+                even,
+                even_src,
+                odd_src,
+                step.coefficients,
+                step.shift,
+                even_start,
+                even_length,
+                odd_start,
+                False,
             )
         elif step.type == StepType.SCALE_EVEN:
             even = self.scale(even, even_start, even_length, step.coefficients[0])
@@ -275,6 +311,7 @@ class LiftingWaveletTransform:
         if not isinstance(x, torch.Tensor):
             x = self.from_device(x)
 
+        self.signal_length = x.shape[1]
         x = self.to_device(x)
         even, odd = self.split(x)
         even_start = 0

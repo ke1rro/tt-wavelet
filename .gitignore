@@ -3,6 +3,7 @@
 .clangd
 .devcontainer/
 .vscode
+.pywt/
 .idea
 .cache
 .venv/
