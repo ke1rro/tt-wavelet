@@ -100,11 +100,7 @@ class LiftingWaveletTransform:
         return self.mode.index_mapper(i, n)
 
     def from_device(self, x_tt) -> torch.Tensor:
-        return ttnn.to_torch(
-            ttnn.to_device(x_tt, self.device),
-            dtype=torch.float32,
-            layout=torch.ROW_MAJOR_LAYOUT,
-        )
+        return ttnn.to_torch(x_tt)
 
     def to_device(self, x: torch.Tensor):
         return ttnn.to_device(
@@ -117,7 +113,17 @@ class LiftingWaveletTransform:
         return self.from_device(result_dev)
 
     def mul_scalar_dev(self, x: torch.Tensor, scalar: float) -> torch.Tensor:
-        result_dev = ttnn.mul_scalar(self.to_device(x), scalar)
+        x_dev = self.to_device(x)
+
+        scalar_host = torch.full(
+            x.shape,
+            float(scalar),
+            dtype=torch.float32,
+            device=x.device,
+        )
+        scalar_dev = self.to_device(scalar_host)
+
+        result_dev = ttnn.multiply(x_dev, scalar_dev)
         return self.from_device(result_dev)
 
     def get_signal_sample(self, x: torch.Tensor, logic_i: int) -> float:
