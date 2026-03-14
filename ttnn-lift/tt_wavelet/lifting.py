@@ -231,7 +231,7 @@ class LiftingWaveletTransform:
                 device=self.device,
             )
             for j, coeff in enumerate(coefficients):
-                idx = src_start + n - j - shift
+                idx = src_start + n + j - shift
                 src_col = self.get_branch_sample(even_src, odd_src, idx, src_is_even)
                 term = self.mul_scalar_dev(src_col, coeff)
                 accum = self.add_dev(accum, term)
