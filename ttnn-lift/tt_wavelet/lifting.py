@@ -132,6 +132,16 @@ class LiftingWaveletTransform:
         odd_out = ttnn.concat(odd, dim=1) if odd else self.empty(x.shape[0], 0)
         return even_out, odd_out
 
+    def split_extended(
+        self, even: ttnn.Tensor, odd: ttnn.Tensor, out_length: int
+    ) -> tuple[ttnn.Tensor, ttnn.Tensor]:
+        if out_length <= 0:
+            return self.empty(even.shape[0], 0), self.empty(odd.shape[0], 0)
+
+        even_ext = [self.get_full_sample(even, odd, 2 * k) for k in range(out_length)]
+        odd_ext = [self.get_full_sample(even, odd, 2 * k + 1) for k in range(out_length)]
+        return ttnn.concat(even_ext, dim=1), ttnn.concat(odd_ext, dim=1)
+
     def get_splited_sample(self, x: ttnn.Tensor, logic_i) -> ttnn.Tensor:
         signal = x.shape[0]
         return ttnn.slice(x, [0, logic_i], [signal, logic_i + 1], [1, 1])
@@ -314,6 +324,8 @@ class LiftingWaveletTransform:
         self.signal_length = x.shape[1]
         x = self.to_device(x)
         even, odd = self.split(x)
+        out_length = (self.signal_length + self.scheme.tap_size - 1) // 2
+        even, odd = self.split_extended(even, odd, out_length)
         even_start = 0
         odd_start = 0
         even_length = even.shape[1]
