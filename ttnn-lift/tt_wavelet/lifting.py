@@ -140,6 +140,45 @@ class LiftingWaveletTransform:
         signal = x.shape[0]
         return ttnn.slice(x, [0, start], [signal, start + length], [1, 1])
 
+    def remap_symmetric_index(self, length: int, logic_i: int) -> int:
+        if length <= 0:
+            raise ValueError("Cannot read samples from an empty branch")
+
+        period = 2 * length
+        folded = logic_i % period
+        if folded < length:
+            return folded
+        return period - 1 - folded
+
+    def get_branch_sample(self, x: ttnn.Tensor, logic_i: int) -> ttnn.Tensor:
+        mapped_i = self.remap_symmetric_index(x.shape[1], logic_i)
+        return self.get_splited_sample(x, mapped_i)
+
+    def replace_core(self, x: ttnn.Tensor, start: int, core: ttnn.Tensor) -> ttnn.Tensor:
+        _, length = x.shape
+        core_length = core.shape[1]
+        if start == 0 and core_length == length:
+            return core
+
+        parts = []
+        if start > 0:
+            parts.append(self.get_core(x, 0, start))
+        parts.append(core)
+
+        right_start = start + core_length
+        right_length = length - right_start
+        if right_length > 0:
+            parts.append(self.get_core(x, right_start, right_length))
+        return ttnn.concat(parts, dim=1)
+
+    def scale(self, x: ttnn.Tensor, start: int, length: int, scalar: float) -> ttnn.Tensor:
+        if length == 0:
+            return x
+
+        core = self.get_core(x, start, length)
+        scaled_core = self.mul_scalar_dev(core, scalar)
+        return self.replace_core(x, start, scaled_core)
+
     def conv(
         self,
         dst: ttnn.Tensor,
@@ -153,6 +192,7 @@ class LiftingWaveletTransform:
         signal, length = dst.shape
         if dst_length == 0:
             return dst
+
         left = self.get_core(dst, 0, dst_start) if dst_start > 0 else None
         out = []
 
@@ -166,7 +206,7 @@ class LiftingWaveletTransform:
             )
             for j, coeff in enumerate(coefficients):
                 idx = src_start + n - j - shift
-                src_col = self.get_splited_sample(src, idx)
+                src_col = self.get_branch_sample(src, idx)
                 term = self.mul_scalar_dev(src_col, coeff)
                 accum = self.add_dev(accum, term)
 
@@ -203,15 +243,9 @@ class LiftingWaveletTransform:
                 even, odd, step.coefficients, step.shift, even_start, even_length, odd_start
             )
         elif step.type == StepType.SCALE_EVEN:
-            even_core = self.get_core(even, even_start, even_length)
-            even = self.conv(
-                even, even_core, [step.coefficients[0] - 1.0], 0, even_start, even_length, 0
-            )
+            even = self.scale(even, even_start, even_length, step.coefficients[0])
         elif step.type == StepType.SCALE_ODD:
-            odd_core = self.get_core(odd, odd_start, odd_length)
-            odd = self.conv(
-                odd, odd_core, [step.coefficients[0] - 1.0], 0, odd_start, odd_length, 0
-            )
+            odd = self.scale(odd, odd_start, odd_length, step.coefficients[0])
         elif step.type == StepType.SWAP:
             even, odd = odd, even
             even_start, odd_start = odd_start, even_start
@@ -241,15 +275,12 @@ class LiftingWaveletTransform:
         if not isinstance(x, torch.Tensor):
             x = self.from_device(x)
 
-        original_length = x.shape[1]
-        pad = self.scheme.tap_size - 1
-        x = self.pad_input(x, self.scheme.tap_size)
         x = self.to_device(x)
         even, odd = self.split(x)
-        even_start = pad // 2
-        odd_start = (pad + 1) // 2
-        even_length = (original_length + 1) // 2
-        odd_length = original_length // 2
+        even_start = 0
+        odd_start = 0
+        even_length = even.shape[1]
+        odd_length = odd.shape[1]
 
         for step in self.scheme.steps:
             even, odd, even_start, even_length, odd_start, odd_length = self.apply_step(
@@ -258,8 +289,8 @@ class LiftingWaveletTransform:
 
         even = self.get_core(even, even_start, even_length)
         odd = self.get_core(odd, odd_start, odd_length)
-        even = self.aplpy_delay(even, self.scheme.delay_even)
-        odd = self.aplpy_delay(odd, self.scheme.delay_odd)
+        even = self.apply_delay(even, self.scheme.delay_even)
+        odd = self.apply_delay(odd, self.scheme.delay_odd)
 
         return {
             "cA": even,
