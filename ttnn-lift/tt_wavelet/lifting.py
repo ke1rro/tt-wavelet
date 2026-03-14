@@ -99,94 +99,92 @@ class LiftingWaveletTransform:
     def _index(self, i: int, n: int) -> int:
         return self.mode.index_mapper(i, n)
 
+    def empty(self, signal: int, length: int) -> ttnn.Tensor:
+        host = torch.empty((signal, length), dtype=torch.float32)
+        return self.to_device(host)
+
     def from_device(self, x_tt) -> torch.Tensor:
         return ttnn.to_torch(x_tt)
 
     def to_device(self, x: torch.Tensor):
-        return ttnn.to_device(
-            ttnn.from_torch(x, dtype=ttnn.float32, layout=ttnn.ROW_MAJOR_LAYOUT),
-            self.device,
+        return ttnn.from_torch(
+            x,
+            dtype=ttnn.float32,
+            layout=ttnn.ROW_MAJOR_LAYOUT,
+            device=self.device,
         )
 
-    def add_dev(self, a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-        result_dev = ttnn.add(self.to_device(a), self.to_device(b))
-        return self.from_device(result_dev)
+    def add_dev(self, a: ttnn.Tensor, b: ttnn.Tensor) -> ttnn.Tensor:
+        return ttnn.add(a, b)
 
-    def mul_scalar_dev(self, x: torch.Tensor, scalar: float) -> torch.Tensor:
-        x_dev = self.to_device(x)
+    def mul_scalar_dev(self, x: ttnn.Tensor, scalar: float) -> ttnn.Tensor:
+        return ttnn.multiply(x, float(scalar))
 
-        scalar_host = torch.full(
-            x.shape,
-            float(scalar),
-            dtype=torch.float32,
-            device=x.device,
-        )
-        scalar_dev = self.to_device(scalar_host)
-
-        result_dev = ttnn.multiply(x_dev, scalar_dev)
-        return self.from_device(result_dev)
-
-    def get_signal_sample(self, x: torch.Tensor, logic_i: int) -> float:
+    def get_signal_sample(self, x: ttnn.Tensor, logic_i: int) -> ttnn.Tensor:
+        signal = x.shape[0]
         mapped = self._index(logic_i, x.shape[1])
-        return x[:, mapped : mapped + 1]
+        return ttnn.slice(x, [0, mapped], [signal, mapped + 1], [1, 1])
 
-    def get_even_sample(self, x: torch.Tensor, logic_i: int) -> float:
+    def get_even_sample(self, x: ttnn.Tensor, logic_i: int) -> ttnn.Tensor:
         return self.get_signal_sample(x, logic_i * 2)
 
-    def get_odd_sample(self, x: torch.Tensor, logic_i: int) -> float:
+    def get_odd_sample(self, x: ttnn.Tensor, logic_i: int) -> ttnn.Tensor:
         return self.get_signal_sample(x, logic_i * 2 + 1)
 
-    def split(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        if x.ndim != 2:
+    def split(self, x: ttnn.Tensor) -> tuple[ttnn.Tensor, ttnn.Tensor]:
+        if len(x.shape) != 2:
             raise ValueError(
                 "Input tensor must be 2D with shape (1 - number of signals, length of signal)"
             )
 
-        signal, length = x.shape
+        _, length = x.shape
         n_even = (length + 1) // 2
         n_odd = length // 2
-        even = torch.empty((signal, n_even), dtype=x.dtype, device=x.device)
-        odd = torch.empty((signal, n_odd), dtype=x.dtype, device=x.device)
+        even = [self.get_even_sample(x, k) for k in range(n_even)]
+        odd = [self.get_odd_sample(x, k) for k in range(n_odd)]
+        even_out = ttnn.concat(even, dim=1) if even else self.empty(x.shape[0], 0)
+        odd_out = ttnn.concat(odd, dim=1) if odd else self.empty(x.shape[0], 0)
+        return even_out, odd_out
 
-        for k in range(n_even):
-            even[:, k : k + 1] = self.get_even_sample(x, k)
-
-        for k in range(n_odd):
-            odd[:, k : k + 1] = self.get_odd_sample(x, k)
-
-        return even, odd
-
-    def get_splited_sample(self, x: torch.Tensor, logic_i) -> torch.Tensor:
+    def get_splited_sample(self, x: ttnn.Tensor, logic_i) -> ttnn.Tensor:
+        signal = x.shape[0]
         mapped = self._index(logic_i, x.shape[1])
-        return x[:, mapped : mapped + 1]
+        return ttnn.slice(x, [0, mapped], [signal, mapped + 1], [1, 1])
 
     def conv(
         self,
-        dst: torch.Tensor,
-        src: torch.Tensor,
+        dst: ttnn.Tensor,
+        src: ttnn.Tensor,
         coefficients: list[float],
         shift: int,
-    ) -> torch.Tensor:
+    ) -> ttnn.Tensor:
         signal, length = dst.shape
-        out = dst.clone()
+        out = []
 
         for n in range(length):
-            accum = torch.zeros((signal, 1), dtype=dst.dtype, device=dst.device)
+            accum = ttnn.full(
+                [signal, 1],
+                fill_value=0.0,
+                dtype=ttnn.float32,
+                layout=ttnn.ROW_MAJOR_LAYOUT,
+                device=self.device,
+            )
             for j, coeff in enumerate(coefficients):
                 idx = n - j - shift
                 src_col = self.get_splited_sample(src, idx)
                 term = self.mul_scalar_dev(src_col, coeff)
                 accum = self.add_dev(accum, term)
 
-            out[:, n : n + 1] = self.add_dev(out[:, n : n + 1], accum)
-        return out
+            dst_col = self.get_splited_sample(dst, n)
+            out.append(self.add_dev(dst_col, accum))
+        return ttnn.concat(out, dim=1)
 
     def apply_step(
         self,
-        even: torch.Tensor,
-        odd: torch.Tensor,
+        even: ttnn.Tensor,
+        odd: ttnn.Tensor,
         step: LiftingStep,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[ttnn.Tensor, ttnn.Tensor]:
         if step.type == StepType.PREDICT:
             odd = self.conv(odd, even, step.coefficients, step.shift)
         elif step.type == StepType.UPDATE:
@@ -202,15 +200,26 @@ class LiftingWaveletTransform:
 
         return even, odd
 
-    def aplpy_delay(self, x: torch.Tensor, delay: int) -> torch.Tensor:
+    def aplpy_delay(self, x: ttnn.Tensor, delay: int) -> ttnn.Tensor:
         if delay == 0:
             return x
-        out = torch.zeros_like(x)
-        if delay < x.shape[1]:
-            out[:, delay:] = x[:, :-delay]
-        return out
+        signal, length = x.shape
+        zero = ttnn.full(
+            [signal, min(delay, length)],
+            fill_value=0.0,
+            dtype=ttnn.float32,
+            layout=ttnn.ROW_MAJOR_LAYOUT,
+            device=self.device,
+        )
+        if delay >= length:
+            return zero
+        body = ttnn.slice(x, [0, 0], [signal, length - delay], [1, 1])
+        return ttnn.concat([zero, body], dim=1)
 
-    def forward(self, x) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, x) -> dict[str, ttnn.Tensor | int]:
+        if isinstance(x, torch.Tensor):
+            x = self.to_device(x)
+
         even, odd = self.split(x)
 
         for step in self.scheme.steps:
