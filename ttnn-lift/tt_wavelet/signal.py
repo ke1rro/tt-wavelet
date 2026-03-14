@@ -1,6 +1,6 @@
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
-from typing import Callable
 
 import numpy as np
 
@@ -25,7 +25,7 @@ class InputSpec:
     seed: int | None = None
 
 
-type SignalGenerator = Callable[[InputSpec], np.ndarray]
+SignalGenerator = Callable[[InputSpec], np.ndarray]
 
 registry: dict[SignalType, SignalGenerator] = {}
 
