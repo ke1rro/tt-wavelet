@@ -304,18 +304,15 @@ class LiftingWaveletTransform:
     def apply_delay(self, x: ttnn.Tensor, delay: int) -> ttnn.Tensor:
         if delay == 0:
             return x
-        signal, length = x.shape
-        zero = ttnn.full(
-            [signal, min(delay, length)],
-            fill_value=0.0,
-            dtype=ttnn.float32,
-            layout=ttnn.ROW_MAJOR_LAYOUT,
-            device=self.device,
-        )
-        if delay >= length:
-            return zero
-        body = ttnn.slice(x, [0, 0], [signal, length - delay], [1, 1])
-        return ttnn.concat([zero, body], dim=1)
+        _, length = x.shape
+        if length == 0:
+            return x
+
+        shifted = []
+        for n in range(length):
+            src_i = self.remap_symmetric_index(length, n - delay)
+            shifted.append(self.get_splited_sample(x, src_i))
+        return ttnn.concat(shifted, dim=1)
 
     def forward(self, x) -> dict[str, ttnn.Tensor | int]:
         if not isinstance(x, torch.Tensor):
