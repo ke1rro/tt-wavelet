@@ -120,7 +120,7 @@ class LiftingWaveletTransform:
         return self.from_device(result_dev)
 
     def get_signal_sample(self, x: torch.Tensor, logic_i: int) -> float:
-        mapped = self._index(logic_i, x.shape[0])
+        mapped = self._index(logic_i, x.shape[1])
         return x[:, mapped : mapped + 1]
 
     def get_even_sample(self, x: torch.Tensor, logic_i: int) -> float:
@@ -171,7 +171,7 @@ class LiftingWaveletTransform:
                 term = self.mul_scalar_dev(src_col, coeff)
                 accum = self.add_dev(accum, term)
 
-            out[:, n : n + 1] = self.add_ttnn(out[:, n : n + 1], accum)
+            out[:, n : n + 1] = self.add_dev(out[:, n : n + 1], accum)
         return out
 
     def apply_step(
@@ -180,7 +180,7 @@ class LiftingWaveletTransform:
         odd: torch.Tensor,
         step: LiftingStep,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        if step.type == StepType.PREDICTION:
+        if step.type == StepType.PREDICT:
             odd = self.conv(odd, even, step.coefficients, step.shift)
         elif step.type == StepType.UPDATE:
             even = self.conv(even, odd, step.coefficients, step.shift)
