@@ -1,300 +1,450 @@
 import json
 from dataclasses import dataclass
-from enum import Enum
+from typing import Any
 
 import numpy as np
 import torch
 import ttnn
 
-
-class StepType(Enum):
-    PREDICT = 1
-    UPDATE = 2
-    SCALE_EVEN = 3
-    SCALE_ODD = 4
-    SWAP = 5
-
-
-def map_type_step(step_type: str) -> StepType:
-    if step_type == "predict":
-        return StepType.PREDICT
-    elif step_type == "update":
-        return StepType.UPDATE
-    elif step_type == "scale-even":
-        return StepType.SCALE_EVEN
-    elif step_type == "scale-odd":
-        return StepType.SCALE_ODD
-    elif step_type == "swap":
-        return StepType.SWAP
-    else:
-        raise ValueError(f"Unknown step type: {step_type}")
+Tensor = Any
 
 
 @dataclass(frozen=True)
-class LiftingStep:
-    type: StepType
+class LiftingStepSpec:
+    type: str
     shift: int
     coefficients: list[float]
 
 
 @dataclass(frozen=True)
 class LiftingScheme:
+    mode: str
     tap_size: int
-    delay_odd: int
-    delay_even: int
-    steps: list[LiftingStep]
+    steps: list[LiftingStepSpec]
+    delays: tuple[int, int]
 
+    @classmethod
+    def from_object(cls, obj: dict[str, Any], mode: str = "symmetric") -> "LiftingScheme":
+        steps: list[LiftingStepSpec] = []
+        for raw_step in obj["steps"]:
+            step_type = raw_step["type"]
+            coefficients = [_to_coeff_float(coeff) for coeff in raw_step.get("coefficients", [])]
 
-def load_lifting_scheme(path: str) -> LiftingScheme:
-    with open(path, "r", encoding="utf-8") as f:
-        data = json.load(f)
+            steps.append(
+                LiftingStepSpec(
+                    type=step_type,
+                    shift=int(raw_step["shift"]),
+                    coefficients=coefficients,
+                )
+            )
 
-    steps = []
-    for step_data in data["steps"]:
-        step = LiftingStep(
-            type=map_type_step(step_data["type"]),
-            shift=step_data["shift"],
-            coefficients=step_data["coefficients"],
+        return cls(
+            mode=mode,
+            tap_size=int(obj["tap_size"]),
+            steps=steps,
+            delays=(int(obj["delay"]["even"]), int(obj["delay"]["odd"])),
         )
-        steps.append(step)
 
-    return LiftingScheme(
-        tap_size=data["tap_size"],
-        delay_odd=data["delay"]["odd"],
-        delay_even=data["delay"]["even"],
-        steps=steps,
-    )
+    @classmethod
+    def from_file(cls, path: str, mode: str = "symmetric") -> "LiftingScheme":
+        with open(path, "r", encoding="utf-8") as handle:
+            obj = json.load(handle)
+        return cls.from_object(obj, mode=mode)
+
+
+def load_lifting_scheme(path: str, mode: str = "symmetric") -> LiftingScheme:
+    return LiftingScheme.from_file(path, mode=mode)
+
+
+def _to_coeff_float(coeff: Any) -> float:
+    if isinstance(coeff, (int, float)):
+        return float(coeff)
+    if isinstance(coeff, dict):
+        return float(coeff["numerator"]) / float(coeff["denominator"])
+    raise TypeError(f"Unsupported coefficient type: {type(coeff)}")
+
+
+class TTNNOps:
+    def __init__(self, device: Any):
+        self.device = device
+
+    def to_device(self, tensor: torch.Tensor) -> Tensor:
+        return ttnn.from_torch(
+            tensor.to(dtype=torch.float32),
+            dtype=ttnn.float32,
+            layout=ttnn.ROW_MAJOR_LAYOUT,
+            device=self.device,
+        )
+
+    def from_device(self, tensor: Tensor) -> torch.Tensor:
+        return ttnn.to_torch(tensor)
+
+    def empty(self, batch: int, length: int) -> Tensor:
+        return self.to_device(torch.empty((batch, length), dtype=torch.float32))
+
+    def full(self, batch: int, length: int, value: float) -> Tensor:
+        return ttnn.full(
+            [batch, length],
+            fill_value=float(value),
+            dtype=ttnn.float32,
+            layout=ttnn.ROW_MAJOR_LAYOUT,
+            device=self.device,
+        )
+
+    def add(self, left: Tensor, right: Tensor) -> Tensor:
+        return ttnn.add(left, right)
+
+    def mul_scalar(self, tensor: Tensor, value: float) -> Tensor:
+        return ttnn.multiply(tensor, float(value))
+
+    def slice_columns(self, tensor: Tensor, start: int, length: int) -> Tensor:
+        if length <= 0:
+            return self.empty(tensor.shape[0], 0)
+        return ttnn.slice(
+            tensor,
+            [0, start],
+            [tensor.shape[0], start + length],
+            [1, 1],
+        )
+
+    def concat_columns(self, tensors: list[Tensor], batch: int) -> Tensor:
+        if not tensors:
+            return self.empty(batch, 0)
+        if len(tensors) == 1:
+            return tensors[0]
+        return ttnn.concat(tensors, dim=1)
+
+    def python_slice_columns(self, tensor: Tensor, start: int, stop: int) -> Tensor:
+        host = self.from_device(tensor)
+        return self.to_device(host[:, start:stop])
+
+    def conv_valid(self, data: Tensor, kernel: Tensor) -> Tensor:
+        batch, data_len = data.shape
+        kernel_len = kernel.shape[1]
+        out_len = data_len - kernel_len + 1
+        if out_len <= 0:
+            return self.empty(batch, 0)
+
+        kernel_values = self.from_device(kernel).reshape(-1).tolist()
+        outputs: list[Tensor] = []
+
+        for out_i in range(out_len):
+            accum = self.full(batch, 1, 0.0)
+            for j in range(kernel_len):
+                data_col = self.slice_columns(data, out_i + j, 1)
+                coeff = float(kernel_values[kernel_len - 1 - j])
+                accum = self.add(accum, self.mul_scalar(data_col, coeff))
+            outputs.append(accum)
+
+        return self.concat_columns(outputs, batch)
+
+
+class ShiftedArray:
+    def __init__(self, data: Tensor, shift: int, ops: TTNNOps):
+        self.data = data
+        self.shift = int(shift)
+        self.ops = ops
+
+    @property
+    def end(self) -> int:
+        return self.shift + int(self.data.shape[1])
+
+    @classmethod
+    def from_coefficients(
+        cls,
+        coefficients: list[float],
+        shift: int,
+        ops: TTNNOps,
+    ) -> "ShiftedArray":
+        coeff_tensor = torch.tensor(coefficients, dtype=torch.float32).reshape(1, -1)
+        return cls(ops.to_device(coeff_tensor), shift, ops)
+
+    def __mul__(self, other: float | "ShiftedArray") -> "ShiftedArray":
+        if isinstance(other, (int, float)):
+            return ShiftedArray(self.ops.mul_scalar(self.data, float(other)), self.shift, self.ops)
+
+        if not isinstance(other, ShiftedArray):
+            return NotImplemented
+
+        shift_new = self.shift + other.shift + min(self.data.shape[1], other.data.shape[1]) - 1
+        data_new = self.ops.conv_valid(self.data, other.data)
+        return ShiftedArray(data_new, shift_new, self.ops)
+
+    def __add__(self, other: "ShiftedArray") -> "ShiftedArray":
+        if not isinstance(other, ShiftedArray):
+            return NotImplemented
+
+        shift_new = max(self.shift, other.shift)
+        end_new = min(self.end, other.end)
+        overlap = end_new - shift_new
+
+        if overlap <= 0:
+            return ShiftedArray(self.ops.empty(self.data.shape[0], 0), shift_new, self.ops)
+
+        data1 = self.ops.slice_columns(self.data, shift_new - self.shift, overlap)
+        data2 = self.ops.slice_columns(other.data, shift_new - other.shift, overlap)
+        return ShiftedArray(self.ops.add(data1, data2), shift_new, self.ops)
+
+    def __neg__(self) -> "ShiftedArray":
+        return ShiftedArray(self.ops.mul_scalar(self.data, -1.0), self.shift, self.ops)
+
+    def __sub__(self, other: "ShiftedArray") -> "ShiftedArray":
+        return self + (-other)
+
+
+class LiftingStep:
+    def forward(
+        self,
+        even: ShiftedArray,
+        odd: ShiftedArray,
+    ) -> tuple[ShiftedArray, ShiftedArray]:
+        return even, odd
+
+    def inverse(
+        self,
+        even: ShiftedArray,
+        odd: ShiftedArray,
+    ) -> tuple[ShiftedArray, ShiftedArray]:
+        return even, odd
+
+
+class LiftingStepPredict(LiftingStep):
+    def __init__(self, kernel: ShiftedArray):
+        self.kernel = kernel
+
+    def forward(
+        self,
+        even: ShiftedArray,
+        odd: ShiftedArray,
+    ) -> tuple[ShiftedArray, ShiftedArray]:
+        pred = even * self.kernel
+        return even, odd + pred
+
+    def inverse(
+        self,
+        even: ShiftedArray,
+        odd: ShiftedArray,
+    ) -> tuple[ShiftedArray, ShiftedArray]:
+        pred = even * self.kernel
+        return even, odd - pred
+
+
+class LiftingStepUpdate(LiftingStep):
+    def __init__(self, kernel: ShiftedArray):
+        self.kernel = kernel
+
+    def forward(
+        self,
+        even: ShiftedArray,
+        odd: ShiftedArray,
+    ) -> tuple[ShiftedArray, ShiftedArray]:
+        upd = odd * self.kernel
+        return even + upd, odd
+
+    def inverse(
+        self,
+        even: ShiftedArray,
+        odd: ShiftedArray,
+    ) -> tuple[ShiftedArray, ShiftedArray]:
+        upd = odd * self.kernel
+        return even - upd, odd
+
+
+class LiftingStepScaleEven(LiftingStep):
+    def __init__(self, factor: float):
+        self.factor = float(factor)
+
+    def forward(
+        self,
+        even: ShiftedArray,
+        odd: ShiftedArray,
+    ) -> tuple[ShiftedArray, ShiftedArray]:
+        return even * self.factor, odd
+
+    def inverse(
+        self,
+        even: ShiftedArray,
+        odd: ShiftedArray,
+    ) -> tuple[ShiftedArray, ShiftedArray]:
+        return even * (1.0 / self.factor), odd
+
+
+class LiftingStepScaleOdd(LiftingStep):
+    def __init__(self, factor: float):
+        self.factor = float(factor)
+
+    def forward(
+        self,
+        even: ShiftedArray,
+        odd: ShiftedArray,
+    ) -> tuple[ShiftedArray, ShiftedArray]:
+        return even, odd * self.factor
+
+    def inverse(
+        self,
+        even: ShiftedArray,
+        odd: ShiftedArray,
+    ) -> tuple[ShiftedArray, ShiftedArray]:
+        return even, odd * (1.0 / self.factor)
+
+
+class LiftingStepSwap(LiftingStep):
+    def forward(
+        self,
+        even: ShiftedArray,
+        odd: ShiftedArray,
+    ) -> tuple[ShiftedArray, ShiftedArray]:
+        return odd, even
+
+    def inverse(
+        self,
+        even: ShiftedArray,
+        odd: ShiftedArray,
+    ) -> tuple[ShiftedArray, ShiftedArray]:
+        return odd, even
 
 
 class LiftingWaveletTransform:
-    scheme: LiftingScheme
-    device: ttnn.device
-
-    def __init__(self, scheme: LiftingScheme, device: ttnn.device):
+    def __init__(self, scheme: LiftingScheme, device: Any):
         self.scheme = scheme
-        self.device = device
+        self.ops = TTNNOps(device)
+        self.steps = self._build_steps()
 
-    def pad_input(self, x: torch.Tensor, tap_size: int) -> torch.Tensor:
-        pad = tap_size - 1
-        if pad <= 0:
-            return x
+    def _build_steps(self) -> list[LiftingStep]:
+        built_steps: list[LiftingStep] = []
+        for spec in self.scheme.steps:
+            if spec.type == "predict":
+                kernel = ShiftedArray.from_coefficients(spec.coefficients, spec.shift, self.ops)
+                built_steps.append(LiftingStepPredict(kernel))
+            elif spec.type == "update":
+                kernel = ShiftedArray.from_coefficients(spec.coefficients, spec.shift, self.ops)
+                built_steps.append(LiftingStepUpdate(kernel))
+            elif spec.type == "scale-even":
+                self._assert_scale_kernel(spec)
+                built_steps.append(LiftingStepScaleEven(spec.coefficients[0]))
+            elif spec.type == "scale-odd":
+                self._assert_scale_kernel(spec)
+                built_steps.append(LiftingStepScaleOdd(spec.coefficients[0]))
+            elif spec.type == "swap":
+                built_steps.append(LiftingStepSwap())
+            else:
+                raise ValueError(f"Unsupported lifting step type: {spec.type}")
+        return built_steps
 
-        padded = np.pad(
-            x.detach().cpu().numpy(),
-            ((0, 0), (pad, pad)),
-            mode="symmetric",
-        )
-        return torch.from_numpy(padded).to(dtype=x.dtype, device=x.device)
+    @staticmethod
+    def _assert_scale_kernel(spec: LiftingStepSpec) -> None:
+        if spec.shift != 0:
+            raise AssertionError("Scale steps must have zero shift")
+        if len(spec.coefficients) != 1:
+            raise AssertionError("Scale steps must have a single coefficient")
 
-    def empty(self, signal: int, length: int) -> ttnn.Tensor:
-        host = torch.empty((signal, length), dtype=torch.float32)
-        return self.to_device(host)
-
-    def from_device(self, x_tt) -> torch.Tensor:
-        return ttnn.to_torch(x_tt)
-
-    def to_device(self, x: torch.Tensor):
-        return ttnn.from_torch(
-            x,
-            dtype=ttnn.float32,
-            layout=ttnn.ROW_MAJOR_LAYOUT,
-            device=self.device,
-        )
-
-    def add_dev(self, a: ttnn.Tensor, b: ttnn.Tensor) -> ttnn.Tensor:
-        return ttnn.add(a, b)
-
-    def mul_scalar_dev(self, x: ttnn.Tensor, scalar: float) -> ttnn.Tensor:
-        return ttnn.multiply(x, float(scalar))
-
-    def get_signal_sample(self, x: ttnn.Tensor, logic_i: int) -> ttnn.Tensor:
-        signal = x.shape[0]
-        return ttnn.slice(x, [0, logic_i], [signal, logic_i + 1], [1, 1])
-
-    def get_even_sample(self, x: ttnn.Tensor, logic_i: int) -> ttnn.Tensor:
-        return self.get_signal_sample(x, logic_i * 2)
-
-    def get_odd_sample(self, x: ttnn.Tensor, logic_i: int) -> ttnn.Tensor:
-        return self.get_signal_sample(x, logic_i * 2 + 1)
-
-    def split(self, x: ttnn.Tensor) -> tuple[ttnn.Tensor, ttnn.Tensor]:
-        if len(x.shape) != 2:
-            raise ValueError(
-                "Input tensor must be 2D with shape (1 - number of signals, length of signal)"
-            )
-
-        _, length = x.shape
-        n_even = (length + 1) // 2
-        n_odd = length // 2
-        even = [self.get_even_sample(x, k) for k in range(n_even)]
-        odd = [self.get_odd_sample(x, k) for k in range(n_odd)]
-        even_out = ttnn.concat(even, dim=1) if even else self.empty(x.shape[0], 0)
-        odd_out = ttnn.concat(odd, dim=1) if odd else self.empty(x.shape[0], 0)
-        return even_out, odd_out
-
-    def get_splited_sample(self, x: ttnn.Tensor, logic_i) -> ttnn.Tensor:
-        signal = x.shape[0]
-        return ttnn.slice(x, [0, logic_i], [signal, logic_i + 1], [1, 1])
-
-    def get_core(self, x: ttnn.Tensor, start: int, length: int) -> ttnn.Tensor:
-        signal = x.shape[0]
-        return ttnn.slice(x, [0, start], [signal, start + length], [1, 1])
-
-    def remap_symmetric_index(self, length: int, logic_i: int) -> int:
-        if length <= 0:
-            raise ValueError("Cannot read samples from an empty branch")
-
-        period = 2 * length
-        folded = logic_i % period
-        if folded < length:
-            return folded
-        return period - 1 - folded
-
-    def get_branch_sample(self, x: ttnn.Tensor, logic_i: int) -> ttnn.Tensor:
-        mapped_i = self.remap_symmetric_index(x.shape[1], logic_i)
-        return self.get_splited_sample(x, mapped_i)
-
-    def replace_core(self, x: ttnn.Tensor, start: int, core: ttnn.Tensor) -> ttnn.Tensor:
-        _, length = x.shape
-        core_length = core.shape[1]
-        if start == 0 and core_length == length:
-            return core
-
-        parts = []
-        if start > 0:
-            parts.append(self.get_core(x, 0, start))
-        parts.append(core)
-
-        right_start = start + core_length
-        right_length = length - right_start
-        if right_length > 0:
-            parts.append(self.get_core(x, right_start, right_length))
-        return ttnn.concat(parts, dim=1)
-
-    def scale(self, x: ttnn.Tensor, start: int, length: int, scalar: float) -> ttnn.Tensor:
-        if length == 0:
-            return x
-
-        core = self.get_core(x, start, length)
-        scaled_core = self.mul_scalar_dev(core, scalar)
-        return self.replace_core(x, start, scaled_core)
-
-    def conv(
-        self,
-        dst: ttnn.Tensor,
-        src: ttnn.Tensor,
-        coefficients: list[float],
-        shift: int,
-        dst_start: int,
-        dst_length: int,
-        src_start: int,
-    ) -> ttnn.Tensor:
-        signal, length = dst.shape
-        if dst_length == 0:
-            return dst
-
-        left = self.get_core(dst, 0, dst_start) if dst_start > 0 else None
-        out = []
-
-        for n in range(dst_length):
-            accum = ttnn.full(
-                [signal, 1],
-                fill_value=0.0,
-                dtype=ttnn.float32,
-                layout=ttnn.ROW_MAJOR_LAYOUT,
-                device=self.device,
-            )
-            for j, coeff in enumerate(coefficients):
-                idx = src_start + n - j - shift
-                src_col = self.get_branch_sample(src, idx)
-                term = self.mul_scalar_dev(src_col, coeff)
-                accum = self.add_dev(accum, term)
-
-            dst_col = self.get_splited_sample(dst, dst_start + n)
-            out.append(self.add_dev(dst_col, accum))
-        right_start = dst_start + dst_length
-        right_length = length - right_start
-        right = self.get_core(dst, right_start, right_length) if right_length > 0 else None
-
-        parts = []
-        if left is not None:
-            parts.append(left)
-        parts.append(ttnn.concat(out, dim=1))
-        if right is not None:
-            parts.append(right)
-        return ttnn.concat(parts, dim=1)
-
-    def apply_step(
-        self,
-        even: ttnn.Tensor,
-        odd: ttnn.Tensor,
-        step: LiftingStep,
-        even_start: int,
-        even_length: int,
-        odd_start: int,
-        odd_length: int,
-    ) -> tuple[ttnn.Tensor, ttnn.Tensor, int, int, int, int]:
-        if step.type == StepType.PREDICT:
-            odd = self.conv(
-                odd, even, step.coefficients, step.shift, odd_start, odd_length, even_start
-            )
-        elif step.type == StepType.UPDATE:
-            even = self.conv(
-                even, odd, step.coefficients, step.shift, even_start, even_length, odd_start
-            )
-        elif step.type == StepType.SCALE_EVEN:
-            even = self.scale(even, even_start, even_length, step.coefficients[0])
-        elif step.type == StepType.SCALE_ODD:
-            odd = self.scale(odd, odd_start, odd_length, step.coefficients[0])
-        elif step.type == StepType.SWAP:
-            even, odd = odd, even
-            even_start, odd_start = odd_start, even_start
-            even_length, odd_length = odd_length, even_length
+    def _as_ttnn_2d(self, value: Any) -> Tensor:
+        if isinstance(value, torch.Tensor):
+            host = value.to(dtype=torch.float32)
+        elif isinstance(value, np.ndarray):
+            host = torch.from_numpy(value).to(dtype=torch.float32)
         else:
-            raise ValueError(f"Unknown step type: {step.type}")
+            host = self.ops.from_device(value).to(dtype=torch.float32)
 
-        return even, odd, even_start, even_length, odd_start, odd_length
+        if host.ndim == 1:
+            host = host.unsqueeze(0)
+        if host.ndim != 2:
+            raise ValueError("Input must be 1D or 2D")
+        return self.ops.to_device(host)
 
-    def apply_delay(self, x: ttnn.Tensor, delay: int) -> ttnn.Tensor:
-        if delay == 0:
-            return x
-        signal, length = x.shape
-        zero = ttnn.full(
-            [signal, min(delay, length)],
-            fill_value=0.0,
-            dtype=ttnn.float32,
-            layout=ttnn.ROW_MAJOR_LAYOUT,
-            device=self.device,
-        )
-        if delay >= length:
-            return zero
-        body = ttnn.slice(x, [0, 0], [signal, length - delay], [1, 1])
-        return ttnn.concat([zero, body], dim=1)
+    def pad(self, tensor: Tensor, shape: int) -> Tensor:
+        host = self.ops.from_device(tensor).detach().cpu().numpy()
 
-    def forward(self, x) -> dict[str, ttnn.Tensor | int]:
-        if not isinstance(x, torch.Tensor):
-            x = self.from_device(x)
-
-        x = self.to_device(x)
-        even, odd = self.split(x)
-        even_start = 0
-        odd_start = 0
-        even_length = even.shape[1]
-        odd_length = odd.shape[1]
-
-        for step in self.scheme.steps:
-            even, odd, even_start, even_length, odd_start, odd_length = self.apply_step(
-                even, odd, step, even_start, even_length, odd_start, odd_length
+        if self.scheme.mode == "symmetric":
+            padded = np.pad(host, ((0, 0), (shape, shape)), mode="symmetric")
+        elif self.scheme.mode == "periodic":
+            padded = np.pad(host, ((0, 0), (shape, shape)), mode="wrap")
+        elif self.scheme.mode == "zero":
+            padded = np.pad(
+                host,
+                ((0, 0), (shape, shape)),
+                mode="constant",
+                constant_values=0,
             )
+        elif self.scheme.mode == "constant":
+            padded = np.pad(host, ((0, 0), (shape, shape)), mode="edge")
+        else:
+            raise ValueError(f"Unsupported padding mode: {self.scheme.mode}")
 
-        even = self.get_core(even, even_start, even_length)
-        odd = self.get_core(odd, odd_start, odd_length)
-        even = self.apply_delay(even, self.scheme.delay_even)
-        odd = self.apply_delay(odd, self.scheme.delay_odd)
+        return self.ops.to_device(torch.from_numpy(padded).to(dtype=torch.float32))
+
+    def _slice_python(self, tensor: Tensor, start: int, stop: int) -> Tensor:
+        return self.ops.python_slice_columns(tensor, start, stop)
+
+    def _split_even_odd(self, tensor: Tensor) -> tuple[Tensor, Tensor]:
+        batch, length = tensor.shape
+        even_cols = [self.ops.slice_columns(tensor, i, 1) for i in range(0, length, 2)]
+        odd_cols = [self.ops.slice_columns(tensor, i, 1) for i in range(1, length, 2)]
+        return (
+            self.ops.concat_columns(even_cols, batch),
+            self.ops.concat_columns(odd_cols, batch),
+        )
+
+    def forward(self, data: Any) -> dict[str, Tensor | int]:
+        data_tt = self._as_ttnn_2d(data)
+
+        L = self.scheme.tap_size
+        input_len = data_tt.shape[1]
+        length = (input_len + L - 1) // 2
+        direct_shift = L // 2
+
+        padded = self.pad(data_tt, L - 1)
+        even_tt, odd_tt = self._split_even_odd(padded)
+
+        even = ShiftedArray(even_tt, self.scheme.delays[0], self.ops)
+        odd = ShiftedArray(odd_tt, self.scheme.delays[1], self.ops)
+
+        for step in self.steps:
+            even, odd = step.forward(even, odd)
+
+        even_shift = even.shift - direct_shift
+        odd_shift = odd.shift - direct_shift
+        if even_shift > 0 or odd_shift > 0:
+            raise ValueError("Coefficients have positive shift after forward lifting")
+
+        even_data = self._slice_python(even.data, -even_shift, -even_shift + length)
+        odd_data = self._slice_python(odd.data, -odd_shift, -odd_shift + length)
 
         return {
-            "cA": even,
-            "cD": odd,
-            "delay_even": self.scheme.delay_even,
-            "delay_odd": self.scheme.delay_odd,
+            "cA": even_data,
+            "cD": odd_data,
+            "delay_even": self.scheme.delays[0],
+            "delay_odd": self.scheme.delays[1],
         }
+
+    def inverse(self, even: Any, odd: Any) -> Tensor:
+        even_tt = self._as_ttnn_2d(even)
+        odd_tt = self._as_ttnn_2d(odd)
+
+        if even_tt.shape[0] != odd_tt.shape[0]:
+            raise ValueError("Even and odd batches must match")
+
+        L = self.scheme.tap_size
+        length = 2 * even_tt.shape[1] - L + 2
+        direct_shift = L // 2
+
+        even_sa = ShiftedArray(even_tt, 0, self.ops)
+        odd_sa = ShiftedArray(odd_tt, 0, self.ops)
+
+        for step in reversed(self.steps):
+            even_sa, odd_sa = step.inverse(even_sa, odd_sa)
+
+        even_shift = even_sa.shift + self.scheme.delays[1] - direct_shift
+        odd_shift = odd_sa.shift + self.scheme.delays[0] - direct_shift
+        odd_shift += 1
+
+        half = length // 2
+        even_out = self._slice_python(even_sa.data, -even_shift, -even_shift + half)
+        odd_out = self._slice_python(odd_sa.data, -odd_shift, -odd_shift + half)
+
+        even_host = self.ops.from_device(even_out)
+        odd_host = self.ops.from_device(odd_out)
+        out_host = torch.empty((even_host.shape[0], length), dtype=torch.float32)
+        out_host[:, 1::2] = even_host
+        out_host[:, ::2] = odd_host
+        return self.ops.to_device(out_host)

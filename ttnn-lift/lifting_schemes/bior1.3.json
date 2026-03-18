@@ -1,0 +1,40 @@
+{
+    "tap_size": 6,
+    "approximation_l2": 3.3619639759361756e-33,
+    "delay": {
+        "even": 1,
+        "odd": 1
+    },
+    "steps": [
+        {
+            "type": "predict",
+            "shift": 0,
+            "coefficients": [
+                -1.0
+            ]
+        },
+        {
+            "type": "update",
+            "shift": -1,
+            "coefficients": [
+                0.0625,
+                0.49999999999999994,
+                -0.0625
+            ]
+        },
+        {
+            "type": "predict",
+            "shift": 0,
+            "coefficients": [
+                0.0
+            ]
+        },
+        {
+            "type": "scale",
+            "shift": 0,
+            "coefficients": [
+                1.4142135623730951
+            ]
+        }
+    ]
+}

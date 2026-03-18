@@ -1,9 +1,6 @@
 {
     "tap_size": 12,
-    "l2": {
-        "fp64": 3.642040244342311e-15,
-        "qq": 1.2450875945650886e-16
-    },
+    "approximation_l2": 1.5502431181398782e-32,
     "delay": {
         "even": 2,
         "odd": 3
@@ -64,17 +61,10 @@
             ]
         },
         {
-            "type": "scale-even",
+            "type": "scale",
             "shift": 0,
             "coefficients": [
                 0.3981034468681145
-            ]
-        },
-        {
-            "type": "scale-odd",
-            "shift": 0,
-            "coefficients": [
-                2.5119099265957483
             ]
         }
     ]
