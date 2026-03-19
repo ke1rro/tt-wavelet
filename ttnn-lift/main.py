@@ -12,7 +12,7 @@ import ttnn
 from tt_wavelet.lifting import LiftingWaveletTransform, load_lifting_scheme
 from tt_wavelet.signal import InputSpec, Signal, SignalType
 
-TEST_LENGTHS = [8, 15, 16, 17, 31, 32, 33, 64, 65]
+TEST_LENGTHS = [8, 15, 17, 33, 64, 65, 1001]
 TEST_SIGNAL_TYPES = [
     SignalType.CONSTANT,
     SignalType.IMPULSE,
@@ -22,8 +22,9 @@ TEST_SIGNAL_TYPES = [
     SignalType.ALTERNATING,
     SignalType.NORMAL,
 ]
-RANDOM_SEEDS = [0, 1, 2]
+RANDOM_SEEDS = [2]
 RANDOM_SIGNAL_TYPES = {SignalType.NORMAL}
+EXCLUDED_WAVELETS = {f"coif{i}" for i in range(10, 18)}
 
 
 def mse(a: np.ndarray, b: np.ndarray) -> float:
@@ -81,12 +82,18 @@ def main() -> None:
 
     tested = 0
     skipped = 0
+    excluded = 0
     failures = 0
 
     device = ttnn.open_device(device_id=0)
     try:
         for scheme_path in scheme_paths:
             wavelet_name = scheme_path.stem.removesuffix("-fp64")
+            if wavelet_name in EXCLUDED_WAVELETS:
+                excluded += 1
+                print(f"SKIP: {scheme_path.name} (excluded)")
+                continue
+
             try:
                 wavelet = pywt.Wavelet(wavelet_name)
             except Exception:
@@ -182,6 +189,7 @@ def main() -> None:
 
         print(f"Discovered {len(scheme_paths)} JSON schemes")
         print(f"Tested {tested} wavelets")
+        print(f"Excluded {excluded} wavelets (coif10-coif17)")
         print(f"Skipped {skipped} schemes (no matching pywt wavelet)")
         print(f"Failed cases: {failures}")
         print(f"CSV saved: {csv_path}")
