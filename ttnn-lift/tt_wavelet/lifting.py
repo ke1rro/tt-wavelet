@@ -97,7 +97,9 @@ class TTNNOps:
         return ttnn.add(left, right)
 
     def mul_scalar(self, tensor: Tensor, value: float) -> Tensor:
-        return ttnn.multiply(tensor, float(value))
+        return ttnn.multiply(
+            tensor, float(value), dtype=ttnn.float32, use_legacy=None, sub_core_grids=None
+        )
 
     def slice_columns(self, tensor: Tensor, start: int, length: int) -> Tensor:
         if length <= 0:

@@ -36,7 +36,7 @@ def main() -> None:
 
     root = Path(__file__).resolve().parent
     schemes_dir = root / "lifting_schemes"
-    scheme_paths = sorted(schemes_dir.glob("*.json"))
+    scheme_paths = sorted(path for path in schemes_dir.rglob("*.json") if path.is_file())
 
     tested = 0
     skipped = 0
@@ -45,14 +45,14 @@ def main() -> None:
     try:
         for scheme_path in scheme_paths:
             wavelet_name = scheme_path.stem.removesuffix("-fp64")
-
             try:
                 wavelet = pywt.Wavelet(wavelet_name)
             except Exception:
                 skipped += 1
+                print(f"SKIP: {scheme_path.name} (no matching pywt wavelet)")
                 continue
 
-            print(f"WAVELET: {wavelet_name}")
+            print(f"WAVELET: {wavelet_name} | FILE: {scheme_path.relative_to(schemes_dir)}")
             scheme = load_lifting_scheme(str(scheme_path), mode="symmetric")
             transform = LiftingWaveletTransform(scheme, device)
 
@@ -75,6 +75,7 @@ def main() -> None:
             print_cmp("reconstruction", signal.astype(np.float64), recon.astype(np.float64))
             tested += 1
 
+        print(f"Discovered {len(scheme_paths)} JSON schemes")
         print(f"Tested {tested} wavelets")
         print(f"Skipped {skipped} schemes (no matching pywt wavelet)")
     finally:
