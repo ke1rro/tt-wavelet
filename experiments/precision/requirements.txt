@@ -1,4 +1,0 @@
-matplotlib
-pywavelets
-numpy
-polars
