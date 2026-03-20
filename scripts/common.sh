@@ -5,6 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TT_METAL_DIR="$ROOT_DIR/tt-metal"
 VENV_DIR="$ROOT_DIR/.venv"
 BUILD_DIR="$ROOT_DIR/build"
+CMAKES_DIR="$ROOT_DIR/cmakes"
 
 log() { printf "[%s] %s\n" "$1" "$2"; }
 
@@ -61,17 +62,19 @@ run_tt_metal_install_deps() {
 }
 
 apply_cmake_fixes() {
+  local fabric_src="$CMAKES_DIR/CMAKE_FABRIC.txt"
+  local scaleout_src="$CMAKES_DIR/CMAKE_SCALEOUT.txt"
   local fabric_dst="$TT_METAL_DIR/tt_metal/fabric/CMakeLists.txt"
   local scaleout_dst="$TT_METAL_DIR/tools/scaleout/CMakeLists.txt"
 
-  [[ -f "$ROOT_DIR/CMAKE_FABRIC.txt" ]] || { log ERROR "CMAKE_FABRIC.txt missing"; exit 1; }
-  [[ -f "$ROOT_DIR/CMAKE_SCALEOUT.txt" ]] || { log ERROR "CMAKE_SCALEOUT.txt missing"; exit 1; }
+  [[ -f "$fabric_src" ]] || { log ERROR "$fabric_src missing"; exit 1; }
+  [[ -f "$scaleout_src" ]] || { log ERROR "$scaleout_src missing"; exit 1; }
 
   log INFO "Patching tt-metal CMake (fabric)"
-  cp "$ROOT_DIR/CMAKE_FABRIC.txt" "$fabric_dst"
+  cp "$fabric_src" "$fabric_dst"
 
   log INFO "Patching tt-metal CMake (scaleout)"
-  cp "$ROOT_DIR/CMAKE_SCALEOUT.txt" "$scaleout_dst"
+  cp "$scaleout_src" "$scaleout_dst"
 }
 
 export_tt_env() {

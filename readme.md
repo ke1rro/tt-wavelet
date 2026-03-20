@@ -5,11 +5,8 @@
 - [Prerequisites](#prerequisites)
 - [Environment setup](#environment-setup)
 - [Build & update scripts](#build--update-scripts)
-- [Manual compilation (optional)](#manual-compilation-optional)
 - [Environment variables](#environment-variables)
 - [Running](#running)
-- [Run pre-commit hooks manually](#run-pre-commit-hooks-manually)
-- [Submodule commands](#submodule-commands)
 - [Koyeb ssh](#koyeb-ssh)
 
 # Clone the repository
@@ -17,11 +14,6 @@
 ```bash
 git clone --recurse-submodules https://github.com/ke1rro/tt-wavelet.git
 cd tt-wavelet
-
-or
-git clone https://github.com/ke1rro/tt-wavelet.git
-cd tt-wavelet
-git submodule update --init --recursive
 ```
 
 # Prerequisites
@@ -54,32 +46,7 @@ These scripts live in the repo root and keep tt-metal patched with fixed CMake f
 Common behavior:
 - Exports `TT_METAL_ROOT`, `TT_METAL_HOME`, `TT_METAL_RUNTIME_ROOT` to `$(pwd)/tt-metal`, and `CC/CXX=clang-20/clang++-20`.
 - Auto-creates `.venv`, upgrades `pip/setuptools/wheel`, installs `requirements.txt`.
-- Applies patched CMake files: `CMAKE_FABRIC.txt -> tt-metal/tt_metal/fabric/CMakeLists.txt`, `CMAKE_SCALEOUT.txt -> tt-metal/tools/scaleout/CMakeLists.txt`.
-
-# Manual compilation (optional)
-
-Initialize and update submodules including tt-metal and its dependencies:
-
-```bash
-git submodule update --init --recursive
-git submodule foreach --recursive 'git lfs fetch --all && git lfs pull'
-```
-
-# Compilation without helper scripts (not recommended)
-
-```bash
-mkdir build && cd build
-cmake -DCMAKE_BUILD_TYPE=Release ../
-make -j$(nproc)
-```
-
-## With TT-Metal (Wormhole) support
-
-```bash
-mkdir build && cd build
-cmake -DCMAKE_BUILD_TYPE=Release -DBUILD_TT_WAVELET=ON ../
-make -j$(nproc)
-```
+- Applies patched CMake files: `cmakes/CMAKE_FABRIC.txt -> tt-metal/tt_metal/fabric/CMakeLists.txt`, `cmakes/CMAKE_SCALEOUT.txt -> tt-metal/tools/scaleout/CMakeLists.txt`.
 
 # Environment variables
 
@@ -103,40 +70,6 @@ source ./scripts/set_env.sh
 
 ```bash
 ./build/tt-wavelet/tt_wavelet_test
-```
-
-# Run pre-commit hooks manually
-
-```bash
-pre-commit run --all-files
-```
-
-# Submodule commands
-
-```bash
-# update submodule to the latest commit on the remote branch
-git submodule update --remote
-
-# check status
-git submodule status
-```
-
-The tt-metal submodule is pinned to the `stable` branch in `.gitmodules`.
-
->[!WARNING]
->Destruction alert! The following commands will change the structure and all team members will need to use `git submodule update --remote` to update their local submodule to the new branch. Make sure to inform your team about the change.
-
-```bash
-# Change submodule branch
-cd third-party/tt-metal
-git checkout <other-branch>
-cd ../..
-git add third-party/tt-metal
-git commit -m "Update tt-metal to different branch"
-```
-
-```bash
-[skip ci] maybe used in commit message to skip CI if chore changes only
 ```
 
 # Koyeb ssh
