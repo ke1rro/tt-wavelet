@@ -4,6 +4,14 @@
 .devcontainer/
 .vscode
 .idea
+.cache
+.venv/
+venv/
+env/
+ENV/
+.venv/
+.venv*/
+env*/
 runtime
 *.log
 *.csv
