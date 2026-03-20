@@ -1,9 +1,37 @@
+from .lifting import (
+    LiftingScheme,
+    LiftingStep,
+    LiftingStepPredict,
+    LiftingStepScaleEven,
+    LiftingStepScaleOdd,
+    LiftingStepSpec,
+    LiftingStepSwap,
+    LiftingStepUpdate,
+    LiftingWaveletTransform,
+    ShiftedArray,
+    Tensor,
+    TTNNOps,
+    load_lifting_scheme,
+)
 from .signal import InputSpec, Signal, SignalType, generate_signal, register
 
 __all__ = [
     "InputSpec",
+    "LiftingScheme",
+    "LiftingStep",
+    "LiftingStepPredict",
+    "LiftingStepScaleEven",
+    "LiftingStepScaleOdd",
+    "LiftingStepSpec",
+    "LiftingStepSwap",
+    "LiftingStepUpdate",
+    "LiftingWaveletTransform",
     "Signal",
     "SignalType",
+    "ShiftedArray",
+    "TTNNOps",
+    "Tensor",
     "generate_signal",
+    "load_lifting_scheme",
     "register",
 ]

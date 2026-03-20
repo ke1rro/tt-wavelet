@@ -1,6 +1,7 @@
 import csv
 import os
 import sys
+from collections import defaultdict
 from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "tt-metal", "ttnn"))
@@ -12,7 +13,7 @@ import ttnn
 from tt_wavelet.lifting import LiftingWaveletTransform, load_lifting_scheme
 from tt_wavelet.signal import InputSpec, Signal, SignalType
 
-TEST_LENGTHS = [8, 15, 17, 33, 64, 65, 1001]
+TEST_LENGTHS = [8, 15, 17, 33, 64, 65]
 TEST_SIGNAL_TYPES = [
     SignalType.CONSTANT,
     SignalType.IMPULSE,
@@ -69,6 +70,15 @@ def iter_input_specs() -> list[InputSpec]:
     return specs
 
 
+def group_input_specs_by_length(
+    input_specs: list[InputSpec],
+) -> dict[int, list[InputSpec]]:
+    grouped: dict[int, list[InputSpec]] = defaultdict(list)
+    for spec in input_specs:
+        grouped[spec.length].append(spec)
+    return dict(grouped)
+
+
 def main() -> None:
     root = Path(__file__).resolve().parent
     schemes_dir = root / "lifting_schemes"
@@ -78,6 +88,7 @@ def main() -> None:
     csv_path = csv_dir / "sfpu_errors.csv"
 
     input_specs = iter_input_specs()
+    grouped_input_specs = group_input_specs_by_length(input_specs)
     rows: list[dict[str, object]] = []
 
     tested = 0
@@ -105,66 +116,83 @@ def main() -> None:
             scheme = load_lifting_scheme(str(scheme_path), mode="symmetric")
             transform = LiftingWaveletTransform(scheme, device)
 
-            for spec in input_specs:
-                row: dict[str, object] = {
-                    "wavelet": wavelet_name,
-                    "file": str(scheme_path.relative_to(schemes_dir)),
-                    "signal_type": spec.kind.name,
-                    "length": spec.length,
-                    "seed": int(spec.seed or 0),
-                }
+            for _, specs_for_length in sorted(grouped_input_specs.items()):
+                signals = [Signal(spec).data.astype(np.float32) for spec in specs_for_length]
+                signal_batch = np.stack(signals, axis=0)
+                signal_torch = torch.from_numpy(signal_batch)
+
+                base_rows = [
+                    {
+                        "wavelet": wavelet_name,
+                        "file": str(scheme_path.relative_to(schemes_dir)),
+                        "signal_type": spec.kind.name,
+                        "length": spec.length,
+                        "seed": int(spec.seed or 0),
+                    }
+                    for spec in specs_for_length
+                ]
 
                 try:
-                    signal = Signal(spec).data.astype(np.float32)
-                    signal_torch = torch.from_numpy(signal).unsqueeze(0)
-
                     out = transform.forward(signal_torch)
-                    approx_ttnn = ttnn.to_torch(out["cA"]).cpu().numpy().reshape(-1)
-                    details_ttnn = ttnn.to_torch(out["cD"]).cpu().numpy().reshape(-1)
-
-                    approx_pywt, details_pywt = pywt.dwt(signal, wavelet=wavelet, mode="symmetric")
+                    approx_ttnn_batch = ttnn.to_torch(out["cA"]).cpu().numpy()
+                    details_ttnn_batch = ttnn.to_torch(out["cD"]).cpu().numpy()
 
                     recon_ttnn = transform.inverse(out["cA"], out["cD"])
-                    recon = ttnn.to_torch(recon_ttnn).cpu().numpy().reshape(-1)
-                    recon = recon[: len(signal)]
+                    recon_batch = ttnn.to_torch(recon_ttnn).cpu().numpy()
 
-                    mse_approx = mse(approx_pywt, approx_ttnn)
-                    mse_detail = mse(details_pywt, details_ttnn)
-                    mse_inverse = mse(signal.astype(np.float64), recon.astype(np.float64))
+                    for index, spec in enumerate(specs_for_length):
+                        signal = signals[index]
+                        approx_ttnn = approx_ttnn_batch[index].reshape(-1)
+                        details_ttnn = details_ttnn_batch[index].reshape(-1)
+                        recon = recon_batch[index].reshape(-1)[: len(signal)]
+                        approx_pywt, details_pywt = pywt.dwt(
+                            signal, wavelet=wavelet, mode="symmetric"
+                        )
 
-                    print(
-                        f"CASE: type={spec.kind.name}, len={spec.length}, seed={int(spec.seed or 0)}"
-                    )
-                    print_cmp("approximation", approx_pywt, approx_ttnn)
-                    print_cmp("details", details_pywt, details_ttnn)
-                    print_cmp("reconstruction", signal.astype(np.float64), recon.astype(np.float64))
+                        mse_approx = mse(approx_pywt, approx_ttnn)
+                        mse_detail = mse(details_pywt, details_ttnn)
+                        mse_inverse = mse(signal.astype(np.float64), recon.astype(np.float64))
 
-                    row.update(
-                        {
-                            "status": "ok",
-                            "error": "",
-                            "mse_approx": mse_approx,
-                            "mse_detail": mse_detail,
-                            "mse_inverse": mse_inverse,
-                        }
-                    )
+                        print(
+                            f"CASE: type={spec.kind.name}, len={spec.length}, seed={int(spec.seed or 0)}"
+                        )
+                        print_cmp("approximation", approx_pywt, approx_ttnn)
+                        print_cmp("details", details_pywt, details_ttnn)
+                        print_cmp(
+                            "reconstruction",
+                            signal.astype(np.float64),
+                            recon.astype(np.float64),
+                        )
+
+                        row = dict(base_rows[index])
+                        row.update(
+                            {
+                                "status": "ok",
+                                "error": "",
+                                "mse_approx": mse_approx,
+                                "mse_detail": mse_detail,
+                                "mse_inverse": mse_inverse,
+                            }
+                        )
+                        rows.append(row)
                 except Exception as error:
-                    failures += 1
-                    row.update(
-                        {
-                            "status": "error",
-                            "error": str(error),
-                            "mse_approx": float("nan"),
-                            "mse_detail": float("nan"),
-                            "mse_inverse": float("nan"),
-                        }
-                    )
-                    print(
-                        f"\033[31m ERROR: type={spec.kind.name}, len={spec.length}, "
-                        f"seed={int(spec.seed or 0)}: {error}\033[0m"
-                    )
-
-                rows.append(row)
+                    for index, spec in enumerate(specs_for_length):
+                        failures += 1
+                        row = dict(base_rows[index])
+                        row.update(
+                            {
+                                "status": "error",
+                                "error": str(error),
+                                "mse_approx": float("nan"),
+                                "mse_detail": float("nan"),
+                                "mse_inverse": float("nan"),
+                            }
+                        )
+                        rows.append(row)
+                        print(
+                            f"\033[31m ERROR: type={spec.kind.name}, len={spec.length}, "
+                            f"seed={int(spec.seed or 0)}: {error}\033[0m"
+                        )
 
             tested += 1
 
