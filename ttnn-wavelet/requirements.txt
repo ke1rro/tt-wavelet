@@ -3,4 +3,4 @@ numpy
 tqdm
 polars
 matplotlib
-pywt
+PyWavelets
