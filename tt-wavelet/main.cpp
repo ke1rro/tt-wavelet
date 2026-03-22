@@ -147,18 +147,18 @@ int main(int argc, char* argv[]) {
     auto core = tt::tt_metal::CoreCoord(0, 0);
 
     constexpr uint32_t cb_id_in_odd = tt::CBIndex::c_0;
-    const tt::tt_metal::CircularBufferConfig cb_in_odd_config(cb_size_bytes, {{cb_id_in_odd, tt::DataFormat::Float32}})
+    auto cb_in_odd_config = tt::tt_metal::CircularBufferConfig(cb_size_bytes, {{cb_id_in_odd, tt::DataFormat::Float32}})
         .set_page_size(cb_id_in_odd, tile_size_bytes);
     auto cb_in_odd = tt::tt_metal::CreateCircularBuffer(program, core, cb_in_odd_config);
 
     constexpr uint32_t cb_id_in_even = tt::CBIndex::c_1;
-    const tt::tt_metal::CircularBufferConfig cb_in_even_config(
+    auto cb_in_even_config = tt::tt_metal::CircularBufferConfig(
         cb_size_bytes, {{cb_id_in_even, tt::DataFormat::Float32}})
         .set_page_size(cb_id_in_even, tile_size_bytes);
     auto cb_in_even = tt::tt_metal::CreateCircularBuffer(program, core, cb_in_even_config);
 
     constexpr uint32_t cb_id_out = tt::CBIndex::c_16;
-    const tt::tt_metal::CircularBufferConfig cb_out_config(cb_size_bytes, {{cb_id_out, tt::DataFormat::Float32}})
+    auto cb_out_config = tt::tt_metal::CircularBufferConfig(cb_size_bytes, {{cb_id_out, tt::DataFormat::Float32}})
         .set_page_size(cb_id_out, tile_size_bytes);
     auto cb_out = tt::tt_metal::CreateCircularBuffer(program, core, cb_out_config);
 
