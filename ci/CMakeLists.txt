@@ -30,6 +30,25 @@ set(METALIUM_INCLUDE_DIRS
     ${TT_METAL_INCLUDE_ROOT}/tt_stl/tt_stl
 )
 
+set(TT_WAVELET_INCLUDE_DIRS
+    ${TT_WAVELET_SOURCE_ROOT}/tt-wavelet/include
+)
+
+set(TT_WAVELET_LLK_INCLUDE_CANDIDATES
+    ${TT_METAL_SOURCE_ROOT}/tt_metal/third_party/tt_llk/tt_llk_wormhole_b0/llk_lib
+    ${TT_METAL_SOURCE_ROOT}/tt_metal/third_party/tt_llk/tt_llk_wormhole_b0/common/inc
+    ${TT_METAL_SOURCE_ROOT}/tt_metal/hw/ckernels/wormhole_b0/metal/llk_api
+    ${TT_METAL_SOURCE_ROOT}/tt_metal/hw/ckernels/wormhole_b0/metal/common
+    ${TT_METAL_SOURCE_ROOT}/tt_metal/hw/ckernels/wormhole_b0/metal/llk_io
+    ${TT_METAL_SOURCE_ROOT}/tt_metal/hw/ckernels/wormhole_b0/metal/llk_api/llk_sfpu
+)
+set(TT_WAVELET_LLK_INCLUDE_DIRS)
+foreach(LLK_INCLUDE_DIR IN LISTS TT_WAVELET_LLK_INCLUDE_CANDIDATES)
+    if(EXISTS "${LLK_INCLUDE_DIR}")
+        list(APPEND TT_WAVELET_LLK_INCLUDE_DIRS "${LLK_INCLUDE_DIR}")
+    endif()
+endforeach()
+
 set(REFLECT_CANDIDATES
     ${TT_METAL_INCLUDE_ROOT}
     ${TT_METAL_SOURCE_ROOT}/build/_deps/reflect-src
@@ -197,6 +216,9 @@ else()
 endif()
 
 add_library(tt_wavelet_analysis OBJECT "${TT_WAVELET_SOURCE_ROOT}/tt-wavelet/main.cpp")
+target_include_directories(tt_wavelet_analysis PRIVATE ${METALIUM_INCLUDE_DIRS})
+target_include_directories(tt_wavelet_analysis PRIVATE ${TT_WAVELET_LLK_INCLUDE_DIRS})
+target_include_directories(tt_wavelet_analysis PRIVATE ${TT_WAVELET_INCLUDE_DIRS})
 target_link_libraries(tt_wavelet_analysis PRIVATE Metalium::Metal)
 if(TT_METAL_PREBUILT_ROOT)
     target_link_libraries(tt_wavelet_analysis PRIVATE ${METALIUM_RUNTIME_LIBS})
@@ -208,6 +230,9 @@ if(CI_BUILD_WAVELET_EXECUTABLE)
     endif()
 
     add_executable(tt_wavelet_test "${TT_WAVELET_SOURCE_ROOT}/tt-wavelet/main.cpp")
+    target_include_directories(tt_wavelet_test PRIVATE ${METALIUM_INCLUDE_DIRS})
+    target_include_directories(tt_wavelet_test PRIVATE ${TT_WAVELET_LLK_INCLUDE_DIRS})
+    target_include_directories(tt_wavelet_test PRIVATE ${TT_WAVELET_INCLUDE_DIRS})
     target_link_libraries(tt_wavelet_test PRIVATE Metalium::Metal)
     target_link_libraries(tt_wavelet_test PRIVATE ${METALIUM_RUNTIME_LIBS})
 endif()
