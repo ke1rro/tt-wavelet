@@ -16,6 +16,7 @@ runtime
 *.log
 *.csv
 *.xlsx
+
 *.code-workspace
 /tt-perf*
 test_hlk_args_init_gen
@@ -164,3 +165,5 @@ Testing
 models/experimental/petr/resources/*.pth
 
 .claude
+tt-artifacts/**
+tt-artifacts/
