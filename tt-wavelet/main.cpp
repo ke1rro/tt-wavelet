@@ -9,6 +9,7 @@
 #include "tt-metalium/host_api.hpp"
 #include "tt-metalium/mesh_buffer.hpp"
 #include "tt-metalium/mesh_device.hpp"
+#include "tt-metalium/mesh_workload.hpp"
 #include "tt-metalium/tensor_accessor_args.hpp"
 
 using json = nlohmann::json;
@@ -279,16 +280,18 @@ int main(int argc, char* argv[]) {
     );
     */
 
-    // TODO: EnqueueProgram, WaitFinish, ReadMeshBuffer
+    tt::tt_metal::distributed::MeshWorkload workload;
+    tt::tt_metal::distributed::MeshCoordinateRange device_range =
+        tt::tt_metal::distributed::MeshCoordinateRange(mesh_device->shape());
+    workload.add_program(device_range, std::move(program));
+    tt::tt_metal::distributed::EnqueueMeshWorkload(cq, workload, false);
 
-    // Запускаємо пайплайн!
-    tt::tt_metal::distributed::EnqueueProgram(cq, program, false);
     tt::tt_metal::distributed::Finish(cq);
 
     std::vector<float> odd_out_vec;
     odd_out_vec.resize(needed_elements, 0.0f);
 
-    tt::tt_metal::distributed::EnqueueReadMeshBuffer(cq, dram_out_odd, odd_out_vec, true);
+    tt::tt_metal::distributed::EnqueueReadMeshBuffer(cq, odd_out_vec, dram_out_odd, true);
 
     std::cout << "Read from device complete!" << std::endl;
 
