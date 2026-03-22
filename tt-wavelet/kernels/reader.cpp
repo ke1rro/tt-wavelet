@@ -1,7 +1,6 @@
 #include <stdint.h>
-#include <tensor_accessor.h>
 
-#include "dataflow_api.h"
+#include "api/dataflow/dataflow_api.h"
 
 void kernel_main() {
     uint32_t dram_addr_odd = get_arg_val<uint32_t>(0);
