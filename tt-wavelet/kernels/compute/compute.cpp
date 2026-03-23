@@ -9,6 +9,7 @@
 
 void kernel_main() {
     constexpr uint32_t n_tile_pairs = 1;
+    constexpr bool k_bypass_sfpi_for_debug = true;
 
     constexpr auto cb_base = tt::CBIndex::c_0;
     constexpr auto cb_in0 = tt::CBIndex::c_1;
@@ -42,13 +43,16 @@ void kernel_main() {
         copy_tile_to_dst_init_short_with_dt(cb_in0, cb_in1);
         copy_tile(cb_in1, 0, dst_in1);
 
-        stencil_mac_tile<false, 2, Policy>(dst_base, dst_input_indices, dst_out, coefficients);
+        if constexpr (!k_bypass_sfpi_for_debug) {
+            stencil_mac_tile<false, 2, Policy>(dst_base, dst_input_indices, dst_out, coefficients);
+        }
 
         tile_regs_commit();
 
         tile_regs_wait();
         cb_reserve_back(cb_out0, 1);
-        pack_tile(dst_out, cb_out0);
+        constexpr uint32_t pack_src = k_bypass_sfpi_for_debug ? dst_base : dst_out;
+        pack_tile(pack_src, cb_out0);
         tile_regs_release();
 
         cb_push_back(cb_out0, 1);
