@@ -310,16 +310,18 @@ int main(int argc, char* argv[]) {
     tt::tt_metal::distributed::MeshWorkload workload;
     tt::tt_metal::distributed::MeshCoordinateRange device_range =
         tt::tt_metal::distributed::MeshCoordinateRange(mesh_device->shape());
+        
     workload.add_program(device_range, std::move(program));
     tt::tt_metal::distributed::EnqueueMeshWorkload(cq, workload, false);
 
     tt::tt_metal::distributed::Finish(cq);
 
-    std::vector<float> odd_out_vec(100 * 1024, 0.0f); // Буфер під дамп БАЗИ
-    std::vector<float> even_out_vec(100 * 1024, 0.0f); // Буфер під дамп ТАПІВ
+    std::vector<float> odd_out_vec(100 * 1024 / sizeof(float), 0.0f); // Буфер під дамп БАЗИ
+    std::vector<float> even_out_vec(100 * 1024 / sizeof(float), 0.0f); // Буфер під дамп ТАПІВ
 
-    tt::tt_metal::distributed::EnqueueReadMeshBuffer(cq, odd_out_vec, dram_out_odd, false);
-    tt::tt_metal::distributed::EnqueueReadMeshBuffer(cq, even_out_vec, dram_out_even, true);
+    tt::tt_metal::distributed::EnqueueReadMeshBuffer(cq, dram_out_odd, odd_out_vec, false);
+    tt::tt_metal::distributed::EnqueueReadMeshBuffer(cq, dram_out_even, even_out_vec, true);
+    tt::tt_metal::distributed::Finish(cq);
 
     std::cout << "Read from device complete!" << std::endl;
 
