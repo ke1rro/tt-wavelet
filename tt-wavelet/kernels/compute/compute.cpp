@@ -1,11 +1,11 @@
 #include <array>
 #include <cstdint>
 
-#include "../include/stencil/api/stencil_mac.h"
-#include "../include/stencil/policy.h"
 #include "compute_kernel_api/common.h"
 #include "compute_kernel_api/eltwise_unary/eltwise_unary.h"
 #include "compute_kernel_api/tile_move_copy.h"
+#include "../include/stencil/api/stencil_mac.h"
+#include "../include/stencil/policy.h"
 
 void kernel_main() {
     constexpr uint32_t n_tile_pairs = 1;
