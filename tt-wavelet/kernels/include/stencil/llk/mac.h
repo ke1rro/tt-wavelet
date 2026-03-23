@@ -4,10 +4,10 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "../policy.h"
 #include "llk_assert.h"
 #include "llk_defs.h"
-#include "stencil/llk/params.h"
-#include "stencil/policy.h"
+#include "params.h"
 
 template <bool APPROXIMATE, typename PolicyT, typename Callable>
 inline void _llk_math_eltwise_stencil_mac_sfpu_(

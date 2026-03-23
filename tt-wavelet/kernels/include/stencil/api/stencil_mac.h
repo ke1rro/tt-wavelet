@@ -4,9 +4,9 @@
 #include <cstddef>
 #include <cstdint>
 
-#include "ckernel_sfpu_stencil_mac.h"
+#include "../../../../ckernels/sfpu/ckernel_sfpu_stencil_mac.h"
+#include "../llk/mac.h"
 #include "llk_defs.h"
-#include "stencil/llk/mac.h"
 
 template <bool APPROXIMATE, typename PolicyT>
 inline void stencil_mac_tile(

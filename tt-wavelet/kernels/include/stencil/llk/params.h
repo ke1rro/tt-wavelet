@@ -5,10 +5,10 @@
 #include <cstdint>
 #include <utility>
 
+#include "../policy.h"
 #include "llk_assert.h"
 #include "llk_defs.h"
 #include "llk_math_eltwise_ternary_sfpu.h"
-#include "stencil/policy.h"
 
 namespace ckernel::stencil {
 
