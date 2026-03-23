@@ -145,7 +145,6 @@ int main(int argc, char* argv[]) {
 
     // cb init
     // -------------------------------------------------------------------------------------------------------------
-    constexpr uint32_t POLICY_LEN = 5;
 
     uint32_t cb_size_tiles = 16; 
     uint32_t cb_size_bytes = cb_size_tiles * tile_size_bytes;
