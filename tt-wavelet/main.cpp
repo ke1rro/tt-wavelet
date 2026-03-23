@@ -122,7 +122,11 @@ int main(int argc, char* argv[]) {
         .buffer_type = tt::tt_metal::BufferType::DRAM,
     };
 
-    tt::tt_metal::distributed::ReplicatedBufferConfig dram_buffer_config{.size = dram_buffer_size};
+    tt::tt_metal::distributed::ReplicatedBufferConfig dram_buffer_config_in{.size = dram_buffer_size};
+    
+    // Збільшуємо вихідні буфери, щоб туди влізли всі "сирі" тапи для тестового дампу
+    uint32_t dram_debug_buffer_size = tile_size_bytes * 100; // на 100 тайлів
+    tt::tt_metal::distributed::ReplicatedBufferConfig dram_buffer_config_out{.size = dram_debug_buffer_size};
 
     const tt::tt_metal::distributed::DeviceLocalBufferConfig l1_config{
         .page_size = tile_size_bytes,
@@ -131,17 +135,19 @@ int main(int argc, char* argv[]) {
 
     tt::tt_metal::distributed::ReplicatedBufferConfig l1_buffer_config{.size = tile_size_bytes};
 
-    auto dram_in_odd{tt::tt_metal::distributed::MeshBuffer::create(dram_buffer_config, dram_config, mesh_device.get())};
+    auto dram_in_odd{tt::tt_metal::distributed::MeshBuffer::create(dram_buffer_config_in, dram_config, mesh_device.get())};
     auto dram_in_even{
-        tt::tt_metal::distributed::MeshBuffer::create(dram_buffer_config, dram_config, mesh_device.get())};
+        tt::tt_metal::distributed::MeshBuffer::create(dram_buffer_config_in, dram_config, mesh_device.get())};
     auto dram_out_odd{
-        tt::tt_metal::distributed::MeshBuffer::create(dram_buffer_config, dram_config, mesh_device.get())};
+        tt::tt_metal::distributed::MeshBuffer::create(dram_buffer_config_out, dram_config, mesh_device.get())};
     auto dram_out_even{
-        tt::tt_metal::distributed::MeshBuffer::create(dram_buffer_config, dram_config, mesh_device.get())};
+        tt::tt_metal::distributed::MeshBuffer::create(dram_buffer_config_out, dram_config, mesh_device.get())};
 
     // cb init
     // -------------------------------------------------------------------------------------------------------------
-    uint32_t cb_size_tiles = 2;
+    constexpr uint32_t POLICY_LEN = 5;
+
+    uint32_t cb_size_tiles = 16; 
     uint32_t cb_size_bytes = cb_size_tiles * tile_size_bytes;
 
     auto core = tt::tt_metal::CoreCoord(0, 0);
@@ -216,38 +222,59 @@ int main(int argc, char* argv[]) {
     );
     */
 
-    uint32_t min_shift = 0;
-    uint32_t max_shift = 0;
+    // RUNTIME ARGS FOR READER -----------------------------------------------------
+    std::vector<uint32_t> reader_rt_args;
+    reader_rt_args.push_back(static_cast<uint32_t>(dram_in_odd->address()));
+    reader_rt_args.push_back(static_cast<uint32_t>(dram_in_even->address()));
+    reader_rt_args.push_back(num_tiles);
+    
+    constexpr uint32_t POLICY_LEN = 5;
+    reader_rt_args.push_back(POLICY_LEN);
+    
+    reader_rt_args.push_back(static_cast<uint32_t>(scheme.steps.size()));
 
     for (const auto& step : scheme.steps) {
-        if (step.shift < 0) {
-            uint32_t abs_shift = static_cast<uint32_t>(-step.shift);
-            if (abs_shift > min_shift) {
-                min_shift = abs_shift;
-            }
-        }
+        uint32_t op_type = 0;
+        if (step.type == "predict") op_type = 0;
+        else if (step.type == "update") op_type = 1;
+        else if (step.type == "scale-even") op_type = 2;
+        else if (step.type == "scale-odd") op_type = 3;
 
-        int32_t right_edge = step.shift + static_cast<int32_t>(step.coefficients.size()) - 1;
-        if (right_edge > 0) {
-            uint32_t abs_right_edge = static_cast<uint32_t>(right_edge);
-            if (abs_right_edge > max_shift) {
-                max_shift = abs_right_edge;
-            }
-        }
+        reader_rt_args.push_back(op_type);
+        reader_rt_args.push_back(static_cast<uint32_t>(step.coefficients.size()));
+        reader_rt_args.push_back(static_cast<uint32_t>(step.shift));
     }
 
     tt::tt_metal::SetRuntimeArgs(
         program,
         reader_kernel,
         core,
-        {static_cast<uint32_t>(dram_in_odd->address()),
-         static_cast<uint32_t>(dram_in_even->address()),
-         num_tiles,
-         min_shift,
-         max_shift});
+        reader_rt_args
+    );
+// --------------------------------------------------------------------------------------------
+
+    // RUNTIME ARGS FOR WRITER (TEST DUMP SINK) ------------------------------------
+    std::vector<uint32_t> writer_rt_args;
+    writer_rt_args.push_back(static_cast<uint32_t>(dram_out_odd->address())); // Пишемо базу сюди
+    writer_rt_args.push_back(static_cast<uint32_t>(dram_out_even->address())); // Пишемо тапи сюди
+    writer_rt_args.push_back(num_tiles);
+    writer_rt_args.push_back(POLICY_LEN);
+    writer_rt_args.push_back(static_cast<uint32_t>(scheme.steps.size()));
+
+    for (const auto& step : scheme.steps) {
+        uint32_t op_type = 0;
+        if (step.type == "predict") op_type = 0;
+        else if (step.type == "update") op_type = 1;
+        else if (step.type == "scale-even") op_type = 2;
+        else if (step.type == "scale-odd") op_type = 3;
+
+        writer_rt_args.push_back(op_type);
+        writer_rt_args.push_back(static_cast<uint32_t>(step.coefficients.size()));
+        writer_rt_args.push_back(static_cast<uint32_t>(step.shift));
+    }
 
     tt::tt_metal::SetRuntimeArgs(
-        program, writer_kernel, core, {static_cast<uint32_t>(dram_out_odd->address()), num_tiles});
+        program, writer_kernel, core, writer_rt_args);
 
     /*
     // runtime args for compute
@@ -289,14 +316,15 @@ int main(int argc, char* argv[]) {
 
     tt::tt_metal::distributed::Finish(cq);
 
-    std::vector<float> odd_out_vec;
-    odd_out_vec.resize(needed_elements, 0.0f);
+    std::vector<float> odd_out_vec(100 * 1024, 0.0f); // Буфер під дамп БАЗИ
+    std::vector<float> even_out_vec(100 * 1024, 0.0f); // Буфер під дамп ТАПІВ
 
-    tt::tt_metal::distributed::EnqueueReadMeshBuffer(cq, odd_out_vec, dram_out_odd, true);
+    tt::tt_metal::distributed::EnqueueReadMeshBuffer(cq, odd_out_vec, dram_out_odd, false);
+    tt::tt_metal::distributed::EnqueueReadMeshBuffer(cq, even_out_vec, dram_out_even, true);
 
     std::cout << "Read from device complete!" << std::endl;
 
-    std::cout << "\n===== TILE 0 =====" << std::endl;
+    std::cout << "\n===== DUMP BASE (TILE 0, Step 0) =====" << std::endl;
     std::cout << "Start: ";
     for (size_t i = 0; i < 5; ++i) {
         std::cout << odd_out_vec[i] << " ";
@@ -307,19 +335,15 @@ int main(int argc, char* argv[]) {
     }
     std::cout << std::endl;
 
-    std::cout << "\n===== TILE 1 =====" << std::endl;
-    std::cout << "Start: ";
-    for (size_t i = 1024; i < 1029; ++i) {
-        std::cout << odd_out_vec[i] << " ";
+    std::cout << "\n===== DUMP TAPS (TILE 0, Step 0) =====" << std::endl;
+    // Знаючи, що у bior3.9 9 тапів, їх буде записано в even_out_vec послідовно (5 тайлів першого пасу в початок і тд)
+    for (int t = 0; t < 5; ++t) {
+        std::cout << "Tap " << t << " Start: ";
+        for (size_t i = t*1024; i < t*1024 + 5; ++i) {
+            std::cout << even_out_vec[i] << " ";
+        }
+        std::cout << " ... " << std::endl;
     }
-    std::cout << " ... ";
-    for (size_t i = 2043; i < 2048; ++i) {
-        std::cout << odd_out_vec[i] << " ";
-    }
-    std::cout << std::endl;
-
-    std::cout << "\nComputed Shift Boundaries (min_shift: " << min_shift << ", max_shift: " << max_shift << ")"
-              << std::endl;
 
     return 0;
 }
