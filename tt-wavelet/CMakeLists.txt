@@ -17,6 +17,7 @@ if (BUILD_TT_WAVELET)
     set(TT_WAVELET_LLK_INCLUDE_DIRS)
 
     set(TT_WAVELET_INCLUDE_DIRS
+    ${CMAKE_SOURCE_DIR}/tt-metal
     ${CMAKE_CURRENT_SOURCE_DIR}/kernels/include
     ${CMAKE_CURRENT_SOURCE_DIR}/ckernels/sfpu
     )
