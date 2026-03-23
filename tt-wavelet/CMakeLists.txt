@@ -18,6 +18,8 @@ if (BUILD_TT_WAVELET)
 
     set(TT_WAVELET_INCLUDE_DIRS
     ${CMAKE_SOURCE_DIR}/tt-metal
+    ${CMAKE_SOURCE_DIR}/tt-metal/tt_metal/common
+    ${CMAKE_SOURCE_DIR}/tt-metal/tt_metal/api/tt-metalium
     ${CMAKE_CURRENT_SOURCE_DIR}/kernels/include
     ${CMAKE_CURRENT_SOURCE_DIR}/ckernels/sfpu
     )
