@@ -324,7 +324,7 @@ int main(int argc, char* argv[]) {
     std::vector<float> odd_out_vec(100 * 1024 / sizeof(float), 0.0f);   // Буфер під дамп БАЗИ
     std::vector<float> even_out_vec(100 * 1024 / sizeof(float), 0.0f);  // Буфер під дамп ТАПІВ
 
-    tt::tt_metal::distributed::EnqueueReadMeshBuffer(cq, odd_out_vec, dram_out_odd, false);
+    tt::tt_metal::distributed::EnqueueReadMeshBuffer(cq, odd_out_vec, dram_out_odd, true);
     tt::tt_metal::distributed::EnqueueReadMeshBuffer(cq, even_out_vec, dram_out_even, true);
     tt::tt_metal::distributed::Finish(cq);
 
