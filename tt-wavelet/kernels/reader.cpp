@@ -28,14 +28,13 @@ inline void read_shifted_tile(
     } else {
         uint32_t elements_from_first = elements_per_tile - offset;
         uint32_t elements_from_second = offset;
-        // here reader needs to wait until wtiter give results
         uint32_t bytes_from_first = elements_from_first * element_size_bytes;
         uint32_t bytes_from_second = elements_from_second * element_size_bytes;
 
-        uint64_t noc_addr_1 = get_noc_addr(start_page_idx, s) + (offset * element_size_bytes);
+        uint64_t noc_addr_1 = get_noc_addr(start_page_idx, s, offset * element_size_bytes);
         noc_async_read(noc_addr_1, l1_write_addr, bytes_from_first);
 
-        uint64_t noc_addr_2 = get_noc_addr(start_page_idx + 1, s);
+        uint64_t noc_addr_2 = get_noc_addr(start_page_idx + 1, s, 0);
         noc_async_read(noc_addr_2, l1_write_addr + bytes_from_first, bytes_from_second);
     }
 }

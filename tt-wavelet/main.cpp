@@ -330,25 +330,42 @@ int main(int argc, char* argv[]) {
 
     std::cout << "Read from device complete!" << std::endl;
 
-    std::cout << "\n===== DUMP BASE (TILE 0, Step 0) =====" << std::endl;
-    std::cout << "Start: ";
-    for (size_t i = 0; i < 5; ++i) {
-        std::cout << odd_out_vec[i] << " ";
-    }
-    std::cout << " ... ";
-    for (size_t i = 1019; i < 1024; ++i) {
-        std::cout << odd_out_vec[i] << " ";
-    }
-    std::cout << std::endl;
-
-    std::cout << "\n===== DUMP TAPS (TILE 0, Step 0) =====" << std::endl;
-    // Знаючи, що у bior3.9 9 тапів, їх буде записано в even_out_vec послідовно (5 тайлів першого пасу в початок і тд)
-    for (int t = 0; t < 5; ++t) {
-        std::cout << "Tap " << t << " Start: ";
-        for (size_t i = t * 1024; i < t * 1024 + 5; ++i) {
-            std::cout << even_out_vec[i] << " ";
+    std::cout << "\n===== DUMP BASE =====" << std::endl;
+    for (int step = 0; step < 3; ++step) {
+        std::cout << "--- Step " << step << " ---" << std::endl;
+        for (int tile = 0; tile < 2; ++tile) {
+            uint32_t idx = 0;
+            if (step == 0) idx = tile; // Step 0: Base 0, Base 1
+            if (step == 1) idx = 2 + tile; // Step 1: Base 2, Base 3
+            if (step == 2) idx = 4 + tile; // Step 2: Base 4, Base 5
+            
+            std::cout << "Tile " << tile << " Start: ";
+            for (size_t i = idx*1024; i < idx*1024 + 5; ++i) {
+                std::cout << odd_out_vec[i] << " ";
+            }
+            std::cout << std::endl;
         }
-        std::cout << " ... " << std::endl;
+    }
+
+    std::cout << "\n===== DUMP TAPS =====" << std::endl;
+    // Step 0: Taps idx 0, 1 (Tile 0 Tap 0, Tile 1 Tap 0)
+    std::cout << "--- Step 0 (Predict, Shift -1, 1 Tap) ---" << std::endl;
+    for(int tile=0; tile<2; tile++) {
+        uint32_t base_idx = tile;
+        std::cout << "Tile " << tile << ", Tap 0: ";
+        for (size_t i = base_idx*1024; i < base_idx*1024 + 5; ++i) std::cout << even_out_vec[i] << " ";
+        std::cout << std::endl;
+    }
+
+    // Step 1: Taps idx 2, 3 (Tile 0 Taps 0-1) and 4, 5 (Tile 1 Taps 0-1)
+    std::cout << "--- Step 1 (Update, Shift 0, 2 Taps) ---" << std::endl;
+    for(int tile=0; tile<2; tile++) {
+        uint32_t base_idx = 2 + tile * 2;
+        std::cout << "Tile " << tile << ", Tap 0: ";
+        for (size_t i = base_idx*1024; i < base_idx*1024 + 5; ++i) std::cout << even_out_vec[i] << " ";
+        std::cout << "  |  Tap 1: ";
+        for (size_t i = (base_idx+1)*1024; i < (base_idx+1)*1024 + 5; ++i) std::cout << even_out_vec[i] << " ";
+        std::cout << std::endl;
     }
 
     return 0;
