@@ -9,7 +9,6 @@
 #include <tt_stl/assert.hpp>
 #include <vector>
 
-#include "impl/debug/inspector/data.hpp"
 #include "tt-metalium/distributed.hpp"
 #include "tt-metalium/host_api.hpp"
 #include "tt-metalium/mesh_buffer.hpp"
