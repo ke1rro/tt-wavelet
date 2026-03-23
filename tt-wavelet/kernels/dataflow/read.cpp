@@ -4,9 +4,9 @@
 #include "api/tensor/tensor_accessor.h"
 
 void kernel_main() {
-    uint32_t base_addr = get_args_val<uint32_t>(0);
-    uint32_t in0_addr = get_args_val<uint32_t>(1);
-    uint32_t in1_addr = get_args_val<uint32_t>(2);
+    uint32_t base_addr = get_arg_val<uint32_t>(0);
+    uint32_t in0_addr = get_arg_val<uint32_t>(1);
+    uint32_t in1_addr = get_arg_val<uint32_t>(2);
 
     constexpr uint32_t base_cb = tt::CBIndex::c_0;
     constexpr uint32_t in0_cb = tt::CBIndex::c_1;
@@ -17,9 +17,9 @@ void kernel_main() {
     constexpr auto base_args = TensorAccessorArgs<0>();
     const auto base_in = TensorAccessor(base_args, base_addr, tile_size_bytes);
     constexpr auto in0_args = TensorAccessorArgs<base_args.next_compile_time_args_offset()>();
-    constexpr auto in0 = TensorAccessor(in0_args, in0_addr, tile_size_bytes);
+    const auto in0 = TensorAccessor(in0_args, in0_addr, tile_size_bytes);
     constexpr auto in1_args = TensorAccessorArgs<in0_args.next_compile_time_args_offset()>();
-    constexpr auto in1 = TensorAccessor(in1_args, in1_addr, tile_size_bytes);
+    const auto in1 = TensorAccessor(in1_args, in1_addr, tile_size_bytes);
 
     cb_reserve_back(base_cb, 1);
     cb_reserve_back(in0_cb, 1);

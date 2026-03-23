@@ -9,6 +9,7 @@
 #include "llk_defs.h"
 #include "params.h"
 
+#ifdef TRISC_MATH
 template <bool APPROXIMATE, typename PolicyT, typename Callable>
 inline void _llk_math_eltwise_stencil_mac_sfpu_(
     Callable&& sfpu_func,
@@ -39,3 +40,4 @@ inline void _llk_math_eltwise_stencil_mac_sfpu_(
     ckernel::stencil::_llk_math_eltwise_stencil_sfpu_params_<APPROXIMATE, FILTER_LEN, PolicyT>(
         sfpu_func, dst_index_base, dst_input_indices, dst_index_out, vector_mode, coefficients.data());
 }
+#endif

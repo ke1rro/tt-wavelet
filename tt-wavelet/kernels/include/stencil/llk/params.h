@@ -8,8 +8,11 @@
 #include "../policy.h"
 #include "llk_assert.h"
 #include "llk_defs.h"
+#ifdef TRISC_MATH
 #include "llk_math_eltwise_ternary_sfpu.h"
+#endif
 
+#ifdef TRISC_MATH
 namespace ckernel::stencil {
 
 inline constexpr char kErrNullInputIndices[] = "dst_input_indices must not be null";
@@ -32,7 +35,7 @@ inline void stencil_sfpu_done() { _llk_math_eltwise_ternary_sfpu_done_(); }
 /** @brief Advances destination register cursor by 8 rows per block. */
 inline void advance_face_by_blocks(const int blocks) {
 #pragma GCC unroll 0
-    for (size_t i = 0; i < blocks; ++i) {
+    for (int i = 0; i < blocks; ++i) {
         TTI_SETRWC(p_setrwc::CLR_NONE, p_setrwc::CR_D, 8, 0, 0, p_setrwc::SET_D);
     }
 }
@@ -205,3 +208,4 @@ inline void _llk_math_eltwise_stencil_sfpu_params_(
 }
 
 }  // namespace ckernel::stencil
+#endif
