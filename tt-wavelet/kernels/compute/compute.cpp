@@ -4,12 +4,52 @@
 #include "compute_kernel_api/common.h"
 #include "compute_kernel_api/eltwise_unary/eltwise_unary.h"
 #include "compute_kernel_api/tile_move_copy.h"
-#include "../include/stencil/api/stencil_mac.h"
-#include "../include/stencil/policy.h"
+#include "llk_math_eltwise_ternary_sfpu_params.h"
+
+#ifdef TRISC_MATH
+inline void custom_stencil_mac_face(
+    uint32_t dst_index_base,
+    uint32_t dst_index_in0,
+    uint32_t dst_index_in1,
+    uint32_t dst_index_out,
+    float c0,
+    float c1) {
+    constexpr uint32_t n_vector_in_tile = 32;
+
+    const uint32_t base_idx = dst_index_base * n_vector_in_tile;
+    const uint32_t in0_idx = dst_index_in0 * n_vector_in_tile;
+    const uint32_t in1_idx = dst_index_in1 * n_vector_in_tile;
+    const uint32_t out_idx = dst_index_out * n_vector_in_tile;
+
+    for (size_t i = 0; i < 8; ++i) {
+        vFloat base = dst_reg[base_idx + i];
+        vFloat in0 = dst_reg[in0_idx + i];
+        vFloat in1 = dst_reg[in1_idx + i];
+        dst_reg[out_idx + i] = base + vFloat(c0) * in0 + vFloat(c1) * in1;
+    }
+}
+#endif
+
+inline void custom_stencil_mac_tile(
+    uint32_t dst_index_base,
+    uint32_t dst_index_in0,
+    uint32_t dst_index_in1,
+    uint32_t dst_index_out,
+    float c0,
+    float c1) {
+    MATH(_llk_math_eltwise_ternary_sfpu_params_<false>(
+        custom_stencil_mac_face,
+        dst_index_base,
+        dst_index_in0,
+        dst_index_in1,
+        dst_index_out,
+        static_cast<int>(VectorMode::RC),
+        c0,
+        c1));
+}
 
 void kernel_main() {
     constexpr uint32_t n_tile_pairs = 1;
-    constexpr bool k_bypass_sfpi_for_debug = false;
 
     constexpr auto cb_base = tt::CBIndex::c_0;
     constexpr auto cb_in0 = tt::CBIndex::c_1;
@@ -21,9 +61,8 @@ void kernel_main() {
     constexpr uint32_t dst_in1 = 2;
     constexpr uint32_t dst_out = 3;
 
-    using Policy = ckernel::stencil::StencilMacPolicy<8>;
-    constexpr std::array<uint32_t, 2> dst_input_indices = {dst_in0, dst_in1};
-    constexpr std::array<float, 2> coefficients = {0.5f, -0.25f};
+    constexpr float c0 = 0.5f;
+    constexpr float c1 = -0.25f;
 
     init_sfpu(cb_base, cb_out0);
     copy_tile_init(cb_base);
@@ -43,16 +82,13 @@ void kernel_main() {
         copy_tile_to_dst_init_short_with_dt(cb_in0, cb_in1);
         copy_tile(cb_in1, 0, dst_in1);
 
-        if constexpr (!k_bypass_sfpi_for_debug) {
-            stencil_mac_tile<false, 2, Policy>(dst_base, dst_input_indices, dst_out, coefficients);
-        }
+        custom_stencil_mac_tile(dst_base, dst_in0, dst_in1, dst_out, c0, c1);
 
         tile_regs_commit();
 
         tile_regs_wait();
         cb_reserve_back(cb_out0, 1);
-        constexpr uint32_t pack_src = k_bypass_sfpi_for_debug ? dst_base : dst_out;
-        pack_tile(pack_src, cb_out0);
+        pack_tile(dst_out, cb_out0);
         tile_regs_release();
 
         cb_push_back(cb_out0, 1);
