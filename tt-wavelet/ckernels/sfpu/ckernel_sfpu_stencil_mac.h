@@ -30,16 +30,23 @@ sfpi_inline void calculate_stencil_mac_face(
     const uint32_t filter_len,
     uint32_t dst_index_out,
     const float* coefficients) {
-    vFloat result = dst_reg[dst_index_base];
+    // SFPI addresses a tile via a stride of 32 rows and advances one row per loop with dst_reg++.
+    constexpr uint32_t dst_tile_size_sfpi = 32;
 
 #pragma GCC unroll 0
-    for (uint32_t i = 0; i < filter_len; ++i) {
-        vFloat input = dst_reg[dst_input_indices[i]];
-        vFloat coeff = vFloat(coefficients[i]);
-        result = result + coeff * input;
-    }
+    for (int d = 0; d < 8; ++d) {
+        vFloat result = dst_reg[dst_index_base * dst_tile_size_sfpi];
 
-    dst_reg[dst_index_out] = result;
+#pragma GCC unroll 0
+        for (uint32_t i = 0; i < filter_len; ++i) {
+            vFloat input = dst_reg[dst_input_indices[i] * dst_tile_size_sfpi];
+            vFloat coeff = vFloat(coefficients[i]);
+            result = result + coeff * input;
+        }
+
+        dst_reg[dst_index_out * dst_tile_size_sfpi] = result;
+        dst_reg++;
+    }
 }
 
 }  // namespace ckernel::sfpu
