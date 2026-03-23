@@ -3,28 +3,32 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
-#include <utility>
 
 #include "llk_assert.h"
 #include "llk_defs.h"
 #include "llk_math_eltwise_ternary_sfpu.h"
 #include "stencil/policy.hpp"
 
-namespace ckernel::detail {
+namespace ckernel::stencil {
 
 inline constexpr char kErrNullInputIndices[] = "dst_input_indices must not be null";
+inline constexpr char kErrNullCoefficients[] = "coefficients must not be null";
 inline constexpr char kErrFilterLenZero[] = "filter_len must be > 0";
 inline constexpr char kErrUnsupportedVectorMode[] = "unsupported vector_mode";
 inline constexpr char kErrInputIndexOutOfRange[] = "dst_input_indices contains out-of-range tile index";
+inline constexpr char kErrBaseIndexOutOfRange[] = "dst_index_base exceeds max dest tiles";
 inline constexpr char kErrOutputIndexOutOfRange[] = "dst_index_out exceeds max dest tiles";
 
+/** @brief Starts SFPU execution for stencil-style face traversal. */
 template <DstSync DstSyncMode>
-void stencil_sfpu_start(const std::uint32_t param) {
+inline void stencil_sfpu_start(const uint32_t param) {
     _llk_math_eltwise_ternary_sfpu_start_<DstSyncMode>(param);
 }
 
+/** @brief Finalizes SFPU execution for stencil-style face traversal. */
 inline void stencil_sfpu_done() { _llk_math_eltwise_ternary_sfpu_done_(); }
 
+/** @brief Advances destination register cursor by 8 rows per block. */
 inline void advance_face_by_blocks(const int blocks) {
 #pragma GCC unroll 0
     for (size_t i = 0; i < blocks; ++i) {
@@ -32,89 +36,271 @@ inline void advance_face_by_blocks(const int blocks) {
     }
 }
 
+/** @brief Returns true when vector_mode is one of R, C, or RC. */
 inline bool is_supported_vector_mode(const int vector_mode) {
     return vector_mode == static_cast<int>(ckernel::VectorMode::R) ||
            vector_mode == static_cast<int>(ckernel::VectorMode::C) ||
            vector_mode == static_cast<int>(ckernel::VectorMode::RC);
 }
 
-template <typename Callable, typename... Args>
-inline void run_faces(
-    Callable& sfpu_func,
+/** @brief Executes a face callback across the selected vector mode layout. */
+template <typename FaceCallable>
+inline void run_faces(FaceCallable&& run_face, const int vector_mode) {
+    const ckernel::VectorMode mode = static_cast<ckernel::VectorMode>(vector_mode);
+
+    if (mode == ckernel::VectorMode::R) {
+#pragma GCC unroll 0
+        for (size_t face = 0; face < 2; ++face) {
+            run_face();
+            advance_face_by_blocks(2);
+        }
+        advance_face_by_blocks(4);
+        return;
+    }
+
+    if (mode == ckernel::VectorMode::C) {
+#pragma GCC unroll 0
+        for (size_t face = 0; face < 2; ++face) {
+            run_face();
+            advance_face_by_blocks(4);
+        }
+        return;
+    }
+
+#pragma GCC unroll 0
+    for (size_t face = 0; face < 4; ++face) {
+        run_face();
+        advance_face_by_blocks(2);
+    }
+}
+
+inline uint32_t get_dst_index_limit() {
+    constexpr uint32_t dest_num_tiles_full = (DEST_REGISTER_FULL_SIZE * DEST_FACE_WIDTH) / (TILE_HEIGHT * TILE_HEIGHT);
+    constexpr uint32_t sync_mode_tiles =
+        (DST_SYNC_MODE == DstSync::SyncHalf) ? (dest_num_tiles_full >> 1U) : dest_num_tiles_full;
+    constexpr uint32_t dst_max = DST_ACCUM_MODE ? (sync_mode_tiles >> 1U) : sync_mode_tiles;
+    return dst_max;
+}
+
+inline void validate_vector_mode(const int vector_mode) {
+    LLK_ASSERT(is_supported_vector_mode(vector_mode), kErrUnsupportedVectorMode);
+}
+
+inline void validate_filter_inputs(const uint32_t* dst_input_indices, const uint32_t filter_len) {
+    LLK_ASSERT((dst_input_indices != nullptr), kErrNullInputIndices);
+    LLK_ASSERT((filter_len > 0), kErrFilterLenZero);
+}
+
+inline void validate_index_range(const uint32_t index, const uint32_t dst_max, const char* err_msg) {
+    LLK_ASSERT((index < dst_max), err_msg);
+}
+
+inline void validate_input_index_range(
+    const uint32_t* dst_input_indices, const uint32_t filter_len, const uint32_t dst_max) {
+#pragma GCC unroll 0
+    for (size_t i = 0; i < filter_len; ++i) {
+        LLK_ASSERT((dst_input_indices[i] < dst_max), kErrInputIndexOutOfRange);
+    }
+}
+
+/**
+ * @brief Shared stencil SFPU wrapper for generic stencil:
+ * out = f(input_0 ... input_{L-1}).
+ */
+template <bool APPROXIMATE, typename PolicyT, typename Callable>
+inline void _llk_math_eltwise_stencil_sfpu_params_(
+    Callable&& sfpu_func,
     const uint32_t* dst_input_indices,
     const uint32_t filter_len,
     const uint32_t dst_index_out,
-    const std::size_t face_count,
-    const int blocks_per_face,
-    Args&... args) {
-#pragma GCC unroll 0
-    for (std::size_t face = 0; face < face_count; ++face) {
-        sfpu_func(dst_input_indices, filter_len, dst_index_out, args...);
-        advance_face_by_blocks(blocks_per_face);
-    }
-}
-
-}  // namespace ckernel::detail
-
-template <bool APPROXIMATE, typename PolicyT, typename Callable, typename... Args>
-void _llk_math_eltwise_stencil_sfpu_params_(
-    Callable&& sfpu_func,
-    const uint32_t* dst_input_indices,
-    uint32_t filter_len,
-    uint32_t dst_index_out,
-    int vector_mode = static_cast<int>(ckernel::VectorMode::RC),
-    Args&&... args) {
+    const int vector_mode = static_cast<int>(ckernel::VectorMode::RC)) {
     [[maybe_unused]] constexpr bool k_approximate = APPROXIMATE;
 
-    LLK_ASSERT((dst_input_indices != nullptr), ckernel::detail::kErrNullInputIndices);
-    LLK_ASSERT((filter_len > 0), ckernel::detail::kErrFilterLenZero);
-    LLK_ASSERT(ckernel::detail::is_supported_vector_mode(vector_mode), ckernel::detail::kErrUnsupportedVectorMode);
-    stencil::assert_taps_within_policy<PolicyT>(filter_len);
+    validate_filter_inputs(dst_input_indices, filter_len);
+    validate_vector_mode(vector_mode);
+    assert_taps_within_policy<PolicyT>(filter_len);
 
-    constexpr uint32_t sync_mode_tiles =
-        (DST_SYNC_MODE == DstSync::SyncHalf) ? DEST_NUM_TILES_FP16_HALF : DEST_NUM_TILES_FP16;
-    constexpr uint32_t dst_max = DST_ACCUM_MODE ? (sync_mode_tiles >> 1U) : sync_mode_tiles;
+    const uint32_t dst_max = get_dst_index_limit();
+    validate_input_index_range(dst_input_indices, filter_len, dst_max);
+    validate_index_range(dst_index_out, dst_max, kErrOutputIndexOutOfRange);
 
-#pragma GCC unroll 0
-    for (size_t i{0}; i < filter_len; ++i) {
-        LLK_ASSERT((dst_input_indices[i] < dst_max), ckernel::detail::kErrInputIndexOutOfRange);
-    }
-    LLK_ASSERT((dst_index_out < dst_max), ckernel::detail::kErrOutputIndexOutOfRange);
-    ckernel::detail::stencil_sfpu_start<DST_SYNC_MODE>(0);
-
-    const ckernel::VectorMode mode = static_cast<ckernel::VectorMode>(vector_mode);
-    auto invoke_face =
-        [&](const uint32_t* input_indices, const uint32_t len, const uint32_t output_index, auto&... call_args) {
-            std::forward<Callable>(sfpu_func)(input_indices, len, output_index, call_args...);
-        };
-
-    if (mode == ckernel::VectorMode::R) {
-        ckernel::detail::run_faces(invoke_face, dst_input_indices, filter_len, dst_index_out, 2, 2, args...);
-        ckernel::detail::advance_face_by_blocks(4);
-    } else if (mode == ckernel::VectorMode::C) {
-        ckernel::detail::run_faces(invoke_face, dst_input_indices, filter_len, dst_index_out, 2, 4, args...);
-    } else if (mode == ckernel::VectorMode::RC) {
-        ckernel::detail::run_faces(invoke_face, dst_input_indices, filter_len, dst_index_out, 4, 2, args...);
-    }
-
-    ckernel::detail::stencil_sfpu_done();
+    stencil_sfpu_start<DST_SYNC_MODE>(0);
+    auto run_face = [&]() { sfpu_func(dst_input_indices, filter_len, dst_index_out); };
+    run_faces(run_face, vector_mode);
+    stencil_sfpu_done();
 }
 
-template <bool APPROXIMATE, std::size_t FILTER_LEN, typename PolicyT, typename Callable, typename... Args>
+template <bool APPROXIMATE, size_t FILTER_LEN, typename PolicyT, typename Callable>
 inline void _llk_math_eltwise_stencil_sfpu_params_(
     Callable&& sfpu_func,
     const std::array<uint32_t, FILTER_LEN>& dst_input_indices,
-    uint32_t dst_index_out,
-    int vector_mode = static_cast<int>(ckernel::VectorMode::RC),
-    Args&&... args) {
+    const uint32_t dst_index_out,
+    const int vector_mode = static_cast<int>(ckernel::VectorMode::RC)) {
     static_assert(FILTER_LEN > 0, "FILTER_LEN must be > 0");
     static_assert(FILTER_LEN <= PolicyT::max_taps_per_pass, "FILTER_LEN exceeds per-pass stencil policy capacity");
 
     _llk_math_eltwise_stencil_sfpu_params_<APPROXIMATE, PolicyT>(
-        std::forward<Callable>(sfpu_func),
-        dst_input_indices.data(),
-        static_cast<std::uint32_t>(FILTER_LEN),
-        dst_index_out,
-        vector_mode,
-        std::forward<Args>(args)...);
+        sfpu_func, dst_input_indices.data(), static_cast<uint32_t>(FILTER_LEN), dst_index_out, vector_mode);
 }
+
+/**
+ * @brief Shared stencil SFPU wrapper for stencil_acc:
+ * out = base + f(input_0 ... input_{L-1}).
+ */
+template <bool APPROXIMATE, typename PolicyT, typename Callable>
+inline void _llk_math_eltwise_stencil_sfpu_params_(
+    Callable&& sfpu_func,
+    const uint32_t dst_index_base,
+    const uint32_t* dst_input_indices,
+    const uint32_t filter_len,
+    const uint32_t dst_index_out,
+    const int vector_mode = static_cast<int>(ckernel::VectorMode::RC)) {
+    [[maybe_unused]] constexpr bool k_approximate = APPROXIMATE;
+
+    validate_filter_inputs(dst_input_indices, filter_len);
+    validate_vector_mode(vector_mode);
+    assert_taps_within_policy<PolicyT>(filter_len);
+
+    const uint32_t dst_max = get_dst_index_limit();
+    validate_index_range(dst_index_base, dst_max, kErrBaseIndexOutOfRange);
+    validate_input_index_range(dst_input_indices, filter_len, dst_max);
+    validate_index_range(dst_index_out, dst_max, kErrOutputIndexOutOfRange);
+
+    stencil_sfpu_start<DST_SYNC_MODE>(0);
+    auto run_face = [&]() { sfpu_func(dst_index_base, dst_input_indices, filter_len, dst_index_out); };
+    run_faces(run_face, vector_mode);
+    stencil_sfpu_done();
+}
+
+template <bool APPROXIMATE, size_t FILTER_LEN, typename PolicyT, typename Callable>
+inline void _llk_math_eltwise_stencil_sfpu_params_(
+    Callable&& sfpu_func,
+    const uint32_t dst_index_base,
+    const std::array<uint32_t, FILTER_LEN>& dst_input_indices,
+    const uint32_t dst_index_out,
+    const int vector_mode = static_cast<int>(ckernel::VectorMode::RC)) {
+    static_assert(FILTER_LEN > 0, "FILTER_LEN must be > 0");
+    static_assert(FILTER_LEN <= PolicyT::max_taps_per_pass, "FILTER_LEN exceeds per-pass stencil policy capacity");
+
+    _llk_math_eltwise_stencil_sfpu_params_<APPROXIMATE, PolicyT>(
+        sfpu_func,
+        dst_index_base,
+        dst_input_indices.data(),
+        static_cast<uint32_t>(FILTER_LEN),
+        dst_index_out,
+        vector_mode);
+}
+
+/**
+ * @brief Shared stencil SFPU wrapper for stencil_mac:
+ * out = base + sum_i(coeff[i] * input[i]).
+ */
+template <bool APPROXIMATE, typename PolicyT, typename Callable>
+inline void _llk_math_eltwise_stencil_sfpu_params_(
+    Callable&& sfpu_func,
+    const uint32_t dst_index_base,
+    const uint32_t* dst_input_indices,
+    const uint32_t filter_len,
+    const uint32_t dst_index_out,
+    const float* coefficients,
+    const int vector_mode = static_cast<int>(ckernel::VectorMode::RC)) {
+    [[maybe_unused]] constexpr bool k_approximate = APPROXIMATE;
+
+    validate_filter_inputs(dst_input_indices, filter_len);
+    LLK_ASSERT((coefficients != nullptr), kErrNullCoefficients);
+    validate_vector_mode(vector_mode);
+    assert_taps_within_policy<PolicyT>(filter_len);
+
+    const uint32_t dst_max = get_dst_index_limit();
+    validate_index_range(dst_index_base, dst_max, kErrBaseIndexOutOfRange);
+    validate_input_index_range(dst_input_indices, filter_len, dst_max);
+    validate_index_range(dst_index_out, dst_max, kErrOutputIndexOutOfRange);
+
+    stencil_sfpu_start<DST_SYNC_MODE>(0);
+    auto run_face = [&]() { sfpu_func(dst_index_base, dst_input_indices, filter_len, dst_index_out, coefficients); };
+    run_faces(run_face, vector_mode);
+    stencil_sfpu_done();
+}
+
+template <bool APPROXIMATE, size_t FILTER_LEN, typename PolicyT, typename Callable>
+inline void _llk_math_eltwise_stencil_sfpu_params_(
+    Callable&& sfpu_func,
+    const uint32_t dst_index_base,
+    const std::array<uint32_t, FILTER_LEN>& dst_input_indices,
+    const uint32_t dst_index_out,
+    const std::array<float, FILTER_LEN>& coefficients,
+    const int vector_mode = static_cast<int>(ckernel::VectorMode::RC)) {
+    static_assert(FILTER_LEN > 0, "FILTER_LEN must be > 0");
+    static_assert(FILTER_LEN <= PolicyT::max_taps_per_pass, "FILTER_LEN exceeds per-pass stencil policy capacity");
+
+    _llk_math_eltwise_stencil_sfpu_params_<APPROXIMATE, PolicyT>(
+        sfpu_func,
+        dst_index_base,
+        dst_input_indices.data(),
+        static_cast<uint32_t>(FILTER_LEN),
+        dst_index_out,
+        coefficients.data(),
+        vector_mode);
+}
+
+/**
+ * @brief Shared stencil SFPU wrapper for stencil_affine:
+ * out = alpha * base + beta * sum_i(coeff[i] * input[i]).
+ */
+template <bool APPROXIMATE, typename PolicyT, typename Callable>
+inline void _llk_math_eltwise_stencil_sfpu_params_(
+    Callable&& sfpu_func,
+    const uint32_t dst_index_base,
+    const uint32_t* dst_input_indices,
+    const uint32_t filter_len,
+    const uint32_t dst_index_out,
+    const float* coefficients,
+    const float alpha,
+    const float beta,
+    const int vector_mode = static_cast<int>(ckernel::VectorMode::RC)) {
+    [[maybe_unused]] constexpr bool k_approximate = APPROXIMATE;
+
+    validate_filter_inputs(dst_input_indices, filter_len);
+    LLK_ASSERT((coefficients != nullptr), kErrNullCoefficients);
+    validate_vector_mode(vector_mode);
+    assert_taps_within_policy<PolicyT>(filter_len);
+
+    const uint32_t dst_max = get_dst_index_limit();
+    validate_index_range(dst_index_base, dst_max, kErrBaseIndexOutOfRange);
+    validate_input_index_range(dst_input_indices, filter_len, dst_max);
+    validate_index_range(dst_index_out, dst_max, kErrOutputIndexOutOfRange);
+
+    stencil_sfpu_start<DST_SYNC_MODE>(0);
+    auto run_face = [&]() {
+        sfpu_func(dst_index_base, dst_input_indices, filter_len, dst_index_out, coefficients, alpha, beta);
+    };
+    run_faces(run_face, vector_mode);
+    stencil_sfpu_done();
+}
+
+template <bool APPROXIMATE, size_t FILTER_LEN, typename PolicyT, typename Callable>
+inline void _llk_math_eltwise_stencil_sfpu_params_(
+    Callable&& sfpu_func,
+    const uint32_t dst_index_base,
+    const std::array<uint32_t, FILTER_LEN>& dst_input_indices,
+    const uint32_t dst_index_out,
+    const std::array<float, FILTER_LEN>& coefficients,
+    const float alpha,
+    const float beta,
+    const int vector_mode = static_cast<int>(ckernel::VectorMode::RC)) {
+    static_assert(FILTER_LEN > 0, "FILTER_LEN must be > 0");
+    static_assert(FILTER_LEN <= PolicyT::max_taps_per_pass, "FILTER_LEN exceeds per-pass stencil policy capacity");
+
+    _llk_math_eltwise_stencil_sfpu_params_<APPROXIMATE, PolicyT>(
+        sfpu_func,
+        dst_index_base,
+        dst_input_indices.data(),
+        static_cast<uint32_t>(FILTER_LEN),
+        dst_index_out,
+        coefficients.data(),
+        alpha,
+        beta,
+        vector_mode);
+}
+
+}  // namespace ckernel::stencil

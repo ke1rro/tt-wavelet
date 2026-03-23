@@ -8,6 +8,11 @@ if (BUILD_TT_WAVELET)
     ${CMAKE_SOURCE_DIR}/tt-metal/tt_metal/hw/ckernels/wormhole_b0/metal/common
     ${CMAKE_SOURCE_DIR}/tt-metal/tt_metal/hw/ckernels/wormhole_b0/metal/llk_io
     ${CMAKE_SOURCE_DIR}/tt-metal/tt_metal/hw/ckernels/wormhole_b0/metal/llk_api/llk_sfpu
+    ${CMAKE_SOURCE_DIR}/tt-metal/runtime/sfpi/include
+    ${CMAKE_SOURCE_DIR}/tt-metal/tt_metal/hw/inc
+    ${CMAKE_SOURCE_DIR}/tt-metal/tt_metal/hw/inc/internal/tt-1xx
+    ${CMAKE_SOURCE_DIR}/tt-metal/tt_metal/hw/inc/internal/tt-1xx/wormhole
+    ${CMAKE_SOURCE_DIR}/tt-metal/tt_metal/hw/inc/internal/tt-1xx/wormhole/wormhole_b0_defines
     )
     set(TT_WAVELET_LLK_INCLUDE_DIRS)
 

@@ -8,19 +8,21 @@
 namespace ckernel::sfpu {
 
 /**
- * @brief Per-face stencil accumulate kernel.
+ * @brief Per-face generic stencil reduction kernel.
  *
  * Calling convention:
- * out = base + sum_i(input_i)
+ * out = sum_i(input_i)
  *
- * @param dst_index_base Destination-register index for the base tile.
+ * This is the default generic stencil face implementation used when no
+ * operation-specific coefficients are provided.
+ *
  * @param dst_input_indices Destination-register indices for input taps.
  * @param filter_len Number of taps in @p dst_input_indices.
  * @param dst_index_out Destination-register index where the result is written.
  */
-sfpi_inline void calculate_stencil_acc_face(
-    uint32_t dst_index_base, const uint32_t* dst_input_indices, uint32_t filter_len, uint32_t dst_index_out) {
-    sfpi::vFloat result = dst_reg[dst_index_base];
+sfpi_inline void calculate_stencil_face(
+    const uint32_t* dst_input_indices, uint32_t filter_len, uint32_t dst_index_out) {
+    sfpi::vFloat result = sfpi::vFloat(0.0f);
 
 #pragma GCC unroll 0
     for (uint32_t i = 0; i < filter_len; ++i) {

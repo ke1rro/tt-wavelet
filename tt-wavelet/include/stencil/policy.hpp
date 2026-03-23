@@ -10,9 +10,7 @@
 
 namespace ckernel::stencil {
 
-namespace detail {
 inline constexpr char kErrFilterLenExceedsPolicy[] = "filter_len exceeds per-pass stencil policy capacity";
-}  // namespace detail
 
 template <uint32_t UsableDstTiles, uint32_t NeedsBaseTile, uint32_t NeedsOutputTile, uint32_t NeedsTempTiles = 0>
 struct Policy {
@@ -39,15 +37,16 @@ using StencilGenericPolicy = Policy<UsableDstTiles, 0, 1, NeedsTempTiles>;
 template <uint32_t UsableDstTiles = 8, uint32_t NeedsTempTiles = 0>
 using StencilAccPolicy = Policy<UsableDstTiles, 0, 1, NeedsTempTiles>;
 
-template <std::uint32_t UsableDstTiles = 8, uint32_t NeedsTempTiles = 0>
+template <uint32_t UsableDstTiles = 8, uint32_t NeedsTempTiles = 0>
 using StencilMacPolicy = Policy<UsableDstTiles, 1, 1, NeedsTempTiles>;
 
-template <std::uint32_t UsableDstTiles = 8, uint32_t NeedsTempTiles = 1>
+template <uint32_t UsableDstTiles = 8, uint32_t NeedsTempTiles = 1>
 using StencilAffinePolicy = Policy<UsableDstTiles, 1, 1, NeedsTempTiles>;
 
+/** @brief Runtime tap-count check against the selected stencil policy. */
 template <typename PolicyT>
 void assert_taps_within_policy(const uint32_t filter_len) {
-    LLK_ASSERT((filter_len <= PolicyT::max_taps_per_pass), detail::kErrFilterLenExceedsPolicy);
+    LLK_ASSERT((filter_len <= PolicyT::max_taps_per_pass), kErrFilterLenExceedsPolicy);
 }
 
 }  // namespace ckernel::stencil

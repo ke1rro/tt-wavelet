@@ -167,3 +167,4 @@ models/experimental/petr/resources/*.pth
 .claude
 tt-artifacts/**
 tt-artifacts/
+tt-isa-documentation/
