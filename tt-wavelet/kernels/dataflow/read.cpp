@@ -26,8 +26,8 @@ void kernel_main() {
     cb_reserve_back(in1_cb, 1);
 
     noc_async_read_tile(0, base_in, get_write_ptr(base_cb));
-    noc_async_read_tile(1, in0, get_write_ptr(in0_cb));
-    noc_async_read_tile(2, in1, get_write_ptr(in1_cb));
+    noc_async_read_tile(0, in0, get_write_ptr(in0_cb));
+    noc_async_read_tile(0, in1, get_write_ptr(in1_cb));
 
     noc_async_read_barrier();
 

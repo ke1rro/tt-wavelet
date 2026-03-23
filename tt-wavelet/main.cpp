@@ -127,9 +127,12 @@ int main() {
     std::vector<float> res;
     tt::tt_metal::distributed::EnqueueReadMeshBuffer(command_queue, res, out, true);
     res = untilize_nfaces(res, 32, 32);
-    for (auto& val : res) {
-        std::cout << val << " ";
+    constexpr float expected = 10.25f;
+    constexpr uint32_t preview_count = 16;
+    std::cout << "preview(" << preview_count << "): ";
+    for (uint32_t i = 0; i < preview_count && i < res.size(); ++i) {
+        std::cout << res[i] << " ";
     }
-    std::cout << std::endl;
+    std::cout << "\nexpected each value ~= " << expected << std::endl;
     return 0;
 }
