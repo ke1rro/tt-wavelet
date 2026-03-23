@@ -240,13 +240,11 @@ int main(int argc, char* argv[]) {
         program,
         reader_kernel,
         core,
-        {
-            static_cast<uint32_t>(dram_in_odd->address()),
-            static_cast<uint32_t>(dram_in_even->address()),
-            num_tiles,
-            min_shift,
-            max_shift
-        });
+        {static_cast<uint32_t>(dram_in_odd->address()),
+         static_cast<uint32_t>(dram_in_even->address()),
+         num_tiles,
+         min_shift,
+         max_shift});
 
     tt::tt_metal::SetRuntimeArgs(
         program, writer_kernel, core, {static_cast<uint32_t>(dram_out_odd->address()), num_tiles});
