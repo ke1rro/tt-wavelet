@@ -2,8 +2,11 @@
 
 #include <cstdint>
 
+#include "ckernel.h"
 #include "ckernel_defs.h"
 #include "sfpi.h"
+
+using namespace sfpi;
 
 #ifdef TRISC_MATH
 

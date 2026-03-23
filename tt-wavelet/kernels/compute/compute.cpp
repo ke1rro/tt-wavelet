@@ -9,7 +9,7 @@
 
 void kernel_main() {
     constexpr uint32_t n_tile_pairs = 1;
-    constexpr bool k_bypass_sfpi_for_debug = true;
+    constexpr bool k_bypass_sfpi_for_debug = false;
 
     constexpr auto cb_base = tt::CBIndex::c_0;
     constexpr auto cb_in0 = tt::CBIndex::c_1;

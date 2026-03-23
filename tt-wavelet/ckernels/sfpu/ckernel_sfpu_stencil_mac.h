@@ -2,8 +2,11 @@
 
 #include <cstdint>
 
+#include "ckernel.h"
 #include "ckernel_defs.h"
 #include "sfpi.h"
+
+using namespace sfpi;
 
 #ifdef TRISC_MATH
 
@@ -27,16 +30,16 @@ sfpi_inline void calculate_stencil_mac_face(
     const uint32_t filter_len,
     uint32_t dst_index_out,
     const float* coefficients) {
-    sfpi::vFloat result = sfpi::dst_reg[dst_index_base];
+    vFloat result = dst_reg[dst_index_base];
 
 #pragma GCC unroll 0
     for (uint32_t i = 0; i < filter_len; ++i) {
-        sfpi::vFloat input = sfpi::dst_reg[dst_input_indices[i]];
-        sfpi::vFloat coeff = sfpi::vFloat(coefficients[i]);
+        vFloat input = dst_reg[dst_input_indices[i]];
+        vFloat coeff = vFloat(coefficients[i]);
         result = result + coeff * input;
     }
 
-    sfpi::dst_reg[dst_index_out] = result;
+    dst_reg[dst_index_out] = result;
 }
 
 }  // namespace ckernel::sfpu
