@@ -4,7 +4,6 @@
 #include <iostream>
 #include <new>
 #include <random>
-#include <stdfloat>
 #include <tt-logger/tt-logger.hpp>
 #include <tt-metalium/tilize_utils.hpp>
 #include <tt_stl/assert.hpp>
