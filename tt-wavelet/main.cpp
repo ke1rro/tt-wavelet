@@ -58,7 +58,7 @@ int main() {
     std::vector<float> in1_signal(1024);
 
     for (auto& val : base_signal) {
-        val = 1.0f;
+        val = 10.0f;
     }
 
     for (auto& val : in0_signal) {
