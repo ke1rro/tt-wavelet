@@ -244,8 +244,8 @@ int main(int argc, char* argv[]) {
             static_cast<uint32_t>(dram_in_odd->address()),
             static_cast<uint32_t>(dram_in_even->address()),
             num_tiles,
-            min_shift,  // передаємо як uint32_t
-            max_shift   // передаємо як uint32_t
+            min_shift,
+            max_shift
         });
 
     tt::tt_metal::SetRuntimeArgs(
@@ -298,8 +298,7 @@ int main(int argc, char* argv[]) {
 
     std::cout << "Read from device complete!" << std::endl;
 
-    // Виводимо інформацію про перші 2 тайла
-    std::cout << "\n===== TILE 0 (Elements 0 to 1023) =====" << std::endl;
+    std::cout << "\n===== TILE 0 =====" << std::endl;
     std::cout << "Start: ";
     for (size_t i = 0; i < 5; ++i) {
         std::cout << odd_out_vec[i] << " ";
@@ -310,7 +309,7 @@ int main(int argc, char* argv[]) {
     }
     std::cout << std::endl;
 
-    std::cout << "\n===== TILE 1 (Elements 1024 to 2047) =====" << std::endl;
+    std::cout << "\n===== TILE 1 =====" << std::endl;
     std::cout << "Start: ";
     for (size_t i = 1024; i < 1029; ++i) {
         std::cout << odd_out_vec[i] << " ";
@@ -321,7 +320,6 @@ int main(int argc, char* argv[]) {
     }
     std::cout << std::endl;
 
-    // Виводимо зміщення для наглядності
     std::cout << "\nComputed Shift Boundaries (min_shift: " << min_shift << ", max_shift: " << max_shift << ")"
               << std::endl;
 
