@@ -34,18 +34,24 @@ sfpi_inline void calculate_stencil_affine_face(
     const float* coefficients,
     float alpha,
     float beta) {
-    sfpi::vFloat alpha_v = sfpi::vFloat(alpha);
-    sfpi::vFloat beta_v = sfpi::vFloat(beta);
-    sfpi::vFloat result = alpha_v * dst_reg[dst_index_base];
+    constexpr uint32_t dst_tile_size_sfpi = 32;
+    vFloat alpha_v = vFloat(alpha);
+    vFloat beta_v = vFloat(beta);
 
 #pragma GCC unroll 0
-    for (uint32_t i = 0; i < filter_len; ++i) {
-        sfpi::vFloat input = dst_reg[dst_input_indices[i]];
-        sfpi::vFloat coeff = sfpi::vFloat(coefficients[i]);
-        result = result + (beta_v * coeff) * input;
-    }
+    for (int d = 0; d < 8; ++d) {
+        vFloat result = alpha_v * dst_reg[dst_index_base * dst_tile_size_sfpi];
 
-    dst_reg[dst_index_out] = result;
+#pragma GCC unroll 0
+        for (uint32_t i = 0; i < filter_len; ++i) {
+            vFloat input = dst_reg[dst_input_indices[i] * dst_tile_size_sfpi];
+            vFloat coeff = vFloat(coefficients[i]);
+            result = result + (beta_v * coeff) * input;
+        }
+
+        dst_reg[dst_index_out * dst_tile_size_sfpi] = result;
+        dst_reg++;
+    }
 }
 
 }  // namespace ckernel::sfpu

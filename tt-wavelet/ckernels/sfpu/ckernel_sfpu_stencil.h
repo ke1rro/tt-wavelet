@@ -27,14 +27,20 @@ namespace ckernel::sfpu {
  */
 sfpi_inline void calculate_stencil_face(
     const uint32_t* dst_input_indices, uint32_t filter_len, uint32_t dst_index_out) {
-    sfpi::vFloat result = sfpi::vFloat(0.0f);
+    constexpr uint32_t dst_tile_size_sfpi = 32;
 
 #pragma GCC unroll 0
-    for (uint32_t i = 0; i < filter_len; ++i) {
-        result = result + dst_reg[dst_input_indices[i]];
-    }
+    for (int d = 0; d < 8; ++d) {
+        vFloat result = vFloat(0.0f);
 
-    dst_reg[dst_index_out] = result;
+#pragma GCC unroll 0
+        for (uint32_t i = 0; i < filter_len; ++i) {
+            result = result + dst_reg[dst_input_indices[i] * dst_tile_size_sfpi];
+        }
+
+        dst_reg[dst_index_out * dst_tile_size_sfpi] = result;
+        dst_reg++;
+    }
 }
 
 }  // namespace ckernel::sfpu
