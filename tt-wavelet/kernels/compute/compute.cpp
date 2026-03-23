@@ -22,10 +22,10 @@ inline void custom_stencil_mac_face(
     const uint32_t out_idx = dst_index_out * n_vector_in_tile;
 
     for (size_t i = 0; i < 8; ++i) {
-        vFloat base = dst_reg[base_idx + i];
-        vFloat in0 = dst_reg[in0_idx + i];
-        vFloat in1 = dst_reg[in1_idx + i];
-        dst_reg[out_idx + i] = base + vFloat(c0) * in0 + vFloat(c1) * in1;
+        sfpi::vFloat base = sfpi::dst_reg[base_idx + i];
+        sfpi::vFloat in0 = sfpi::dst_reg[in0_idx + i];
+        sfpi::vFloat in1 = sfpi::dst_reg[in1_idx + i];
+        sfpi::dst_reg[out_idx + i] = base + sfpi::vFloat(c0) * in0 + sfpi::vFloat(c1) * in1;
     }
 }
 #endif
