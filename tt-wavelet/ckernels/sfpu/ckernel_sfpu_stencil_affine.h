@@ -5,6 +5,8 @@
 #include "ckernel_defs.h"
 #include "sfpi.h"
 
+#ifdef TRISC_MATH
+
 namespace ckernel::sfpu {
 
 /**
@@ -44,3 +46,5 @@ sfpi_inline void calculate_stencil_affine_face(
 }
 
 }  // namespace ckernel::sfpu
+
+#endif  // TRISC_MATH
