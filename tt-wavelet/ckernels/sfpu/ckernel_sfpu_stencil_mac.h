@@ -30,7 +30,6 @@ sfpi_inline void calculate_stencil_mac_face(
     const uint32_t filter_len,
     uint32_t dst_index_out,
     const float* coefficients) {
-    // SFPI addresses a tile via a stride of 32 rows and advances one row per loop with dst_reg++.
     constexpr uint32_t dst_tile_size_sfpi = 32;
 
 #pragma GCC unroll 0
