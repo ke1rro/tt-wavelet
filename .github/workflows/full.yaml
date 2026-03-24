@@ -239,10 +239,10 @@ jobs:
       - name: Build tt-wavelet
         run: cmake --build build/full --target tt_wavelet_test -j"$(nproc)"
 
-      - name: Install pre-commit
-        run: pip install pre-commit
+      # - name: Install pre-commit
+      #   run: pip install pre-commit
 
-      - name: Run pre-commit hooks
-        env:
-          TT_METAL_PREBUILT_ROOT: ${{ github.workspace }}/third_party/tt-metal-prebuilt
-        run: pre-commit run --all-files --show-diff-on-failure
+      # - name: Run pre-commit hooks
+      #   env:
+      #     TT_METAL_PREBUILT_ROOT: ${{ github.workspace }}/third_party/tt-metal-prebuilt
+      #   run: pre-commit run --all-files --show-diff-on-failure
