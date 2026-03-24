@@ -1,5 +1,6 @@
 if (BUILD_TT_WAVELET)
     add_executable(tt_wavelet_test main.cpp)
+    add_executable(tt_wavelet_lwt_test main_lwt.cpp)
 
     set(TT_WAVELET_LLK_INCLUDE_CANDIDATES
     ${CMAKE_SOURCE_DIR}/tt-metal/tt_metal/third_party/tt_llk/tt_llk_wormhole_b0/llk_lib
@@ -31,8 +32,13 @@ if (BUILD_TT_WAVELET)
 
     if(DEFINED METALIUM_INCLUDE_DIRS)
         target_include_directories(tt_wavelet_test PRIVATE ${METALIUM_INCLUDE_DIRS})
+        target_include_directories(tt_wavelet_lwt_test PRIVATE ${METALIUM_INCLUDE_DIRS})
     endif()
     target_include_directories(tt_wavelet_test PRIVATE ${TT_WAVELET_LLK_INCLUDE_DIRS})
     target_include_directories(tt_wavelet_test PRIVATE ${TT_WAVELET_INCLUDE_DIRS})
     target_link_libraries(tt_wavelet_test PRIVATE Metalium::Metal)
+    
+    target_include_directories(tt_wavelet_lwt_test PRIVATE ${TT_WAVELET_LLK_INCLUDE_DIRS})
+    target_include_directories(tt_wavelet_lwt_test PRIVATE ${TT_WAVELET_INCLUDE_DIRS})
+    target_link_libraries(tt_wavelet_lwt_test PRIVATE Metalium::Metal)
 endif()
