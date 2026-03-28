@@ -8,11 +8,14 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 option(BUILD_TT_WAVELET "Build with TT-Metal (Wormhole) support" OFF)
 
 if(BUILD_TT_WAVELET)
-    if(EXISTS "${CMAKE_SOURCE_DIR}/tt-metal/CMakeLists.txt")
-        include("${CMAKE_SOURCE_DIR}/cmake/tt-metal.cmake")
-    else()
-        message(FATAL_ERROR "BUILD_TT_WAVELET is ON but tt-metal not found at ${CMAKE_SOURCE_DIR}/tt-metal")
-    endif()
+  if(EXISTS "${CMAKE_SOURCE_DIR}/tt-metal/CMakeLists.txt")
+    include("${CMAKE_SOURCE_DIR}/cmake/tt-metal.cmake")
+  else()
+    message(
+      FATAL_ERROR
+        "BUILD_TT_WAVELET is ON but tt-metal not found at ${CMAKE_SOURCE_DIR}/tt-metal"
+    )
+  endif()
 endif()
 
 # Add main project
