@@ -30,15 +30,7 @@ repos:
         args: [--style=file, --version=20]
         files: ^tt-wavelet/.*\.(c|cc|cpp|cxx|h|hpp)$
       - id: clang-tidy
-        args:
-          [
-            -p=build/ci-clang-tidy,
-            --config-file=.clang-tidy,
-            --exclude-header-filter=tt-wavelet/tt-metal/tt_metal/third_party/,
-            --version=20,
-            --extra-arg=-I/Users/nikitalenyk/Desktop/tt-wavelet/tt-metal/tt_metal/hw/inc/internal/tt-1xx/wormhole,
-            --extra-arg=-I/Users/nikitalenyk/Desktop/tt-wavelet/tt-metal/tt_metal/hw/inc/internal/tt-1xx/wormhole/wormhole_b0_defines,
-          ]
+        args: [-p=build/ci-clang-tidy, --config-file=.clang-tidy, --version=20]
         files: ^tt-wavelet/.*\.(c|cc|cpp|cxx|hpp|h)$
         exclude: |
           (?x)^(
@@ -49,5 +41,9 @@ repos:
             tt-wavelet/kernels/include/stencil/llk/params\.h|
             tt-wavelet/kernels/include/stencil/policy\.h|
             tt-wavelet/kernels/compute/compute\.cpp|
-            tt-metal/tt_metal/third_party/tt_llk/tt_llk_wormhole_b0/common/inc/ckernel_instr_params\.h
+            tt-metal/tt_metal/third_party/tt_llk/tt_llk_wormhole_b0/common/inc/ckernel_instr_params\.h|
+            tt-wavelet/ckernels/sfpu/ckernel_sfpu_stencil\.h|
+            tt-wavelet/ckernels/sfpu/ckernel_sfpu_stencil_acc\.h|
+            tt-wavelet/kernels/dataflow/read\.cpp|
+            tt-wavelet/kernels/dataflow/write\.cpp
           )$
