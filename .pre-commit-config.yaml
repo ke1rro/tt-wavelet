@@ -30,5 +30,24 @@ repos:
         args: [--style=file, --version=20]
         files: ^tt-wavelet/.*\.(c|cc|cpp|cxx|h|hpp)$
       - id: clang-tidy
-        args: [-p=build/ci-clang-tidy, --config-file=.clang-tidy, --exclude-header-filter=tt-metal/tt_metal/third_party/, --version=20]
+        args:
+          [
+            -p=build/ci-clang-tidy,
+            --config-file=.clang-tidy,
+            --exclude-header-filter=tt-wavelet/tt-metal/tt_metal/third_party/,
+            --version=20,
+            --extra-arg=-I/Users/nikitalenyk/Desktop/tt-wavelet/tt-metal/tt_metal/hw/inc/internal/tt-1xx/wormhole,
+            --extra-arg=-I/Users/nikitalenyk/Desktop/tt-wavelet/tt-metal/tt_metal/hw/inc/internal/tt-1xx/wormhole/wormhole_b0_defines,
+          ]
         files: ^tt-wavelet/.*\.(c|cc|cpp|cxx|hpp|h)$
+        exclude: |
+          (?x)^(
+            tt-wavelet/ckernels/sfpu/ckernel_sfpu_stencil_affine\.h|
+            tt-wavelet/ckernels/sfpu/ckernel_sfpu_stencil_mac\.h|
+            tt-wavelet/kernels/include/stencil/api/stencil_mac\.h|
+            tt-wavelet/kernels/include/stencil/llk/mac\.h|
+            tt-wavelet/kernels/include/stencil/llk/params\.h|
+            tt-wavelet/kernels/include/stencil/policy\.h|
+            tt-wavelet/kernels/compute/compute\.cpp|
+            tt-metal/tt_metal/third_party/tt_llk/tt_llk_wormhole_b0/common/inc/ckernel_instr_params\.h
+          )$
