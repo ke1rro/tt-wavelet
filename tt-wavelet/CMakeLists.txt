@@ -1,4 +1,5 @@
 if(BUILD_TT_WAVELET)
+  add_compile_definitions(TT_WAVELET_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
   add_executable(tt_wavelet_test main.cpp)
 
   set(TT_WAVELET_LLK_INCLUDE_CANDIDATES
@@ -20,8 +21,7 @@ if(BUILD_TT_WAVELET)
       ${CMAKE_SOURCE_DIR}/tt-metal
       ${CMAKE_SOURCE_DIR}/tt-metal/tt_metal/common
       ${CMAKE_SOURCE_DIR}/tt-metal/tt_metal/api/tt-metalium
-      ${CMAKE_CURRENT_SOURCE_DIR}/kernels/include
-      ${CMAKE_CURRENT_SOURCE_DIR}/ckernels/sfpu)
+      ${CMAKE_CURRENT_SOURCE_DIR})
   foreach(LLK_INCLUDE_DIR IN LISTS TT_WAVELET_LLK_INCLUDE_CANDIDATES)
     if(EXISTS "${LLK_INCLUDE_DIR}")
       list(APPEND TT_WAVELET_LLK_INCLUDE_DIRS "${LLK_INCLUDE_DIR}")

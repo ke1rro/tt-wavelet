@@ -15,6 +15,16 @@
 #include "tt-metalium/mesh_device.hpp"
 #include "tt-metalium/tensor_accessor_args.hpp"
 
+namespace {
+
+std::filesystem::path wavelet_source_path() { return TT_WAVELET_SOURCE_DIR; }
+
+std::filesystem::path wavelet_path(const std::filesystem::path& relative_path) {
+    return wavelet_source_path() / relative_path;
+}
+
+}  // namespace
+
 inline tt::tt_metal::CBHandle create_cir_buff(
     tt::tt_metal::Program& program,
     const tt::tt_metal::CoreCoord& core,
@@ -35,9 +45,9 @@ int main() {
     constexpr int device_id{0};
     const auto mesh_device{tt::tt_metal::distributed::MeshDevice::create_unit_mesh(device_id)};
 
-    std::filesystem::path reader_kernel = "tt-wavelet/kernels/dataflow/read.cpp";
-    std::filesystem::path writer_kernel = "tt-wavelet/kernels/dataflow/write.cpp";
-    std::filesystem::path compute_kernel = "tt-wavelet/kernels/compute/compute.cpp";
+    const std::filesystem::path reader_kernel = wavelet_path("kernels/dataflow/read.cpp");
+    const std::filesystem::path writer_kernel = wavelet_path("kernels/dataflow/write.cpp");
+    const std::filesystem::path compute_kernel = wavelet_path("compute.cpp");
 
     tt::tt_metal::CoreCoord core{0, 0};
     tt::tt_metal::Program program{tt::tt_metal::CreateProgram()};

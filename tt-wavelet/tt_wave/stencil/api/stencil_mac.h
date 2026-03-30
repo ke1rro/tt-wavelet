@@ -4,9 +4,9 @@
 #include <cstddef>
 #include <cstdint>
 
-#include "../../../../ckernels/sfpu/ckernel_sfpu_stencil_mac.h"
-#include "../llk/mac.h"
 #include "llk_defs.h"
+#include "tt_wave/sfpu/ckernel_sfpu_stencil_mac.h"
+#include "tt_wave/stencil/llk/mac.h"
 
 template <bool APPROXIMATE, typename PolicyT>
 inline void stencil_mac_tile(
@@ -60,9 +60,9 @@ inline void stencil_mac_tile(
 
 template <bool APPROXIMATE, size_t FILTER_LEN, typename PolicyT>
 inline void stencil_mac_tile(
-    uint32_t dst_index_base,
+    const uint32_t dst_index_base,
     const std::array<uint32_t, FILTER_LEN>& dst_input_indices,
-    uint32_t dst_index_out,
+    const uint32_t dst_index_out,
     const std::array<float, FILTER_LEN>& coefficients) {
     stencil_mac_tile<APPROXIMATE, FILTER_LEN, PolicyT>(
         dst_index_base, dst_input_indices, dst_index_out, static_cast<int>(ckernel::VectorMode::RC), coefficients);

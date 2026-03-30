@@ -4,10 +4,10 @@
 #include <cstddef>
 #include <cstdint>
 
-#include "../policy.h"
 #include "llk_assert.h"
 #include "llk_defs.h"
-#include "params.h"
+#include "tt_wave/stencil/llk/params.h"
+#include "tt_wave/stencil/policy.h"
 
 #ifdef TRISC_MATH
 template <bool APPROXIMATE, typename PolicyT, typename Callable>
