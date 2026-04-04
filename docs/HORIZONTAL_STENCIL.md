@@ -31,7 +31,7 @@ Taking into account the hardware limitations (i.e. processing even and odd colum
 Define: $f_e[i] = f[2i]$ and $f_o[i] = f[2i+1]$. Then we can rewrite the stencil as follows:
 
 $$
-g[2i] = \sum_{j=0}^{k-1} h[j] \cdot f[2i-j] = \sum_{j=0}^{\lfloor (k-1)/2 \rfloor} h[2j] \cdot f[2i-2j] \\ + \sum_{j=0}^{\lfloor (k-2)/2 \rfloor} h[2j+1] \cdot f[2i-(2j+1)] = \\
+g[2i] = \sum_{j=0}^{k-1} h[j] \cdot f[2i-j] = \sum_{j=0}^{\lfloor (k-1)/2 \rfloor} h[2j] \cdot f[2i-2j] + \sum_{j=0}^{\lfloor (k-2)/2 \rfloor} h[2j+1] \cdot f[2i-(2j+1)] =
 \sum_{j=0}^{\lfloor (k-1)/2 \rfloor} h[2j] \cdot f_e[i-j] + \sum_{j=0}^{\lfloor (k-2)/2 \rfloor} h[2j+1] \cdot f_o[i-j-1]
 $$
 
