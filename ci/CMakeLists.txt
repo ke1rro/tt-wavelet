@@ -31,7 +31,7 @@ set(METALIUM_INCLUDE_DIRS
 )
 
 set(TT_WAVELET_INCLUDE_DIRS
-    ${TT_WAVELET_SOURCE_ROOT}/tt-wavelet/include
+    ${TT_WAVELET_SOURCE_ROOT}/tt-wavelet
 )
 
 set(TT_WAVELET_LLK_INCLUDE_CANDIDATES
@@ -41,6 +41,10 @@ set(TT_WAVELET_LLK_INCLUDE_CANDIDATES
     ${TT_METAL_SOURCE_ROOT}/tt_metal/hw/ckernels/wormhole_b0/metal/common
     ${TT_METAL_SOURCE_ROOT}/tt_metal/hw/ckernels/wormhole_b0/metal/llk_io
     ${TT_METAL_SOURCE_ROOT}/tt_metal/hw/ckernels/wormhole_b0/metal/llk_api/llk_sfpu
+    ${TT_METAL_SOURCE_ROOT}/runtime/sfpi/include
+    ${TT_METAL_SOURCE_ROOT}/tt_metal/hw/inc/internal/tt-1xx
+    ${TT_METAL_SOURCE_ROOT}/tt_metal/hw/inc/internal/tt-1xx/wormhole
+    ${TT_METAL_SOURCE_ROOT}/tt_metal/hw/inc/internal/tt-1xx/wormhole/wormhole_b0_defines
 )
 set(TT_WAVELET_LLK_INCLUDE_DIRS)
 foreach(LLK_INCLUDE_DIR IN LISTS TT_WAVELET_LLK_INCLUDE_CANDIDATES)
@@ -215,10 +219,14 @@ else()
     )
 endif()
 
-add_library(tt_wavelet_analysis OBJECT "${TT_WAVELET_SOURCE_ROOT}/tt-wavelet/main.cpp")
+add_library(tt_wavelet_analysis OBJECT
+    "${TT_WAVELET_SOURCE_ROOT}/tt-wavelet/main.cpp"
+    "${TT_WAVELET_SOURCE_ROOT}/tt-wavelet/tt_wavelet/src/padding_device.cpp"
+)
 target_include_directories(tt_wavelet_analysis PRIVATE ${METALIUM_INCLUDE_DIRS})
 target_include_directories(tt_wavelet_analysis PRIVATE ${TT_WAVELET_LLK_INCLUDE_DIRS})
 target_include_directories(tt_wavelet_analysis PRIVATE ${TT_WAVELET_INCLUDE_DIRS})
+target_compile_definitions(tt_wavelet_analysis PRIVATE TT_WAVELET_SOURCE_DIR="${TT_WAVELET_SOURCE_ROOT}/tt-wavelet")
 target_link_libraries(tt_wavelet_analysis PRIVATE Metalium::Metal)
 if(TT_METAL_PREBUILT_ROOT)
     target_link_libraries(tt_wavelet_analysis PRIVATE ${METALIUM_RUNTIME_LIBS})
