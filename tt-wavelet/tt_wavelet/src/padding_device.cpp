@@ -17,13 +17,15 @@ namespace {
 constexpr uint32_t kOutputCbId = tt::CBIndex::c_0;
 constexpr uint32_t kCacheCbId = tt::CBIndex::c_1;
 constexpr uint32_t kCircularBufferAlignmentBytes = 32;
+constexpr const char* kSymmetricReaderKernelPath = "kernels/dataflow/pad_symmetric_1d_reader.cpp";
+constexpr const char* kWriterKernelPath = "kernels/dataflow/pad_1d_writer.cpp";
 
 [[nodiscard]] std::filesystem::path reader_kernel_path(const std::filesystem::path& kernel_root) {
-    return kernel_root / "kernels/dataflow/pad_symmetric_1d_reader.cpp";
+    return kernel_root / kSymmetricReaderKernelPath;
 }
 
 [[nodiscard]] std::filesystem::path writer_kernel_path(const std::filesystem::path& kernel_root) {
-    return kernel_root / "kernels/dataflow/pad_1d_writer.cpp";
+    return kernel_root / kWriterKernelPath;
 }
 
 }  // namespace
