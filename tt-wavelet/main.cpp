@@ -19,13 +19,13 @@ int main() {
     constexpr tt::tt_metal::CoreCoord core{0, 0};
 
     // 1. Prepare Host Data
-    const size_t signal_length = 100;
+    const size_t signal_length = 3;
     std::vector<float> original_signal(signal_length);
     for (size_t i = 0; i < signal_length; ++i) {
         original_signal[i] = static_cast<float>(i + 1);
     }
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-member-init)
-    Pad1DConfig pad_config{.mode = BoundaryMode::Symmetric, .left = 16, .right = 16};
+    Pad1DConfig pad_config{.mode = BoundaryMode::Symmetric, .left = 2, .right = 2};
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-member-init)
     SignalBuffer input_desc{
         .dram_address = 0, .length = signal_length, .stick_width = 32, .element_size_bytes = sizeof(float)};
@@ -74,6 +74,18 @@ int main() {
     tt::tt_metal::distributed::EnqueueReadMeshBuffer(command_queue, device_result, output_buffer, true);
 
     std::vector<float> host_reference = materialize_reference_padding(original_signal, layout);
+
+    std::cout << "Original Signal: [ ";
+    for (float v : original_signal) {
+        std::cout << v << " ";
+    }
+    std::cout << "]\n\n";
+
+    std::cout << "Device Padded Signal (length " << layout.output.length << "): [ ";
+    for (size_t i = 0; i < layout.output.length; ++i) {
+        std::cout << device_result[i] << " ";
+    }
+    std::cout << "]\n\n";
 
     bool success = true;
     for (size_t i = 0; i < layout.output.length; ++i) {
