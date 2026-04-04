@@ -19,11 +19,11 @@ constexpr uint32_t kCacheCbId = tt::CBIndex::c_1;
 constexpr uint32_t kCircularBufferAlignmentBytes = 32;
 
 [[nodiscard]] std::filesystem::path reader_kernel_path(const std::filesystem::path& kernel_root) {
-    return kernel_root / "dataflow/pad_symmetric_1d_reader.cpp";
+    return kernel_root / "kernels/dataflow/pad_symmetric_1d_reader.cpp";
 }
 
 [[nodiscard]] std::filesystem::path writer_kernel_path(const std::filesystem::path& kernel_root) {
-    return kernel_root / "dataflow/pad_1d_writer.cpp";
+    return kernel_root / "kernels/dataflow/pad_1d_writer.cpp";
 }
 
 }  // namespace
