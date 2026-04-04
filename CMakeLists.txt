@@ -18,5 +18,4 @@ if(BUILD_TT_WAVELET)
   endif()
 endif()
 
-# Add main project
 add_subdirectory(tt-wavelet)

@@ -1,6 +1,10 @@
 if(BUILD_TT_WAVELET)
   add_compile_definitions(TT_WAVELET_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
-  add_executable(tt_wavelet_test main.cpp)
+  add_executable(
+    tt_wavelet_test
+    main.cpp
+    tt_wavelet/src/padding_device.cpp
+  )
 
   set(TT_WAVELET_LLK_INCLUDE_CANDIDATES
       ${CMAKE_SOURCE_DIR}/tt-metal/tt_metal/third_party/tt_llk/tt_llk_wormhole_b0/llk_lib

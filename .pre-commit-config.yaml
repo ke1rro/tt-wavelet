@@ -45,5 +45,7 @@ repos:
             tt-wavelet/ckernels/sfpu/ckernel_sfpu_stencil\.h|
             tt-wavelet/ckernels/sfpu/ckernel_sfpu_stencil_acc\.h|
             tt-wavelet/kernels/dataflow/read\.cpp|
-            tt-wavelet/kernels/dataflow/write\.cpp
+            tt-wavelet/kernels/dataflow/write\.cpp|
+            tt-wavelet/kernels/dataflow/pad_symmetric_1d_reader\.cpp|
+            tt-wavelet/kernels/dataflow/pad_1d_writer\.cpp
           )$
