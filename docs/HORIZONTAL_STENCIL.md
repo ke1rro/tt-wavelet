@@ -93,6 +93,7 @@ $$
 The whole algorithm is implemented by alternating between doing the shift on even and odd columns and doing the multiplication and reduction for the stencil formula.
 
 Recall the formulas:
+
 $$
 g_e = \sum_{j=0}^{\lfloor (k-1)/2 \rfloor} h[2j] \cdot (R_j f_e)[i] + \sum_{j=0}^{\lfloor (k-2)/2 \rfloor} h[2j+1] \cdot (R_{j+1} f_o)[i] \\
 
