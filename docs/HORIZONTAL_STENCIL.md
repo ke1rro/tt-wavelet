@@ -95,8 +95,9 @@ The whole algorithm is implemented by alternating between doing the shift on eve
 Recall the formulas:
 
 $$
-g_e = \sum_{j=0}^{\lfloor (k-1)/2 \rfloor} h[2j] \cdot (R_j f_e)[i] + \sum_{j=0}^{\lfloor (k-2)/2 \rfloor} h[2j+1] \cdot (R_{j+1} f_o)[i] \\
-
+g_e = \sum_{j=0}^{\lfloor (k-1)/2 \rfloor} h[2j] \cdot (R_j f_e)[i] + \sum_{j=0}^{\lfloor (k-2)/2 \rfloor} h[2j+1] \cdot (R_{j+1} f_o)[i]
+$$
+$$
 g_o = \sum_{j=0}^{\lfloor (k-1)/2 \rfloor} h[2j] \cdot (R_j f_o)[i] + \sum_{j=0}^{\lfloor (k-2)/2 \rfloor} h[2j+1] \cdot (R_j f_e)[i]
 $$
 
