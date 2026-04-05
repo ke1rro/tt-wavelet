@@ -38,7 +38,7 @@ namespace ttwv {
  *
  * A **stick** is a fixed-width row of scalar samples that forms the minimum addressable
  * transfer unit for the NOC. For the current fp32 device path `stick_width` is 32,
- * meaning each stick is 128 bytes (32 × 4 B).
+ * meaning each stick is 128 bytes (32 x 4 B).
  *
  * ### Logical vs physical size
  *
@@ -48,7 +48,7 @@ namespace ttwv {
  * @code
  * // Example: length = 70, stick_width = 32
  * //
- * // [s0  .. s31] [s32 .. s63] [s64 .. s69 | 0 .. 0]
+ * // [s0 ... s31] [s32 ... s63] [s64 ... s69 | 0 ... 0]
  * //  stick 0      stick 1      stick 2  (22 padding zeros)
  * //
  * // physical_length() = 3 * 32 = 96
@@ -57,7 +57,7 @@ namespace ttwv {
  */
 struct SignalBuffer {
     uint64_t dram_address{0};                    ///< Base DRAM address of the first stick.
-    std::size_t length{0};                       ///< Logical number of scalar samples in the signal.
+    size_t length{0};                       ///< Logical number of scalar samples in the signal.
     uint32_t stick_width{32};                    ///< Number of scalar samples per physical stick.
     uint32_t element_size_bytes{sizeof(float)};  ///< Size of one scalar element in bytes.
 

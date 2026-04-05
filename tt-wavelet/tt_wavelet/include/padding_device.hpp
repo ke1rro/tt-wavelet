@@ -3,7 +3,7 @@
 #include <filesystem>
 
 #include "tt-metalium/host_api.hpp"
-#include "tt_wavelet/includes/padding.hpp"
+#include "tt_wavelet/include/padding.hpp"
 
 namespace ttwv {
 

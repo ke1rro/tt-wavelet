@@ -6,8 +6,8 @@
 #include <span>
 #include <vector>
 
-#include "tt_wavelet/includes/boundary.hpp"
-#include "tt_wavelet/includes/signal.hpp"
+#include "tt_wavelet/include/boundary.hpp"
+#include "tt_wavelet/include/signal.hpp"
 
 namespace ttwv {
 

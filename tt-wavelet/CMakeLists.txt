@@ -4,6 +4,8 @@ if(BUILD_TT_WAVELET)
     tt_wavelet_test
     main.cpp
     tt_wavelet/src/padding_device.cpp
+    tt_wavelet/src/pad_split_device.cpp
+    tt_wavelet/src/split_device.cpp
   )
 
   set(TT_WAVELET_LLK_INCLUDE_CANDIDATES
