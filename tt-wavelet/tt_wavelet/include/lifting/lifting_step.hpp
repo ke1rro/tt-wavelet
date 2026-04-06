@@ -23,8 +23,6 @@ struct LiftingStep {
     int shift;
 };
 
-// for convenience -------------------------------------------------
-
 template <std::size_t N>
 using PredictStep = LiftingStep<StepType::Predict, N>;
 
@@ -38,8 +36,6 @@ template <std::size_t N>
 using ScaleOddStep = LiftingStep<StepType::ScaleOdd, N>;
 
 using SwapStep = LiftingStep<StepType::Swap, 0>;
-
-//--------------------------------------------------------------------------
 
 template <typename Step>
 inline constexpr bool is_update_step = (Step::type == StepType::Update || Step::type == StepType::ScaleEven);

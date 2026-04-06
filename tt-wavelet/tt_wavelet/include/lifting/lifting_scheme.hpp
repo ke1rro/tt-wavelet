@@ -64,8 +64,6 @@ template <typename... Steps>
     };
 }
 
-//--------------------------------------------------------------------------
-
 template <typename Tag>
 [[nodiscard]] constexpr const auto& get_scheme() noexcept {
     return scheme_traits<Tag>::scheme;
