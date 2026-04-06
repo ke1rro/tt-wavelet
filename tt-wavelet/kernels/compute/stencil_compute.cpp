@@ -33,8 +33,56 @@ void MAIN {
 
     // Unpack filter coefficients from compile-time args
     uint32_t h_packed[K];
-    for (uint32_t i = 0; i < K; i++) {
-        h_packed[i] = get_compile_time_arg_val(2 + i);
+    if constexpr (K > 0) {
+        h_packed[0] = get_compile_time_arg_val(2);
+    }
+    if constexpr (K > 1) {
+        h_packed[1] = get_compile_time_arg_val(3);
+    }
+    if constexpr (K > 2) {
+        h_packed[2] = get_compile_time_arg_val(4);
+    }
+    if constexpr (K > 3) {
+        h_packed[3] = get_compile_time_arg_val(5);
+    }
+    if constexpr (K > 4) {
+        h_packed[4] = get_compile_time_arg_val(6);
+    }
+    if constexpr (K > 5) {
+        h_packed[5] = get_compile_time_arg_val(7);
+    }
+    if constexpr (K > 6) {
+        h_packed[6] = get_compile_time_arg_val(8);
+    }
+    if constexpr (K > 7) {
+        h_packed[7] = get_compile_time_arg_val(9);
+    }
+    if constexpr (K > 8) {
+        h_packed[8] = get_compile_time_arg_val(10);
+    }
+    if constexpr (K > 9) {
+        h_packed[9] = get_compile_time_arg_val(11);
+    }
+    if constexpr (K > 10) {
+        h_packed[10] = get_compile_time_arg_val(12);
+    }
+    if constexpr (K > 11) {
+        h_packed[11] = get_compile_time_arg_val(13);
+    }
+    if constexpr (K > 12) {
+        h_packed[12] = get_compile_time_arg_val(14);
+    }
+    if constexpr (K > 13) {
+        h_packed[13] = get_compile_time_arg_val(15);
+    }
+    if constexpr (K > 14) {
+        h_packed[14] = get_compile_time_arg_val(16);
+    }
+    if constexpr (K > 15) {
+        h_packed[15] = get_compile_time_arg_val(17);
+    }
+    if constexpr (K > 16) {
+        h_packed[16] = get_compile_time_arg_val(18);
     }
 
     constexpr auto cb_in_halo = tt::CBIndex::c_0;       // halo tile (row-major sticks)
