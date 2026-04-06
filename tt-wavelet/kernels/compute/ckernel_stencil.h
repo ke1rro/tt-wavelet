@@ -59,7 +59,7 @@ inline void calculate_stencil_init() {
     vInt check = tid & 0xE;  // bits [3:1] of tile ID → col index within subvec
     v_if(check == 0) { mask = 1.0f; }
     v_endif;
-    vConstFloatPrgm2 = mask.get();
+    TTI_SFPMOV(0, reinterpret<sfpi::vInt>(mask), p_sfpu::LREG14, 0)
 }
 
 // ============================================================================
