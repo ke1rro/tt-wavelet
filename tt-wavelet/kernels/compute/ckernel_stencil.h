@@ -55,7 +55,7 @@ namespace sfpu {
 template <uint8_t K>
 inline void calculate_stencil_init() {
     vFloat mask = 0.0f;
-    vInt tid = reinterpret<vInt>(vConstTileId);
+    vInt tid = vConstTileId;
     vInt check = tid & 0xE;  // bits [3:1] of tile ID → col index within subvec
     v_if(check == 0) { mask = 1.0f; }
     v_endif;
