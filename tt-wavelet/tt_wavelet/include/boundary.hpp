@@ -9,18 +9,15 @@ namespace ttwv {
 /**
  * @brief Signal extension mode used when accessing out-of-bounds indices during padding.
  *
- * @note Padding in this library is a physical operation. Boundary extensions are
- * resolved explicitly by a dedicated padding preprocessing kernel that physically copies
- * the padded and reflected/wrapped values into a new, larger DRAM buffer before the main
- * computation kernels run.
+ * @note Padding in this library is a physical operation.
  *
  * Mirrors the modes supported by NumPy / PyWavelets: Zero, Constant, Symmetric, Periodic
  */
 enum class BoundaryMode : uint8_t {
-    Zero = 0,       ///< Pad with zeros (numpy `constant`, constant_values=0)
-    Constant = 1,   ///< Clamp to edge value (numpy `edge`)
-    Symmetric = 2,  ///< Mirror reflection (numpy `symmetric` / PyWavelets `sym`)
-    Periodic = 3    ///< Wrap-around (numpy `wrap` / PyWavelets `per`)
+    Zero = 0,       ///< Pad with zeros
+    Constant = 1,   ///< Clamp to edge value
+    Symmetric = 2,  ///< Mirror reflection
+    Periodic = 3    ///< Wrap-around
 };
 
 /**
@@ -49,16 +46,16 @@ enum class BoundaryMode : uint8_t {
  * The signal is treated as if it were extended by mirroring at both edges with period 2 * length.
  * This matches NumPy's symmetric and PyWavelets' sym padding.
  *
- * @par Example (length = 5, signal indices 0..4):
+ * @par Example (length = 5, signal indices 0...4):
  * @code
  * index:  -2  -1   0  1  2  3  4   5   6
  * result:  1   0   0  1  2  3  4   4   3
  * @endcode
  *
- * @param index  Logical sample index (may be negative or beyond `length`).
+ * @param index  Logical sample index (may be negative or beyond length).
  * @param length Number of samples in the original signal. Must be > 0
- *               (returns 0 immediately when `length <= 1`).
- * @return Reflected index in `[0, length)`.
+ *               (returns 0 immediately when length <= 1).
+ * @return Reflected index in [0, length).
  */
 [[nodiscard]] constexpr size_t symmetric_index(const int64_t index, const size_t length) noexcept {
     if (length <= 1) {
@@ -109,13 +106,5 @@ enum class BoundaryMode : uint8_t {
 
     return std::nullopt;
 }
-
-// static_assert(symmetric_index(-1, 5) == 0);
-// static_assert(symmetric_index(-2, 5) == 1);
-// static_assert(symmetric_index(5, 5) == 4);
-// static_assert(symmetric_index(6, 5) == 3);
-// static_assert(boundary_index(-4, 5, BoundaryMode::Periodic).value() == 1);
-// static_assert(boundary_index(-1, 5, BoundaryMode::Constant).value() == 0);
-// static_assert(!boundary_index(-1, 5, BoundaryMode::Zero).has_value());
 
 }  // namespace ttwv

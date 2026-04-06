@@ -7,8 +7,8 @@
 #include "tt-metalium/host_api.hpp"
 #include "tt-metalium/mesh_buffer.hpp"
 #include "tt-metalium/mesh_device.hpp"
-#include "tt_wavelet/include/pad_split_device.hpp"
 #include "tt_wavelet/include/pad_split.hpp"
+#include "tt_wavelet/include/pad_split_device.hpp"
 
 using namespace ttwv;
 
@@ -24,7 +24,7 @@ int main() {
     for (size_t i = 0; i < signal_length; ++i) {
         original_signal[i] = static_cast<float>(i + 1);
     }
-    
+
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-member-init)
     Pad1DConfig pad_config{.mode = BoundaryMode::Symmetric, .left = 2, .right = 2};
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-member-init)
@@ -38,7 +38,8 @@ int main() {
     tt::tt_metal::distributed::ReplicatedBufferConfig input_rep_conf{
         .size = static_cast<uint64_t>(layout.input.physical_nbytes())};
 
-    auto input_buffer = tt::tt_metal::distributed::MeshBuffer::create(input_rep_conf, input_local_conf, mesh_device.get());
+    auto input_buffer =
+        tt::tt_metal::distributed::MeshBuffer::create(input_rep_conf, input_local_conf, mesh_device.get());
 
     tt::tt_metal::distributed::DeviceLocalBufferConfig even_local_conf{
         .page_size = layout.output.even.aligned_stick_bytes(32), .buffer_type = tt::tt_metal::BufferType::DRAM};
@@ -103,16 +104,16 @@ int main() {
     bool success = true;
     for (size_t i = 0; i < layout.output.even.length; ++i) {
         if (std::abs(device_even_result[i] - host_reference.even[i]) > 1e-5) {
-            std::cerr << "Even mismatch at index " << i << ": device=" << device_even_result[i] << ", host=" << host_reference.even[i]
-                      << std::endl;
+            std::cerr << "Even mismatch at index " << i << ": device=" << device_even_result[i]
+                      << ", host=" << host_reference.even[i] << std::endl;
             success = false;
         }
     }
-    
+
     for (size_t i = 0; i < layout.output.odd.length; ++i) {
         if (std::abs(device_odd_result[i] - host_reference.odd[i]) > 1e-5) {
-            std::cerr << "Odd mismatch at index " << i << ": device=" << device_odd_result[i] << ", host=" << host_reference.odd[i]
-                      << std::endl;
+            std::cerr << "Odd mismatch at index " << i << ": device=" << device_odd_result[i]
+                      << ", host=" << host_reference.odd[i] << std::endl;
             success = false;
         }
     }

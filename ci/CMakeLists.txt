@@ -221,7 +221,7 @@ endif()
 
 add_library(tt_wavelet_analysis OBJECT
     "${TT_WAVELET_SOURCE_ROOT}/tt-wavelet/main.cpp"
-    "${TT_WAVELET_SOURCE_ROOT}/tt-wavelet/tt_wavelet/src/padding_device.cpp"
+    "${TT_WAVELET_SOURCE_ROOT}/tt-wavelet/tt_wavelet/src/pad_split_device.cpp"
 )
 target_include_directories(tt_wavelet_analysis PRIVATE ${METALIUM_INCLUDE_DIRS})
 target_include_directories(tt_wavelet_analysis PRIVATE ${TT_WAVELET_LLK_INCLUDE_DIRS})

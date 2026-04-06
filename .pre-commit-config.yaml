@@ -30,8 +30,14 @@ repos:
         args: [--style=file, --version=20]
         files: ^tt-wavelet/.*\.(c|cc|cpp|cxx|h|hpp)$
       - id: clang-tidy
-        args: [-p=build/ci-clang-tidy, --config-file=.clang-tidy, --version=20]
-        files: ^tt-wavelet/.*\.(c|cc|cpp|cxx|hpp|h)$
+        args:
+          [
+            -p=build/ci-clang-tidy,
+            --config-file=.clang-tidy,
+            --version=20,
+            --exclude-header-filter=tt-metal/tt_metal/third_party/,
+          ]
+        files: ^tt-wavelet/(main\.cpp|tt_wavelet/src/.*\.(c|cc|cpp|cxx))$
         exclude: |
           (?x)^(
             tt-wavelet/ckernels/sfpu/ckernel_sfpu_stencil_affine\.h|
