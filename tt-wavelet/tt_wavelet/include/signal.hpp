@@ -135,4 +135,39 @@ struct Signal {
     SignalBuffer odd;   ///< Buffer of odd-indexed samples:  signal[1], signal[3], signal[5], …
 };
 
+/**
+ * @brief Builds the even/odd signal descriptors produced by splitting a 1D source signal.
+ *
+ * The output buffers inherit the same stick geometry as @p input and only differ in
+ * logical length and DRAM address.
+ *
+ * @param input         Descriptor of the source signal.
+ * @param source_length Logical length of the signal being split into even/odd streams.
+ * @param even_addr     DRAM base address for the even-indexed output.
+ * @param odd_addr      DRAM base address for the odd-indexed output.
+ * @return Even/odd output descriptors for the split signal.
+ */
+[[nodiscard]] constexpr Signal make_split_signal(
+    const SignalBuffer& input,
+    const size_t source_length,
+    const uint64_t even_addr,
+    const uint64_t odd_addr) noexcept {
+    const size_t even_len = ceil_div(source_length, size_t{2});
+    const size_t odd_len = source_length / 2;
+
+    return Signal{
+        .even =
+            SignalBuffer{
+                .dram_address = even_addr,
+                .length = even_len,
+                .stick_width = input.stick_width,
+                .element_size_bytes = input.element_size_bytes},
+        .odd =
+            SignalBuffer{
+                .dram_address = odd_addr,
+                .length = odd_len,
+                .stick_width = input.stick_width,
+                .element_size_bytes = input.element_size_bytes}};
+}
+
 }  // namespace ttwv
