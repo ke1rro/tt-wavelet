@@ -65,8 +65,9 @@ PadSplit1DDeviceProgram create_pad_split_1d_program(
     tt::tt_metal::TensorAccessorArgs(input_buffer).append_to(reader_compile_args);
 
     // Writer compile args: cb_even, cb_odd, stick_nbytes
-
-    std::vector<uint32_t> writer_compile_args = {kCbIdEven, kCbIdOdd, page_size, stick_width};
+    // The writer kernel consumes TensorAccessorArgs starting at CTA index 3.
+    // Do not append extra compile-time args before the accessor payload.
+    std::vector<uint32_t> writer_compile_args = {kCbIdEven, kCbIdOdd, page_size};
     tt::tt_metal::TensorAccessorArgs(even_buffer).append_to(writer_compile_args);
 
     const auto reader_kernel = tt::tt_metal::CreateKernel(
