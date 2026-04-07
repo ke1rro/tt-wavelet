@@ -60,11 +60,13 @@ PadSplit1DDeviceProgram create_pad_split_1d_program(
     tt::tt_metal::CreateCircularBuffer(program, core, cache_cb_config);
 
     // Reader compile args: cb_even, cb_odd, stick_nbytes, cb_cache
-    std::vector<uint32_t> reader_compile_args = {kCbIdEven, kCbIdOdd, page_size, kCbIdCache};
+    const uint32_t stick_width = page_size / sizeof(float);
+    std::vector<uint32_t> reader_compile_args = {kCbIdEven, kCbIdOdd, page_size, kCbIdCache, stick_width};
     tt::tt_metal::TensorAccessorArgs(input_buffer).append_to(reader_compile_args);
 
     // Writer compile args: cb_even, cb_odd, stick_nbytes
-    std::vector<uint32_t> writer_compile_args = {kCbIdEven, kCbIdOdd, page_size};
+
+    std::vector<uint32_t> writer_compile_args = {kCbIdEven, kCbIdOdd, page_size, stick_width};
     tt::tt_metal::TensorAccessorArgs(even_buffer).append_to(writer_compile_args);
 
     const auto reader_kernel = tt::tt_metal::CreateKernel(

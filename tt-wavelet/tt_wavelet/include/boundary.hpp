@@ -62,8 +62,8 @@ enum class BoundaryMode : uint8_t {
         return 0;
     }
 
-    const auto period = length * 2;
-    const auto reflected = positive_mod(index, period);
+    const auto period{length * 2};
+    const auto reflected{positive_mod(index, period)};
     return reflected < length ? reflected : period - 1 - reflected;
 }
 
