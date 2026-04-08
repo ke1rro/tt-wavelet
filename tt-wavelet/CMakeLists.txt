@@ -2,8 +2,9 @@ if(BUILD_TT_WAVELET)
   add_compile_definitions(TT_WAVELET_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
   add_executable(
     tt_wavelet_test
-    main.cpp
+    lwt_reader_test.cpp
     tt_wavelet/src/pad_split_device.cpp
+    tt_wavelet/src/lwt_device.cpp
   )
 
   set(TT_WAVELET_LLK_INCLUDE_CANDIDATES
@@ -39,17 +40,4 @@ if(BUILD_TT_WAVELET)
                              PRIVATE ${TT_WAVELET_LLK_INCLUDE_DIRS})
   target_include_directories(tt_wavelet_test PRIVATE ${TT_WAVELET_INCLUDE_DIRS})
   target_link_libraries(tt_wavelet_test PRIVATE Metalium::Metal)
-
-  add_executable(lwt_reader_test
-    lwt_reader_test.cpp
-    tt_wavelet/src/pad_split_device.cpp
-    tt_wavelet/src/lwt_device.cpp
-  )
-  if(DEFINED METALIUM_INCLUDE_DIRS)
-    target_include_directories(lwt_reader_test PRIVATE ${METALIUM_INCLUDE_DIRS})
-  endif()
-  target_include_directories(lwt_reader_test
-    PRIVATE ${TT_WAVELET_LLK_INCLUDE_DIRS}
-            ${TT_WAVELET_INCLUDE_DIRS})
-  target_link_libraries(lwt_reader_test PRIVATE Metalium::Metal)
 endif()
