@@ -221,7 +221,9 @@ endif()
 
 add_library(tt_wavelet_analysis OBJECT
     "${TT_WAVELET_SOURCE_ROOT}/tt-wavelet/main.cpp"
-    "${TT_WAVELET_SOURCE_ROOT}/tt-wavelet/tt_wavelet/src/padding_device.cpp"
+    "${TT_WAVELET_SOURCE_ROOT}/tt-wavelet/tt_wavelet/src/pad_split_device.cpp"
+    "${TT_WAVELET_SOURCE_ROOT}/tt-wavelet/kernels/dataflow/pad_split_1d_reader.cpp"
+    "${TT_WAVELET_SOURCE_ROOT}/tt-wavelet/kernels/dataflow/pad_split_1d_writer.cpp"
 )
 target_include_directories(tt_wavelet_analysis PRIVATE ${METALIUM_INCLUDE_DIRS})
 target_include_directories(tt_wavelet_analysis PRIVATE ${TT_WAVELET_LLK_INCLUDE_DIRS})
@@ -241,6 +243,7 @@ if(CI_BUILD_WAVELET_EXECUTABLE)
     target_include_directories(tt_wavelet_test PRIVATE ${METALIUM_INCLUDE_DIRS})
     target_include_directories(tt_wavelet_test PRIVATE ${TT_WAVELET_LLK_INCLUDE_DIRS})
     target_include_directories(tt_wavelet_test PRIVATE ${TT_WAVELET_INCLUDE_DIRS})
+    target_compile_definitions(tt_wavelet_test PRIVATE TT_WAVELET_SOURCE_DIR="${TT_WAVELET_SOURCE_ROOT}/tt-wavelet")
     target_link_libraries(tt_wavelet_test PRIVATE Metalium::Metal)
     target_link_libraries(tt_wavelet_test PRIVATE ${METALIUM_RUNTIME_LIBS})
 endif()

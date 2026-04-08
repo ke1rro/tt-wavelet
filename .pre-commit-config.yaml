@@ -30,22 +30,11 @@ repos:
         args: [--style=file, --version=20]
         files: ^tt-wavelet/.*\.(c|cc|cpp|cxx|h|hpp)$
       - id: clang-tidy
-        args: [-p=build/ci-clang-tidy, --config-file=.clang-tidy, --version=20]
-        files: ^tt-wavelet/.*\.(c|cc|cpp|cxx|hpp|h)$
-        exclude: |
-          (?x)^(
-            tt-wavelet/ckernels/sfpu/ckernel_sfpu_stencil_affine\.h|
-            tt-wavelet/ckernels/sfpu/ckernel_sfpu_stencil_mac\.h|
-            tt-wavelet/kernels/include/stencil/api/stencil_mac\.h|
-            tt-wavelet/kernels/include/stencil/llk/mac\.h|
-            tt-wavelet/kernels/include/stencil/llk/params\.h|
-            tt-wavelet/kernels/include/stencil/policy\.h|
-            tt-wavelet/kernels/compute/compute\.cpp|
-            tt-metal/tt_metal/third_party/tt_llk/tt_llk_wormhole_b0/common/inc/ckernel_instr_params\.h|
-            tt-wavelet/ckernels/sfpu/ckernel_sfpu_stencil\.h|
-            tt-wavelet/ckernels/sfpu/ckernel_sfpu_stencil_acc\.h|
-            tt-wavelet/kernels/dataflow/read\.cpp|
-            tt-wavelet/kernels/dataflow/write\.cpp|
-            tt-wavelet/kernels/dataflow/pad_symmetric_1d_reader\.cpp|
-            tt-wavelet/kernels/dataflow/pad_1d_writer\.cpp
-          )$
+        args:
+          [
+            -p=build/ci-clang-tidy,
+            --config-file=.clang-tidy,
+            --version=20,
+            --exclude-header-filter=tt-metal/tt_metal/third_party/,
+          ]
+        files: ^tt-wavelet/.*\.(c|cc|cpp|cxx|h|hpp)$
