@@ -39,7 +39,6 @@ PadSplit1DDeviceProgram create_pad_split_1d_program(
     const tt::tt_metal::Buffer& even_buffer,
     const tt::tt_metal::Buffer& odd_buffer,
     const PadSplit1DLayout& layout) {
-
     TT_FATAL(layout.pad_config.mode == BoundaryMode::Symmetric, "currently supports symmetric mode only");
     TT_FATAL(layout.input.element_size_bytes == sizeof(float), "is fp32-only");
     TT_FATAL(layout.input.stick_width == 32, "kernel expects 32 scalar samples per stick");
@@ -52,14 +51,12 @@ PadSplit1DDeviceProgram create_pad_split_1d_program(
             .set_page_size(kCbIdEven, page_size);
     tt::tt_metal::CreateCircularBuffer(program, core, even_cb_config);
 
-    const auto odd_cb_config =
-        tt::tt_metal::CircularBufferConfig(2 * page_size, {{kCbIdOdd, tt::DataFormat::Float32}})
-            .set_page_size(kCbIdOdd, page_size);
+    const auto odd_cb_config = tt::tt_metal::CircularBufferConfig(2 * page_size, {{kCbIdOdd, tt::DataFormat::Float32}})
+                                   .set_page_size(kCbIdOdd, page_size);
     tt::tt_metal::CreateCircularBuffer(program, core, odd_cb_config);
 
-    const auto cache_cb_config =
-        tt::tt_metal::CircularBufferConfig(page_size, {{kCbIdCache, tt::DataFormat::Float32}})
-            .set_page_size(kCbIdCache, page_size);
+    const auto cache_cb_config = tt::tt_metal::CircularBufferConfig(page_size, {{kCbIdCache, tt::DataFormat::Float32}})
+                                     .set_page_size(kCbIdCache, page_size);
     tt::tt_metal::CreateCircularBuffer(program, core, cache_cb_config);
 
     // Reader compile args: cb_even, cb_odd, stick_nbytes, cb_cache
@@ -93,7 +90,6 @@ void set_pad_split_1d_runtime_args(
     const tt::tt_metal::Buffer& even_buffer,
     const tt::tt_metal::Buffer& odd_buffer,
     const PadSplit1DLayout& layout) {
-
     TT_FATAL(
         layout.input.length <= static_cast<size_t>(std::numeric_limits<uint32_t>::max()),
         "input.length ({}) overflows uint32_t",

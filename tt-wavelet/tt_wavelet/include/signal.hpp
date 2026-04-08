@@ -8,8 +8,7 @@ namespace ttwv {
 /**
  * @brief Integer ceiling division: ceil(numerator / denominator).
  *
- * Equivalent to std::ceil((double)numerator / denominator) but performed entirely
- * in integer arithmetic, avoiding floating-point rounding issues.
+ * Equivalent to std::ceil((double)numerator / denominator) only in integer arithmetic.
  *
  * @param numerator   Dividend.
  * @param denominator Divisor. Returns 0 if this is 0 (divide-by-zero guard).
@@ -57,7 +56,7 @@ namespace ttwv {
  */
 struct SignalBuffer {
     uint64_t dram_address{0};                    ///< Base DRAM address of the first stick.
-    size_t length{0};                       ///< Logical number of scalar samples in the signal.
+    size_t length{0};                            ///< Logical number of scalar samples in the signal.
     uint32_t stick_width{32};                    ///< Number of scalar samples per physical stick.
     uint32_t element_size_bytes{sizeof(float)};  ///< Size of one scalar element in bytes.
 
@@ -101,7 +100,7 @@ struct SignalBuffer {
      * Always a multiple of @ref stick_width. May be larger than @ref length when the
      * signal does not fill the last stick completely.
      *
-     * @return `stick_count() * stick_width`.
+     * @return stick_count() * stick_width.
      */
     [[nodiscard]] constexpr size_t physical_length() const noexcept {
         return stick_count() * static_cast<size_t>(stick_width);
@@ -131,15 +130,12 @@ struct SignalBuffer {
  * This split is the first step of the Wavelet Lifting Transform.
  */
 struct Signal {
-    SignalBuffer even;  ///< Buffer of even-indexed samples: signal[0], signal[2], signal[4], …
-    SignalBuffer odd;   ///< Buffer of odd-indexed samples:  signal[1], signal[3], signal[5], …
+    SignalBuffer even;  ///< Buffer of even-indexed samples: signal[0], signal[2], signal[4], ...
+    SignalBuffer odd;   ///< Buffer of odd-indexed samples:  signal[1], signal[3], signal[5], ...
 };
 
 /**
  * @brief Builds the even/odd signal descriptors produced by splitting a 1D source signal.
- *
- * The output buffers inherit the same stick geometry as @p input and only differ in
- * logical length and DRAM address.
  *
  * @param input         Descriptor of the source signal.
  * @param source_length Logical length of the signal being split into even/odd streams.
@@ -148,10 +144,7 @@ struct Signal {
  * @return Even/odd output descriptors for the split signal.
  */
 [[nodiscard]] constexpr Signal make_split_signal(
-    const SignalBuffer& input,
-    const size_t source_length,
-    const uint64_t even_addr,
-    const uint64_t odd_addr) noexcept {
+    const SignalBuffer& input, const size_t source_length, const uint64_t even_addr, const uint64_t odd_addr) noexcept {
     const size_t even_len = ceil_div(source_length, size_t{2});
     const size_t odd_len = source_length / 2;
 
@@ -162,12 +155,11 @@ struct Signal {
                 .length = even_len,
                 .stick_width = input.stick_width,
                 .element_size_bytes = input.element_size_bytes},
-        .odd =
-            SignalBuffer{
-                .dram_address = odd_addr,
-                .length = odd_len,
-                .stick_width = input.stick_width,
-                .element_size_bytes = input.element_size_bytes}};
+        .odd = SignalBuffer{
+            .dram_address = odd_addr,
+            .length = odd_len,
+            .stick_width = input.stick_width,
+            .element_size_bytes = input.element_size_bytes}};
 }
 
 }  // namespace ttwv

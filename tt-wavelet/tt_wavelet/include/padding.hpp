@@ -12,10 +12,10 @@
 namespace ttwv {
 
 /**
- * @brief Parameters describing how to pad a 1D signal.
+ * @brief Parameters describing signal padding 1D.
  *
  * Specifies the extension mode and the number of samples to prepend/append.
- * The actual output length is `input.length + left + right`.
+ * The actual output length is input.length + left + right.
  */
 struct Pad1DConfig {
     BoundaryMode mode{BoundaryMode::Symmetric};  ///< Signal extension mode at both boundaries.
@@ -24,10 +24,7 @@ struct Pad1DConfig {
 };
 
 /**
- * @brief Describes the full memory layout of a 1D padding operation.
- *
- * Bundles the input and output @ref SignalBuffer descriptors together with the
- * @ref Pad1DConfig
+ * @brief Describes layout of a 1D padding operation.
  */
 struct Pad1DLayout {
     SignalBuffer input{};   ///< Descriptor of the unpadded input signal in DRAM.
@@ -85,19 +82,7 @@ struct Pad1DLayout {
 }
 
 /**
- * @brief Materializes the padded signal into a host-side vector (reference implementation).
- *
- * Iterates over every output index, resolves its source via @ref source_index_for_output,
- * and copies the corresponding input sample (or writes 0.0 for @ref BoundaryMode::Zero).
- * The output vector is allocated to @ref SignalBuffer::physical_length to ensure the last
- * stick is zero-padded.
- *
- * @note This is a host-only reference path used for testing. Device padding is handled by
- *       the kernels in `kernels/dataflow/`.
- *
- * @param input  View of the input signal samples.
- * @param layout Fully constructed padding layout.
- * @return Zero-padded output vector of size `layout.output.physical_length()`.
+ * @brief Temp function will be removed
  */
 [[nodiscard]] inline std::vector<float> materialize_reference_padding(
     const std::span<const float> input, const Pad1DLayout& layout) {
@@ -112,14 +97,7 @@ struct Pad1DLayout {
 }
 
 /**
- * @brief Convenience overload that constructs the layout internally from a flat input span.
- *
- * Creates a temporary @ref Pad1DLayout with stick_width = 32 and element_size_bytes = 4
- * (fp32), then delegates to @ref materialize_reference_padding(const std::span<const float>, const Pad1DLayout&).
- *
- * @param input  View of the input signal samples.
- * @param config Padding configuration to apply.
- * @return Padded output vector (host reference).
+ * @brief Temp function will be removed
  */
 [[nodiscard]] inline std::vector<float> materialize_reference_padding(
     const std::span<const float> input, const Pad1DConfig config) {

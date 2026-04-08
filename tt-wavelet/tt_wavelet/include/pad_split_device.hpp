@@ -21,7 +21,6 @@ struct PadSplit1DDeviceProgram {
     const tt::tt_metal::Buffer& odd_buffer,
     const PadSplit1DLayout& layout);
 
-
 void set_pad_split_1d_runtime_args(
     const PadSplit1DDeviceProgram& program_bundle,
     const tt::tt_metal::CoreCoord& core,
