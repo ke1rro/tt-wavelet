@@ -4,6 +4,7 @@
 
 #include "api/dataflow/dataflow_api.h"
 #include "boundary.hpp"
+#define ALWI inline __attribute__((always_inline))
 
 namespace ttwv::kernels::utils {
 
@@ -18,7 +19,7 @@ struct StickReadCache {
 };
 
 template <typename SrcAccessor>
-inline __attribute__((always_inline)) void cache_source_stick(
+ALWI void cache_source_stick(
     const SrcAccessor& src, StickReadCache& cache, const uint32_t source_stick) {
     if (cache.valid) {
         cb_pop_front(cache.cb_id, 1);
@@ -37,7 +38,7 @@ inline __attribute__((always_inline)) void cache_source_stick(
 }
 
 template <typename SrcAccessor>
-inline __attribute__((always_inline)) float read_padded_symmetric_value(
+ALWI float read_padded_symmetric_value(
     const SrcAccessor& src,
     StickReadCache& cache,
     const uint32_t input_length,
@@ -60,7 +61,36 @@ inline __attribute__((always_inline)) float read_padded_symmetric_value(
     return cached_values[source_lane];
 }
 
-inline __attribute__((always_inline)) void release_cache(StickReadCache& cache) {
+template <typename SrcAccessor>
+ALWI float read_source_value(const SrcAccessor& src, StickReadCache& cache, const uint32_t source_index) {
+    const uint32_t source_stick = source_index / cache.stick_width;
+    const uint32_t source_lane = source_index % cache.stick_width;
+
+    if (!cache.valid || source_stick != cache.cached_stick_id) {
+        cache_source_stick(src, cache, source_stick);
+    }
+
+    const auto* cached_values = reinterpret_cast<const float*>(get_read_ptr(cache.cb_id));
+    return cached_values[source_lane];
+}
+
+template <typename SrcAccessor>
+ALWI float read_shifted_symmetric_value(
+    const SrcAccessor& src,
+    StickReadCache& cache,
+    const uint32_t input_length,
+    const int32_t logical_index,
+    const int32_t source_offset) {
+    if (input_length == 0) {
+        return 0.0F;
+    }
+
+    const int32_t source_logical_index = logical_index + source_offset;
+    const uint32_t source_index = symmetric_index(source_logical_index, input_length);
+    return read_source_value(src, cache, source_index);
+}
+
+ALWI void release_cache(StickReadCache& cache) {
     if (!cache.valid) {
         return;
     }

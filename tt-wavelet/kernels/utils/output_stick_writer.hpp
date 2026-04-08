@@ -3,6 +3,7 @@
 #include <cstdint>
 
 #include "api/dataflow/dataflow_api.h"
+#define ALWI inline __attribute__((always_inline))
 
 namespace ttwv::kernels::utils {
 
@@ -15,7 +16,7 @@ struct OutputStickWriter {
     float* ptr;
 };
 
-inline __attribute__((always_inline)) OutputStickWriter
+ALWI OutputStickWriter
 make_output_stick_writer(const uint32_t cb_id, const uint32_t stick_width, const uint32_t total_stick_count) {
     OutputStickWriter writer{cb_id, stick_width, total_stick_count, 0, 0, nullptr};
     if (total_stick_count == 0) {
@@ -27,7 +28,7 @@ make_output_stick_writer(const uint32_t cb_id, const uint32_t stick_width, const
     return writer;
 }
 
-inline __attribute__((always_inline)) void push_output_value(OutputStickWriter& writer, const float value) {
+ALWI void push_output_value(OutputStickWriter& writer, const float value) {
     if (writer.ptr == nullptr) {
         return;
     }
@@ -50,7 +51,7 @@ inline __attribute__((always_inline)) void push_output_value(OutputStickWriter& 
     }
 }
 
-inline __attribute__((always_inline)) void flush_partial_output_stick(OutputStickWriter& writer) {
+ALWI void flush_partial_output_stick(OutputStickWriter& writer) {
     if (writer.ptr == nullptr) {
         return;
     }
