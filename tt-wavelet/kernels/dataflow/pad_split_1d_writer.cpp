@@ -18,9 +18,6 @@ void kernel_main() {
     uint32_t even_written = 0;
     uint32_t odd_written = 0;
 
-    // Drain even and odd CBs in interleaved fashion.
-    // The reader produces sticks at a 1:1 even:odd rate (one even stick per ~64 elements,
-    // immediately followed by one odd stick), so alternating avoids CB back-pressure.
     while (even_written < even_stick_count || odd_written < odd_stick_count) {
         if (even_written < even_stick_count) {
             cb_wait_front(cb_id_even, 1);

@@ -18,7 +18,6 @@ int main() {
     tt::tt_metal::distributed::MeshCommandQueue& command_queue = mesh_device->mesh_command_queue();
     constexpr tt::tt_metal::CoreCoord core{0, 0};
 
-    // 1. Create Layouts and Inputs
     constexpr size_t signal_length = 3;
     std::vector<float> original_signal(signal_length);
     for (size_t i = 0; i < signal_length; ++i) {

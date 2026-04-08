@@ -1,18 +1,3 @@
-// lwt_main.cpp
-//
-// End-to-end demonstration of the 1D lifting wavelet transform pipeline.
-//
-// To change the wavelet, replace the `kScheme` definition below with any
-// scheme built from make_lifting_scheme() + the step helpers in
-// tt_wavelet/include/lifting/.
-//
-// For each predict / update step the program:
-//   1. Runs lwt_reader + lwt_writer on the Tenstorrent device.
-//   2. Reads back the output sub-band from DRAM.
-//   3. Prints it to stdout.
-//
-// Swap / scale steps are recognised and skipped.
-
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
@@ -76,14 +61,11 @@ static void run_step(
     MeshCQ& cq,
     const fs::path& kernel_root,
     const tt::tt_metal::CoreCoord& core,
-    // input sub-band on device
     const SignalBuffer& in_desc,
     const std::shared_ptr<MeshBuffer>& in_buf,
-    // output sub-band descriptor (dram_address will be set)
     SignalBuffer& out_desc,
     std::shared_ptr<MeshBuffer>& out_buf,
-    // step parameters
-    uint32_t split_phase,  // 0 = reading even sub-band, 1 = odd
+    uint32_t split_phase,
     int32_t source_offset,
     uint32_t stencil_k,
     const std::string& label) {
@@ -126,7 +108,7 @@ int main() {
     constexpr size_t kSignalLength = 8;
     std::vector<float> original_signal(kSignalLength);
     for (size_t i = 0; i < kSignalLength; ++i) {
-        original_signal[i] = static_cast<float>(i + 1);  // [1, 2, 3, 4, 5, 6, 7, 8]
+        original_signal[i] = static_cast<float>(i + 1);
     }
 
     print_signal("Input:", original_signal, kSignalLength);

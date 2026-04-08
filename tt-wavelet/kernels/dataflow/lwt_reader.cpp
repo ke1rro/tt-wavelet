@@ -3,8 +3,6 @@
 #include "api/dataflow/dataflow_api.h"
 #include "lwt_reader_utils.hpp"
 
-namespace ku = ttwv::kernels::utils;
-
 // Fused reader for the 1D lifting pipeline.
 //
 // Runtime args:
@@ -33,8 +31,8 @@ namespace ku = ttwv::kernels::utils;
 // only row 0 carries signal data; rows 1..31 are zero-filled.
 void kernel_main() {
     const uint32_t src_addr = get_arg_val<uint32_t>(0);
-    
-    ku::LwtReaderConfig config;
+
+    ttwv::kernels::utils::LwtReaderConfig config;
     config.input_length = get_arg_val<uint32_t>(1);
     config.padded_length = get_arg_val<uint32_t>(2);
     config.left_pad = get_arg_val<uint32_t>(3);
@@ -52,14 +50,14 @@ void kernel_main() {
     constexpr auto src_args = TensorAccessorArgs<5>();
     const auto src = TensorAccessor(src_args, src_addr, stick_nbytes);
 
-    ku::StickReadCache read_cache{cb_cache, stick_nbytes, stick_width, ku::kInvalidStick, false};
+    ttwv::kernels::utils::StickReadCache read_cache{cb_cache, stick_nbytes, stick_width, ttwv::kernels::utils::kInvalidStick, false};
 
-    auto generator = ku::make_lwt_tile_generator(
+    auto generator = ttwv::kernels::utils::make_lwt_tile_generator(
         src, read_cache, config, cb_halo, cb_cur, stick_nbytes, stick_width);
 
     for (uint32_t tile = 0; tile < config.num_tiles; ++tile) {
         generator.push_tile_pair(tile);
     }
 
-    ku::release_cache(read_cache);
+    ttwv::kernels::utils::release_cache(read_cache);
 }

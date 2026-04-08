@@ -1,19 +1,3 @@
-// lwt_writer.cpp
-//
-// Writer kernel for the 1D LWT (lifting wavelet transform) pipeline.
-//
-// Drains the output circular buffer produced by the compute kernel and
-// stores each stick sequentially into a DRAM destination buffer.
-//
-// Runtime args:
-//   0: dst_addr    — base address of the DRAM output buffer
-//   1: stick_count — total number of sticks to write
-//
-// Compile-time args:
-//   0: cb_id_out   — index of the output CB to drain
-//   1: stick_nbytes — byte size of one stick (must be NOC-aligned)
-//   2+: TensorAccessorArgs for the destination buffer
-
 #include <cstdint>
 
 #include "api/dataflow/dataflow_api.h"
