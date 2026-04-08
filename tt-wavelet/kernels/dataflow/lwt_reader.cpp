@@ -33,13 +33,16 @@ namespace ku = ttwv::kernels::utils;
 // only row 0 carries signal data; rows 1..31 are zero-filled.
 void kernel_main() {
     const uint32_t src_addr = get_arg_val<uint32_t>(0);
-    const uint32_t input_length = get_arg_val<uint32_t>(1);
-    const uint32_t padded_length = get_arg_val<uint32_t>(2);
-    const uint32_t left_pad = get_arg_val<uint32_t>(3);
-    const uint32_t split_phase = get_arg_val<uint32_t>(4) & 1U;
-    const int32_t source_offset = get_arg_val<int32_t>(5);
-    const uint32_t stencil_k = get_arg_val<uint32_t>(6);
-    const uint32_t num_tiles = get_arg_val<uint32_t>(7);
+    
+    ku::LwtReaderConfig config;
+    config.input_length = get_arg_val<uint32_t>(1);
+    config.padded_length = get_arg_val<uint32_t>(2);
+    config.left_pad = get_arg_val<uint32_t>(3);
+    config.split_phase = get_arg_val<uint32_t>(4) & 1U;
+    config.source_offset = get_arg_val<int32_t>(5);
+    config.stencil_k = get_arg_val<uint32_t>(6);
+    config.num_tiles = get_arg_val<uint32_t>(7);
+    config.is_pad_split = get_arg_val<uint32_t>(8) == 1;
 
     constexpr uint32_t cb_halo = get_compile_time_arg_val(0);
     constexpr uint32_t cb_cur = get_compile_time_arg_val(1);
@@ -51,21 +54,11 @@ void kernel_main() {
 
     ku::StickReadCache read_cache{cb_cache, stick_nbytes, stick_width, ku::kInvalidStick, false};
 
-    for (uint32_t tile = 0; tile < num_tiles; ++tile) {
-        ku::push_fused_lwt_tile_pair(
-            src,
-            read_cache,
-            cb_halo,
-            cb_cur,
-            stick_nbytes,
-            stick_width,
-            input_length,
-            padded_length,
-            left_pad,
-            split_phase,
-            source_offset,
-            stencil_k,
-            tile);
+    auto generator = ku::make_lwt_tile_generator(
+        src, read_cache, config, cb_halo, cb_cur, stick_nbytes, stick_width);
+
+    for (uint32_t tile = 0; tile < config.num_tiles; ++tile) {
+        generator.push_tile_pair(tile);
     }
 
     ku::release_cache(read_cache);
