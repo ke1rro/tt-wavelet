@@ -40,16 +40,16 @@ if(BUILD_TT_WAVELET)
   target_include_directories(tt_wavelet_test PRIVATE ${TT_WAVELET_INCLUDE_DIRS})
   target_link_libraries(tt_wavelet_test PRIVATE Metalium::Metal)
 
-  add_executable(lwt_main
-    lwt_main.cpp
+  add_executable(lwt_reader_test
+    lwt_reader_test.cpp
     tt_wavelet/src/pad_split_device.cpp
     tt_wavelet/src/lwt_device.cpp
   )
   if(DEFINED METALIUM_INCLUDE_DIRS)
-    target_include_directories(lwt_main PRIVATE ${METALIUM_INCLUDE_DIRS})
+    target_include_directories(lwt_reader_test PRIVATE ${METALIUM_INCLUDE_DIRS})
   endif()
-  target_include_directories(lwt_main
+  target_include_directories(lwt_reader_test
     PRIVATE ${TT_WAVELET_LLK_INCLUDE_DIRS}
             ${TT_WAVELET_INCLUDE_DIRS})
-  target_link_libraries(lwt_main PRIVATE Metalium::Metal)
+  target_link_libraries(lwt_reader_test PRIVATE Metalium::Metal)
 endif()
