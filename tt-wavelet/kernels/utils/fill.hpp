@@ -8,9 +8,7 @@
 
 namespace ttwv::kernels::utils {
 
-ALWI void fill_zeros(float* ptr, const uint32_t n) {
-    __builtin_memset(ptr, 0, n * sizeof(float));
-}
+ALWI void fill_zeros(float* ptr, const uint32_t n) { __builtin_memset(ptr, 0, n * sizeof(float)); }
 
 ALWI void push_zero_stick(const uint32_t cb_id, const uint32_t stick_nbytes) {
     cb_reserve_back(cb_id, 1);

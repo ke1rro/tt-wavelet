@@ -2,9 +2,7 @@ if(BUILD_TT_WAVELET)
   add_compile_definitions(TT_WAVELET_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
   add_executable(
     tt_wavelet_test
-    lwt_reader_test.cpp
-    tt_wavelet/src/pad_split_device.cpp
-    tt_wavelet/src/lwt_device.cpp
+          stencil.cpp
   )
 
   set(TT_WAVELET_LLK_INCLUDE_CANDIDATES
