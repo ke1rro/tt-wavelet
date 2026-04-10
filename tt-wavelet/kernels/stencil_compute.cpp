@@ -1,10 +1,9 @@
 #include <cstdint>
 
 #include "compute_kernel_api/common.h"
-#include "compute_kernel_api/copy_dest_values.h"
 #include "compute_kernel_api/eltwise_unary/eltwise_unary.h"
-#include "compute_kernel_api/eltwise_unary/exp.h"
 #include "compute_kernel_api/tile_move_copy.h"
+#include "stencil_sfpi.h"
 #include "tt_metal/fabric/hw/inc/edm_fabric/compile_time_arg_tmp.hpp"
 
 void kernel_main() {
@@ -20,7 +19,7 @@ void kernel_main() {
     constexpr uint dst_input = 1;
     constexpr uint dst_out = 2;
 
-    init_sfpu(cb_input, cb_output);
+    ckernel::init_sfpu(cb_input, cb_output);
 
     tile_regs_acquire();
     cb_wait_front(cb_halo, 1);
@@ -33,11 +32,8 @@ void kernel_main() {
     copy_tile(cb_input, 0, dst_input);
     cb_pop_front(cb_input, 1);
 
-    // Temp copy input to out and each elem to e^x
-    copy_dest_values_init();
-    copy_dest_values(dst_out, dst_input);
-    exp_tile_init();
-    exp_tile(dst_out);
+    MATH((ckernel::sfpu::calculate_stencil_init<K>()));
+    MATH((ckernel::sfpu::calculate_stencil<K>(h_coeffs_of_step.data(), dst_halo, dst_input, dst_out)));
 
     tile_regs_commit();
     tile_regs_wait();

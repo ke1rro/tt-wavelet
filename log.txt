@@ -1,26 +1,183 @@
-2026-04-09 22:27:19.181 | info     |             UMD | Established firmware bundle version: 19.6.0 (topology_discovery.cpp:369)
-2026-04-09 22:27:19.181 | info     |             UMD | Firmware bundle version 19.6.0 on the system is newer than the latest fully tested version 19.4.0 for wormhole_b0 architecture. Newest features may not be supported. (topology_discovery.cpp:395)
-2026-04-09 22:27:19.190 | info     |          Device | Opening user mode device driver (tt_cluster.cpp:223)
-2026-04-09 22:27:19.200 | info     |             UMD | Established firmware bundle version: 19.6.0 (topology_discovery.cpp:369)
-2026-04-09 22:27:19.200 | info     |             UMD | Firmware bundle version 19.6.0 on the system is newer than the latest fully tested version 19.4.0 for wormhole_b0 architecture. Newest features may not be supported. (topology_discovery.cpp:395)
-2026-04-09 22:27:19.219 | info     |             UMD | Established firmware bundle version: 19.6.0 (topology_discovery.cpp:369)
-2026-04-09 22:27:19.219 | info     |             UMD | Firmware bundle version 19.6.0 on the system is newer than the latest fully tested version 19.4.0 for wormhole_b0 architecture. Newest features may not be supported. (topology_discovery.cpp:395)
-2026-04-09 22:27:19.240 | info     |             UMD | Harvesting masks for chip 0 tensix: 0x201 dram: 0x0 eth: 0x0 pcie: 0x0 l2cpu: 0x0 (cluster.cpp:338)
-2026-04-09 22:27:19.270 | info     |             UMD | Harvesting masks for chip 1 tensix: 0x280 dram: 0x0 eth: 0x0 pcie: 0x0 l2cpu: 0x0 (cluster.cpp:338)
-2026-04-09 22:27:19.281 | info     |             UMD | Opening local chip ids/PCIe ids: {0}/[0] and remote chip ids {1} (cluster.cpp:185)
-2026-04-09 22:27:19.281 | info     |             UMD | IOMMU: disabled (cluster.cpp:161)
-2026-04-09 22:27:19.281 | info     |             UMD | KMD version: 2.5.0 (cluster.cpp:164)
-2026-04-09 22:27:19.282 | info     |             UMD | Starting devices in cluster (cluster.cpp:964)
-2026-04-09 22:27:19.283 | info     |             UMD | Mapped hugepage 0x200000000 to NOC address 0x800000000 (silicon_sysmem_manager.cpp:207)
-2026-04-09 22:27:19.283 | info     |             UMD | Mapped hugepage 0x1c0000000 to NOC address 0x840000000 (silicon_sysmem_manager.cpp:207)
-2026-04-09 22:27:19.307 | info     |     Distributed | Using auto discovery to generate mesh graph. (metal_context.cpp:863)
-2026-04-09 22:27:19.307 | info     |     Distributed | Constructing control plane using auto-discovery (no mesh graph descriptor). (metal_context.cpp:840)
-2026-04-09 22:27:19.307 | info     |          Fabric | TopologyMapper mapping start (mesh=0): n_log=2, n_phys=2, log_deg_hist={1:2}, phys_deg_hist={1:2} (topology_mapper_utils.cpp:171)
-2026-04-09 22:27:19.307 | info     |          Fabric | Fast-path path-graph mapping succeeded for mesh 0 (topology_mapper_utils.cpp:401)
-2026-04-09 22:27:19.307 | info     |          Fabric | TopologyMapper mapping start (mesh=0): n_log=2, n_phys=2, log_deg_hist={1:2}, phys_deg_hist={1:2} (topology_mapper_utils.cpp:171)
-2026-04-09 22:27:19.307 | info     |          Fabric | Fast-path path-graph mapping succeeded for mesh 0 (topology_mapper_utils.cpp:401)
+2026-04-10 12:10:56.446 | info     |             UMD | Established firmware bundle version: 19.6.0 (topology_discovery.cpp:369)
+2026-04-10 12:10:56.446 | info     |             UMD | Firmware bundle version 19.6.0 on the system is newer than the latest fully tested version 19.4.0 for wormhole_b0 architecture. Newest features may not be supported. (topology_discovery.cpp:395)
+2026-04-10 12:10:56.452 | info     |          Device | Opening user mode device driver (tt_cluster.cpp:223)
+2026-04-10 12:10:56.455 | info     |             UMD | Established firmware bundle version: 19.6.0 (topology_discovery.cpp:369)
+2026-04-10 12:10:56.455 | info     |             UMD | Firmware bundle version 19.6.0 on the system is newer than the latest fully tested version 19.4.0 for wormhole_b0 architecture. Newest features may not be supported. (topology_discovery.cpp:395)
+2026-04-10 12:10:56.468 | info     |             UMD | Established firmware bundle version: 19.6.0 (topology_discovery.cpp:369)
+2026-04-10 12:10:56.469 | info     |             UMD | Firmware bundle version 19.6.0 on the system is newer than the latest fully tested version 19.4.0 for wormhole_b0 architecture. Newest features may not be supported. (topology_discovery.cpp:395)
+2026-04-10 12:10:56.480 | info     |             UMD | Harvesting masks for chip 0 tensix: 0x201 dram: 0x0 eth: 0x0 pcie: 0x0 l2cpu: 0x0 (cluster.cpp:338)
+2026-04-10 12:10:56.507 | info     |             UMD | Harvesting masks for chip 1 tensix: 0x280 dram: 0x0 eth: 0x0 pcie: 0x0 l2cpu: 0x0 (cluster.cpp:338)
+2026-04-10 12:10:56.521 | info     |             UMD | Opening local chip ids/PCIe ids: {0}/[0] and remote chip ids {1} (cluster.cpp:185)
+2026-04-10 12:10:56.521 | info     |             UMD | IOMMU: disabled (cluster.cpp:161)
+2026-04-10 12:10:56.521 | info     |             UMD | KMD version: 2.5.0 (cluster.cpp:164)
+2026-04-10 12:10:56.523 | info     |             UMD | Starting devices in cluster (cluster.cpp:964)
+2026-04-10 12:10:56.524 | info     |             UMD | Mapped hugepage 0x200000000 to NOC address 0x800000000 (silicon_sysmem_manager.cpp:207)
+2026-04-10 12:10:56.525 | info     |             UMD | Mapped hugepage 0x1c0000000 to NOC address 0x840000000 (silicon_sysmem_manager.cpp:207)
+2026-04-10 12:10:56.627 | warning  |             UMD | Waiting for AICLK value to settle failed on timeout after 100ms. Expected to see 1000, last value observed 898. This can be due to possible overheating of the chip or other issues. ASIC temperature: 75 (chip.cpp:272)
+2026-04-10 12:10:56.644 | info     |     Distributed | Using auto discovery to generate mesh graph. (metal_context.cpp:863)
+2026-04-10 12:10:56.645 | info     |     Distributed | Constructing control plane using auto-discovery (no mesh graph descriptor). (metal_context.cpp:840)
+2026-04-10 12:10:56.645 | info     |          Fabric | TopologyMapper mapping start (mesh=0): n_log=2, n_phys=2, log_deg_hist={1:2}, phys_deg_hist={1:2} (topology_mapper_utils.cpp:171)
+2026-04-10 12:10:56.645 | info     |          Fabric | Fast-path path-graph mapping succeeded for mesh 0 (topology_mapper_utils.cpp:401)
+2026-04-10 12:10:56.645 | info     |          Fabric | TopologyMapper mapping start (mesh=0): n_log=2, n_phys=2, log_deg_hist={1:2}, phys_deg_hist={1:2} (topology_mapper_utils.cpp:171)
+2026-04-10 12:10:56.645 | info     |          Fabric | Fast-path path-graph mapping succeeded for mesh 0 (topology_mapper_utils.cpp:401)
+2026-04-10 12:10:56.666 | info     |           Metal | While initializing device 0, active ethernet dispatch core (x=21,y=17) detected as still running, issuing exit signal. (metal_context.cpp:902)
+2026-04-10 12:10:56.666 | info     |           Metal | While initializing device 0, active ethernet dispatch core (x=18,y=17) detected as still running, issuing exit signal. (metal_context.cpp:902)
+2026-04-10 12:10:56.666 | info     |           Metal | While initializing device 0, active ethernet dispatch core (x=25,y=17) detected as still running, issuing exit signal. (metal_context.cpp:902)
+Read unexpected run_mailbox value: 0x40 (expected 0x80 or 0x0)
+2026-04-10 12:10:56.666 | critical |          Always | TT_FATAL: Read unexpected run_mailbox value from core (x=25,y=17) (assert.hpp:104)
+2026-04-10 12:10:56.667 | warning  |          Always | Detected dispatch kernels still running but failed to complete an early exit. This may happen from time to time following a reset, continuing to FW initialization... (metal_context.cpp:936)
+2026-04-10 12:10:56.670 | info     |           Metal | While initializing device 1, active ethernet dispatch core (x=18,y=16) detected as still running, issuing exit signal. (metal_context.cpp:902)
+2026-04-10 12:10:56.670 | info     |           Metal | While initializing device 1, active ethernet dispatch core (x=25,y=16) detected as still running, issuing exit signal. (metal_context.cpp:902)
+Read unexpected run_mailbox value: 0x40 (expected 0x80 or 0x0)
+2026-04-10 12:10:56.670 | critical |          Always | TT_FATAL: Read unexpected run_mailbox value from core (x=25,y=16) (assert.hpp:104)
+2026-04-10 12:10:56.671 | warning  |          Always | Detected dispatch kernels still running but failed to complete an early exit. This may happen from time to time following a reset, continuing to FW initialization... (metal_context.cpp:936)
 [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, ]
 [18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, ]
-[6.5601e+07, 1.78518e+08, 4.84962e+08, 1.31909e+09, 3.59449e+09, 9.74743e+09, 2.64742e+10, 7.20739e+10, 1.95687e+11, 5.33109e+11, 1.44524e+12, 3.93845e+12, 1.07373e+13, 2.90337e+13, 7.93012e+13, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 1.00194, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, ]
-2026-04-09 22:27:19.887 | info     |          Device | Closing user mode device drivers (tt_cluster.cpp:472)
-2026-04-09 22:27:19.887 | info     |             UMD | Closing devices in cluster (cluster.cpp:975)
+2026-04-10 12:10:57.002 | error    |    BuildKernels | trisc0 compile failure -- cmd: cd /root/.cache/tt-metal-cache/f87c34a93e/11358605694596585868/kernels/stencil_compute/540580417206407652/trisc0/ && /opt/tenstorrent/sfpi/compiler/bin/riscv-tt-elf-g++ -O3 -std=c++17 -flto=auto -ffast-math -fno-exceptions -g -MMD -fno-use-cxa-atexit -Wall -Werror -Wno-unknown-pragmas -Wno-deprecated-declarations -Wno-error=multistatement-macros -Wno-error=parentheses -Wno-error=unused-but-set-variable -Wno-unused-variable -Wno-unused-function -mcpu=tt-wh-tensix -I. -I.. -I/root/tt-wavelet/tt-metal/ -I/root/tt-wavelet/tt-metal/ttnn -I/root/tt-wavelet/tt-metal/ttnn/cpp -I/root/tt-wavelet/tt-metal/tt_metal -I/root/tt-wavelet/tt-metal/tt_metal/include -I/root/tt-wavelet/tt-metal/tt_metal/hw/inc -I/root/tt-wavelet/tt-metal/tt_metal/hostdevcommon/api -I/root/tt-wavelet/tt-metal/tt_metal/hw/inc/debug -I/root/tt-wavelet/tt-metal/tt_metal/api/ -I/opt/tenstorrent/sfpi/include -I/root/tt-wavelet/tt-metal/tt_metal/hw/ckernels/wormhole_b0/metal/common -I/root/tt-wavelet/tt-metal/tt_metal/hw/ckernels/wormhole_b0/metal/llk_io -I/root/tt-wavelet/tt-metal/tt_metal/hw/inc/internal/tt-1xx -I/root/tt-wavelet/tt-metal/tt_metal/hw/inc/internal/tt-1xx/wormhole -I/root/tt-wavelet/tt-metal/tt_metal/hw/inc/internal/tt-1xx/wormhole/wormhole_b0_defines -I/root/tt-wavelet/tt-metal/tt_metal/hw/inc/internal/tt-1xx/wormhole/noc -I/root/tt-wavelet/tt-metal/tt_metal/third_party/tt_llk/tt_llk_wormhole_b0/common/inc -I/root/tt-wavelet/tt-metal/tt_metal/third_party/tt_llk/tt_llk_wormhole_b0/llk_lib -I/root/tt-wavelet/tt-metal/tt_metal/hw/ckernels/wormhole_b0/metal/llk_api -I/root/tt-wavelet/tt-metal/tt_metal/hw/ckernels/wormhole_b0/metal/llk_api/llk_sfpu -I/root/tt-wavelet/tt-metal/tt_metal/hw/firmware/src/tt-1xx -I/root/tt-wavelet/tt-wavelet/kernels -c -o trisck.o /root/tt-wavelet/tt-metal/tt_metal/hw/firmware/src/tt-1xx/trisck.cc -DIS_NOT_POW2_NUM_DRAM_BANKS=1 -DIS_NOT_POW2_NUM_L1_BANKS=1 -DNUM_DRAM_BANKS=12 -DNUM_L1_BANKS=56 -DPCIE_NOC_X=0 -DPCIE_NOC_Y=3 -DTENSIX_FIRMWARE -DLOCAL_MEM_EN=0 -DROUTING_FW_ENABLED -DPROCESSOR_INDEX=2 -DUCK_CHLKC_UNPACK -DNAMESPACE=chlkc_unpack -DCOMPILE_FOR_TRISC=0 -DARCH_WORMHOLE -DDISPATCH_MESSAGE_ADDR=4290183304 -DKERNEL_BUILD -DKERNEL_COMPILE_TIME_ARGS=2,0,1,16,3204448256,3204448256  (build.cpp:51)
+2026-04-10 12:10:57.002 | critical |          Always | TT_THROW: trisc0 build failed. Log: In file included from /root/tt-wavelet/tt-wavelet/kernels/stencil_compute.cpp:6,
+                 from /root/tt-wavelet/tt-metal/tt_metal/hw/ckernels/wormhole_b0/metal/common/chlkc_list.h:37,
+                 from /root/tt-wavelet/tt-metal/tt_metal/hw/firmware/src/tt-1xx/trisck.cc:13:
+/root/tt-wavelet/tt-wavelet/kernels/stencil_sfpi.h: In function 'void ckernel::sfpu::calculate_stencil(const uint32_t*, uint, uint, uint, uint)':
+/root/tt-wavelet/tt-wavelet/kernels/stencil_sfpi.h:168:5: error: expected primary-expression before ')' token [-Wtemplate-body]
+  168 |     );
+      |     ^
+/root/tt-wavelet/tt-wavelet/kernels/stencil_sfpi.h:176:5: error: expected primary-expression before ')' token [-Wtemplate-body]
+  176 |     );
+      |     ^
+/root/tt-wavelet/tt-wavelet/kernels/stencil_sfpi.h:190:5: error: expected primary-expression before ')' token [-Wtemplate-body]
+  190 |     );
+      |     ^
+/root/tt-wavelet/tt-wavelet/kernels/stencil_sfpi.h:198:5: error: expected primary-expression before ')' token [-Wtemplate-body]
+  198 |     );
+      |     ^
+ (assert.hpp:104)
+2026-04-10 12:10:57.062 | error    |    BuildKernels | trisc1 compile failure -- cmd: cd /root/.cache/tt-metal-cache/f87c34a93e/11358605694596585868/kernels/stencil_compute/540580417206407652/trisc1/ && /opt/tenstorrent/sfpi/compiler/bin/riscv-tt-elf-g++ -O3 -std=c++17 -flto=auto -ffast-math -fno-exceptions -g -MMD -fno-use-cxa-atexit -Wall -Werror -Wno-unknown-pragmas -Wno-deprecated-declarations -Wno-error=multistatement-macros -Wno-error=parentheses -Wno-error=unused-but-set-variable -Wno-unused-variable -Wno-unused-function -mcpu=tt-wh-tensix -I. -I.. -I/root/tt-wavelet/tt-metal/ -I/root/tt-wavelet/tt-metal/ttnn -I/root/tt-wavelet/tt-metal/ttnn/cpp -I/root/tt-wavelet/tt-metal/tt_metal -I/root/tt-wavelet/tt-metal/tt_metal/include -I/root/tt-wavelet/tt-metal/tt_metal/hw/inc -I/root/tt-wavelet/tt-metal/tt_metal/hostdevcommon/api -I/root/tt-wavelet/tt-metal/tt_metal/hw/inc/debug -I/root/tt-wavelet/tt-metal/tt_metal/api/ -I/opt/tenstorrent/sfpi/include -I/root/tt-wavelet/tt-metal/tt_metal/hw/ckernels/wormhole_b0/metal/common -I/root/tt-wavelet/tt-metal/tt_metal/hw/ckernels/wormhole_b0/metal/llk_io -I/root/tt-wavelet/tt-metal/tt_metal/hw/inc/internal/tt-1xx -I/root/tt-wavelet/tt-metal/tt_metal/hw/inc/internal/tt-1xx/wormhole -I/root/tt-wavelet/tt-metal/tt_metal/hw/inc/internal/tt-1xx/wormhole/wormhole_b0_defines -I/root/tt-wavelet/tt-metal/tt_metal/hw/inc/internal/tt-1xx/wormhole/noc -I/root/tt-wavelet/tt-metal/tt_metal/third_party/tt_llk/tt_llk_wormhole_b0/common/inc -I/root/tt-wavelet/tt-metal/tt_metal/third_party/tt_llk/tt_llk_wormhole_b0/llk_lib -I/root/tt-wavelet/tt-metal/tt_metal/hw/ckernels/wormhole_b0/metal/llk_api -I/root/tt-wavelet/tt-metal/tt_metal/hw/ckernels/wormhole_b0/metal/llk_api/llk_sfpu -I/root/tt-wavelet/tt-metal/tt_metal/hw/firmware/src/tt-1xx -I/root/tt-wavelet/tt-wavelet/kernels -c -o trisck.o /root/tt-wavelet/tt-metal/tt_metal/hw/firmware/src/tt-1xx/trisck.cc -DIS_NOT_POW2_NUM_DRAM_BANKS=1 -DIS_NOT_POW2_NUM_L1_BANKS=1 -DNUM_DRAM_BANKS=12 -DNUM_L1_BANKS=56 -DPCIE_NOC_X=0 -DPCIE_NOC_Y=3 -DTENSIX_FIRMWARE -DLOCAL_MEM_EN=0 -DROUTING_FW_ENABLED -DPROCESSOR_INDEX=3 -DUCK_CHLKC_MATH -DNAMESPACE=chlkc_math -DCOMPILE_FOR_TRISC=1 -DARCH_WORMHOLE -DDISPATCH_MESSAGE_ADDR=4290183304 -DKERNEL_BUILD -DKERNEL_COMPILE_TIME_ARGS=2,0,1,16,3204448256,3204448256  (build.cpp:51)
+2026-04-10 12:10:57.062 | critical |          Always | TT_THROW: trisc1 build failed. Log: In file included from /root/tt-wavelet/tt-wavelet/kernels/stencil_compute.cpp:6,
+                 from /root/tt-wavelet/tt-metal/tt_metal/hw/ckernels/wormhole_b0/metal/common/chlkc_list.h:21,
+                 from /root/tt-wavelet/tt-metal/tt_metal/hw/firmware/src/tt-1xx/trisck.cc:13:
+/root/tt-wavelet/tt-wavelet/kernels/stencil_sfpi.h: In function 'void ckernel::sfpu::calculate_stencil(const uint32_t*, uint, uint, uint, uint)':
+/root/tt-wavelet/tt-wavelet/kernels/stencil_sfpi.h:168:5: error: expected primary-expression before ')' token [-Wtemplate-body]
+  168 |     );
+      |     ^
+/root/tt-wavelet/tt-wavelet/kernels/stencil_sfpi.h:176:5: error: expected primary-expression before ')' token [-Wtemplate-body]
+  176 |     );
+      |     ^
+/root/tt-wavelet/tt-wavelet/kernels/stencil_sfpi.h:190:5: error: expected primary-expression before ')' token [-Wtemplate-body]
+  190 |     );
+      |     ^
+/root/tt-wavelet/tt-wavelet/kernels/stencil_sfpi.h:198:5: error: expected primary-expression before ')' token [-Wtemplate-body]
+  198 |     );
+      |     ^
+ (assert.hpp:104)
+2026-04-10 12:10:57.063 | critical |          Always | TT_THROW: Failed to generate binaries for stencil_compute TT_THROW @ /root/tt-wavelet/tt-metal/tt_metal/jit_build/build.cpp:55: tt::exception
+info:
+trisc0 build failed. Log: In file included from /root/tt-wavelet/tt-wavelet/kernels/stencil_compute.cpp:6,
+                 from /root/tt-wavelet/tt-metal/tt_metal/hw/ckernels/wormhole_b0/metal/common/chlkc_list.h:37,
+                 from /root/tt-wavelet/tt-metal/tt_metal/hw/firmware/src/tt-1xx/trisck.cc:13:
+/root/tt-wavelet/tt-wavelet/kernels/stencil_sfpi.h: In function 'void ckernel::sfpu::calculate_stencil(const uint32_t*, uint, uint, uint, uint)':
+/root/tt-wavelet/tt-wavelet/kernels/stencil_sfpi.h:168:5: error: expected primary-expression before ')' token [-Wtemplate-body]
+  168 |     );
+      |     ^
+/root/tt-wavelet/tt-wavelet/kernels/stencil_sfpi.h:176:5: error: expected primary-expression before ')' token [-Wtemplate-body]
+  176 |     );
+      |     ^
+/root/tt-wavelet/tt-wavelet/kernels/stencil_sfpi.h:190:5: error: expected primary-expression before ')' token [-Wtemplate-body]
+  190 |     );
+      |     ^
+/root/tt-wavelet/tt-wavelet/kernels/stencil_sfpi.h:198:5: error: expected primary-expression before ')' token [-Wtemplate-body]
+  198 |     );
+      |     ^
+
+backtrace:
+ --- /root/tt-wavelet/build/tt-metal/tt_metal/libtt_metal.so(+0x326429) [0x7f2818765429]
+ --- /root/tt-wavelet/build/tt-metal/tt_metal/libtt_metal.so(+0x56669f) [0x7f28189a569f]
+ --- tt::tt_metal::JitBuildState::compile_one(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&, tt::tt_metal::JitBuildSettings const*, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&) const
+ --- /root/tt-wavelet/build/tt-metal/tt_metal/libtt_metal.so(+0x57b0d4) [0x7f28189ba0d4]
+ --- /root/tt-wavelet/build/tt-metal/tt_metal/libtt_metal.so(+0x57b079) [0x7f28189ba079]
+ --- /root/tt-wavelet/build/tt-metal/tt_metal/libtt_metal.so(+0x32cc07) [0x7f281876bc07]
+ --- /lib/x86_64-linux-gnu/libc.so.6(+0x99ee8) [0x7f2817c1aee8]
+ --- /root/tt-wavelet/build/tt-metal/tt_metal/libtt_metal.so(+0x32ca72) [0x7f281876ba72]
+ --- /root/tt-wavelet/build/tt-metal/tt_metal/libtt_metal.so(+0x57aeb1) [0x7f28189b9eb1]
+ --- /root/tt-wavelet/build/tt-metal/tt_metal/libtt_metal.so(+0x51d395) [0x7f281895c395]
+ --- /root/tt-wavelet/build/tt-metal/tt_metal/libtt_metal.so(+0x51beb1) [0x7f281895aeb1]
+ --- /root/tt-wavelet/build/tt-metal/tt_metal/libtt_metal.so(+0x51b3a9) [0x7f281895a3a9]
+ --- /lib/x86_64-linux-gnu/libstdc++.so.6(+0xdc253) [0x7f2817f8f253]
+ --- /lib/x86_64-linux-gnu/libc.so.6(+0x94ac3) [0x7f2817c15ac3]
+ --- /lib/x86_64-linux-gnu/libc.so.6(+0x1268d0) [0x7f2817ca78d0]
+ (assert.hpp:104)
+terminate called after throwing an instance of 'std::runtime_error'
+  what():  TT_THROW @ /root/tt-wavelet/tt-metal/tt_metal/impl/program/program.cpp:160: tt::exception
+info:
+Failed to generate binaries for stencil_compute TT_THROW @ /root/tt-wavelet/tt-metal/tt_metal/jit_build/build.cpp:55: tt::exception
+info:
+trisc0 build failed. Log: In file included from /root/tt-wavelet/tt-wavelet/kernels/stencil_compute.cpp:6,
+                 from /root/tt-wavelet/tt-metal/tt_metal/hw/ckernels/wormhole_b0/metal/common/chlkc_list.h:37,
+                 from /root/tt-wavelet/tt-metal/tt_metal/hw/firmware/src/tt-1xx/trisck.cc:13:
+/root/tt-wavelet/tt-wavelet/kernels/stencil_sfpi.h: In function 'void ckernel::sfpu::calculate_stencil(const uint32_t*, uint, uint, uint, uint)':
+/root/tt-wavelet/tt-wavelet/kernels/stencil_sfpi.h:168:5: error: expected primary-expression before ')' token [-Wtemplate-body]
+  168 |     );
+      |     ^
+/root/tt-wavelet/tt-wavelet/kernels/stencil_sfpi.h:176:5: error: expected primary-expression before ')' token [-Wtemplate-body]
+  176 |     );
+      |     ^
+/root/tt-wavelet/tt-wavelet/kernels/stencil_sfpi.h:190:5: error: expected primary-expression before ')' token [-Wtemplate-body]
+  190 |     );
+      |     ^
+/root/tt-wavelet/tt-wavelet/kernels/stencil_sfpi.h:198:5: error: expected primary-expression before ')' token [-Wtemplate-body]
+  198 |     );
+      |     ^
+
+backtrace:
+ --- /root/tt-wavelet/build/tt-metal/tt_metal/libtt_metal.so(+0x326429) [0x7f2818765429]
+ --- /root/tt-wavelet/build/tt-metal/tt_metal/libtt_metal.so(+0x56669f) [0x7f28189a569f]
+ --- tt::tt_metal::JitBuildState::compile_one(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&, tt::tt_metal::JitBuildSettings const*, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&) const
+ --- /root/tt-wavelet/build/tt-metal/tt_metal/libtt_metal.so(+0x57b0d4) [0x7f28189ba0d4]
+ --- /root/tt-wavelet/build/tt-metal/tt_metal/libtt_metal.so(+0x57b079) [0x7f28189ba079]
+ --- /root/tt-wavelet/build/tt-metal/tt_metal/libtt_metal.so(+0x32cc07) [0x7f281876bc07]
+ --- /lib/x86_64-linux-gnu/libc.so.6(+0x99ee8) [0x7f2817c1aee8]
+ --- /root/tt-wavelet/build/tt-metal/tt_metal/libtt_metal.so(+0x32ca72) [0x7f281876ba72]
+ --- /root/tt-wavelet/build/tt-metal/tt_metal/libtt_metal.so(+0x57aeb1) [0x7f28189b9eb1]
+ --- /root/tt-wavelet/build/tt-metal/tt_metal/libtt_metal.so(+0x51d395) [0x7f281895c395]
+ --- /root/tt-wavelet/build/tt-metal/tt_metal/libtt_metal.so(+0x51beb1) [0x7f281895aeb1]
+ --- /root/tt-wavelet/build/tt-metal/tt_metal/libtt_metal.so(+0x51b3a9) [0x7f281895a3a9]
+ --- /lib/x86_64-linux-gnu/libstdc++.so.6(+0xdc253) [0x7f2817f8f253]
+ --- /lib/x86_64-linux-gnu/libc.so.6(+0x94ac3) [0x7f2817c15ac3]
+ --- /lib/x86_64-linux-gnu/libc.so.6(+0x1268d0) [0x7f2817ca78d0]
+
+backtrace:
+ --- /root/tt-wavelet/build/tt-metal/tt_metal/libtt_metal.so(+0x43da19) [0x7f281887ca19]
+ --- /root/tt-wavelet/build/tt-metal/tt_metal/libtt_metal.so(+0x40aca9) [0x7f2818849ca9]
+ --- /root/tt-wavelet/build/tt-metal/tt_metal/libtt_metal.so(+0x57b0d4) [0x7f28189ba0d4]
+ --- /root/tt-wavelet/build/tt-metal/tt_metal/libtt_metal.so(+0x57b079) [0x7f28189ba079]
+ --- /root/tt-wavelet/build/tt-metal/tt_metal/libtt_metal.so(+0x32cc07) [0x7f281876bc07]
+ --- /lib/x86_64-linux-gnu/libc.so.6(+0x99ee8) [0x7f2817c1aee8]
+ --- /root/tt-wavelet/build/tt-metal/tt_metal/libtt_metal.so(+0x32ca72) [0x7f281876ba72]
+ --- /root/tt-wavelet/build/tt-metal/tt_metal/libtt_metal.so(+0x57aeb1) [0x7f28189b9eb1]
+ --- /root/tt-wavelet/build/tt-metal/tt_metal/libtt_metal.so(+0x51d395) [0x7f281895c395]
+ --- /root/tt-wavelet/build/tt-metal/tt_metal/libtt_metal.so(+0x51beb1) [0x7f281895aeb1]
+ --- /root/tt-wavelet/build/tt-metal/tt_metal/libtt_metal.so(+0x51b3a9) [0x7f281895a3a9]
+ --- /lib/x86_64-linux-gnu/libstdc++.so.6(+0xdc253) [0x7f2817f8f253]
+ --- /lib/x86_64-linux-gnu/libc.so.6(+0x94ac3) [0x7f2817c15ac3]
+ --- /lib/x86_64-linux-gnu/libc.so.6(+0x1268d0) [0x7f2817ca78d0]
+
+[25f78357:221442] *** Process received signal ***
+[25f78357:221442] Signal: Aborted (6)
+[25f78357:221442] Signal code:  (-6)
+[25f78357:221442] [ 0] /lib/x86_64-linux-gnu/libc.so.6(+0x42520)[0x7f2817bc3520]
+[25f78357:221442] [ 1] /lib/x86_64-linux-gnu/libc.so.6(pthread_kill+0x12c)[0x7f2817c179fc]
+[25f78357:221442] [ 2] /lib/x86_64-linux-gnu/libc.so.6(raise+0x16)[0x7f2817bc3476]
+[25f78357:221442] [ 3] /lib/x86_64-linux-gnu/libc.so.6(abort+0xd3)[0x7f2817ba97f3]
+[25f78357:221442] [ 4] /lib/x86_64-linux-gnu/libstdc++.so.6(+0xa2b9e)[0x7f2817f55b9e]
+[25f78357:221442] [ 5] /lib/x86_64-linux-gnu/libstdc++.so.6(+0xae20c)[0x7f2817f6120c]
+[25f78357:221442] [ 6] /lib/x86_64-linux-gnu/libstdc++.so.6(+0xae277)[0x7f2817f61277]
+[25f78357:221442] [ 7] /lib/x86_64-linux-gnu/libstdc++.so.6(+0xae1fe)[0x7f2817f611fe]
+[25f78357:221442] [ 8] /root/tt-wavelet/build/tt-metal/tt_metal/libtt_metal.so(+0x52c199)[0x7f281896b199]
+[25f78357:221442] [ 9] /root/tt-wavelet/build/tt-metal/tt_metal/libtt_metal.so(_ZN2tt8tt_metal16sync_build_stepsERSt6vectorISt13shared_futureIvESaIS3_EE+0x18)[0x7f28189a6ab8]
+[25f78357:221442] [10] /root/tt-wavelet/build/tt-metal/tt_metal/libtt_metal.so(_ZN2tt8tt_metal6detail11ProgramImpl7compileEPNS0_7IDeviceEb+0x2fa)[0x7f281881491a]
+[25f78357:221442] [11] /root/tt-wavelet/build/tt-metal/tt_metal/libtt_metal.so(_ZN2tt8tt_metal11distributed16MeshWorkloadImpl7compileEPNS1_10MeshDeviceE+0x55)[0x7f2818a5b775]
+[25f78357:221442] [12] /root/tt-wavelet/build/tt-metal/tt_metal/libtt_metal.so(_ZN2tt8tt_metal11distributed19EnqueueMeshWorkloadERNS1_16MeshCommandQueueERNS1_12MeshWorkloadEb+0x2e)[0x7f2818a7213e]
+[25f78357:221442] [13] ./build/tt-wavelet/tt_wavelet_test(+0x6b7e)[0x55ba00708b7e]
+[25f78357:221442] [14] /lib/x86_64-linux-gnu/libc.so.6(+0x29d90)[0x7f2817baad90]
+[25f78357:221442] [15] /lib/x86_64-linux-gnu/libc.so.6(__libc_start_main+0x80)[0x7f2817baae40]
+[25f78357:221442] [16] ./build/tt-wavelet/tt_wavelet_test(+0x57b5)[0x55ba007077b5]
+[25f78357:221442] *** End of error message ***
