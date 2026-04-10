@@ -5,14 +5,6 @@
 #include <string>
 #include <vector>
 
-#include "../tt-metal/tt_metal/api/tt-metalium/base_types.hpp"
-#include "../tt-metal/tt_metal/api/tt-metalium/distributed.hpp"
-#include "../tt-metal/tt_metal/api/tt-metalium/host_api.hpp"
-#include "../tt-metal/tt_metal/api/tt-metalium/kernel_types.hpp"
-#include "../tt-metal/tt_metal/api/tt-metalium/mesh_coord.hpp"
-#include "../tt-metal/tt_metal/api/tt-metalium/mesh_trace_id.hpp"
-#include "../tt-metal/tt_metal/api/tt-metalium/mesh_workload.hpp"
-#include "../tt-metal/tt_metal/api/tt-metalium/tensor_accessor_args.hpp"
 #include "tt-metalium/distributed.hpp"
 #include "tt-metalium/host_api.hpp"
 #include "tt-metalium/mesh_buffer.hpp"
