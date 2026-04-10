@@ -56,6 +56,37 @@ void push_step_coeffs_to_compile_args(std::vector<uint32_t>& args, std::vector<f
     }
 }
 
+std::vector<float> cpu_stencil_reference(
+    const std::vector<float>& halo,
+    const std::vector<float>& input,
+    const std::vector<float>& coeffs) {
+    const size_t coeff_count = coeffs.size();
+
+    std::vector<float> padded_signal(64, 0.0f);
+    for (size_t i = 0; i < 32; ++i) {
+        padded_signal[i] = halo[i];
+        padded_signal[32 + i] = input[i];
+    }
+
+    std::vector<float> stencil_output(64, 0.0f);
+    for (size_t n = 0; n < stencil_output.size(); ++n) {
+        float sum = 0.0f;
+        for (size_t j = 0; j < coeff_count; ++j) {
+            if (n >= j) {
+                sum += coeffs[j] * padded_signal[n - j];
+            }
+        }
+        stencil_output[n] = sum;
+    }
+
+    std::vector<float> expected(32, 0.0f);
+    for (size_t i = 0; i < 16; ++i) {
+        expected[i] = stencil_output[16 + i];
+        expected[16 + i] = stencil_output[32 + i];
+    }
+    return expected;
+}
+
 int main() {
     constexpr uint32_t num_tiles_input{2};
     constexpr uint32_t num_tiles_output{1};
@@ -115,12 +146,8 @@ int main() {
     std::copy(halo.begin(), halo.end(), halo_tile.begin());
     std::copy(input.begin(), input.end(), input_tile.begin());
 
-    const std::vector<uint32_t> tile_shape = {1, 1, tt::constants::TILE_HEIGHT, tt::constants::TILE_WIDTH};
-
-    // User-requested debug layout: keep first-row-contiguous row-major tile payload.
-    // This bypasses host tilize so flattened tile content matches the custom 32x32 printout.
-    auto tiled_halo = halo_tile;
-    auto tiled_input = input_tile;
+    auto tiled_halo = tilize_nfaces(halo_tile, tt::constants::TILE_HEIGHT, tt::constants::TILE_WIDTH);
+    auto tiled_input = tilize_nfaces(input_tile, tt::constants::TILE_HEIGHT, tt::constants::TILE_WIDTH);
 
     std::vector<float> combined((tt::constants::TILE_HEIGHT * tt::constants::TILE_WIDTH) * 2);
     std::cout << "Tiled Halo:" << std::endl;
@@ -199,31 +226,32 @@ int main() {
 
     std::vector<float> result_of_stencil;
     tt::tt_metal::distributed::EnqueueReadMeshBuffer(command_queue, result_of_stencil, output_dram_buffer);
-    std::cout << "Result of stencil computation:" << std::endl;
+    std::cout << "Result of stencil computation (face-based tile):" << std::endl;
     print_array(result_of_stencil);
 
-    //     std::vector<float> debug_tiles;
-    // tt::tt_metal::distributed::EnqueueReadMeshBuffer(command_queue, debug_tiles, output_dram_buffer);
+    auto result_row_major = untilize_nfaces(result_of_stencil, tt::constants::TILE_HEIGHT, tt::constants::TILE_WIDTH);
+    std::cout << "Result row-major row 0:" << std::endl;
+    print_prefix(result_row_major, 32, "hw_output:");
 
-    // std::vector<float> result_of_halo(debug_tiles.begin(), debug_tiles.begin() + elems_per_tile);
-    // std::vector<float> result_of_input(debug_tiles.begin() + elems_per_tile, debug_tiles.end());
+    auto expected = cpu_stencil_reference(halo, input, coeffs);
+    std::cout << "CPU reference row 0:" << std::endl;
+    print_prefix(expected, 32, "expected:");
 
-    // print_array(result_of_halo);
-    // print_array(result_of_input);
+    bool pass = true;
+    constexpr float tolerance = 1e-3f;
+    for (size_t i = 0; i < 32; ++i) {
+        float hw = result_row_major[i];
+        float ref = expected[i];
+        if (std::abs(hw - ref) > tolerance) {
+            std::cerr << "MISMATCH at col " << i << ": hw=" << hw << " ref=" << ref
+                      << " diff=" << std::abs(hw - ref) << std::endl;
+            pass = false;
+        }
+    }
 
-    // auto result_row_halo = convert_layout(
-    //     tt::stl::make_const_span(result_of_halo),
-    //     tile_shape,
-    //     TensorLayoutType::TILED_NFACES,
-    //     TensorLayoutType::LIN_ROW_MAJOR);
+    std::cout << (pass ? "PASS: All 32 output values match CPU reference."
+                       : "FAIL: Output mismatch detected.")
+              << std::endl;
 
-    // print_prefix(result_row_halo, 64, "row-major prefix:");
-
-    // auto result_row_input = convert_layout(
-    //     tt::stl::make_const_span(result_of_input),
-    //     tile_shape,
-    //     TensorLayoutType::TILED_NFACES,
-    //     TensorLayoutType::LIN_ROW_MAJOR);
-
-    // print_prefix(result_row_input, 64, "row-major prefix:");
+    return pass ? 0 : 1;
 }
