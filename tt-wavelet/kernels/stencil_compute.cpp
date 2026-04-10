@@ -13,8 +13,8 @@ void kernel_main() {
     constexpr uint32_t cb_output = get_compile_time_arg_val(3);
     constexpr auto h_coeffs_of_step = fill_array_with_next_n_args<uint32_t, 4, K>();
     (void)h_coeffs_of_step;
-    // halo:  [0, 0, ..., 0, 1, 2, 3, ..., 14]
-    // input: [15, 16, 17, ..., 32, 0, 0, ..., 0]
+    // halo:  [0, 0, ..., 0, 1, 2, 3, ..., 18]
+    // input: [19, 20, 21, ..., 32, 0, 0, ..., 0]
     constexpr uint dst_halo = 0;
     constexpr uint dst_input = 1;
     constexpr uint dst_out = 2;
@@ -42,5 +42,10 @@ void kernel_main() {
     pack_tile(dst_out, cb_output);
     cb_push_back(cb_output, 1);
 
+    // Temporary debug expose the copied halo input tiles  to the writer
+    // cb_reserve_back(cb_output, 2);
+    // pack_tile(dst_halo, cb_output);
+    // pack_tile(dst_input, cb_output);
+    // cb_push_back(cb_output, 2);
     tile_regs_release();
 }

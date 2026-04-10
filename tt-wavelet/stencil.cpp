@@ -20,7 +20,7 @@ inline tt::tt_metal::CBHandle create_circular_buffer(
     tt::CBIndex cb_index,
     const uint32_t num_tiles_in_cb,
     const uint32_t tile_size_bytes,
-    tt::DataFormat data_format = tt::DataFormat::Float16_b) {
+    tt::DataFormat data_format = tt::DataFormat::Float32) {
     const tt::tt_metal::CircularBufferConfig cb_config =
         tt::tt_metal::CircularBufferConfig(num_tiles_in_cb * tile_size_bytes, {{cb_index, data_format}})
             .set_page_size(cb_index, tile_size_bytes);
@@ -37,9 +37,18 @@ void print_array(const std::vector<T>& arr) {
     std::cout << "]" << std::endl;
 }
 
+template <typename T>
+void print_prefix(const std::vector<T>& arr, const size_t count, const std::string& label) {
+    std::cout << label << " [";
+    for (size_t i = 0; i < std::min(count, arr.size()); ++i) {
+        std::cout << arr[i] << ", ";
+    }
+    std::cout << "]" << std::endl;
+}
+
 uint8_t K(const uint8_t k) { return 17 - k; }
 
-uint8_t halo_pad(const uint8_t k) { return 32 - K(k); }
+uint8_t halo_pad(const uint8_t k) { return K(k); }
 
 void push_step_coeffs_to_compile_args(std::vector<uint32_t>& args, std::vector<float>& coeffs) {
     for (size_t i{0}; i < coeffs.size(); ++i) {
@@ -51,7 +60,8 @@ int main() {
     constexpr uint32_t num_tiles_input{2};
     constexpr uint32_t num_tiles_output{1};
     constexpr uint32_t elems_per_tile{tt::constants::TILE_HEIGHT * tt::constants::TILE_WIDTH};
-    uint32_t size_tile_b = sizeof(float) * elems_per_tile;
+    constexpr tt::DataFormat cb_data_format = tt::DataFormat::Float32;
+    const uint32_t size_tile_b = tt::tile_size(cb_data_format);
     constexpr int device_id{0};
     std::string reader{"tt-wavelet/kernels/dataflow/stencil_read.cpp"};
     std::string writer{"tt-wavelet/kernels/dataflow/stencil_write.cpp"};
@@ -78,20 +88,27 @@ int main() {
 
     std::vector<float> halo(32, 0.0f);
     std::vector<float> input(32, 0.0f);
-    std::vector<float> coeffs = {-0.49999999999999994, -0.49999999999999994};
+    std::vector<float> coeffs = {1.0f, 1.0f, 1.0f};
     const uint8_t k = coeffs.size();
     const uint8_t halo_idx = halo_pad(k);
 
-    size_t sig = 1.0f;
-    for (size_t j = 0; j < halo_idx; ++j) {
-        halo[halo_idx + j] = sig++;
+    size_t sig = 1;
+    const size_t halo_signal_count = halo.size() - halo_idx;
+    for (size_t j = 0; j < halo_signal_count; ++j) {
+        halo[halo_idx + j] = static_cast<float>(sig++);
     }
 
-    for (size_t j = 0; j < 32 - halo_idx; ++j) {
-        input[j] = sig++;
+    const size_t input_signal_count = std::min(input.size(), static_cast<size_t>(halo_idx));
+    for (size_t j = 0; j < input_signal_count; ++j) {
+        input[j] = static_cast<float>(sig++);
     }
+
+    std::cout << "Halo:";
     print_array(halo);
+    std::cout << "\n";
+    std::cout << "Input:";
     print_array(input);
+    std::cout << "\n";
 
     std::vector<float> halo_tile(elems_per_tile, 0.0f);
     std::vector<float> input_tile(elems_per_tile, 0.0f);
@@ -100,35 +117,33 @@ int main() {
 
     const std::vector<uint32_t> tile_shape = {1, 1, tt::constants::TILE_HEIGHT, tt::constants::TILE_WIDTH};
 
-    auto tiled_halo = convert_layout(
-        tt::stl::make_const_span(halo_tile),
-        tile_shape,
-        TensorLayoutType::LIN_ROW_MAJOR,
-        TensorLayoutType::TILED_NFACES);
-
-    auto tiled_input = convert_layout(
-        tt::stl::make_const_span(input_tile),
-        tile_shape,
-        TensorLayoutType::LIN_ROW_MAJOR,
-        TensorLayoutType::TILED_NFACES);
+    // User-requested debug layout: keep first-row-contiguous row-major tile payload.
+    // This bypasses host tilize so flattened tile content matches the custom 32x32 printout.
+    auto tiled_halo = halo_tile;
+    auto tiled_input = input_tile;
 
     std::vector<float> combined((tt::constants::TILE_HEIGHT * tt::constants::TILE_WIDTH) * 2);
+    std::cout << "Tiled Halo:" << std::endl;
+    print_array(tiled_halo);
+    std::cout << "Tiled Input:" << std::endl;
+    print_array(tiled_input);
 
     std::copy(tiled_halo.begin(), tiled_halo.end(), combined.begin());
     std::copy(
         tiled_input.begin(),
         tiled_input.end(),
         combined.begin() + tt::constants::TILE_HEIGHT * tt::constants::TILE_WIDTH);
-
+    std::cout << "Combined Tiles (halo followed by input):" << std::endl;
+    print_array(combined);
     tt::tt_metal::distributed::EnqueueWriteMeshBuffer(command_queue, input_dram_buffer, combined, false);
 
     constexpr tt::CBIndex halo_cb = tt::CBIndex::c_0;
     constexpr tt::CBIndex input_cb = tt::CBIndex::c_1;
     constexpr tt::CBIndex output_cb = tt::CBIndex::c_16;
 
-    create_circular_buffer(program, core, halo_cb, 1, size_tile_b);
-    create_circular_buffer(program, core, input_cb, 1, size_tile_b);
-    create_circular_buffer(program, core, output_cb, 1, size_tile_b);
+    create_circular_buffer(program, core, halo_cb, 1, size_tile_b, cb_data_format);
+    create_circular_buffer(program, core, input_cb, 1, size_tile_b, cb_data_format);
+    create_circular_buffer(program, core, output_cb, 1, size_tile_b, cb_data_format);
 
     std::vector<uint32_t> reader_compile_args;
     std::vector<uint32_t> writer_compile_args;
@@ -140,7 +155,6 @@ int main() {
     compute_compile_args.push_back(static_cast<uint32_t>(halo_cb));
     compute_compile_args.push_back(static_cast<uint32_t>(input_cb));
     compute_compile_args.push_back(static_cast<uint32_t>(output_cb));
-    // Took bior 2.8  [{"type": "update", "shift": -1, "coefficients": [-0.49999999999999994, -0.49999999999999994]}
 
     push_step_coeffs_to_compile_args(compute_compile_args, coeffs);
 
@@ -185,6 +199,31 @@ int main() {
 
     std::vector<float> result_of_stencil;
     tt::tt_metal::distributed::EnqueueReadMeshBuffer(command_queue, result_of_stencil, output_dram_buffer);
-
+    std::cout << "Result of stencil computation:" << std::endl;
     print_array(result_of_stencil);
+
+    //     std::vector<float> debug_tiles;
+    // tt::tt_metal::distributed::EnqueueReadMeshBuffer(command_queue, debug_tiles, output_dram_buffer);
+
+    // std::vector<float> result_of_halo(debug_tiles.begin(), debug_tiles.begin() + elems_per_tile);
+    // std::vector<float> result_of_input(debug_tiles.begin() + elems_per_tile, debug_tiles.end());
+
+    // print_array(result_of_halo);
+    // print_array(result_of_input);
+
+    // auto result_row_halo = convert_layout(
+    //     tt::stl::make_const_span(result_of_halo),
+    //     tile_shape,
+    //     TensorLayoutType::TILED_NFACES,
+    //     TensorLayoutType::LIN_ROW_MAJOR);
+
+    // print_prefix(result_row_halo, 64, "row-major prefix:");
+
+    // auto result_row_input = convert_layout(
+    //     tt::stl::make_const_span(result_of_input),
+    //     tile_shape,
+    //     TensorLayoutType::TILED_NFACES,
+    //     TensorLayoutType::LIN_ROW_MAJOR);
+
+    // print_prefix(result_row_input, 64, "row-major prefix:");
 }

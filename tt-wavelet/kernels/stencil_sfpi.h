@@ -13,12 +13,12 @@ namespace sfpu {
 
 template <uint8_t K>
 inline void calculate_stencil_init() {
-    vFloat mask = 0.0f;
+    vInt mask = 0;
     vInt tid = vConstTileId;
     vInt check = tid & 0xE;  // bits [3:1] of tile ID
-    v_if(check == 0) { mask = 1.0f; }
+    v_if(check == 0) { mask = 1; }
     v_endif;
-    TTI_SFPMOV(0, reinterpret<sfpi::vInt>(mask), p_sfpu::LREG14, 0);
+    sfpi::l_reg[sfpi::LRegs::LReg7] = mask;
 }
 
 // ROTATE(a, b): 1-element right shift within subvectors.
@@ -32,7 +32,7 @@ inline void calculate_stencil_init() {
         /* Shift b to the right */                                                    \
         TTI_SFPSHFT2(0, b_reg, b_reg, sfpi::SFPSHFT2_MOD1_SUBVEC_SHFLROR1);           \
         /* Set LaneEnable=true for lanes with col=0 and LaneEnable=false for others*/ \
-        TTI_SFPSETCC(0, p_sfpu::LREG14, 0, sfpi::SFPSETCC_MOD1_LREG_NE0);             \
+        TTI_SFPSETCC(0, p_sfpu::LREG7, 0, sfpi::SFPSETCC_MOD1_LREG_NE0);              \
         /* Copy first column of a to the first column of b */                         \
         TTI_SFPMOV(0, a_reg, b_reg, 0);                                               \
         /* Set all LaneEnable=true */                                                 \
@@ -63,7 +63,7 @@ inline void calculate_stencil_init() {
 //   LREG4: g_e (accumulator for even output)
 //   LREG5: g_o (accumulator for odd output)
 //   LREG6: tmp (broadcast coefficient)
-//   LREG14: mask (preloaded in vConstFloatPrgm2 -> LREG14 is the const reg)
+//   LREG7: lane mask for column 0, preloaded by calculate_stencil_init()
 template <uint8_t K>
 inline void calculate_stencil_body(
     const uint32_t h_packed[K],
@@ -149,9 +149,9 @@ inline void calculate_stencil(
 
     // First face-row
     // col0/1
-    calculate_stencil_faces<K>(h_packed, input1, input1 + FACE_SIZE, output, rows, );
+    calculate_stencil_faces<K>(h_packed, input1, input1 + FACE_SIZE, output, rows);
     // col1/2
-    calculate_stencil_faces<K>(h_packed, input1 + FACE_SIZE, input2, output + FACE_SIZE, rows, );
+    calculate_stencil_faces<K>(h_packed, input1 + FACE_SIZE, input2, output + FACE_SIZE, rows);
 
     if (rows < 16) {
         return;
@@ -160,10 +160,10 @@ inline void calculate_stencil(
     // Second face-row
     // col0/1
     calculate_stencil_faces<K>(
-        h_packed, input1 + FACE_SIZE * 2, input1 + FACE_SIZE * 3, output + FACE_SIZE * 2, rows - 16, );
+        h_packed, input1 + FACE_SIZE * 2, input1 + FACE_SIZE * 3, output + FACE_SIZE * 2, rows - 16);
     // col1/2
     calculate_stencil_faces<K>(
-        h_packed, input1 + FACE_SIZE * 3, input2 + FACE_SIZE * 2, output + FACE_SIZE * 3, rows - 16, );
+        h_packed, input1 + FACE_SIZE * 3, input2 + FACE_SIZE * 2, output + FACE_SIZE * 3, rows - 16);
 }
 
 }  // namespace sfpu
