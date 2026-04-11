@@ -15,7 +15,6 @@
 #include "ckernel_defs.h"
 #include "sfpi.h"
 #include "cmath_common.h"
-#include "api/debug/dprint.h" 
 
 using namespace sfpi;
 
