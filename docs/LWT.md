@@ -267,6 +267,12 @@ Let`s view the row major layout from the perspective of the next files
 
 - [main](../tt-wavelet/stencil.cpp) - here host tilization is performed:
 
+- [reader](../tt-wavelet/kernels/dataflow/stencil_read.cpp) - from DRAM input signal to CB_HALO, CB_INPUT
+
+- [compute](../tt-wavelet/kernels/stencil_compute.cpp) - copys CBs to dst registers, calls sfpi kernel and copies result back to CB_OUTPUT
+
+- [writer](../tt-wavelet/kernels/dataflow/stencil_write.cpp) - writes output CB into DRAM output signal and into vector on host.
+
 The sfpi kernel has the next calling convention
 
 ```cpp
