@@ -102,7 +102,7 @@ int main() {
     tt::tt_metal::distributed::MeshCommandQueue& command_queue = mesh_device->mesh_command_queue();
     auto program = tt::tt_metal::CreateProgram();
 
-    constexpr tt::tt_metal::CoreCoord core{0, 0};
+    constexpr tt::tt_metal::CoreCoord core{1, 0};
 
     tt::tt_metal::distributed::DeviceLocalBufferConfig buffer_config{
         .page_size = size_tile_b, .buffer_type = tt::tt_metal::BufferType::DRAM};

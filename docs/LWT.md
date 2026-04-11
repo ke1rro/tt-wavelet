@@ -78,13 +78,13 @@ The signal is extended by mirroring values at both boundaries.
 Padding length is defined as
 
 $$
-P = \text{tap\_size} - 1
+P = \text{tap \ size} - 1
 $$
 
 For bior1.3
 
 $$
-\text{tap\_size} = 6
+\text{tap \ size} = 6
 $$
 
 therefore
