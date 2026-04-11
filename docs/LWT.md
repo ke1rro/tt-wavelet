@@ -174,12 +174,7 @@ $$
 The predict step updates odd samples using a stencil computed from the even samples
 
 $$
-d[n]
-=
-o[n]
-+
-\sum_{k=0}^{K-1}
-h_k \, e[n + s + k]
+d[n]=o[n]+\sum_{k=0}^{K-1}h_ke[n + s + k]
 $$
 
 where $o[n]$ are odd samples, $e[n]$ are even samples, $h_k$ are predict coefficients,
@@ -194,12 +189,7 @@ This step produces the detail coefficients $d[n]$.
 The update step modifies the even samples using the predicted detail values
 
 $$
-a[n]
-=
-e[n]
-+
-\sum_{k=0}^{K-1}
-g_k \, d[n + s + k]
+a[n]=e[n]+\sum_{k=0}^{K-1}g_kd[n + s + k]
 $$
 
 where $e[n]$ are even samples, $d[n]$ are detail coefficients from the predict step,
@@ -214,13 +204,7 @@ The update step depends on the output of the predict step, therefore predict mus
 Both predict and update steps share the same stencil structure
 
 $$
-f[n]
-=
-\text{base}[n]
-+
-\sum_{k=0}^{K-1}
-h_k \,
-\text{signal}[n+\delta_k]
+f[n]=\text{base}[n]+\sum_{k=0}^{K-1}h_k\text{signal}[n+\delta_k]
 $$
 
 where $\text{base}$ is the value being updated, $\text{signal}$ is the input stream,
@@ -265,7 +249,7 @@ where $s_e$ and $s_o$ are the scaling factors for even and odd streams respectiv
 
 For 1D LWT we use custom sfpi 1D horizontal stencil function defined here [sfpi](../tt-wavelet/kernels/stencil_sfpi.h)
 
->!NOTE
+>[!NOTE]
 >The sfpi is currently in WIP it produces incorrect results. But the idea should reamin the same.
 
 The code is now splitted between two set of files
@@ -552,8 +536,7 @@ $$
 Then each tap multiplies a coefficient by the shifted details element:
 
 $$
-h[t]\cdot d_{\text{work}}[i-t]
-=
+h[t]\cdot d_{\text{work}}[i-t]=
 h[t]\cdot d[i-t-(17-K)].
 $$
 
