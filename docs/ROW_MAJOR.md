@@ -20,6 +20,8 @@ As discussed in the [horizontal stencil documentation](./HORIZONTAL_STENCIL.md) 
 
 ![](./figs/AdvancedRowMajor.svg)
 
+On the figure above `S` is an input signal-array already padded in the left with $17-k$ elements as required by [horizontal stencil](./HORIZONTAL_STENCIL.md) and `G` is the output array of the stencil.
+
 The idea is basically to think of two tiles as 4x64 tensor, where last 16 elements of the row `i` equal to the first 16 columns of the row `i+1`. In the figure you can see how result of the stencil `G` is computed from signal `S`. By collecting result as shown using arrows we can inverse map the output back to row-major layout.
 
 This idea can be easily extended to more tiles or blocks per tiles. For example, we can add more tiles to the right, making the "tensor" wider, or we can add more blocks to the bottom, making the "tensor" taller.
