@@ -60,7 +60,7 @@ So when you substitute $j=k-1$ you get $s[0]$. That means that the actual result
 
 ## Implementation details
 
-Our kernel is the operator $g'[i:i+16] = g[i+16:i+32] = T(f[i:i+16], f[i+16:i+32], h)$, where $g$ and $f$ are 4 consecutive rows of the tensor (refer to the [Tenstorrent ISA Documentation]() for details on the SFPU registers and the tile layout).
+Our kernel is the operator $g'[i:i+16] = g[i+16:i+32] = T(f[i:i+16], f[i+16:i+32], h)$, where $g$ and $f$ are 4 consecutive rows of the tensor (refer to the [Tenstorrent ISA Documentation](https://github.com/tenstorrent/tt-isa-documentation/) for details on the SFPU registers and the tile layout).
 
 We have implemented a 1-element shift operator for two consecutive stacks of columns (a, b). It produces a valid results for the second stack (b) while first stack is used as a halo for the elements to be shifted out to the right. You can do the same shift up to 8 elements for the same stacks (a, b).
 
