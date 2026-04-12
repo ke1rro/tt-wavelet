@@ -1,1 +1,400 @@
-{"tap_size": 90, "delay": {"even": 22, "odd": 23}, "steps": [{"type": "predict", "shift": 0, "coefficients": [-1.2897741618562026]}, {"type": "update", "shift": 0, "coefficients": [0.48423718452217374, 1.2639499898685347]}, {"type": "predict", "shift": -1, "coefficients": [-0.7270233697667717, 0.6428033306678536]}, {"type": "update", "shift": 0, "coefficients": [-1.397907228804814, 1.3194470386377024]}, {"type": "predict", "shift": -1, "coefficients": [-0.6726723283047139, 0.5205981648562232]}, {"type": "update", "shift": 0, "coefficients": [-1.585507045236142, 1.0082262565477131]}, {"type": "predict", "shift": -1, "coefficients": [-0.6512079280299485, 0.433880222632739]}, {"type": "update", "shift": 0, "coefficients": [-1.0580611007234606, 0.9924827064971548]}, {"type": "predict", "shift": -1, "coefficients": [-0.4307304371885423, 0.434526914245163]}, {"type": "update", "shift": 0, "coefficients": [-0.9937666237263103, 0.6670485786227032]}, {"type": "predict", "shift": -1, "coefficients": [-0.3823493292297637, 0.2851429557140588]}, {"type": "update", "shift": 0, "coefficients": [-0.5610215121565959, 0.5265062769036399]}, {"type": "predict", "shift": -1, "coefficients": [-0.2728352161796091, 0.15252736975188622]}, {"type": "update", "shift": 0, "coefficients": [-0.3263823946652938, 0.22808720846718547]}, {"type": "predict", "shift": -1, "coefficients": [-0.1095001816745404, 0.032513625761338136]}, {"type": "update", "shift": 0, "coefficients": [-0.06923720576213042, -0.07106056626034186]}, {"type": "predict", "shift": -1, "coefficients": [0.03336728387625981, -0.09032948160272197]}, {"type": "update", "shift": 0, "coefficients": [0.1897005733384422, -0.3759142882535599]}, {"type": "predict", "shift": -1, "coefficients": [0.1702658171295798, -0.19418344535919665]}, {"type": "update", "shift": 0, "coefficients": [0.4208973859688965, -0.6922529528858968]}, {"type": "predict", "shift": -1, "coefficients": [0.2802733405887139, -0.32171545905656795]}, {"type": "update", "shift": 0, "coefficients": [0.7484249456326094, -0.7941637917743165]}, {"type": "predict", "shift": -1, "coefficients": [0.3313633544498278, -0.5072148285437122]}, {"type": "update", "shift": 0, "coefficients": [0.8981293767673796, -1.105715028883524]}, {"type": "predict", "shift": -1, "coefficients": [0.5056731851825095, -0.46145766351246464]}, {"type": "update", "shift": 0, "coefficients": [1.1131016802234768, -1.2188572285710393]}, {"type": "predict", "shift": -1, "coefficients": [0.45843207556345145, -0.681212867901405]}, {"type": "update", "shift": 0, "coefficients": [1.081277049003081, -1.714456745036544]}, {"type": "predict", "shift": -1, "coefficients": [0.5106373968070279, -0.6737591012318322]}, {"type": "update", "shift": 0, "coefficients": [1.3720982902714223, -16.929943370953424]}, {"type": "predict", "shift": -1, "coefficients": [0.059035259240292744, 0.025228791688864768]}, {"type": "update", "shift": 0, "coefficients": [-39.52111234757306, -23.18766124544887]}, {"type": "predict", "shift": -1, "coefficients": [0.04276133592960398, -0.06733868347591351]}, {"type": "update", "shift": 0, "coefficients": [14.799358504406761, -27.62418098094733]}, {"type": "predict", "shift": -1, "coefficients": [0.036164435923515585, -0.07561017031150706]}, {"type": "update", "shift": 0, "coefficients": [13.222745144271988, -31.130228903031174]}, {"type": "predict", "shift": -1, "coefficients": [0.03212180750218894, -0.08626491812426516]}, {"type": "update", "shift": 0, "coefficients": [11.59213232089231, -36.048470967339185]}, {"type": "predict", "shift": -1, "coefficients": [0.027740411408545204, -0.10164250328122518]}, {"type": "update", "shift": 0, "coefficients": [9.838403464738509, -43.3964128693067]}, {"type": "predict", "shift": -1, "coefficients": [0.02304337920217246, -0.12589665617398568]}, {"type": "update", "shift": 0, "coefficients": [7.943022716528973, -55.98894762883499]}, {"type": "predict", "shift": -1, "coefficients": [0.017860667905882883, -0.17320877077439453]}, {"type": "update", "shift": 0, "coefficients": [5.773379693932994, -86.62099361725184]}, {"type": "predict", "shift": -1, "coefficients": [0.011544545476107716, -0.35710897129418684]}, {"type": "swap", "shift": 0, "coefficients": []}, {"type": "predict", "shift": 0, "coefficients": [2.8002656902623673]}, {"type": "scale-even", "shift": 0, "coefficients": [2.764734607593604e-05]}, {"type": "scale-odd", "shift": 0, "coefficients": [-36169.836962050744]}], "meta": {"l2": {"qq": 2.407017422481075e-10, "fp64": 1.971118695094441e-07}}}
+{
+    "tap_size": 90,
+    "delay": {
+        "even": 22,
+        "odd": 23
+    },
+    "steps": [
+        {
+            "type": "predict",
+            "shift": 0,
+            "coefficients": [
+                -1.2897741618562026
+            ]
+        },
+        {
+            "type": "update",
+            "shift": 0,
+            "coefficients": [
+                0.48423718452217374,
+                1.2639499898685347
+            ]
+        },
+        {
+            "type": "predict",
+            "shift": -1,
+            "coefficients": [
+                -0.7270233697667717,
+                0.6428033306678536
+            ]
+        },
+        {
+            "type": "update",
+            "shift": 0,
+            "coefficients": [
+                -1.397907228804814,
+                1.3194470386377024
+            ]
+        },
+        {
+            "type": "predict",
+            "shift": -1,
+            "coefficients": [
+                -0.6726723283047139,
+                0.5205981648562232
+            ]
+        },
+        {
+            "type": "update",
+            "shift": 0,
+            "coefficients": [
+                -1.585507045236142,
+                1.0082262565477131
+            ]
+        },
+        {
+            "type": "predict",
+            "shift": -1,
+            "coefficients": [
+                -0.6512079280299485,
+                0.433880222632739
+            ]
+        },
+        {
+            "type": "update",
+            "shift": 0,
+            "coefficients": [
+                -1.0580611007234606,
+                0.9924827064971548
+            ]
+        },
+        {
+            "type": "predict",
+            "shift": -1,
+            "coefficients": [
+                -0.4307304371885423,
+                0.434526914245163
+            ]
+        },
+        {
+            "type": "update",
+            "shift": 0,
+            "coefficients": [
+                -0.9937666237263103,
+                0.6670485786227032
+            ]
+        },
+        {
+            "type": "predict",
+            "shift": -1,
+            "coefficients": [
+                -0.3823493292297637,
+                0.2851429557140588
+            ]
+        },
+        {
+            "type": "update",
+            "shift": 0,
+            "coefficients": [
+                -0.5610215121565959,
+                0.5265062769036399
+            ]
+        },
+        {
+            "type": "predict",
+            "shift": -1,
+            "coefficients": [
+                -0.2728352161796091,
+                0.15252736975188622
+            ]
+        },
+        {
+            "type": "update",
+            "shift": 0,
+            "coefficients": [
+                -0.3263823946652938,
+                0.22808720846718547
+            ]
+        },
+        {
+            "type": "predict",
+            "shift": -1,
+            "coefficients": [
+                -0.1095001816745404,
+                0.032513625761338136
+            ]
+        },
+        {
+            "type": "update",
+            "shift": 0,
+            "coefficients": [
+                -0.06923720576213042,
+                -0.07106056626034186
+            ]
+        },
+        {
+            "type": "predict",
+            "shift": -1,
+            "coefficients": [
+                0.03336728387625981,
+                -0.09032948160272197
+            ]
+        },
+        {
+            "type": "update",
+            "shift": 0,
+            "coefficients": [
+                0.1897005733384422,
+                -0.3759142882535599
+            ]
+        },
+        {
+            "type": "predict",
+            "shift": -1,
+            "coefficients": [
+                0.1702658171295798,
+                -0.19418344535919665
+            ]
+        },
+        {
+            "type": "update",
+            "shift": 0,
+            "coefficients": [
+                0.4208973859688965,
+                -0.6922529528858968
+            ]
+        },
+        {
+            "type": "predict",
+            "shift": -1,
+            "coefficients": [
+                0.2802733405887139,
+                -0.32171545905656795
+            ]
+        },
+        {
+            "type": "update",
+            "shift": 0,
+            "coefficients": [
+                0.7484249456326094,
+                -0.7941637917743165
+            ]
+        },
+        {
+            "type": "predict",
+            "shift": -1,
+            "coefficients": [
+                0.3313633544498278,
+                -0.5072148285437122
+            ]
+        },
+        {
+            "type": "update",
+            "shift": 0,
+            "coefficients": [
+                0.8981293767673796,
+                -1.105715028883524
+            ]
+        },
+        {
+            "type": "predict",
+            "shift": -1,
+            "coefficients": [
+                0.5056731851825095,
+                -0.46145766351246464
+            ]
+        },
+        {
+            "type": "update",
+            "shift": 0,
+            "coefficients": [
+                1.1131016802234768,
+                -1.2188572285710393
+            ]
+        },
+        {
+            "type": "predict",
+            "shift": -1,
+            "coefficients": [
+                0.45843207556345145,
+                -0.681212867901405
+            ]
+        },
+        {
+            "type": "update",
+            "shift": 0,
+            "coefficients": [
+                1.081277049003081,
+                -1.714456745036544
+            ]
+        },
+        {
+            "type": "predict",
+            "shift": -1,
+            "coefficients": [
+                0.5106373968070279,
+                -0.6737591012318322
+            ]
+        },
+        {
+            "type": "update",
+            "shift": 0,
+            "coefficients": [
+                1.3720982902714223,
+                -16.929943370953424
+            ]
+        },
+        {
+            "type": "predict",
+            "shift": -1,
+            "coefficients": [
+                0.059035259240292744,
+                0.025228791688864768
+            ]
+        },
+        {
+            "type": "update",
+            "shift": 0,
+            "coefficients": [
+                -39.52111234757306,
+                -23.18766124544887
+            ]
+        },
+        {
+            "type": "predict",
+            "shift": -1,
+            "coefficients": [
+                0.04276133592960398,
+                -0.06733868347591351
+            ]
+        },
+        {
+            "type": "update",
+            "shift": 0,
+            "coefficients": [
+                14.799358504406761,
+                -27.62418098094733
+            ]
+        },
+        {
+            "type": "predict",
+            "shift": -1,
+            "coefficients": [
+                0.036164435923515585,
+                -0.07561017031150706
+            ]
+        },
+        {
+            "type": "update",
+            "shift": 0,
+            "coefficients": [
+                13.222745144271988,
+                -31.130228903031174
+            ]
+        },
+        {
+            "type": "predict",
+            "shift": -1,
+            "coefficients": [
+                0.03212180750218894,
+                -0.08626491812426516
+            ]
+        },
+        {
+            "type": "update",
+            "shift": 0,
+            "coefficients": [
+                11.59213232089231,
+                -36.048470967339185
+            ]
+        },
+        {
+            "type": "predict",
+            "shift": -1,
+            "coefficients": [
+                0.027740411408545204,
+                -0.10164250328122518
+            ]
+        },
+        {
+            "type": "update",
+            "shift": 0,
+            "coefficients": [
+                9.838403464738509,
+                -43.3964128693067
+            ]
+        },
+        {
+            "type": "predict",
+            "shift": -1,
+            "coefficients": [
+                0.02304337920217246,
+                -0.12589665617398568
+            ]
+        },
+        {
+            "type": "update",
+            "shift": 0,
+            "coefficients": [
+                7.943022716528973,
+                -55.98894762883499
+            ]
+        },
+        {
+            "type": "predict",
+            "shift": -1,
+            "coefficients": [
+                0.017860667905882883,
+                -0.17320877077439453
+            ]
+        },
+        {
+            "type": "update",
+            "shift": 0,
+            "coefficients": [
+                5.773379693932994,
+                -86.62099361725184
+            ]
+        },
+        {
+            "type": "predict",
+            "shift": -1,
+            "coefficients": [
+                0.011544545476107716,
+                -0.35710897129418684
+            ]
+        },
+        {
+            "type": "swap",
+            "shift": 0,
+            "coefficients": []
+        },
+        {
+            "type": "predict",
+            "shift": 0,
+            "coefficients": [
+                2.8002656902623673
+            ]
+        },
+        {
+            "type": "scale-even",
+            "shift": 0,
+            "coefficients": [
+                2.764734607593604e-05
+            ]
+        },
+        {
+            "type": "scale-odd",
+            "shift": 0,
+            "coefficients": [
+                -36169.836962050744
+            ]
+        }
+    ],
+    "meta": {
+        "l2": {
+            "qq": 2.407017422481075e-10,
+            "fp64": 1.971118695094441e-07
+        }
+    }
+}

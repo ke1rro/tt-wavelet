@@ -174,11 +174,10 @@ $$
 The predict step updates odd samples using a stencil computed from the even samples
 
 $$
-d[n]=o[n]+\sum_{k=0}^{K-1}h_ke[n + s + k]
+d = o + \operatorname{stencil}(e, h)
 $$
 
-where $o[n]$ are odd samples, $e[n]$ are even samples, $h_k$ are predict coefficients,
-$K$ is the number of stencil taps, $s$ is the shift from the lifting scheme, and $n$ is the sample index.
+where $o$ are odd samples, $e$ are even samples, and $h$ are the predict coefficients of the current lifting step.
 
 This step produces the detail coefficients $d[n]$.
 
@@ -189,11 +188,10 @@ This step produces the detail coefficients $d[n]$.
 The update step modifies the even samples using the predicted detail values
 
 $$
-a[n]=e[n]+\sum_{k=0}^{K-1}g_kd[n + s + k]
+a = e + \operatorname{stencil}(d, g)
 $$
 
-where $e[n]$ are even samples, $d[n]$ are detail coefficients from the predict step,
-$g_k$ are update coefficients, $K$ is the number of stencil taps, and $s$ is the shift.
+where $e$ are even samples, $d$ are detail coefficients from the predict step, and $g$ are update coefficients.
 
 The update step depends on the output of the predict step, therefore predict must be executed first.
 
@@ -201,14 +199,31 @@ The update step depends on the output of the predict step, therefore predict mus
 
 ## General Stencil Form
 
-Both predict and update steps share the same stencil structure
+Both predict and update steps share the same high-level structure
 
 $$
-f[n]=\text{base}[n]+\sum_{k=0}^{K-1}h_k\text{signal}[n+\delta_k]
+\text{output} = \text{base} + \operatorname{stencil}(\text{signal}, h)
 $$
 
-where $\text{base}$ is the value being updated, $\text{signal}$ is the input stream,
-$h_k$ are stencil coefficients, $K$ is the number of taps, and $\delta_k = s + k$ are stencil offsets.
+where $\text{base}$ is the value being updated, $\text{signal}$ is the source stream for the current step,
+and $h$ is the coefficient array of that step.
+
+For the current TT-Metal path, the exact indexing convention is defined by the SFPI horizontal stencil kernel, not by
+the abstract lifting notation in this section. The hardware kernel consumes coefficients as-is and evaluates the causal
+operator
+
+$$
+g[i] = \sum_{j=0}^{k-1} h[j] \cdot f[i-j]
+$$
+
+The reader kernel is responsible for preparing the working stream $f$ for the current step:
+
+1. Select the source stream for this step.
+2. Build the left halo of size $17-k$ required by the SFPI stencil.
+3. Pack the row-major stream into the tile layout expected by compute.
+
+This keeps the compute kernel simple: it receives the source stream already prepared for SFPI and applies the step
+coefficients exactly as stored in the lifting scheme.
 
 Predict
 
@@ -249,8 +264,9 @@ where $s_e$ and $s_o$ are the scaling factors for even and odd streams respectiv
 
 For 1D LWT we use custom sfpi 1D horizontal stencil function defined here [sfpi](../tt-wavelet/kernels/stencil_sfpi.h)
 
->[!NOTE]
->The sfpi is currently in WIP it produces incorrect results. But the idea should reamin the same.
+[!NOTE]
+The standalone SFPI stencil test path is working. The remaining work is integrating it into the full LWT step loop and
+replacing the current naive row-major tilization path with the optimized reader path.
 
 The code is now splitted between two set of files
 
@@ -492,26 +508,16 @@ For the predict step in this example, the coefficient length is 1:
 }
 ```
 
-So $K = 1$, and the generic predict formula
+So $K = 1$ and the device path passes the coefficient array `[-1.0]` directly to the stencil kernel.
+
+For this step the reader prepares the even stream with left halo
 
 $$
-d[n] = o[n] + \sum_{k=0}^{K-1} h_k\,e[n+s+k]
+17 - K = 16
 $$
 
-reduces to
-
-$$
-d[n] = o[n] + h_0\,e[n+s].
-$$
-
-For bior1.3 predict, $s = 0$ and $h_0 = -1$, therefore
-
-$$
-d[n] = o[n] - e[n].
-$$
-
-Interpretation: for each index $n$, we take one odd sample and subtract the aligned even sample.
-In this special case there is no multi-tap window and no extra tap-dependent shift term.
+and the compute kernel applies the 1-tap stencil to the prepared source stream and accumulates it into the odd base
+stream. For aligned samples this behaves like subtracting the even sample from the odd sample.
 
 For the update step, the coefficient length is 3:
 
@@ -522,16 +528,14 @@ For the update step, the coefficient length is 3:
     "coefficients": [0.0625, 0.5, -0.0625]
 }
 ```
-Here we need to perform a 3-tap stencil with coefficients $h_0 = 0.0625$, $h_1 = 0.5$, $h_2 = -0.0625$
-
-and shift $s=-1$. So the update formula becomes
+Here we need to perform a 3-tap stencil with coefficients
 
 $$
-a[n] = e[n] + 0.0625\,d[n-1] + 0.5\,d[n] - 0.0625\,d[n+1].
+h = [0.0625, 0.5, -0.0625]
 $$
 
-For this update step, the input stream is details $d$.
-So in the SFPU path we apply the same pre-shift rule to details:
+For this update step, the source stream is details $d$, and the reader prepares that stream for SFPI by applying the
+standard halo rule
 
 $$
 d_{\text{work}} = R_{17-K}d,
@@ -539,14 +543,15 @@ d_{\text{work}} = R_{17-K}d,
 d_{\text{work}}[i] = d[i-(17-K)].
 $$
 
-Then each tap multiplies a coefficient by the shifted details element:
+Then compute consumes the coefficient array exactly as stored in the step description and applies it to the prepared
+details stream:
 
 $$
-h[t]\cdot d_{\text{work}}[i-t]=
-h[t]\cdot d[i-t-(17-K)].
+h[t]\cdot d_{\text{work}}[i-t].
 $$
 
-In simple words: because this is the update step, coefficients are multiplied by details, and those details must be pre-shifted by $17-K$ (implemented via left halo).
+In simple words: because this is the update step, coefficients are multiplied by details, and those details must be
+prepared with left halo $17-K$ before they reach the stencil kernel.
 For this example $K=3$, so the required pre-shift is $17-3=14$.
 
 As a concrete example, if details are
@@ -571,8 +576,9 @@ Important ordering note: before the per-step stencil loop starts, the reader sho
 1. Apply physical (symmetric) padding to the full signal.
 2. Split the padded signal into even and odd streams.
 
-In theory, this should also be part of the fused reader kernel path (initial stage), executed once per signal.
-After that, predict/update steps run iteratively on the produced streams.
+This preprocessing stage is executed exactly once per signal. After that, predict/update steps run iteratively on the
+already-produced streams. The per-step reader does not repeat wavelet padding or even/odd split; it only prepares the
+current step source stream for the SFPI stencil.
 
 For large schemes (for example [coif17](../ttnn-wavelet/lifting_schemes/coif17.json) with `tap_size = 102`), the complexity comes from many predict/update iterations.
 In each iteration we have a step-specific stencil:
@@ -588,10 +594,10 @@ $$
 So the reader must be reconfigured per step (or at least per step pattern):
 
 1. Select which stream is the stencil input for this step (`e` for predict, `d` for update).
-2. Build halo for the current $p_r = 17-K_r$ and the step shift.
+2. Build halo for the current $p_r = 17-K_r$.
 3. Feed tiles to compute as `halo + input` chunks.
 
-Even when $K_r$ is often 2 in coif17 (so $p_r=15$ for many steps), this is still iterative because source streams and step shifts change, and each new step consumes results from the previous one.
+Even when $K_r$ is often 2 in coif17 (so $p_r=15$ for many steps), this is still iterative because source streams and coefficients change, and each new step consumes results from the previous one.
 
 Dataflow-wise, this forms a repeated pipeline:
 
@@ -649,4 +655,3 @@ In short, the runtime loop is a ping-pong cycle like:
 ```
 
 This coif17 fragment requires multiple repeated stencil passes, where each pass reuses previous-step output and rebuilds padding/halo according to the current step configuration.
-

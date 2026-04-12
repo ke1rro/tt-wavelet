@@ -1,6 +1,7 @@
 #include <bit>
 #include <cassert>
 #include <cmath>
+#include <cstring>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -13,6 +14,7 @@
 #include "tt-metalium/tilize_utils.hpp"
 #include "tt_wavelet/include/pad_split.hpp"
 #include "tt_wavelet/include/pad_split_device.hpp"
+#include "tt_wavelet/include/device_step_desc.hpp"
 
 inline tt::tt_metal::CBHandle create_circular_buffer(
     tt::tt_metal::Program& program,
@@ -50,10 +52,24 @@ uint8_t K(const uint8_t k) { return 17 - k; }
 
 uint8_t halo_pad(const uint8_t k) { return K(k); }
 
-void push_step_coeffs_to_compile_args(std::vector<uint32_t>& args, std::vector<float>& coeffs) {
-    for (size_t i{0}; i < coeffs.size(); ++i) {
-        args.push_back(std::bit_cast<uint32_t>(coeffs[i]));
+ttwv::device::DeviceStepDesc
+make_device_step_desc(const ttwv::device::DeviceStepType type, const std::vector<float>& coeffs) {
+    assert(coeffs.size() <= ttwv::device::step_coeff_capacity);
+
+    ttwv::device::DeviceStepDesc desc{};
+    desc.type = static_cast<uint32_t>(type);
+    desc.k = static_cast<uint32_t>(coeffs.size());
+    for (size_t i = 0; i < coeffs.size(); ++i) {
+        desc.coeffs_packed[i] = std::bit_cast<uint32_t>(coeffs[i]);
     }
+    return desc;
+}
+
+std::vector<uint32_t> device_step_desc_to_runtime_args(const ttwv::device::DeviceStepDesc& desc) {
+    std::vector<uint32_t> args(ttwv::device::step_desc_word_count, 0);
+    static_assert(sizeof(ttwv::device::DeviceStepDesc) == ttwv::device::step_desc_word_count * sizeof(uint32_t));
+    std::memcpy(args.data(), &desc, sizeof(desc));
+    return args;
 }
 
 std::vector<float> cpu_stencil_reference(
@@ -120,6 +136,7 @@ int main() {
     std::vector<float> halo(32, 0.0f);
     std::vector<float> input(32, 0.0f);
     std::vector<float> coeffs = {1.0f, 1.0f, 1.0f};
+    const auto step_desc = make_device_step_desc(ttwv::device::DeviceStepType::Predict, coeffs);
     const uint8_t k = coeffs.size();
     const uint8_t halo_idx = halo_pad(k);
 
@@ -178,12 +195,9 @@ int main() {
     reader_compile_args.push_back(static_cast<uint32_t>(input_cb));
     writer_compile_args.push_back(static_cast<uint32_t>(output_cb));
     std::vector<uint32_t> compute_compile_args;
-    compute_compile_args.push_back(static_cast<uint32_t>(k));
     compute_compile_args.push_back(static_cast<uint32_t>(halo_cb));
     compute_compile_args.push_back(static_cast<uint32_t>(input_cb));
     compute_compile_args.push_back(static_cast<uint32_t>(output_cb));
-
-    push_step_coeffs_to_compile_args(compute_compile_args, coeffs);
 
     tt::tt_metal::TensorAccessorArgs(input_dram_buffer->get_backing_buffer()).append_to(reader_compile_args);
     tt::tt_metal::TensorAccessorArgs(output_dram_buffer->get_backing_buffer()).append_to(writer_compile_args);
@@ -215,6 +229,7 @@ int main() {
             .math_fidelity = MathFidelity::HiFi4, .fp32_dest_acc_en = true, .compile_args = compute_compile_args});
 
     tt::tt_metal::SetRuntimeArgs(program, reader_ker, core, {static_cast<uint32_t>(input_dram_buffer->address())});
+    tt::tt_metal::SetRuntimeArgs(program, compute_ker, core, device_step_desc_to_runtime_args(step_desc));
 
     tt::tt_metal::SetRuntimeArgs(program, wtiter_ker, core, {static_cast<uint32_t>(output_dram_buffer->address())});
     tt::tt_metal::distributed::MeshWorkload workload;

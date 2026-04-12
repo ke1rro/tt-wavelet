@@ -9,6 +9,7 @@
 //   LREG14: lane mask for column 0, preloaded by _horizontal_stencil_init()
 #pragma once
 
+#include <array>
 #include <algorithm>
 
 #include "ckernel.h"

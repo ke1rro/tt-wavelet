@@ -1,1 +1,112 @@
-{"tap_size": 18, "delay": {"even": 4, "odd": 5}, "steps": [{"type": "predict", "shift": 0, "coefficients": [-2.0515539827866274]}, {"type": "update", "shift": 0, "coefficients": [0.39385749847296075, 0.2148393570559503]}, {"type": "predict", "shift": -1, "coefficients": [-2.5880424409152916, 0.5945201093038691]}, {"type": "update", "shift": 0, "coefficients": [-0.10426705485141172, -0.05233608022579983]}, {"type": "predict", "shift": -1, "coefficients": [0.31292566283120704, -1.0697411069980074]}, {"type": "update", "shift": 0, "coefficients": [0.15226372139055047, -0.7647306467169724]}, {"type": "predict", "shift": -1, "coefficients": [1.086318044410939, -4.088544356526117]}, {"type": "update", "shift": 0, "coefficients": [0.24111771738878687, -0.4348142547402506]}, {"type": "predict", "shift": -1, "coefficients": [2.2897052993756963, -16.695716192526508]}, {"type": "swap", "shift": 0, "coefficients": []}, {"type": "predict", "shift": 0, "coefficients": [0.059890621454768894]}, {"type": "scale-even", "shift": 0, "coefficients": [-0.023371966502539712]}, {"type": "scale-odd", "shift": 0, "coefficients": [42.78630126786015]}], "meta": {"l2": {"qq": 2.5067835808059365e-16, "fp64": 1.0777489476480442e-14}}}
+{
+    "tap_size": 18,
+    "delay": {
+        "even": 4,
+        "odd": 5
+    },
+    "steps": [
+        {
+            "type": "predict",
+            "shift": 0,
+            "coefficients": [
+                -2.0515539827866274
+            ]
+        },
+        {
+            "type": "update",
+            "shift": 0,
+            "coefficients": [
+                0.39385749847296075,
+                0.2148393570559503
+            ]
+        },
+        {
+            "type": "predict",
+            "shift": -1,
+            "coefficients": [
+                -2.5880424409152916,
+                0.5945201093038691
+            ]
+        },
+        {
+            "type": "update",
+            "shift": 0,
+            "coefficients": [
+                -0.10426705485141172,
+                -0.05233608022579983
+            ]
+        },
+        {
+            "type": "predict",
+            "shift": -1,
+            "coefficients": [
+                0.31292566283120704,
+                -1.0697411069980074
+            ]
+        },
+        {
+            "type": "update",
+            "shift": 0,
+            "coefficients": [
+                0.15226372139055047,
+                -0.7647306467169724
+            ]
+        },
+        {
+            "type": "predict",
+            "shift": -1,
+            "coefficients": [
+                1.086318044410939,
+                -4.088544356526117
+            ]
+        },
+        {
+            "type": "update",
+            "shift": 0,
+            "coefficients": [
+                0.24111771738878687,
+                -0.4348142547402506
+            ]
+        },
+        {
+            "type": "predict",
+            "shift": -1,
+            "coefficients": [
+                2.2897052993756963,
+                -16.695716192526508
+            ]
+        },
+        {
+            "type": "swap",
+            "shift": 0,
+            "coefficients": []
+        },
+        {
+            "type": "predict",
+            "shift": 0,
+            "coefficients": [
+                0.059890621454768894
+            ]
+        },
+        {
+            "type": "scale-even",
+            "shift": 0,
+            "coefficients": [
+                -0.023371966502539712
+            ]
+        },
+        {
+            "type": "scale-odd",
+            "shift": 0,
+            "coefficients": [
+                42.78630126786015
+            ]
+        }
+    ],
+    "meta": {
+        "l2": {
+            "qq": 2.5067835808059365e-16,
+            "fp64": 1.0777489476480442e-14
+        }
+    }
+}
