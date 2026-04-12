@@ -12,7 +12,6 @@ void kernel_main() {
     constexpr uint32_t cb_input = get_compile_time_arg_val(2);
     constexpr uint32_t cb_output = get_compile_time_arg_val(3);
     constexpr auto h_coeffs_of_step = fill_array_with_next_n_args<uint32_t, 4, K>();
-    (void)h_coeffs_of_step;
     // halo:  [0, 0, ..., 0, 1, 2, 3, ..., 18]
     // input: [19, 20, 21, ..., 32, 0, 0, ..., 0]
     constexpr uint dst_halo = 0;
@@ -32,8 +31,8 @@ void kernel_main() {
     copy_tile(cb_input, 0, dst_input);
     cb_pop_front(cb_input, 1);
 
-    MATH((ckernel::sfpu::calculate_stencil_init<K>()));
-    MATH((ckernel::sfpu::calculate_stencil<K>(h_coeffs_of_step.data(), dst_halo, dst_input, dst_out)));
+    hstencil_init();
+    hstencil_row<K>(h_coeffs_of_step, dst_halo, dst_input, dst_out);
 
     tile_regs_commit();
     tile_regs_wait();

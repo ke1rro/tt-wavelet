@@ -76,7 +76,7 @@ SFPSETCC(0, mask, 0, SFPSETCC_MOD1_LREG_NE0);
 // Copy first column of a to the first column of b
 SFPMOV(0, a, b, 0);
 // Set all LaneEnable=true
-SFPSETCC(1, 0, 0, SFPSETCC_MOD1_IMM_BIT0);
+SFPENCC(0, 0, 0, SFPENCC_MOD1_EU_R1);
 ```
 
 The register `mask` is preloaded with the following values:
