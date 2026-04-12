@@ -10,7 +10,7 @@ Nevertheless computation on TensixCoprocessor is done on tiles, thus requiring u
 
 On the figure above data will occupy `tile0/face0/block0/row0`, `tile0/face1/block0/row0`, `tile1/face0/block0/row0`, `tile1/face1/block0/row0` and so on.
 
-Our [horizontal stencil](./HORIZONTAL_STENCIL.md) processes 4x16 blocks at a time. Sine only first row of the tile is active, we can only process 2 blocks per tile (`face0/block0`, `face1/block0`), thus we would need to process a total of N/16 blocks. Hovewer in that case we only have efficiency of 25%, because 3/4 rows of the block are not used.
+Our [horizontal stencil](./HORIZONTAL_STENCIL.md) processes 4x16 blocks at a time. Since only first row of the tile is active, we can only process 2 blocks per tile (`face0/block0`, `face1/block0`), thus we would need to process a total of N/16 blocks. Hovewer in that case we only have efficiency of 25%, because 3/4 rows of the block are not used.
 
 ## Proposed solution
 
