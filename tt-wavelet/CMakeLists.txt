@@ -1,9 +1,6 @@
 if(BUILD_TT_WAVELET)
   add_compile_definitions(TT_WAVELET_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
-  add_executable(
-    tt_wavelet_test
-          stencil.cpp
-  )
+  add_executable(tt_wavelet_test main.cpp tt_wavelet/src/pad_split_device.cpp)
 
   set(TT_WAVELET_LLK_INCLUDE_CANDIDATES
       ${CMAKE_SOURCE_DIR}/tt-metal/tt_metal/third_party/tt_llk/tt_llk_wormhole_b0/llk_lib
@@ -21,8 +18,7 @@ if(BUILD_TT_WAVELET)
   set(TT_WAVELET_LLK_INCLUDE_DIRS)
 
   set(TT_WAVELET_INCLUDE_DIRS
-      ${CMAKE_SOURCE_DIR}/tt-metal
-      ${CMAKE_SOURCE_DIR}/tt-metal/tt_metal/common
+      ${CMAKE_SOURCE_DIR}/tt-metal ${CMAKE_SOURCE_DIR}/tt-metal/tt_metal/common
       ${CMAKE_SOURCE_DIR}/tt-metal/tt_metal/api/tt-metalium
       ${CMAKE_CURRENT_SOURCE_DIR})
   foreach(LLK_INCLUDE_DIR IN LISTS TT_WAVELET_LLK_INCLUDE_CANDIDATES)

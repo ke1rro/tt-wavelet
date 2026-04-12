@@ -191,4 +191,4 @@ CheckOptions:
 
 FormatStyle: 'file'
 
-HeaderFilterRegex: '^tt-wavelet/.*'
+HeaderFilterRegex: '(^|.*/)tt-wavelet/.*\.(h|hpp)$'
