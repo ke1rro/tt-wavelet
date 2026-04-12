@@ -25,3 +25,13 @@ The idea is basically to think of two tiles as 4x64 tensor, where last 16 elemen
 This idea can be easily extended to more tiles or blocks per tiles. For example, we can add more tiles to the right, making the "tensor" wider, or we can add more blocks to the bottom, making the "tensor" taller.
 
 Note that making the "tensor" wider is more efficient, because it does not require increasing the number of copied rows.
+
+## Efficiency analysis
+
+In this way for 2 tiles with all blocks active we can fit 1552 samples of the input signal. 2 full tiles consist of 8 face, given 4 blocks per face, we have 32 blocks in total. Thus we need to process N/776 tiles or N/48.5 blocks, which is a significant improvement over the naive method and the efficiency is around 75.8% (1552/2048).
+
+By increasing number of tiles (horizontal scaling) for example to 4, we can fit 3600 samples of the input signal, which gives us efficiency of around 87.9% (3600/4096).
+
+## Implementation details
+
+Work in progress, stay tuned!
