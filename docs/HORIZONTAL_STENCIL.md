@@ -76,7 +76,7 @@ SFPSETCC(0, mask, 0, SFPSETCC_MOD1_LREG_NE0);
 // Copy first column of a to the first column of b
 SFPMOV(0, a, b, 0);
 // Set all LaneEnable=true
-SFPSETCC(1, 0, 0, SFPSETCC_MOD1_IMM_BIT0);
+SFPENCC(0, 0, 0, SFPENCC_MOD1_EU_R1);
 ```
 
 The register `mask` is preloaded with the following values:
@@ -89,6 +89,10 @@ $$
 1 & 0 & 0 & 0 & 0 & 0 & 0 & 0
 \end{bmatrix}
 $$
+
+It can also be viewed as in figure below.
+
+![](./figs/HorizontalRotate.svg)
 
 The whole algorithm is implemented by alternating between doing the shift on even and odd columns and doing the multiplication and reduction for the stencil formula.
 
@@ -125,4 +129,10 @@ SFPLOADI(r, SFPLOADI_MOD0_UPPER, c >> 16);
 SFPLOADI(r, SFPLOADI_MOD0_LOWER, c & 0xffff);
 ```
 
+### Processing tiles
 
+Above code works for two 4x16 blocks of the tile and outputs one 4x16 block of the output. On the figure below can be seen how choice of the input blocks (blue) influences where output block (red) is located. By sliding over the input blocks horizontally we compute whole tile of the output.
+
+![](./figs/HorizontalStencilExamples.svg)
+
+From tile 0 and tile 1 of the input, we compute tile 0 of the output. Then we can either add tile 2, and compute stenctil over tile 1 and tile 2 to produce tile 1 of the output, or we can just compute final stemcil over tile 1, whcih will produce half of the tile 1, with block 0 of face 1 (as show of figure) will not be valid.
