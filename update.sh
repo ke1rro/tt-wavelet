@@ -6,7 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/scripts/common.sh"
 
 BUILD_TYPE=${1:-Release}
-TARGET=${2:-tt_wavelet_test}
+TARGET=${2:-lwt}
 
 log INFO "Updating tt-wavelet only (target: $TARGET)"
 ensure_upd_deps

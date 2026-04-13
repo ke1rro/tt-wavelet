@@ -1,0 +1,30 @@
+2026-04-13 18:44:43.953 | info     |             UMD | Established firmware bundle version: 19.6.0 (topology_discovery.cpp:369)
+2026-04-13 18:44:43.953 | info     |             UMD | Firmware bundle version 19.6.0 on the system is newer than the latest fully tested version 19.4.0 for wormhole_b0 architecture. Newest features may not be supported. (topology_discovery.cpp:395)
+2026-04-13 18:44:43.961 | info     |          Device | Opening user mode device driver (tt_cluster.cpp:223)
+2026-04-13 18:44:43.964 | info     |             UMD | Established firmware bundle version: 19.6.0 (topology_discovery.cpp:369)
+2026-04-13 18:44:43.964 | info     |             UMD | Firmware bundle version 19.6.0 on the system is newer than the latest fully tested version 19.4.0 for wormhole_b0 architecture. Newest features may not be supported. (topology_discovery.cpp:395)
+2026-04-13 18:44:43.980 | info     |             UMD | Established firmware bundle version: 19.6.0 (topology_discovery.cpp:369)
+2026-04-13 18:44:43.980 | info     |             UMD | Firmware bundle version 19.6.0 on the system is newer than the latest fully tested version 19.4.0 for wormhole_b0 architecture. Newest features may not be supported. (topology_discovery.cpp:395)
+2026-04-13 18:44:43.992 | info     |             UMD | Harvesting masks for chip 0 tensix: 0x201 dram: 0x0 eth: 0x0 pcie: 0x0 l2cpu: 0x0 (cluster.cpp:338)
+2026-04-13 18:44:44.015 | info     |             UMD | Harvesting masks for chip 1 tensix: 0x280 dram: 0x0 eth: 0x0 pcie: 0x0 l2cpu: 0x0 (cluster.cpp:338)
+2026-04-13 18:44:44.025 | info     |             UMD | Opening local chip ids/PCIe ids: {0}/[0] and remote chip ids {1} (cluster.cpp:185)
+2026-04-13 18:44:44.025 | info     |             UMD | IOMMU: disabled (cluster.cpp:161)
+2026-04-13 18:44:44.025 | info     |             UMD | KMD version: 2.5.0 (cluster.cpp:164)
+2026-04-13 18:44:44.026 | info     |             UMD | Starting devices in cluster (cluster.cpp:964)
+2026-04-13 18:44:44.026 | info     |             UMD | Mapped hugepage 0x200000000 to NOC address 0x800000000 (silicon_sysmem_manager.cpp:207)
+2026-04-13 18:44:44.027 | info     |             UMD | Mapped hugepage 0x1c0000000 to NOC address 0x840000000 (silicon_sysmem_manager.cpp:207)
+2026-04-13 18:44:44.048 | info     |     Distributed | Using auto discovery to generate mesh graph. (metal_context.cpp:863)
+2026-04-13 18:44:44.048 | info     |     Distributed | Constructing control plane using auto-discovery (no mesh graph descriptor). (metal_context.cpp:840)
+2026-04-13 18:44:44.048 | info     |          Fabric | TopologyMapper mapping start (mesh=0): n_log=2, n_phys=2, log_deg_hist={1:2}, phys_deg_hist={1:2} (topology_mapper_utils.cpp:171)
+2026-04-13 18:44:44.048 | info     |          Fabric | Fast-path path-graph mapping succeeded for mesh 0 (topology_mapper_utils.cpp:401)
+2026-04-13 18:44:44.048 | info     |          Fabric | TopologyMapper mapping start (mesh=0): n_log=2, n_phys=2, log_deg_hist={1:2}, phys_deg_hist={1:2} (topology_mapper_utils.cpp:171)
+2026-04-13 18:44:44.048 | info     |          Fabric | Fast-path path-graph mapping succeeded for mesh 0 (topology_mapper_utils.cpp:401)
+input signal (19): [1.00000000e+00, 2.00000000e+00, 3.00000000e+00, 4.00000000e+00, 5.00000000e+00, 6.00000000e+00, 7.00000000e+00, 8.00000000e+00, 9.00000000e+00, 1.00000000e+01, 1.10000000e+01, 1.20000000e+01, 1.30000000e+01, 1.40000000e+01, 1.50000000e+01, 1.60000000e+01, 1.70000000e+01, 1.80000000e+01, 1.90000000e+01]
+tt-wavelet approximation coefficients (21): [8.48129654e+00, 5.68320942e+00, 2.70698118e+00, 1.50559258e+00, 4.25033808e+00, 7.07106781e+00, 9.89949512e+00, 1.27279215e+01, 1.55563498e+01, 1.83854961e+01, 2.12166653e+01, 2.40212154e+01, 2.67928486e+01, 2.55656757e+01, 2.26110287e+01, 0.00000000e+00, 0.00000000e+00, 0.00000000e+00, 0.00000000e+00, 0.00000000e+00, 0.00000000e+00]
+tt-wavelet detail coefficients (20): [-9.06269997e-02, 2.66191691e-01, -1.72452718e-01, -2.77369749e-03, -3.37865960e-04, 7.32934097e-07, -3.33151860e-07, 4.66412587e-07, 1.53249857e-06, 1.63870733e-02, 1.38959035e-01, -2.44728893e-01, 9.61401612e-02, -7.47859292e-03, 7.21473654e-04, 0.00000000e+00, 0.00000000e+00, 0.00000000e+00, 0.00000000e+00, 0.00000000e+00]
+Scheme: "/root/tt-wavelet/tt-wavelet/../ttnn-wavelet/lifting_schemes/coif2.json"
+Steps executed: 9
+Even logical length: 21
+Odd logical length: 20
+2026-04-13 18:44:47.344 | info     |          Device | Closing user mode device drivers (tt_cluster.cpp:472)
+2026-04-13 18:44:47.344 | info     |             UMD | Closing devices in cluster (cluster.cpp:975)

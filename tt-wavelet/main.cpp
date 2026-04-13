@@ -1,125 +1,132 @@
-#include <cassert>
-#include <cmath>
+#include <cstdlib>
+#include <filesystem>
+#include <iomanip>
 #include <iostream>
+#include <sstream>
+#include <stdexcept>
+#include <string>
 #include <vector>
 
 #include "tt-metalium/distributed.hpp"
 #include "tt-metalium/host_api.hpp"
 #include "tt-metalium/mesh_buffer.hpp"
 #include "tt-metalium/mesh_device.hpp"
-#include "tt_wavelet/include/pad_split.hpp"
-#include "tt_wavelet/include/pad_split_device.hpp"
+#include "tt_wavelet/include/lifting/device.hpp"
 
-using namespace ttwv;
+namespace {
 
-int main() {
-    constexpr int device_id = 0;
-    auto mesh_device = tt::tt_metal::distributed::MeshDevice::create_unit_mesh(device_id);
-    tt::tt_metal::distributed::MeshCommandQueue& command_queue = mesh_device->mesh_command_queue();
-    constexpr tt::tt_metal::CoreCoord core{0, 0};
+[[nodiscard]] std::filesystem::path default_scheme_path() {
+    return std::filesystem::path(TT_WAVELET_SOURCE_DIR) / "../ttnn-wavelet/lifting_schemes/coif2.json";
+}
 
-    constexpr size_t signal_length = 3;
-    std::vector<float> original_signal(signal_length);
-    for (size_t i = 0; i < signal_length; ++i) {
-        original_signal[i] = static_cast<float>(i + 1);
+[[nodiscard]] std::vector<float> default_signal() {
+    constexpr size_t default_signal_length = 100000;
+    std::vector<float> signal(default_signal_length);
+    for (size_t i = 0; i < default_signal_length; ++i) {
+        signal[i] = static_cast<float>(i + 1);
+    }
+    return signal;
+}
+
+[[nodiscard]] std::vector<float> parse_signal_arg(const char* raw_signal) {
+    std::vector<float> signal;
+    std::string token;
+    std::stringstream stream(raw_signal);
+    while (std::getline(stream, token, ',')) {
+        if (token.empty()) {
+            continue;
+        }
+
+        size_t parsed_chars = 0;
+        const float value = std::stof(token, &parsed_chars);
+        if (parsed_chars != token.size()) {
+            throw std::runtime_error("Failed to parse signal token: " + token);
+        }
+        signal.push_back(value);
     }
 
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-member-init)
-    Pad1DConfig pad_config{.mode = BoundaryMode::Symmetric, .left = 2, .right = 2};
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-member-init)
-    SignalBuffer input_desc{
-        .dram_address = 0, .length = signal_length, .stick_width = 32, .element_size_bytes = sizeof(float)};
+    if (signal.empty()) {
+        throw std::runtime_error("Signal argument is empty.");
+    }
 
-    PadSplit1DLayout layout = make_pad_split_1d_layout(input_desc, 0, 0, pad_config);
+    return signal;
+}
 
-    tt::tt_metal::distributed::DeviceLocalBufferConfig input_local_conf{
-        .page_size = layout.input.aligned_stick_bytes(32), .buffer_type = tt::tt_metal::BufferType::DRAM};
-    tt::tt_metal::distributed::ReplicatedBufferConfig input_rep_conf{
-        .size = static_cast<uint64_t>(layout.input.physical_nbytes())};
+void print_coeffs(const char* label, const std::vector<float>& values, const size_t logical_length) {
+    std::cout << label << " (" << logical_length << "): [";
+    for (size_t i = 0; i < logical_length; ++i) {
+        if (i > 0) {
+            std::cout << ", ";
+        }
 
+        std::cout << std::scientific << std::setprecision(8) << static_cast<double>(values[i]);
+    }
+    std::cout << std::defaultfloat << "]\n";
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+    const std::filesystem::path scheme_path = argc > 1 ? std::filesystem::path(argv[1]) : default_scheme_path();
+    const std::vector<float> original_signal = argc > 2 ? parse_signal_arg(argv[2]) : default_signal();
+
+    constexpr int device_id = 0;
+    constexpr tt::tt_metal::CoreCoord core{0, 0};
+    const size_t signal_length = original_signal.size();
+
+    auto mesh_device = tt::tt_metal::distributed::MeshDevice::create_unit_mesh(device_id);
+    tt::tt_metal::distributed::MeshCommandQueue& command_queue = mesh_device->mesh_command_queue();
+
+    ttwv::SignalBuffer input_desc{
+        .dram_address = 0,
+        .length = signal_length,
+        .stick_width = 32,
+        .element_size_bytes = sizeof(float),
+    };
+
+    const tt::tt_metal::distributed::DeviceLocalBufferConfig input_local_config{
+        .page_size = input_desc.aligned_stick_bytes(32),
+        .buffer_type = tt::tt_metal::BufferType::DRAM,
+    };
+    const tt::tt_metal::distributed::ReplicatedBufferConfig input_replicated_config{
+        .size = static_cast<uint64_t>(input_desc.physical_nbytes()),
+    };
     auto input_buffer =
-        tt::tt_metal::distributed::MeshBuffer::create(input_rep_conf, input_local_conf, mesh_device.get());
+        tt::tt_metal::distributed::MeshBuffer::create(input_replicated_config, input_local_config, mesh_device.get());
+    input_desc.dram_address = input_buffer->get_backing_buffer()->address();
 
-    tt::tt_metal::distributed::DeviceLocalBufferConfig even_local_conf{
-        .page_size = layout.output.even.aligned_stick_bytes(32), .buffer_type = tt::tt_metal::BufferType::DRAM};
-    tt::tt_metal::distributed::ReplicatedBufferConfig even_rep_conf{
-        .size = static_cast<uint64_t>(layout.output.even.physical_nbytes())};
+    const auto scheme = ttwv::load_runtime_lifting_scheme(scheme_path);
+    auto bundle = ttwv::create_lifting_preprocess_program(
+        TT_WAVELET_SOURCE_DIR, *mesh_device, core, *(input_buffer->get_backing_buffer()), input_desc, scheme);
 
-    auto even_buffer = tt::tt_metal::distributed::MeshBuffer::create(even_rep_conf, even_local_conf, mesh_device.get());
-
-    tt::tt_metal::distributed::DeviceLocalBufferConfig odd_local_conf{
-        .page_size = layout.output.odd.aligned_stick_bytes(32), .buffer_type = tt::tt_metal::BufferType::DRAM};
-    tt::tt_metal::distributed::ReplicatedBufferConfig odd_rep_conf{
-        .size = static_cast<uint64_t>(layout.output.odd.physical_nbytes())};
-
-    auto odd_buffer = tt::tt_metal::distributed::MeshBuffer::create(odd_rep_conf, odd_local_conf, mesh_device.get());
-
-    layout.input.dram_address = input_buffer->get_backing_buffer()->address();
-    layout.output.even.dram_address = even_buffer->get_backing_buffer()->address();
-    layout.output.odd.dram_address = odd_buffer->get_backing_buffer()->address();
     tt::tt_metal::distributed::EnqueueWriteMeshBuffer(command_queue, input_buffer, original_signal, false);
+    ttwv::run_preprocess(command_queue, *mesh_device, bundle);
 
-    PadSplit1DDeviceProgram pad_split_program = create_pad_split_1d_program(
-        TT_WAVELET_SOURCE_DIR,
-        core,
-        *(input_buffer->get_backing_buffer()),
-        *(even_buffer->get_backing_buffer()),
-        *(odd_buffer->get_backing_buffer()),
-        layout);
+    const auto active_streams =
+        ttwv::execute_forward_lifting(TT_WAVELET_SOURCE_DIR, *mesh_device, command_queue, core, bundle);
 
-    tt::tt_metal::distributed::MeshWorkload workload;
-    auto dev_range = tt::tt_metal::distributed::MeshCoordinateRange(mesh_device->shape());
-    workload.add_program(dev_range, std::move(pad_split_program.program));
-    tt::tt_metal::distributed::EnqueueMeshWorkload(command_queue, workload, false);
-    tt::tt_metal::distributed::Finish(command_queue);
     std::vector<float> device_even_result;
     std::vector<float> device_odd_result;
 
+    auto even_buffer = active_streams.even.family == ttwv::LogicalStream::kEven
+                           ? bundle.buffers.even.at(active_streams.even.slot)
+                           : bundle.buffers.odd.at(active_streams.even.slot);
+    auto odd_buffer = active_streams.odd.family == ttwv::LogicalStream::kEven
+                          ? bundle.buffers.even.at(active_streams.odd.slot)
+                          : bundle.buffers.odd.at(active_streams.odd.slot);
     tt::tt_metal::distributed::EnqueueReadMeshBuffer(command_queue, device_even_result, even_buffer, true);
     tt::tt_metal::distributed::EnqueueReadMeshBuffer(command_queue, device_odd_result, odd_buffer, true);
 
-    SplitResult host_reference = materialize_reference_pad_split(original_signal, layout);
+    const auto& even_output_desc = bundle.plan.resolve_stream_buffer(active_streams.even);
+    const auto& odd_output_desc = bundle.plan.resolve_stream_buffer(active_streams.odd);
 
-    std::cout << "Original Signal: [ ";
-    for (float v : original_signal) {
-        std::cout << v << " ";
-    }
-    std::cout << "]\n\n";
+    print_coeffs("input signal", original_signal, original_signal.size());
+    print_coeffs("tt-wavelet approximation coefficients", device_even_result, even_output_desc.length);
+    print_coeffs("tt-wavelet detail coefficients", device_odd_result, odd_output_desc.length);
 
-    std::cout << "Padded length: " << layout.padded_length() << "\n\n";
-
-    std::cout << "Device Even Signal (length " << layout.output.even.length << "): [ ";
-    for (size_t i = 0; i < layout.output.even.length; ++i) {
-        std::cout << device_even_result[i] << " ";
-    }
-    std::cout << "]\n\n";
-
-    std::cout << "Device Odd Signal (length " << layout.output.odd.length << "): [ ";
-    for (size_t i = 0; i < layout.output.odd.length; ++i) {
-        std::cout << device_odd_result[i] << " ";
-    }
-    std::cout << "]\n\n";
-
-    bool success = true;
-    for (size_t i = 0; i < layout.output.even.length; ++i) {
-        if (std::abs(device_even_result[i] - host_reference.even[i]) > 1e-5) {
-            std::cerr << "Even mismatch at index " << i << ": device=" << device_even_result[i]
-                      << ", host=" << host_reference.even[i] << std::endl;
-            success = false;
-        }
-    }
-
-    for (size_t i = 0; i < layout.output.odd.length; ++i) {
-        if (std::abs(device_odd_result[i] - host_reference.odd[i]) > 1e-5) {
-            std::cerr << "Odd mismatch at index " << i << ": device=" << device_odd_result[i]
-                      << ", host=" << host_reference.odd[i] << std::endl;
-            success = false;
-        }
-    }
-
-    if (success) {
-        std::cout << "SUCCESS!\n";
-    }
-
-    return success ? 0 : 1;
+    std::cout << "Scheme: " << scheme_path << '\n';
+    std::cout << "Steps executed: " << bundle.scheme.steps.size() << '\n';
+    std::cout << "Even logical length: " << even_output_desc.length << '\n';
+    std::cout << "Odd logical length: " << odd_output_desc.length << '\n';
+    return EXIT_SUCCESS;
 }

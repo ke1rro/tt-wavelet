@@ -1,12 +1,9 @@
 if(BUILD_TT_WAVELET)
   add_compile_definitions(TT_WAVELET_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
-  add_executable(tt_wavelet_test stencil.cpp tt_wavelet/src/lifting_plan.cpp)
+  set(PROJECT_NAME lwt)
   add_executable(
-    tt_wavelet_lifting_test
-    lifting.cpp
-    tt_wavelet/src/lifting_plan.cpp
-    tt_wavelet/src/pad_split_device.cpp
-    tt_wavelet/src/lifting_device.cpp)
+    ${PROJECT_NAME} main.cpp tt_wavelet/src/lifting/plan.cpp
+        tt_wavelet/src/pad_split/device.cpp tt_wavelet/src/lifting/device.cpp)
 
   set(TT_WAVELET_LLK_INCLUDE_CANDIDATES
       ${CMAKE_SOURCE_DIR}/tt-metal/tt_metal/third_party/tt_llk/tt_llk_wormhole_b0/llk_lib
@@ -26,8 +23,10 @@ if(BUILD_TT_WAVELET)
   set(TT_WAVELET_INCLUDE_DIRS
       ${CMAKE_SOURCE_DIR}/tt-metal ${CMAKE_SOURCE_DIR}/tt-metal/tt_metal/common
       ${CMAKE_SOURCE_DIR}/tt-metal/tt_metal/api/tt-metalium
+      ${CMAKE_SOURCE_DIR}
       ${CMAKE_CURRENT_SOURCE_DIR})
-  file(GLOB TT_WAVELET_JSON_INCLUDE_CANDIDATES "${CMAKE_SOURCE_DIR}/tt-metal/.cpmcache/nlohmann_json/*/include")
+  file(GLOB TT_WAVELET_JSON_INCLUDE_CANDIDATES
+       "${CMAKE_SOURCE_DIR}/tt-metal/.cpmcache/nlohmann_json/*/include")
   foreach(LLK_INCLUDE_DIR IN LISTS TT_WAVELET_LLK_INCLUDE_CANDIDATES)
     if(EXISTS "${LLK_INCLUDE_DIR}")
       list(APPEND TT_WAVELET_LLK_INCLUDE_DIRS "${LLK_INCLUDE_DIR}")
@@ -40,14 +39,12 @@ if(BUILD_TT_WAVELET)
   endforeach()
 
   if(DEFINED METALIUM_INCLUDE_DIRS)
-    target_include_directories(tt_wavelet_test PRIVATE ${METALIUM_INCLUDE_DIRS})
-    target_include_directories(tt_wavelet_lifting_test PRIVATE ${METALIUM_INCLUDE_DIRS})
+    target_include_directories(${PROJECT_NAME}
+                               PRIVATE ${METALIUM_INCLUDE_DIRS})
   endif()
-  target_include_directories(tt_wavelet_test
+  target_include_directories(${PROJECT_NAME}
                              PRIVATE ${TT_WAVELET_LLK_INCLUDE_DIRS})
-  target_include_directories(tt_wavelet_test PRIVATE ${TT_WAVELET_INCLUDE_DIRS})
-  target_include_directories(tt_wavelet_lifting_test PRIVATE ${TT_WAVELET_LLK_INCLUDE_DIRS})
-  target_include_directories(tt_wavelet_lifting_test PRIVATE ${TT_WAVELET_INCLUDE_DIRS})
-  target_link_libraries(tt_wavelet_test PRIVATE Metalium::Metal)
-  target_link_libraries(tt_wavelet_lifting_test PRIVATE Metalium::Metal)
+  target_include_directories(${PROJECT_NAME}
+                             PRIVATE ${TT_WAVELET_INCLUDE_DIRS})
+  target_link_libraries(${PROJECT_NAME} PRIVATE Metalium::Metal)
 endif()

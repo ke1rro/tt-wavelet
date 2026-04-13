@@ -1,8 +1,8 @@
 #include <cstdint>
 
+#include "../primitives/stick_cache.hpp"
+#include "../primitives/tile_row_major.hpp"
 #include "api/dataflow/dataflow_api.h"
-#include "../utils/row_major_tile.hpp"
-#include "../utils/stick_read_cache.hpp"
 
 void kernel_main() {
     const uint32_t src_addr = get_arg_val<uint32_t>(0);
@@ -23,31 +23,31 @@ void kernel_main() {
     constexpr auto accessor_args = TensorAccessorArgs<5>();
     const auto src = TensorAccessor(accessor_args, src_addr, stick_nbytes);
 
-    ttwv::kernels::utils::StickReadCache src_cache{
-        cb_src_cache, stick_nbytes, stick_width, ttwv::kernels::utils::kInvalidStick, false};
+    ttwv::kernels::primitives::StickReadCache src_cache{
+        cb_src_cache, stick_nbytes, stick_width, ttwv::kernels::primitives::kInvalidStick, false};
 
     for (uint32_t stick = 0; stick < output_stick_count; ++stick) {
         cb_reserve_back(cb_input, 1);
         auto* input_tile = reinterpret_cast<float*>(get_write_ptr(cb_input));
-        ttwv::kernels::utils::clear_tile(input_tile);
+        ttwv::kernels::primitives::clear_tile(input_tile);
 
         cb_reserve_back(cb_coeff, 1);
         auto* coeff_tile = reinterpret_cast<float*>(get_write_ptr(cb_coeff));
-        ttwv::kernels::utils::clear_tile(coeff_tile);
+        ttwv::kernels::primitives::clear_tile(coeff_tile);
 
         const uint32_t output_base = stick * stick_width;
         for (uint32_t col = 0; col < stick_width; ++col) {
             const uint32_t logical_index = output_base + col;
             const float input_value = logical_index < logical_length
-                                          ? ttwv::kernels::utils::read_source_value(src, src_cache, logical_index)
+                                          ? ttwv::kernels::primitives::read_source_value(src, src_cache, logical_index)
                                           : 0.0F;
-            ttwv::kernels::utils::store_row0_value(input_tile, col, input_value);
-            ttwv::kernels::utils::store_row0_value(coeff_tile, col, scalar);
+            ttwv::kernels::primitives::store_row0_value(input_tile, col, input_value);
+            ttwv::kernels::primitives::store_row0_value(coeff_tile, col, scalar);
         }
 
         cb_push_back(cb_input, 1);
         cb_push_back(cb_coeff, 1);
     }
 
-    ttwv::kernels::utils::release_cache(src_cache);
+    ttwv::kernels::primitives::release_cache(src_cache);
 }

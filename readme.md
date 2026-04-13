@@ -39,7 +39,7 @@ These scripts live in the repo root and keep tt-metal patched with fixed CMake f
 | Script | Purpose | Notes |
 | --- | --- | --- |
 | `./build.sh [Debug\|Release]` | Full build (tt-metal deps + tt-wavelet) | Runs `tt-metal/install_dependencies.sh`, ensures clang-20, sets env vars, applies CMake fixes, configures & builds, installs tt-metal Python bindings into `.venv`. |
-| `./update.sh [Debug\|Release] [target]` | Fast rebuild of tt-wavelet only | Re-applies CMake fixes and env; default target `tt_wavelet_test`. Does **not** run tt-metal install_dependencies. |
+| `./update.sh [Debug\|Release] [target]` | Fast rebuild of tt-wavelet only | Re-applies CMake fixes and env; default target `tt_wavelet_lifting_test`. Does **not** run tt-metal install_dependencies. |
 | `./scripts/revert_tt_metal_cmake.sh` | Restore tt-metal CMakeLists to submodule state | Use before committing if you want a clean submodule. |
 | `source ./scripts/set_env.sh` | Persist env vars in current shell | Exports TT_METAL_ROOT/TT_METAL_HOME/TT_METAL_RUNTIME_ROOT and CC/CXX=clang-20. |
 
@@ -69,9 +69,8 @@ source ./scripts/set_env.sh
 # Running
 
 ```bash
-./build/tt-wavelet/tt_wavelet_test
+./build/tt-wavelet/tt_wavelet_lifting_test
 ```
-
 # Koyeb ssh
 
 <https://github.com/koyeb/tenstorrent-examples/tree/main/tt-ssh>

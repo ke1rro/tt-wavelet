@@ -35,6 +35,7 @@ repos:
             -p=build/ci-clang-tidy,
             --config-file=.clang-tidy,
             --version=20,
-            --exclude-header-filter=tt-metal/tt_metal/third_party/,
+            --exclude-header-filter=tt-metal/|tt-wavelet/tt_wavelet/include/,
+            --extra-arg=-Wno-deprecated-declarations,
           ]
-        files: ^tt-wavelet/.*\.(c|cc|cpp|cxx|h|hpp)$
+        files: ^tt-wavelet/(main\.cpp|cpu-wavelet/.*\.(c|cc|cpp|cxx)|tt_wavelet/src/.*\.(c|cc|cpp|cxx))$

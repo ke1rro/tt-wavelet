@@ -13,8 +13,6 @@ set(TT_METAL_SOURCE_ROOT
 set(TT_METAL_PREBUILT_ROOT
     ""
     CACHE PATH "Path to prebuilt tt-metal package (include/ + lib/)")
-option(CI_BUILD_WAVELET_EXECUTABLE
-       "Build tt_wavelet_test executable in CI config" ON)
 
 if(TT_METAL_PREBUILT_ROOT)
   set(TT_METAL_INCLUDE_ROOT "${TT_METAL_PREBUILT_ROOT}/include")
@@ -222,43 +220,4 @@ else()
   add_library(Metalium::Metal INTERFACE IMPORTED GLOBAL)
   set_target_properties(Metalium::Metal PROPERTIES INTERFACE_INCLUDE_DIRECTORIES
                                                    "${METALIUM_INCLUDE_DIRS}")
-endif()
-
-add_library(
-  tt_wavelet_analysis OBJECT
-  "${TT_WAVELET_SOURCE_ROOT}/tt-wavelet/main.cpp"
-  "${TT_WAVELET_SOURCE_ROOT}/tt-wavelet/tt_wavelet/src/pad_split_device.cpp")
-target_include_directories(tt_wavelet_analysis PRIVATE ${METALIUM_INCLUDE_DIRS})
-target_include_directories(tt_wavelet_analysis
-                           PRIVATE ${TT_WAVELET_LLK_INCLUDE_DIRS})
-target_include_directories(tt_wavelet_analysis
-                           PRIVATE ${TT_WAVELET_INCLUDE_DIRS})
-target_compile_definitions(
-  tt_wavelet_analysis
-  PRIVATE TT_WAVELET_SOURCE_DIR="${TT_WAVELET_SOURCE_ROOT}/tt-wavelet")
-target_link_libraries(tt_wavelet_analysis PRIVATE Metalium::Metal)
-if(TT_METAL_PREBUILT_ROOT)
-  target_link_libraries(tt_wavelet_analysis PRIVATE ${METALIUM_RUNTIME_LIBS})
-endif()
-
-if(CI_BUILD_WAVELET_EXECUTABLE)
-  if(NOT TT_METAL_PREBUILT_ROOT)
-    message(
-      FATAL_ERROR
-        "CI_BUILD_WAVELET_EXECUTABLE=ON requires TT_METAL_PREBUILT_ROOT")
-  endif()
-
-  add_executable(
-    tt_wavelet_test
-    "${TT_WAVELET_SOURCE_ROOT}/tt-wavelet/main.cpp"
-    "${TT_WAVELET_SOURCE_ROOT}/tt-wavelet/tt_wavelet/src/pad_split_device.cpp")
-  target_include_directories(tt_wavelet_test PRIVATE ${METALIUM_INCLUDE_DIRS})
-  target_include_directories(tt_wavelet_test
-                             PRIVATE ${TT_WAVELET_LLK_INCLUDE_DIRS})
-  target_include_directories(tt_wavelet_test PRIVATE ${TT_WAVELET_INCLUDE_DIRS})
-  target_compile_definitions(
-    tt_wavelet_test
-    PRIVATE TT_WAVELET_SOURCE_DIR="${TT_WAVELET_SOURCE_ROOT}/tt-wavelet")
-  target_link_libraries(tt_wavelet_test PRIVATE Metalium::Metal)
-  target_link_libraries(tt_wavelet_test PRIVATE ${METALIUM_RUNTIME_LIBS})
 endif()

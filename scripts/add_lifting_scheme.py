@@ -150,7 +150,7 @@ def generate_wavelet_header(spec: SchemeSpec, wavelet_id: int) -> str:
     return (
         f"#pragma once\n"
         f"\n"
-        f'#include "../lifting_scheme.hpp"\n'
+        f'#include "../scheme.hpp"\n'
         f"\n"
         f"namespace ttwv {{\n"
         f"\n"

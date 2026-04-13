@@ -11,13 +11,13 @@ namespace ttwv {
  *
  * @note Padding in this library is a physical operation.
  *
- * Mirrors the modes supported by NumPy / PyWavelets: Zero, Constant, Symmetric, Periodic
+ * Mirrors the modes supported by NumPy / PyWavelets: kZero, kConstant, kSymmetric, kPeriodic
  */
 enum class BoundaryMode : uint8_t {
-    Zero = 0,       ///< Pad with zeros
-    Constant = 1,   ///< Clamp to edge value
-    Symmetric = 2,  ///< Mirror reflection
-    Periodic = 3    ///< Wrap-around
+    kZero = 0,       ///< Pad with zeros
+    kConstant = 1,   ///< Clamp to edge value
+    kSymmetric = 2,  ///< Mirror reflection
+    kPeriodic = 3    ///< Wrap-around
 };
 
 /**
@@ -73,7 +73,7 @@ enum class BoundaryMode : uint8_t {
  *
  * This is the single entry-point for boundary handling used by the padding pipeline.
  * It returns std::nullopt whenever the requested position should yield a zero sample
- * (i.e. @ref BoundaryMode::Zero, or an empty signal).
+ * (i.e. @ref BoundaryMode::kZero, or an empty signal).
  *
  * | Mode       | In-bounds [0, length) | Negative index        | Index >= length        |
  * |------------|--------------------------|-----------------------|------------------------|
@@ -94,14 +94,14 @@ enum class BoundaryMode : uint8_t {
     }
 
     switch (mode) {
-        case BoundaryMode::Zero: return std::nullopt;
-        case BoundaryMode::Constant:
+        case BoundaryMode::kZero: return std::nullopt;
+        case BoundaryMode::kConstant:
             if (index < 0) {
                 return size_t{0};
             }
             return static_cast<size_t>(index) >= length ? length - 1 : static_cast<size_t>(index);
-        case BoundaryMode::Symmetric: return symmetric_index(index, length);
-        case BoundaryMode::Periodic: return positive_mod(index, length);
+        case BoundaryMode::kSymmetric: return symmetric_index(index, length);
+        case BoundaryMode::kPeriodic: return positive_mod(index, length);
     }
 
     return std::nullopt;
