@@ -174,7 +174,7 @@ $$
 The predict step updates odd samples using a stencil computed from the even samples
 
 $$
-d = o + \operatorname{stencil}(e, h)
+d = o + S(e, h)
 $$
 
 where $o$ are odd samples, $e$ are even samples, and $h$ are the predict coefficients of the current lifting step.
@@ -188,7 +188,7 @@ This step produces the detail coefficients $d[n]$.
 The update step modifies the even samples using the predicted detail values
 
 $$
-a = e + \operatorname{stencil}(d, g)
+a = e + S(d, g)
 $$
 
 where $e$ are even samples, $d$ are detail coefficients from the predict step, and $g$ are update coefficients.
@@ -202,7 +202,7 @@ The update step depends on the output of the predict step, therefore predict mus
 Both predict and update steps share the same high-level structure
 
 $$
-\text{output} = \text{base} + \operatorname{stencil}(\text{signal}, h)
+\mathrm{output} = \mathrm{base} + S(\mathrm{signal}, h)
 $$
 
 where $\text{base}$ is the value being updated, $\text{signal}$ is the source stream for the current step,

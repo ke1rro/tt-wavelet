@@ -313,7 +313,7 @@ Its logic is:
 2. shift it back into the original signal coordinate system:
 
 $$
-\text{logical} = \text{out\_idx} - \text{left\_pad}
+\mathrm{logical} = \mathrm{outIdx} - \mathrm{leftPad}
 $$
 
 3. reflect this logical index into the valid source range `[0, input_length - 1]` using `symmetric_index()`
@@ -487,7 +487,7 @@ For a predict or update step, `compute_step_geometry()` combines:
 and computes:
 
 $$
-\text{conv\_shift} = \text{source.shift} + \text{kernel\_shift} + \min(\text{source.length}, k) - 1
+\mathrm{convShift} = \mathrm{sourceShift} + \mathrm{kernelShift} + \min(\mathrm{sourceLength}, k) - 1
 $$
 
 From this it derives:
@@ -502,8 +502,8 @@ The reader kernel in [lwt_reader.cpp](../tt-wavelet/kernels/dataflow/lwt_reader.
 Conceptually, the physical output is computed as:
 
 $$
-\text{out}[p] = \text{base}[\text{base\_offset} + p] +
-\sum_{j=0}^{k-1} h[j] \cdot \text{source}[\text{source\_offset} + p + k - 1 - j]
+\mathrm{out}[p] = \mathrm{base}[\mathrm{baseOffset} + p] +
+\sum_{j=0}^{k-1} h[j] \cdot \mathrm{source}[\mathrm{sourceOffset} + p + k - 1 - j]
 $$
 
 That is why the reader uses:
@@ -608,31 +608,31 @@ For this predict step the local step shift is `0`, so the convolution stage uses
 Compute geometry:
 
 $$
-\text{conv\_shift} = 1 + 0 + \min(8,1) - 1 = 1
+\mathrm{convShift} = 1 + 0 + \min(8,1) - 1 = 1
 $$
 
 $$
-\text{conv\_length} = 8 - 1 + 1 = 8
+\mathrm{convLength} = 8 - 1 + 1 = 8
 $$
 
 $$
-\text{out\_shift} = \max(2,1) = 2
+\mathrm{outShift} = \max(2,1) = 2
 $$
 
 $$
-\text{out\_end} = \min(2+7,\;1+8) = 9
+\mathrm{outEnd} = \min(2+7,\;1+8) = 9
 $$
 
 $$
-\text{out\_length} = 9 - 2 = 7
+\mathrm{outLength} = 9 - 2 = 7
 $$
 
 $$
-\text{source\_offset} = 2 - 1 = 1
+\mathrm{sourceOffset} = 2 - 1 = 1
 $$
 
 $$
-\text{base\_offset} = 2 - 2 = 0
+\mathrm{baseOffset} = 2 - 2 = 0
 $$
 
 So this step does not compute a new odd shift as `delay.odd + step.shift`.
@@ -760,31 +760,31 @@ Instead it takes the current source shift and applies the local step shift `-1` 
 Compute geometry:
 
 $$
-\text{conv\_shift} = 2 + (-1) + \min(7,3) - 1 = 3
+\mathrm{convShift} = 2 + (-1) + \min(7,3) - 1 = 3
 $$
 
 $$
-\text{conv\_length} = 7 - 3 + 1 = 5
+\mathrm{convLength} = 7 - 3 + 1 = 5
 $$
 
 $$
-\text{out\_shift} = \max(1,3) = 3
+\mathrm{outShift} = \max(1,3) = 3
 $$
 
 $$
-\text{out\_end} = \min(1+8,\;3+5) = 8
+\mathrm{outEnd} = \min(1+8,\;3+5) = 8
 $$
 
 $$
-\text{out\_length} = 8 - 3 = 5
+\mathrm{outLength} = 8 - 3 = 5
 $$
 
 $$
-\text{source\_offset} = 3 - 3 = 0
+\mathrm{sourceOffset} = 3 - 3 = 0
 $$
 
 $$
-\text{base\_offset} = 3 - 1 = 2
+\mathrm{baseOffset} = 3 - 1 = 2
 $$
 
 Again, the new even shift is not computed as `delay.even + step.shift`.
@@ -796,8 +796,8 @@ That overlap produces `out_shift = 3`, which becomes the new current even shift.
 From the generic packed stencil equation:
 
 $$
-\text{out}[p] = \text{base}[\text{base\_offset} + p] +
-\sum_{j=0}^{k-1} h[j] \cdot \text{source}[\text{source\_offset} + p + k - 1 - j]
+\mathrm{out}[p] = \mathrm{base}[\mathrm{baseOffset} + p] +
+\sum_{j=0}^{k-1} h[j] \cdot \mathrm{source}[\mathrm{sourceOffset} + p + k - 1 - j]
 $$
 
 substituting:
