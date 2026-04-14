@@ -125,7 +125,7 @@ jobs:
             -DTT_METAL_PREBUILT_ROOT="${TT_METAL_PREBUILT_ROOT}"
 
       - name: Build tt-wavelet only
-        run: cmake --build build/fast --target tt_wavelet_test -j"$(nproc)"
+        run: cmake --build build/fast --target lwt -j"$(nproc)"
 
       - name: Run pre-commit hooks
         env:

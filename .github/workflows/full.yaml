@@ -237,7 +237,7 @@ jobs:
             -DTT_METAL_PREBUILT_ROOT="${TT_METAL_PREBUILT_ROOT}"
 
       - name: Build tt-wavelet
-        run: cmake --build build/full --target tt_wavelet_test -j"$(nproc)"
+        run: cmake --build build/full --target lwt -j"$(nproc)"
 
       - name: Install pre-commit
         run: pip install pre-commit
