@@ -36,6 +36,9 @@ set(METALIUM_INCLUDE_DIRS
 
 set(TT_WAVELET_INCLUDE_DIRS ${TT_WAVELET_SOURCE_ROOT}/tt-wavelet)
 
+option(CI_BUILD_WAVELET_EXECUTABLE "Build the tt-wavelet lwt executable in CI"
+       OFF)
+
 set(TT_WAVELET_LLK_INCLUDE_CANDIDATES
     ${TT_METAL_SOURCE_ROOT}/tt_metal/third_party/tt_llk/tt_llk_wormhole_b0/llk_lib
     ${TT_METAL_SOURCE_ROOT}/tt_metal/third_party/tt_llk/tt_llk_wormhole_b0/common/inc
@@ -220,4 +223,22 @@ else()
   add_library(Metalium::Metal INTERFACE IMPORTED GLOBAL)
   set_target_properties(Metalium::Metal PROPERTIES INTERFACE_INCLUDE_DIRECTORIES
                                                    "${METALIUM_INCLUDE_DIRS}")
+endif()
+
+if(CI_BUILD_WAVELET_EXECUTABLE)
+  add_executable(
+    lwt
+    ${TT_WAVELET_SOURCE_ROOT}/tt-wavelet/main.cpp
+    ${TT_WAVELET_SOURCE_ROOT}/tt-wavelet/tt_wavelet/src/lifting/plan.cpp
+    ${TT_WAVELET_SOURCE_ROOT}/tt-wavelet/tt_wavelet/src/pad_split/device.cpp
+    ${TT_WAVELET_SOURCE_ROOT}/tt-wavelet/tt_wavelet/src/lifting/device.cpp)
+
+  target_compile_definitions(
+    lwt PRIVATE TT_WAVELET_SOURCE_DIR="${TT_WAVELET_SOURCE_ROOT}/tt-wavelet")
+
+  target_include_directories(
+    lwt PRIVATE ${TT_WAVELET_INCLUDE_DIRS} ${TT_WAVELET_SOURCE_ROOT}
+                ${TT_WAVELET_LLK_INCLUDE_DIRS} ${METALIUM_INCLUDE_DIRS})
+
+  target_link_libraries(lwt PRIVATE Metalium::Metal ${METALIUM_RUNTIME_LIBS})
 endif()
