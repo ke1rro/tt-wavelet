@@ -340,6 +340,10 @@ LiftingForwardPlan make_forward_lifting_plan(
         .packed_steps = pack_device_step_descs(scheme.steps),
         .routes = std::move(routes),
         .final_active = active,
+        .final_even_shift = even_state.shift,
+        .final_odd_shift = odd_state.shift,
+        .final_even_length = even_state.length,
+        .final_odd_length = odd_state.length,
         .output_length = ceil_div(input.length + static_cast<size_t>(scheme.tap_size) - 1, size_t{2}),
     };
 }

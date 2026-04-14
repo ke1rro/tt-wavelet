@@ -20,7 +20,7 @@ namespace {
 }
 
 [[nodiscard]] std::vector<float> default_signal() {
-    constexpr size_t default_signal_length = 100000;
+    constexpr size_t default_signal_length = 19;
     std::vector<float> signal(default_signal_length);
     for (size_t i = 0; i < default_signal_length; ++i) {
         signal[i] = static_cast<float>(i + 1);
@@ -62,6 +62,22 @@ void print_coeffs(const char* label, const std::vector<float>& values, const siz
         std::cout << std::scientific << std::setprecision(8) << static_cast<double>(values[i]);
     }
     std::cout << std::defaultfloat << "]\n";
+}
+
+[[nodiscard]] std::vector<float> canonicalize_forward_output(
+    const std::vector<float>& values, const size_t logical_length, const size_t output_length) {
+    const size_t available_logical = std::min(values.size(), logical_length);
+    std::vector<float> logical_values(values.begin(), values.begin() + static_cast<std::ptrdiff_t>(available_logical));
+
+    if (logical_values.size() <= output_length) {
+        return logical_values;
+    }
+
+    const size_t extra = logical_values.size() - output_length;
+    const size_t crop_offset = (extra + 1) / 2;
+    return std::vector<float>(
+        logical_values.begin() + static_cast<std::ptrdiff_t>(crop_offset),
+        logical_values.begin() + static_cast<std::ptrdiff_t>(crop_offset + output_length));
 }
 
 }  // namespace
@@ -117,16 +133,20 @@ int main(int argc, char** argv) {
     tt::tt_metal::distributed::EnqueueReadMeshBuffer(command_queue, device_even_result, even_buffer, true);
     tt::tt_metal::distributed::EnqueueReadMeshBuffer(command_queue, device_odd_result, odd_buffer, true);
 
-    const auto& even_output_desc = bundle.plan.resolve_stream_buffer(active_streams.even);
-    const auto& odd_output_desc = bundle.plan.resolve_stream_buffer(active_streams.odd);
+    const size_t canonical_length = bundle.plan.output_length;
+
+    const auto even_canonical =
+        canonicalize_forward_output(device_even_result, bundle.plan.final_even_length, canonical_length);
+    const auto odd_canonical =
+        canonicalize_forward_output(device_odd_result, bundle.plan.final_odd_length, canonical_length);
 
     print_coeffs("input signal", original_signal, original_signal.size());
-    print_coeffs("tt-wavelet approximation coefficients", device_even_result, even_output_desc.length);
-    print_coeffs("tt-wavelet detail coefficients", device_odd_result, odd_output_desc.length);
+    print_coeffs("tt-wavelet approximation coefficients", even_canonical, canonical_length);
+    print_coeffs("tt-wavelet detail coefficients", odd_canonical, canonical_length);
 
     std::cout << "Scheme: " << scheme_path << '\n';
     std::cout << "Steps executed: " << bundle.scheme.steps.size() << '\n';
-    std::cout << "Even logical length: " << even_output_desc.length << '\n';
-    std::cout << "Odd logical length: " << odd_output_desc.length << '\n';
+    std::cout << "Even logical length: " << canonical_length << '\n';
+    std::cout << "Odd logical length: " << canonical_length << '\n';
     return EXIT_SUCCESS;
 }

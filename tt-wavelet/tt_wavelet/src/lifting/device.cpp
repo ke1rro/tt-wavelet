@@ -306,17 +306,6 @@ void run_preprocess(
     run_program(mesh_device, command_queue, std::move(bundle.preprocess.program));
 }
 
-[[nodiscard]] size_t count_initial_predict_update_steps(const std::vector<RuntimeLiftingStep>& steps) {
-    size_t count = 0;
-    for (const auto& step : steps) {
-        if (step.type != StepType::kPredict && step.type != StepType::kUpdate) {
-            break;
-        }
-        ++count;
-    }
-    return count;
-}
-
 [[nodiscard]] bool debug_step_readback_enabled() {
     const char* raw = std::getenv("TT_WAVELET_DEBUG_STEP_READBACK");
     return raw != nullptr && raw[0] != '\0' && raw[0] != '0';
@@ -418,7 +407,9 @@ void set_predict_update_runtime_args(
     const PredictUpdateProgram& program_bundle,
     const tt::tt_metal::CoreCoord& core,
     const LiftingPreprocessDeviceProgram& bundle,
-    const size_t num_pu_steps) {
+    const std::vector<size_t>& pu_step_indices) {
+    const size_t num_pu_steps = pu_step_indices.size();
+
     // Reader runtime args:
     // [num_steps, (src_addr, src_len, base_addr, base_len, out_len, out_sticks, src_off, base_off, src_left_pad) * N]
     constexpr uint32_t kReaderArgsPerStep = 9;
@@ -426,7 +417,8 @@ void set_predict_update_runtime_args(
     reader_rt[0] = static_cast<uint32_t>(num_pu_steps);
 
     for (size_t i = 0; i < num_pu_steps; ++i) {
-        const auto& route = bundle.plan.routes[i];
+        const size_t step_index = pu_step_indices[i];
+        const auto& route = bundle.plan.routes[step_index];
         const auto& source_desc = resolve_signal_buffer(bundle.plan, route.source);
         const auto& src_buf = resolve_mesh_buffer(bundle.buffers, route.source);
         const auto& base_buf = resolve_mesh_buffer(bundle.buffers, route.base);
@@ -442,7 +434,7 @@ void set_predict_update_runtime_args(
         reader_rt[off + 5] = output_stick_count;
         reader_rt[off + 6] = checked_length(route.source_offset, "source offset");
         reader_rt[off + 7] = checked_length(route.base_offset, "base offset");
-        reader_rt[off + 8] = stencil_source_left_pad(bundle.plan.packed_steps[i]);
+        reader_rt[off + 8] = stencil_source_left_pad(bundle.plan.packed_steps[step_index]);
     }
     tt::tt_metal::SetRuntimeArgs(program_bundle.program, program_bundle.reader, core, reader_rt);
 
@@ -452,8 +444,9 @@ void set_predict_update_runtime_args(
     compute_rt[0] = static_cast<uint32_t>(num_pu_steps);
 
     for (size_t i = 0; i < num_pu_steps; ++i) {
-        const auto& route = bundle.plan.routes[i];
-        const auto& packed = bundle.plan.packed_steps[i];
+        const size_t step_index = pu_step_indices[i];
+        const auto& route = bundle.plan.routes[step_index];
+        const auto& packed = bundle.plan.packed_steps[step_index];
         const auto& source_desc = resolve_signal_buffer(bundle.plan, route.source);
         const uint32_t output_stick_count = checked_length(
             (route.output_length + source_desc.stick_width - 1) / source_desc.stick_width, "output sticks");
@@ -473,7 +466,8 @@ void set_predict_update_runtime_args(
     writer_rt[0] = static_cast<uint32_t>(num_pu_steps);
 
     for (size_t i = 0; i < num_pu_steps; ++i) {
-        const auto& route = bundle.plan.routes[i];
+        const size_t step_index = pu_step_indices[i];
+        const auto& route = bundle.plan.routes[step_index];
         const auto& source_desc = resolve_signal_buffer(bundle.plan, route.source);
         const auto& out_buf = resolve_output_mesh_buffer(bundle.buffers, route);
         const uint32_t output_stick_count = checked_length(
@@ -498,24 +492,43 @@ LiftingActiveStreams execute_forward_lifting(
         bundle.plan.routes.size(),
         bundle.plan.packed_steps.size());
 
-    const size_t num_pu_steps = count_initial_predict_update_steps(bundle.scheme.steps);
-
-    // Phase 1: run all contiguous predict/update steps in one LWT program.
-    if (num_pu_steps > 0) {
-        const auto& first_output_desc = resolve_output_buffer_desc(bundle.plan, bundle.plan.routes[0]);
-        auto program_bundle = create_predict_update_program(
-            kernel_root, core, *(bundle.buffers.even.ping->get_backing_buffer()), first_output_desc);
-        set_predict_update_runtime_args(program_bundle, core, bundle, num_pu_steps);
-        run_program(mesh_device, command_queue, std::move(program_bundle.program));
-    }
-
-    // Remaining steps (scale, swap) use individual programs.
-    for (size_t step_index = num_pu_steps; step_index < bundle.plan.routes.size(); ++step_index) {
+    for (size_t step_index = 0; step_index < bundle.plan.routes.size();) {
         const auto& step = bundle.scheme.steps[step_index];
         const auto& route = bundle.plan.routes[step_index];
         const auto& packed_step = bundle.plan.packed_steps[step_index];
 
         if (step.type == StepType::kSwap) {
+            ++step_index;
+            continue;
+        }
+
+        if (step.type == StepType::kPredict || step.type == StepType::kUpdate) {
+            std::vector<size_t> pu_step_indices;
+            size_t scan = step_index;
+            while (scan < bundle.plan.routes.size()) {
+                const auto& scan_step = bundle.scheme.steps[scan];
+                if (scan_step.type == StepType::kSwap) {
+                    ++scan;
+                    continue;
+                }
+                if (scan_step.type == StepType::kPredict || scan_step.type == StepType::kUpdate) {
+                    pu_step_indices.push_back(scan);
+                    ++scan;
+                    continue;
+                }
+                break;
+            }
+
+            TT_FATAL(!pu_step_indices.empty(), "empty predict/update segment at step {}", step_index);
+
+            const auto& first_route = bundle.plan.routes[pu_step_indices.front()];
+            const auto& first_output_desc = resolve_output_buffer_desc(bundle.plan, first_route);
+            auto program_bundle = create_predict_update_program(
+                kernel_root, core, *(bundle.buffers.even.ping->get_backing_buffer()), first_output_desc);
+            set_predict_update_runtime_args(program_bundle, core, bundle, pu_step_indices);
+            run_program(mesh_device, command_queue, std::move(program_bundle.program));
+
+            step_index = scan;
             continue;
         }
 
@@ -525,9 +538,8 @@ LiftingActiveStreams execute_forward_lifting(
         const auto& output_buffer = resolve_output_mesh_buffer(bundle.buffers, route);
 
         TT_FATAL(
-            step.type != StepType::kPredict && step.type != StepType::kUpdate,
-            "step-by-step predict/update path was removed from lifting_device.cpp; encountered {} after initial LWT "
-            "phase",
+            step.type == StepType::kScaleEven || step.type == StepType::kScaleOdd,
+            "unexpected step type {} in scale path",
             static_cast<int>(step.type));
 
         auto program_bundle = create_scale_step_program(
@@ -556,6 +568,8 @@ LiftingActiveStreams execute_forward_lifting(
                       << " slot=" << (route.output.slot == StreamSlot::kPing ? "ping" : "pong") << '\n';
             debug_print_signal("step output", device_output, logical_length);
         }
+
+        ++step_index;
     }
 
     return bundle.plan.final_active;

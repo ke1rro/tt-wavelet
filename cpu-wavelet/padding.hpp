@@ -6,7 +6,8 @@
 #include <vector>
 
 #include "cpu-wavelet/boundary.hpp"
-#include "tt-wavelet/tt_wavelet/include/common/padding.hpp"
+#include "cpu-wavelet/padding_layout.hpp"
+#include "cpu-wavelet/signal.hpp"
 
 namespace ttwv::cpu {
 
@@ -20,7 +21,7 @@ namespace ttwv::cpu {
 
 [[nodiscard]] inline std::vector<float> materialize_reference_padding(
     const std::span<const float> input, const Pad1DLayout& layout) {
-    std::vector<float> output(layout.output.physical_length(), 0.0F);
+    std::vector<float> output(physical_length(layout.output), 0.0F);
 
     for (size_t output_index = 0; output_index < layout.output.length; ++output_index) {
         const auto source_index{source_index_for_output(layout, output_index)};

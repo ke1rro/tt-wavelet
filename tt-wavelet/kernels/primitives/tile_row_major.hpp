@@ -25,8 +25,4 @@ ALWI void store_row0_value(float* tile_ptr, const uint32_t col, const float valu
     tile_ptr[tile_row0_offset(col)] = value;
 }
 
-[[nodiscard]] ALWI float load_row0_value(const float* tile_ptr, const uint32_t col) {
-    return tile_ptr[tile_row0_offset(col)];
-}
-
 }  // namespace ttwv::kernels::primitives

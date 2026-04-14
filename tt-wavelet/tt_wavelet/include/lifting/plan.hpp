@@ -76,6 +76,10 @@ struct LiftingForwardPlan {
     std::vector<device_protocol::DeviceStepDesc> packed_steps;
     std::vector<LiftingStepRoute> routes;
     LiftingActiveStreams final_active{};
+    int final_even_shift{0};
+    int final_odd_shift{0};
+    size_t final_even_length{0};
+    size_t final_odd_length{0};
     size_t output_length{0};
 
     [[nodiscard]] constexpr const SignalBuffer& resolve_stream_buffer(const StreamRef stream) const noexcept {

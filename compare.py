@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import ast
+import json
 import math
 import os
 import re
@@ -11,9 +12,18 @@ from typing import Sequence
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 LIFTING_USAGE_DIR = PROJECT_ROOT / "lifting-factorization" / "usage"
-TT_WAVELET_BINARY = PROJECT_ROOT / "build" / "tt-wavelet" / "tt_wavelet_lifting_test"
+TT_WAVELET_BINARY = PROJECT_ROOT / "build" / "tt-wavelet" / "lwt"
 TT_WAVELET_ENV = PROJECT_ROOT / "scripts" / "set_env.sh"
 VENV_PYTHON = PROJECT_ROOT / ".venv" / "bin" / "python3"
+
+STEP_COEFF_CAPACITY = 17
+PU_STEP_TYPES = {"predict", "update"}
+VALID_STEP_TYPES = {"predict", "update", "scale-even", "scale-odd", "swap"}
+
+PU_HEADER_WORDS = 1
+PU_READER_ARGS_PER_STEP = 9
+PU_COMPUTE_ARGS_PER_STEP = 20
+PU_WRITER_ARGS_PER_STEP = 2
 
 try:
     from pywt import dwt
@@ -38,7 +48,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--wavelet",
-        default="bior3.9",
+        default="sym12",
         help="Wavelet name / JSON basename under ttnn-wavelet/lifting_schemes (default: %(default)s).",
     )
     parser.add_argument(
@@ -57,6 +67,23 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Skip running the TT-wavelet device executable.",
     )
+    parser.add_argument(
+        "--all-green",
+        action="store_true",
+        help="Run comparisons for all runtime-capacity green schemes.",
+    )
+    parser.add_argument(
+        "--runtime-limit",
+        type=int,
+        default=341,
+        help="Runtime-args limit used to classify green schemes (default: %(default)s).",
+    )
+    parser.add_argument(
+        "--schemes-dir",
+        type=Path,
+        default=PROJECT_ROOT / "ttnn-wavelet" / "lifting_schemes",
+        help="Directory with lifting-scheme JSON files (default: %(default)s).",
+    )
     return parser.parse_args()
 
 
@@ -70,12 +97,12 @@ def format_coeffs(values: Sequence[float]) -> str:
 
 def print_pairwise_mismatches(
     lhs: Sequence[float], rhs: Sequence[float], name: str, tolerance: float
-) -> None:
+) -> int:
     mismatches = 0
 
     if len(lhs) != len(rhs):
         print(f"{name} length differs: lhs={len(lhs)} vs rhs={len(rhs)}")
-        return
+        return 1
 
     for i, (lhs_val, rhs_val) in enumerate(zip(lhs, rhs)):
         if abs(float(lhs_val) - float(rhs_val)) > tolerance:
@@ -84,6 +111,7 @@ def print_pairwise_mismatches(
 
     if mismatches == 0:
         print(f"{name}: all coefficients match within tolerance {tolerance}")
+    return mismatches
 
 
 def print_error_metrics(reference: Sequence[float], candidate: Sequence[float], name: str) -> None:
@@ -116,7 +144,7 @@ def print_error_metrics(reference: Sequence[float], candidate: Sequence[float], 
 def run_tt_wavelet(scheme_path: Path, raw_signal: str) -> dict[str, list[float]]:
     if not TT_WAVELET_BINARY.exists():
         raise FileNotFoundError(
-            f"TT-wavelet binary not found at {TT_WAVELET_BINARY}. Rebuild with ./update.sh Release tt_wavelet_lifting_test"
+            f"TT-wavelet binary not found at {TT_WAVELET_BINARY}. Rebuild with ./update.sh Release lwt"
         )
 
     command = (
@@ -181,10 +209,101 @@ def sh_quote(value: str) -> str:
     return "'" + value.replace("'", "'\"'\"'") + "'"
 
 
-def main() -> int:
-    args = parse_args()
+def max_predict_update_segment_steps(steps: Sequence[dict[str, object]]) -> int:
+    max_count = 0
+    current_count = 0
+    for step in steps:
+        step_type = str(step.get("type", "")).strip()
+        if step_type in PU_STEP_TYPES:
+            current_count += 1
+            max_count = max(max_count, current_count)
+            continue
+
+        if step_type == "swap":
+            continue
+
+        current_count = 0
+
+    return max_count
+
+
+def is_green_scheme(scheme_path: Path, runtime_limit: int) -> tuple[bool, list[str]]:
+    errors: list[str] = []
+
+    with scheme_path.open("r", encoding="utf-8") as handle:
+        obj = json.load(handle)
+
+    tap_size = obj.get("tap_size", 0)
+    if not isinstance(tap_size, int) or tap_size <= 0:
+        errors.append("tap_size must be positive")
+
+    steps_obj = obj.get("steps", [])
+    if not isinstance(steps_obj, list) or len(steps_obj) == 0:
+        errors.append("missing or empty steps")
+        steps_obj = []
+
+    steps: list[dict[str, object]] = []
+    for i, step in enumerate(steps_obj):
+        if not isinstance(step, dict):
+            errors.append(f"step {i}: invalid entry")
+            continue
+
+        step_type = str(step.get("type", "")).strip()
+        if step_type not in VALID_STEP_TYPES:
+            errors.append(f"step {i}: unsupported type '{step_type}'")
+
+        coeffs = step.get("coefficients", [])
+        if not isinstance(coeffs, list):
+            errors.append(f"step {i}: coefficients must be a list")
+            coeff_count = 0
+        else:
+            coeff_count = len(coeffs)
+
+        if coeff_count > STEP_COEFF_CAPACITY:
+            errors.append(
+                f"step {i}: coefficients {coeff_count} exceed capacity {STEP_COEFF_CAPACITY}"
+            )
+
+        steps.append(step)
+
+    max_segment = max_predict_update_segment_steps(steps)
+    pu_reader_args = PU_HEADER_WORDS + max_segment * PU_READER_ARGS_PER_STEP
+    pu_compute_args = PU_HEADER_WORDS + max_segment * PU_COMPUTE_ARGS_PER_STEP
+    pu_writer_args = PU_HEADER_WORDS + max_segment * PU_WRITER_ARGS_PER_STEP
+
+    if pu_reader_args > runtime_limit:
+        errors.append(f"predict/update reader args {pu_reader_args} > limit {runtime_limit}")
+    if pu_compute_args > runtime_limit:
+        errors.append(f"predict/update compute args {pu_compute_args} > limit {runtime_limit}")
+    if pu_writer_args > runtime_limit:
+        errors.append(f"predict/update writer args {pu_writer_args} > limit {runtime_limit}")
+
+    return len(errors) == 0, errors
+
+
+def discover_green_wavelets(schemes_dir: Path, runtime_limit: int) -> tuple[list[str], list[str]]:
+    if not schemes_dir.exists() or not schemes_dir.is_dir():
+        raise FileNotFoundError(f"Schemes directory not found: {schemes_dir}")
+
+    json_files = sorted(schemes_dir.glob("*.json"))
+    if not json_files:
+        raise FileNotFoundError(f"No JSON schemes found in: {schemes_dir}")
+
+    green: list[str] = []
+    red: list[str] = []
+    for path in json_files:
+        ok, _ = is_green_scheme(path, runtime_limit)
+        if ok:
+            green.append(path.stem)
+        else:
+            red.append(path.stem)
+
+    return green, red
+
+
+def run_single_comparison(args: argparse.Namespace, wavelet: str) -> bool:
     signal = parse_signal(args.signal)
-    scheme_path = PROJECT_ROOT / "ttnn-wavelet" / "lifting_schemes" / f"{args.wavelet}.json"
+    scheme_path = args.schemes_dir / f"{wavelet}.json"
 
     if not scheme_path.exists():
         raise FileNotFoundError(f"Wavelet scheme file not found: {scheme_path}")
@@ -193,7 +312,7 @@ def main() -> int:
     print(f"scheme path: {scheme_path}")
     print()
 
-    cA_pywt, cD_pywt = dwt(signal, args.wavelet, mode="symmetric")
+    cA_pywt, cD_pywt = dwt(signal, wavelet, mode="symmetric")
 
     scheme = LiftingScheme.from_file(
         str(scheme_path),
@@ -228,33 +347,35 @@ def main() -> int:
         print()
 
     print("Pairwise comparison")
-    print_pairwise_mismatches(
+    pywt_vs_lifting_a = print_pairwise_mismatches(
         cA_pywt, cA_lifting, "Approximation pywt vs lifting-factorization", args.tolerance
     )
-    print_pairwise_mismatches(
+    pywt_vs_lifting_d = print_pairwise_mismatches(
         cD_pywt, cD_lifting, "Detail pywt vs lifting-factorization", args.tolerance
     )
     print_error_metrics(cA_pywt, cA_lifting, "Approximation pywt -> lifting-factorization")
     print_error_metrics(cD_pywt, cD_lifting, "Detail pywt -> lifting-factorization")
 
+    checks_ok = pywt_vs_lifting_a == 0 and pywt_vs_lifting_d == 0
+
     if tt_wavelet is not None:
-        print_pairwise_mismatches(
+        pywt_vs_tt_a = print_pairwise_mismatches(
             cA_pywt, tt_wavelet["approximation"], "Approximation pywt vs tt-wavelet", args.tolerance
         )
-        print_pairwise_mismatches(
+        pywt_vs_tt_d = print_pairwise_mismatches(
             cD_pywt, tt_wavelet["detail"], "Detail pywt vs tt-wavelet", args.tolerance
         )
         print_error_metrics(
             cA_pywt, tt_wavelet["approximation"], "Approximation pywt -> tt-wavelet"
         )
         print_error_metrics(cD_pywt, tt_wavelet["detail"], "Detail pywt -> tt-wavelet")
-        print_pairwise_mismatches(
+        lifting_vs_tt_a = print_pairwise_mismatches(
             cA_lifting,
             tt_wavelet["approximation"],
             "Approximation lifting-factorization vs tt-wavelet",
             args.tolerance,
         )
-        print_pairwise_mismatches(
+        lifting_vs_tt_d = print_pairwise_mismatches(
             cD_lifting,
             tt_wavelet["detail"],
             "Detail lifting-factorization vs tt-wavelet",
@@ -268,8 +389,76 @@ def main() -> int:
                 "Note: tt-wavelet length still differs from pywt, so this comparison is not yet canonicalized."
             )
 
-    return 0
+        checks_ok = checks_ok and all(
+            x == 0
+            for x in [
+                pywt_vs_tt_a,
+                pywt_vs_tt_d,
+                lifting_vs_tt_a,
+                lifting_vs_tt_d,
+            ]
+        )
+
+    return checks_ok
+
+
+def main() -> int:
+    args = parse_args()
+    if args.all_green:
+        green, red = discover_green_wavelets(args.schemes_dir, args.runtime_limit)
+        if not green:
+            print("Green schemes: none")
+            print(f"Red schemes: {len(red)}")
+            return 1
+
+        print(f"Runtime-args green schemes ({len(green)}): {', '.join(green)}")
+        print(f"Runtime-args red schemes ({len(red)}): {', '.join(red)}")
+        print()
+
+        passed: list[str] = []
+        failed: list[str] = []
+        for i, wavelet in enumerate(green, start=1):
+            print("=" * 80)
+            print(f"[{i}/{len(green)}] Testing wavelet: {wavelet}")
+            print("=" * 80)
+            try:
+                ok = run_single_comparison(args, wavelet)
+            except Exception as exc:  # noqa: BLE001
+                ok = False
+                print(f"ERROR while testing {wavelet}: {exc}")
+
+            if ok:
+                passed.append(wavelet)
+                print(f"RESULT {wavelet}: PASS")
+            else:
+                failed.append(wavelet)
+                print(f"RESULT {wavelet}: FAIL")
+            print()
+
+        print("Summary")
+        print(f"Passed: {len(passed)}")
+        if passed:
+            print(f"Passed list: {', '.join(passed)}")
+        print(f"Failed: {len(failed)}")
+        if failed:
+            print(f"Failed list: {', '.join(failed)}")
+
+        return 0 if not failed else 1
+
+    return 0 if run_single_comparison(args, args.wavelet) else 1
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+# from pywt import dwt
+
+
+# signal = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+# cA, cD = dwt(signal, "coif2", mode="symmetric")
+
+# print(f"signal: {signal}")
+# print(f"pywt approximation coefficients: {cA}")
+# print(f"pywt detail coefficients: {cD}")
+# print(len(cA), len(cD))

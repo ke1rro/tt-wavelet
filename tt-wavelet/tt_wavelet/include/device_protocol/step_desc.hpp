@@ -15,7 +15,6 @@ enum class DeviceStepType : uint32_t {
 constexpr uint32_t step_coeff_capacity = 17;
 constexpr uint32_t step_desc_header_words = 2;
 constexpr uint32_t step_desc_word_count = step_desc_header_words + step_coeff_capacity;
-constexpr uint32_t step_type_arg_idx = 0;
 constexpr uint32_t step_k_arg_idx = 1;
 constexpr uint32_t step_coeffs_arg_idx = 2;
 

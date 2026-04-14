@@ -73,22 +73,6 @@ ALWI float read_source_value(const SrcAccessor& src, StickReadCache& cache, cons
     return cached_values[source_lane];
 }
 
-template <typename SrcAccessor>
-ALWI float read_shifted_symmetric_value(
-    const SrcAccessor& src,
-    StickReadCache& cache,
-    const uint32_t input_length,
-    const int32_t logical_index,
-    const int32_t source_offset) {
-    if (input_length == 0) {
-        return 0.0F;
-    }
-
-    const int32_t source_logical_index = logical_index + source_offset;
-    const uint32_t source_index = symmetric_index(source_logical_index, input_length);
-    return read_source_value(src, cache, source_index);
-}
-
 ALWI void release_cache(StickReadCache& cache) {
     if (!cache.valid) {
         return;

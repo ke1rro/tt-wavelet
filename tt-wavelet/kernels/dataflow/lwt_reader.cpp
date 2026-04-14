@@ -1,8 +1,7 @@
 #include <cstdint>
 
-#include "../primitives/stick_cache.hpp"
-#include "../primitives/tile_row_major.hpp"
 #include "api/dataflow/dataflow_api.h"
+#include "lwt_readers_utils.hpp"
 
 void kernel_main() {
     const uint32_t num_steps = get_arg_val<uint32_t>(0);

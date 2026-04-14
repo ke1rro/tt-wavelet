@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "cpu-wavelet/padding.hpp"
+#include "cpu-wavelet/signal.hpp"
 #include "tt-wavelet/tt_wavelet/include/pad_split/layout.hpp"
 
 namespace ttwv::cpu {
@@ -20,8 +21,8 @@ struct SplitResult {
     const std::vector<float> padded = materialize_reference_padding(input, pad_layout);
 
     SplitResult result{
-        .even = std::vector<float>(layout.output.even.physical_length(), 0.0F),
-        .odd = std::vector<float>(layout.output.odd.physical_length(), 0.0F)};
+        .even = std::vector<float>(physical_length(layout.output.even), 0.0F),
+        .odd = std::vector<float>(physical_length(layout.output.odd), 0.0F)};
 
     for (size_t i = 0; i < layout.output.even.length; ++i) {
         result.even[i] = padded[i * 2];

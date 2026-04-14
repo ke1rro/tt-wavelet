@@ -50,7 +50,7 @@ namespace ttwv {
  * // [s0 ... s31] [s32 ... s63] [s64 ... s69 | 0 ... 0]
  * //  stick 0      stick 1      stick 2  (22 padding zeros)
  * //
- * // physical_length() = 3 * 32 = 96
+ * // physical slots = 3 * 32 = 96
  * // stick_count()     = 3
  * @endcode
  */
@@ -91,19 +91,6 @@ struct SignalBuffer {
      */
     [[nodiscard]] constexpr uint32_t aligned_stick_bytes(const uint32_t alignment = 32) const noexcept {
         return static_cast<uint32_t>(round_up(static_cast<size_t>(stick_bytes()), alignment));
-    }
-
-    /**
-     * @brief Total number of scalar slots actually present in DRAM, including zero-padding
-     *        in the last stick.
-     *
-     * Always a multiple of @ref stick_width. May be larger than @ref length when the
-     * signal does not fill the last stick completely.
-     *
-     * @return stick_count() * stick_width.
-     */
-    [[nodiscard]] constexpr size_t physical_length() const noexcept {
-        return stick_count() * static_cast<size_t>(stick_width);
     }
 
     /**
