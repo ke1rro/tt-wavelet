@@ -38,4 +38,4 @@ repos:
             --exclude-header-filter=tt-metal/|tt-wavelet/tt_wavelet/include/,
             --extra-arg=-Wno-deprecated-declarations,
           ]
-        files: ^tt-wavelet/(main\.cpp|cpu-wavelet/.*\.(c|cc|cpp|cxx)|tt_wavelet/src/.*\.(c|cc|cpp|cxx))$
+        files: ^tt-wavelet/(main\.cpp|tt_wavelet/src/.*\.(c|cc|cpp|cxx))$
