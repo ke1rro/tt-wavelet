@@ -47,4 +47,26 @@ if(BUILD_TT_WAVELET)
   target_include_directories(${PROJECT_NAME}
                              PRIVATE ${TT_WAVELET_INCLUDE_DIRS})
   target_link_libraries(${PROJECT_NAME} PRIVATE Metalium::Metal)
+
+  if(ENABLE_TRACY AND TARGET Tracy::TracyClient)
+      target_link_libraries(${PROJECT_NAME} PRIVATE Tracy::TracyClient)
+      message(STATUS "${PROJECT_NAME}: Tracy profiling enabled")
+
+      # Tracy demo executable (CPU-only)
+      add_executable(tracy_demo tracy_demo.cpp)
+      target_link_libraries(tracy_demo PRIVATE Tracy::TracyClient)
+      
+      # N300s demo with Tracy profiling
+      add_executable(n300s_demo n300s_demo.cpp)
+      target_include_directories(n300s_demo PRIVATE ${TT_WAVELET_INCLUDE_DIRS} ${TT_WAVELET_LLK_INCLUDE_DIRS})
+      if(DEFINED METALIUM_INCLUDE_DIRS)
+        target_include_directories(n300s_demo PRIVATE ${METALIUM_INCLUDE_DIRS})
+      endif()
+      target_link_libraries(n300s_demo PRIVATE 
+          Metalium::Metal
+          Tracy::TracyClient
+      )
+  else()
+      message(STATUS "Tracy not enabled or Tracy::TracyClient target not found. Skipping tracy_demo and n300s_demo.")
+  endif()
 endif()
