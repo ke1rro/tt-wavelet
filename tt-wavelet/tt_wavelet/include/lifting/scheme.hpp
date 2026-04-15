@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <type_traits>
 #include <tuple>
 #include <utility>
 
@@ -25,6 +26,13 @@ struct SchemeInfo {
 
 template <typename... Steps>
 struct LiftingScheme {
+    private:
+        template <typename Visitor, std::size_t... Is>
+        constexpr void for_each_step_indexed_impl(Visitor&& v, std::index_sequence<Is...>) const {
+            (std::forward<Visitor>(v)(std::get<Is>(steps), std::integral_constant<std::size_t, Is>{}), ...);
+        }
+
+    public:
     static constexpr std::size_t num_steps = sizeof...(Steps);
 
     int tap_size;
@@ -45,20 +53,18 @@ struct LiftingScheme {
 
     template <typename Visitor>
     constexpr void for_each_step_indexed(Visitor&& v) const {
-        [&]<std::size_t... Is>(std::index_sequence<Is...>) {
-            (std::forward<Visitor>(v)(std::get<Is>(steps), std::integral_constant<std::size_t, Is>{}), ...);
-        }(std::make_index_sequence<num_steps>{});
+        for_each_step_indexed_impl(std::forward<Visitor>(v), std::make_index_sequence<num_steps>{});
     }
 };
 
 template <typename... Steps>
-[[nodiscard]] constexpr LiftingScheme<std::remove_cvref_t<Steps>...> make_lifting_scheme(
+[[nodiscard]] constexpr LiftingScheme<typename std::decay<Steps>::type...> make_lifting_scheme(
     int tap_size, int delay_even, int delay_odd, Steps&&... steps) {
-    return LiftingScheme<std::remove_cvref_t<Steps>...>{
+    return LiftingScheme<typename std::decay<Steps>::type...>{
         tap_size,
         delay_even,
         delay_odd,
-        std::tuple<std::remove_cvref_t<Steps>...>{std::forward<Steps>(steps)...},
+        std::tuple<typename std::decay<Steps>::type...>{std::forward<Steps>(steps)...},
     };
 }
 

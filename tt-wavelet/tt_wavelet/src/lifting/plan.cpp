@@ -4,8 +4,11 @@
 #include <fstream>
 #include <limits>
 #include <nlohmann/json.hpp>
+#include <string>
 #include <string_view>
 #include <tt_stl/assert.hpp>
+
+#include "tt_wavelet/include/lifting/wavelets/wavelet_registry.hpp"
 
 namespace ttwv {
 
@@ -105,8 +108,13 @@ RuntimeLiftingScheme load_runtime_lifting_scheme(const std::filesystem::path& pa
     TT_FATAL(handle.good(), "Failed to open lifting scheme file: {}", path.string());
 
     const nlohmann::json obj = nlohmann::json::parse(handle);
+    const std::string scheme_name = path.stem().string();
+    const SchemeInfo* registry_info = find_scheme(scheme_name);
+    TT_FATAL(registry_info != nullptr, "Scheme '{}' not found in generated wavelet registry", scheme_name);
 
     RuntimeLiftingScheme scheme{
+        .name = scheme_name,
+        .wavelet_id = registry_info != nullptr ? registry_info->id : -1,
         .mode = mode,
         .tap_size = obj.at("tap_size").get<int>(),
         .delay_even = obj.value("delay", nlohmann::json::object()).value("even", 0),
@@ -337,7 +345,6 @@ LiftingForwardPlan make_forward_lifting_plan(
         .preprocess_layout = preprocess_layout,
         .even_buffers = SignalBufferPair{.ping = even_ping, .pong = even_pong},
         .odd_buffers = SignalBufferPair{.ping = odd_ping, .pong = odd_pong},
-        .packed_steps = pack_device_step_descs(scheme.steps),
         .routes = std::move(routes),
         .final_active = active,
         .final_even_shift = even_state.shift,

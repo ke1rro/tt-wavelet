@@ -1,16 +1,16 @@
 #include "tt_wavelet/include/lifting/device.hpp"
 
-#include <array>
+#include <algorithm>
 #include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
-#include <cstring>
 #include <filesystem>
 #include <iomanip>
 #include <iostream>
 #include <limits>
 #include <memory>
+#include <string>
 #include <tt_stl/assert.hpp>
 #include <vector>
 
@@ -43,8 +43,12 @@ constexpr const char* kRowMajorWriterKernelPath = "kernels/dataflow/lwt_row_majo
 constexpr const char* kMulComputeKernelPath = "kernels/compute/lwt_mul_compute.cpp";
 
 constexpr const char* kLwtReaderKernelPath = "kernels/dataflow/lwt_reader.cpp";
+constexpr uint32_t kWaveletKernelChunkSize = 1;
 constexpr const char* kLwtComputeKernelPath = "kernels/compute/lwt_compute.cpp";
+constexpr uint32_t kWaveletSchemeCount = 106;
 constexpr const char* kLwtWriterKernelPath = "kernels/dataflow/lwt_writer.cpp";
+
+constexpr uint32_t kStencilMaxTaps = 17;
 
 constexpr uint32_t kLwtSrcTile0Cb = tt::CBIndex::c_0;
 constexpr uint32_t kLwtSrcTile1Cb = tt::CBIndex::c_1;
@@ -54,6 +58,12 @@ constexpr uint32_t kLwtSrcCacheCb = tt::CBIndex::c_3;
 constexpr uint32_t kLwtBaseCacheCb = tt::CBIndex::c_4;
 constexpr uint32_t kLwtSyncCb = tt::CBIndex::c_5;
 constexpr uint32_t kLwtSyncPageSize = 32;
+
+constexpr uint32_t kKernelRuntimeArgsLimit = 341;
+constexpr uint32_t kLwtReaderHeaderArgs = 1;
+constexpr uint32_t kLwtReaderArgsPerStep = 9;
+constexpr uint32_t kMaxPredictUpdateStepsPerDispatch =
+    (kKernelRuntimeArgsLimit - kLwtReaderHeaderArgs) / kLwtReaderArgsPerStep;
 
 struct ScaleStepProgram {
     tt::tt_metal::Program program;
@@ -103,21 +113,24 @@ void create_circular_buffer(
     static_cast<void>(tt::tt_metal::CreateCircularBuffer(program, core, config));
 }
 
-[[nodiscard]] std::vector<uint32_t> to_runtime_args(const device_protocol::DeviceStepDesc& desc) {
-    std::vector<uint32_t> args(device_protocol::step_desc_word_count, 0);
-    std::memcpy(args.data(), &desc, sizeof(desc));
-    return args;
-}
-
 [[nodiscard]] uint32_t checked_length(const size_t value, const char* label) {
     TT_FATAL(
         value <= static_cast<size_t>(std::numeric_limits<uint32_t>::max()), "{} {} overflows uint32_t", label, value);
     return static_cast<uint32_t>(value);
 }
 
-[[nodiscard]] uint32_t stencil_source_left_pad(const device_protocol::DeviceStepDesc& desc) {
-    TT_FATAL(desc.k > 0U && desc.k <= device_protocol::step_coeff_capacity, "invalid stencil width {}", desc.k);
-    return device_protocol::step_coeff_capacity - desc.k;
+[[nodiscard]] uint32_t lwt_compute_chunk_for_wavelet_id(const int wavelet_id) {
+    TT_FATAL(wavelet_id >= 0, "Wavelet id must be resolved before compute-kernel selection");
+    TT_FATAL(wavelet_id < static_cast<int>(kWaveletSchemeCount), "Wavelet id {} is out of valid range", wavelet_id);
+    return static_cast<uint32_t>(wavelet_id) / kWaveletKernelChunkSize;
+}
+
+[[nodiscard]] uint32_t stencil_source_left_pad_from_k(const size_t k) {
+    TT_FATAL(
+        k > 0U && k <= static_cast<size_t>(kStencilMaxTaps),
+        "invalid stencil width {}",
+        k);
+    return kStencilMaxTaps - static_cast<uint32_t>(k);
 }
 
 [[nodiscard]] const SignalBuffer& resolve_signal_buffer(const LiftingForwardPlan& plan, const StreamRef stream) {
@@ -222,8 +235,9 @@ void set_scale_step_runtime_args(
     const tt::tt_metal::Buffer& output_buffer,
     const SignalBuffer& source_desc,
     const LiftingStepRoute& route,
-    const device_protocol::DeviceStepDesc& desc) {
-    TT_FATAL(desc.k == 1U, "Scale steps must provide exactly one coefficient");
+    const RuntimeLiftingStep& step) {
+    TT_FATAL(step.coefficients.size() == 1, "Scale steps must provide exactly one coefficient");
+    const uint32_t coeff_packed = std::bit_cast<uint32_t>(step.coefficients.front());
     const uint32_t output_stick_count = checked_length(
         (route.output_length + source_desc.stick_width - 1) / source_desc.stick_width, "output stick count");
 
@@ -235,7 +249,7 @@ void set_scale_step_runtime_args(
             static_cast<uint32_t>(source_buffer.address()),
             checked_length(route.source_length, "source length"),
             output_stick_count,
-            desc.coeffs_packed[0],
+            coeff_packed,
         });
     tt::tt_metal::SetRuntimeArgs(
         program_bundle.program, program_bundle.compute, core, std::array<uint32_t, 1>{output_stick_count});
@@ -326,7 +340,8 @@ void debug_print_signal(const char* label, const std::vector<float>& values, con
     const std::filesystem::path& kernel_root,
     const tt::tt_metal::CoreCoord& core,
     const tt::tt_metal::Buffer& any_working_buffer,
-    const SignalBuffer& output_desc) {
+    const SignalBuffer& output_desc,
+    const RuntimeLiftingScheme& scheme) {
     TT_FATAL(output_desc.element_size_bytes == sizeof(float), "LWT path is fp32-only");
     TT_FATAL(output_desc.stick_width == 32, "LWT path expects 32-element sticks");
 
@@ -384,6 +399,8 @@ void debug_print_signal(const char* label, const std::vector<float>& values, con
         kernel_path(kernel_root, kLwtWriterKernelPath),
         core,
         tt::tt_metal::WriterDataMovementConfig(writer_ct_args));
+    const uint32_t wavelet_chunk = lwt_compute_chunk_for_wavelet_id(scheme.wavelet_id);
+
     const auto compute = tt::tt_metal::CreateKernel(
         program,
         kernel_path(kernel_root, kLwtComputeKernelPath),
@@ -393,6 +410,11 @@ void debug_print_signal(const char* label, const std::vector<float>& values, con
             .fp32_dest_acc_en = true,
             .unpack_to_dest_mode = unpack_to_dest_mode,
             .compile_args = compute_ct_args,
+            .defines = {
+                {"WAVELET_CHUNK", std::to_string(wavelet_chunk)},
+                {"WAVELET_CHUNK_SIZE", std::to_string(kWaveletKernelChunkSize)},
+                {"WAVELET_SCHEME_COUNT", std::to_string(kWaveletSchemeCount)},
+            },
         });
 
     return PredictUpdateProgram{
@@ -434,29 +456,27 @@ void set_predict_update_runtime_args(
         reader_rt[off + 5] = output_stick_count;
         reader_rt[off + 6] = checked_length(route.source_offset, "source offset");
         reader_rt[off + 7] = checked_length(route.base_offset, "base offset");
-        reader_rt[off + 8] = stencil_source_left_pad(bundle.plan.packed_steps[step_index]);
+        reader_rt[off + 8] = stencil_source_left_pad_from_k(bundle.scheme.steps[step_index].coefficients.size());
     }
     tt::tt_metal::SetRuntimeArgs(program_bundle.program, program_bundle.reader, core, reader_rt);
 
-    // Compute runtime args: [num_steps, (output_sticks, DeviceStepDesc[19]) * N]
-    constexpr uint32_t kComputeArgsPerStep = 1 + device_protocol::step_desc_word_count;
-    std::vector<uint32_t> compute_rt(1 + num_pu_steps * kComputeArgsPerStep, 0);
-    compute_rt[0] = static_cast<uint32_t>(num_pu_steps);
+    // Compute runtime args: [wavelet_id, num_steps, (full_step_index, output_sticks) * N]
+    constexpr uint32_t kComputeArgsPerStep = 2;
+    std::vector<uint32_t> compute_rt(2 + num_pu_steps * kComputeArgsPerStep, 0);
+    compute_rt[0] = bundle.scheme.wavelet_id >= 0 ? static_cast<uint32_t>(bundle.scheme.wavelet_id)
+                                                   : std::numeric_limits<uint32_t>::max();
+    compute_rt[1] = static_cast<uint32_t>(num_pu_steps);
 
     for (size_t i = 0; i < num_pu_steps; ++i) {
         const size_t step_index = pu_step_indices[i];
         const auto& route = bundle.plan.routes[step_index];
-        const auto& packed = bundle.plan.packed_steps[step_index];
         const auto& source_desc = resolve_signal_buffer(bundle.plan, route.source);
         const uint32_t output_stick_count = checked_length(
             (route.output_length + source_desc.stick_width - 1) / source_desc.stick_width, "output sticks");
 
-        const uint32_t off = static_cast<uint32_t>(1 + i * kComputeArgsPerStep);
-        compute_rt[off] = output_stick_count;
-        auto desc_words = to_runtime_args(packed);
-        for (size_t w = 0; w < desc_words.size(); ++w) {
-            compute_rt[off + 1 + w] = desc_words[w];
-        }
+        const uint32_t off = static_cast<uint32_t>(2 + i * kComputeArgsPerStep);
+        compute_rt[off + 0] = static_cast<uint32_t>(step_index);
+        compute_rt[off + 1] = output_stick_count;
     }
     tt::tt_metal::SetRuntimeArgs(program_bundle.program, program_bundle.compute, core, compute_rt);
 
@@ -486,16 +506,9 @@ LiftingActiveStreams execute_forward_lifting(
     tt::tt_metal::distributed::MeshCommandQueue& command_queue,
     const tt::tt_metal::CoreCoord& core,
     const LiftingPreprocessDeviceProgram& bundle) {
-    TT_FATAL(
-        bundle.plan.routes.size() == bundle.plan.packed_steps.size(),
-        "Route count {} must match packed step count {}",
-        bundle.plan.routes.size(),
-        bundle.plan.packed_steps.size());
-
     for (size_t step_index = 0; step_index < bundle.plan.routes.size();) {
         const auto& step = bundle.scheme.steps[step_index];
         const auto& route = bundle.plan.routes[step_index];
-        const auto& packed_step = bundle.plan.packed_steps[step_index];
 
         if (step.type == StepType::kSwap) {
             ++step_index;
@@ -521,12 +534,30 @@ LiftingActiveStreams execute_forward_lifting(
 
             TT_FATAL(!pu_step_indices.empty(), "empty predict/update segment at step {}", step_index);
 
-            const auto& first_route = bundle.plan.routes[pu_step_indices.front()];
-            const auto& first_output_desc = resolve_output_buffer_desc(bundle.plan, first_route);
-            auto program_bundle = create_predict_update_program(
-                kernel_root, core, *(bundle.buffers.even.ping->get_backing_buffer()), first_output_desc);
-            set_predict_update_runtime_args(program_bundle, core, bundle, pu_step_indices);
-            run_program(mesh_device, command_queue, std::move(program_bundle.program));
+            TT_FATAL(
+                kMaxPredictUpdateStepsPerDispatch > 0,
+                "invalid max predict/update steps per dispatch: {}",
+                kMaxPredictUpdateStepsPerDispatch);
+
+            for (size_t offset = 0; offset < pu_step_indices.size();
+                 offset += kMaxPredictUpdateStepsPerDispatch) {
+                const size_t chunk_end = std::min(
+                    offset + static_cast<size_t>(kMaxPredictUpdateStepsPerDispatch), pu_step_indices.size());
+                std::vector<size_t> pu_chunk(
+                    pu_step_indices.begin() + static_cast<std::ptrdiff_t>(offset),
+                    pu_step_indices.begin() + static_cast<std::ptrdiff_t>(chunk_end));
+
+                const auto& first_route = bundle.plan.routes[pu_chunk.front()];
+                const auto& first_output_desc = resolve_output_buffer_desc(bundle.plan, first_route);
+                auto program_bundle = create_predict_update_program(
+                    kernel_root,
+                    core,
+                    *(bundle.buffers.even.ping->get_backing_buffer()),
+                    first_output_desc,
+                    bundle.scheme);
+                set_predict_update_runtime_args(program_bundle, core, bundle, pu_chunk);
+                run_program(mesh_device, command_queue, std::move(program_bundle.program));
+            }
 
             step_index = scan;
             continue;
@@ -555,7 +586,7 @@ LiftingActiveStreams execute_forward_lifting(
             *(output_buffer->get_backing_buffer()),
             source_desc,
             route,
-            packed_step);
+            step);
         run_program(mesh_device, command_queue, std::move(program_bundle.program));
 
         if (debug_step_readback_enabled()) {

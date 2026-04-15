@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <string>
 #include <vector>
 
 #include "tt_wavelet/include/common/boundary.hpp"
@@ -20,6 +21,8 @@ struct RuntimeLiftingStep {
 };
 
 struct RuntimeLiftingScheme {
+    std::string name{};
+    int wavelet_id{-1};
     BoundaryMode mode{BoundaryMode::kSymmetric};
     int tap_size{0};
     int delay_even{0};
@@ -73,7 +76,6 @@ struct LiftingForwardPlan {
     PadSplit1DLayout preprocess_layout{};
     SignalBufferPair even_buffers{};
     SignalBufferPair odd_buffers{};
-    std::vector<device_protocol::DeviceStepDesc> packed_steps;
     std::vector<LiftingStepRoute> routes;
     LiftingActiveStreams final_active{};
     int final_even_shift{0};

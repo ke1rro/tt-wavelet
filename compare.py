@@ -7,6 +7,7 @@ import os
 import re
 import subprocess
 import sys
+import warnings
 from pathlib import Path
 from typing import Sequence
 
@@ -20,9 +21,9 @@ STEP_COEFF_CAPACITY = 17
 PU_STEP_TYPES = {"predict", "update"}
 VALID_STEP_TYPES = {"predict", "update", "scale-even", "scale-odd", "swap"}
 
-PU_HEADER_WORDS = 1
+PU_HEADER_WORDS = 2   # wavelet_id + num_steps
 PU_READER_ARGS_PER_STEP = 9
-PU_COMPUTE_ARGS_PER_STEP = 20
+PU_COMPUTE_ARGS_PER_STEP = 2   # full_step_index + output_sticks  (coefficients are now compile-time)
 PU_WRITER_ARGS_PER_STEP = 2
 
 try:
@@ -38,8 +39,14 @@ except ModuleNotFoundError as exc:
 if str(LIFTING_USAGE_DIR) not in sys.path:
     sys.path.insert(0, str(LIFTING_USAGE_DIR))
 
-import dtypes  # noqa: E402  # type: ignore[import-not-found]
-from lifting import LiftingScheme  # noqa: E402  # type: ignore[import-not-found]
+HAS_LIFTING_BACKEND = True
+try:
+    import dtypes  # noqa: E402  # type: ignore[import-not-found]
+    from lifting import LiftingScheme  # noqa: E402  # type: ignore[import-not-found]
+except ModuleNotFoundError:
+    HAS_LIFTING_BACKEND = False
+    dtypes = None  # type: ignore[assignment]
+    LiftingScheme = None  # type: ignore[assignment]
 
 
 def parse_args() -> argparse.Namespace:
@@ -68,9 +75,19 @@ def parse_args() -> argparse.Namespace:
         help="Skip running the TT-wavelet device executable.",
     )
     parser.add_argument(
+        "--skip-lifting",
+        action="store_true",
+        help="Skip lifting-factorization backend (useful if lifting-factorization submodule is unavailable).",
+    )
+    parser.add_argument(
         "--all-green",
         action="store_true",
         help="Run comparisons for all runtime-capacity green schemes.",
+    )
+    parser.add_argument(
+        "--all-schemes",
+        action="store_true",
+        help="Run comparisons for all schemes in --schemes-dir (ignores green/red classification).",
     )
     parser.add_argument(
         "--runtime-limit",
@@ -301,6 +318,17 @@ def discover_green_wavelets(schemes_dir: Path, runtime_limit: int) -> tuple[list
     return green, red
 
 
+def discover_all_wavelets(schemes_dir: Path) -> list[str]:
+    if not schemes_dir.exists() or not schemes_dir.is_dir():
+        raise FileNotFoundError(f"Schemes directory not found: {schemes_dir}")
+
+    json_files = sorted(schemes_dir.glob("*.json"))
+    if not json_files:
+        raise FileNotFoundError(f"No JSON schemes found in: {schemes_dir}")
+
+    return [path.stem for path in json_files]
+
+
 def run_single_comparison(args: argparse.Namespace, wavelet: str) -> bool:
     signal = parse_signal(args.signal)
     scheme_path = args.schemes_dir / f"{wavelet}.json"
@@ -314,21 +342,30 @@ def run_single_comparison(args: argparse.Namespace, wavelet: str) -> bool:
 
     cA_pywt, cD_pywt = dwt(signal, wavelet, mode="symmetric")
 
-    scheme = LiftingScheme.from_file(
-        str(scheme_path),
-        mode="symmetric",
-        dtype=dtypes.float32,
-    )
-    cA_lifting, cD_lifting = scheme.forward(signal)
+    run_lifting = (not args.skip_lifting) and HAS_LIFTING_BACKEND
+    cA_lifting: Sequence[float] | None = None
+    cD_lifting: Sequence[float] | None = None
+
+    if run_lifting:
+        scheme = LiftingScheme.from_file(  # type: ignore[union-attr]
+            str(scheme_path),
+            mode="symmetric",
+            dtype=dtypes.float32,  # type: ignore[union-attr]
+        )
+        cA_lifting, cD_lifting = scheme.forward(signal)
 
     print(f"pywt approximation coefficients: {format_coeffs(cA_pywt)}")
     print(f"pywt detail coefficients: {format_coeffs(cD_pywt)}")
     print(f"pywt lengths: cA={len(cA_pywt)}, cD={len(cD_pywt)}")
     print()
-    print(f"lifting-factorization approximation coefficients: {format_coeffs(cA_lifting)}")
-    print(f"lifting-factorization detail coefficients: {format_coeffs(cD_lifting)}")
-    print(f"lifting-factorization lengths: cA={len(cA_lifting)}, cD={len(cD_lifting)}")
-    print()
+    if run_lifting and cA_lifting is not None and cD_lifting is not None:
+        print(f"lifting-factorization approximation coefficients: {format_coeffs(cA_lifting)}")
+        print(f"lifting-factorization detail coefficients: {format_coeffs(cD_lifting)}")
+        print(f"lifting-factorization lengths: cA={len(cA_lifting)}, cD={len(cD_lifting)}")
+        print()
+    else:
+        print("lifting-factorization run skipped.")
+        print()
 
     tt_wavelet = None
     if args.skip_tt_wavelet:
@@ -347,16 +384,20 @@ def run_single_comparison(args: argparse.Namespace, wavelet: str) -> bool:
         print()
 
     print("Pairwise comparison")
-    pywt_vs_lifting_a = print_pairwise_mismatches(
-        cA_pywt, cA_lifting, "Approximation pywt vs lifting-factorization", args.tolerance
-    )
-    pywt_vs_lifting_d = print_pairwise_mismatches(
-        cD_pywt, cD_lifting, "Detail pywt vs lifting-factorization", args.tolerance
-    )
-    print_error_metrics(cA_pywt, cA_lifting, "Approximation pywt -> lifting-factorization")
-    print_error_metrics(cD_pywt, cD_lifting, "Detail pywt -> lifting-factorization")
-
-    checks_ok = pywt_vs_lifting_a == 0 and pywt_vs_lifting_d == 0
+    checks_ok = True
+    if run_lifting and cA_lifting is not None and cD_lifting is not None:
+        pywt_vs_lifting_a = print_pairwise_mismatches(
+            cA_pywt, cA_lifting, "Approximation pywt vs lifting-factorization", args.tolerance
+        )
+        pywt_vs_lifting_d = print_pairwise_mismatches(
+            cD_pywt, cD_lifting, "Detail pywt vs lifting-factorization", args.tolerance
+        )
+        print_error_metrics(cA_pywt, cA_lifting, "Approximation pywt -> lifting-factorization")
+        print_error_metrics(cD_pywt, cD_lifting, "Detail pywt -> lifting-factorization")
+        checks_ok = pywt_vs_lifting_a == 0 and pywt_vs_lifting_d == 0
+    else:
+        print("Approximation pywt vs lifting-factorization: skipped")
+        print("Detail pywt vs lifting-factorization: skipped")
 
     if tt_wavelet is not None:
         pywt_vs_tt_a = print_pairwise_mismatches(
@@ -369,18 +410,24 @@ def run_single_comparison(args: argparse.Namespace, wavelet: str) -> bool:
             cA_pywt, tt_wavelet["approximation"], "Approximation pywt -> tt-wavelet"
         )
         print_error_metrics(cD_pywt, tt_wavelet["detail"], "Detail pywt -> tt-wavelet")
-        lifting_vs_tt_a = print_pairwise_mismatches(
-            cA_lifting,
-            tt_wavelet["approximation"],
-            "Approximation lifting-factorization vs tt-wavelet",
-            args.tolerance,
-        )
-        lifting_vs_tt_d = print_pairwise_mismatches(
-            cD_lifting,
-            tt_wavelet["detail"],
-            "Detail lifting-factorization vs tt-wavelet",
-            args.tolerance,
-        )
+        if run_lifting and cA_lifting is not None and cD_lifting is not None:
+            lifting_vs_tt_a = print_pairwise_mismatches(
+                cA_lifting,
+                tt_wavelet["approximation"],
+                "Approximation lifting-factorization vs tt-wavelet",
+                args.tolerance,
+            )
+            lifting_vs_tt_d = print_pairwise_mismatches(
+                cD_lifting,
+                tt_wavelet["detail"],
+                "Detail lifting-factorization vs tt-wavelet",
+                args.tolerance,
+            )
+        else:
+            lifting_vs_tt_a = 0
+            lifting_vs_tt_d = 0
+            print("Approximation lifting-factorization vs tt-wavelet: skipped")
+            print("Detail lifting-factorization vs tt-wavelet: skipped")
         if len(cA_pywt) != len(tt_wavelet["approximation"]) or len(cD_pywt) != len(
             tt_wavelet["detail"]
         ):
@@ -404,6 +451,17 @@ def run_single_comparison(args: argparse.Namespace, wavelet: str) -> bool:
 
 def main() -> int:
     args = parse_args()
+    if args.all_green and args.all_schemes:
+        raise ValueError("Use either --all-green or --all-schemes, not both.")
+
+    if not HAS_LIFTING_BACKEND and not args.skip_lifting:
+        warnings.warn(
+            "lifting backend modules are unavailable; proceeding with --skip-lifting mode. "
+            "(Missing lifting-factorization/usage in this workspace)",
+            RuntimeWarning,
+        )
+        args.skip_lifting = True
+
     if args.all_green:
         green, red = discover_green_wavelets(args.schemes_dir, args.runtime_limit)
         if not green:
@@ -420,6 +478,41 @@ def main() -> int:
         for i, wavelet in enumerate(green, start=1):
             print("=" * 80)
             print(f"[{i}/{len(green)}] Testing wavelet: {wavelet}")
+            print("=" * 80)
+            try:
+                ok = run_single_comparison(args, wavelet)
+            except Exception as exc:  # noqa: BLE001
+                ok = False
+                print(f"ERROR while testing {wavelet}: {exc}")
+
+            if ok:
+                passed.append(wavelet)
+                print(f"RESULT {wavelet}: PASS")
+            else:
+                failed.append(wavelet)
+                print(f"RESULT {wavelet}: FAIL")
+            print()
+
+        print("Summary")
+        print(f"Passed: {len(passed)}")
+        if passed:
+            print(f"Passed list: {', '.join(passed)}")
+        print(f"Failed: {len(failed)}")
+        if failed:
+            print(f"Failed list: {', '.join(failed)}")
+
+        return 0 if not failed else 1
+
+    if args.all_schemes:
+        all_wavelets = discover_all_wavelets(args.schemes_dir)
+        print(f"All schemes ({len(all_wavelets)}): {', '.join(all_wavelets)}")
+        print()
+
+        passed: list[str] = []
+        failed: list[str] = []
+        for i, wavelet in enumerate(all_wavelets, start=1):
+            print("=" * 80)
+            print(f"[{i}/{len(all_wavelets)}] Testing wavelet: {wavelet}")
             print("=" * 80)
             try:
                 ok = run_single_comparison(args, wavelet)
