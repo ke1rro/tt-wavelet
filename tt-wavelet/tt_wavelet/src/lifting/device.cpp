@@ -14,6 +14,8 @@
 #include <tt_stl/assert.hpp>
 #include <vector>
 
+#include "tracy/Tracy.hpp"
+
 #include "tt-metalium/circular_buffer_constants.h"
 #include "tt-metalium/host_api.hpp"
 #include "tt-metalium/tensor_accessor_args.hpp"
@@ -143,11 +145,15 @@ void run_program(
     tt::tt_metal::distributed::MeshDevice& mesh_device,
     tt::tt_metal::distributed::MeshCommandQueue& command_queue,
     tt::tt_metal::Program&& program) {
+    ZoneScopedN("Enqueue Mesh Workload");
     tt::tt_metal::distributed::MeshWorkload workload;
     const auto device_range = tt::tt_metal::distributed::MeshCoordinateRange(mesh_device.shape());
     workload.add_program(device_range, std::move(program));
     tt::tt_metal::distributed::EnqueueMeshWorkload(command_queue, workload, false);
-    tt::tt_metal::distributed::Finish(command_queue);
+    {
+        ZoneScopedN("Device Finish");
+        tt::tt_metal::distributed::Finish(command_queue);
+    }
 }
 
 [[nodiscard]] ScaleStepProgram create_scale_step_program(
@@ -258,6 +264,7 @@ LiftingPreprocessDeviceProgram create_lifting_preprocess_program(
     const tt::tt_metal::Buffer& input_buffer,
     const SignalBuffer& input_desc,
     const RuntimeLiftingScheme& scheme) {
+    ZoneScoped;
     TT_FATAL(input_desc.length > 0, "Input signal must be non-empty");
     TT_FATAL(input_desc.element_size_bytes == sizeof(float), "Lifting preprocess currently supports fp32 only");
 
@@ -486,6 +493,7 @@ LiftingActiveStreams execute_forward_lifting(
     tt::tt_metal::distributed::MeshCommandQueue& command_queue,
     const tt::tt_metal::CoreCoord& core,
     const LiftingPreprocessDeviceProgram& bundle) {
+    ZoneScoped;
     TT_FATAL(
         bundle.plan.routes.size() == bundle.plan.packed_steps.size(),
         "Route count {} must match packed step count {}",

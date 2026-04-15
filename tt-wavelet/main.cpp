@@ -31,6 +31,7 @@ namespace {
 }
 
 [[nodiscard]] std::vector<float> parse_signal_arg(const char* raw_signal) {
+    ZoneScopedN("parse_signal_arg");
     std::vector<float> signal;
     std::string token;
     std::stringstream stream(raw_signal);
@@ -68,6 +69,7 @@ void print_coeffs(const char* label, const std::vector<float>& values, const siz
 
 [[nodiscard]] std::vector<float> canonicalize_forward_output(
     const std::vector<float>& values, const size_t logical_length, const size_t output_length) {
+    ZoneScopedN("canonicalize_forward_output");
     const size_t available_logical = std::min(values.size(), logical_length);
     std::vector<float> logical_values(values.begin(), values.begin() + static_cast<std::ptrdiff_t>(available_logical));
 
@@ -86,6 +88,9 @@ void print_coeffs(const char* label, const std::vector<float>& values, const siz
 
 int main(int argc, char** argv) {
     ZoneScoped;
+    std::cout << "Press ENTER to start execution (start Tracy GUI now)..." << std::flush;
+    std::cin.ignore();
+    
     const std::filesystem::path scheme_path = argc > 1 ? std::filesystem::path(argv[1]) : default_scheme_path();
     const std::vector<float> original_signal = argc > 2 ? parse_signal_arg(argv[2]) : default_signal();
 
@@ -110,8 +115,11 @@ int main(int argc, char** argv) {
     const tt::tt_metal::distributed::ReplicatedBufferConfig input_replicated_config{
         .size = static_cast<uint64_t>(input_desc.physical_nbytes()),
     };
-    auto input_buffer =
-        tt::tt_metal::distributed::MeshBuffer::create(input_replicated_config, input_local_config, mesh_device.get());
+    auto input_buffer = [&]() {
+        ZoneScopedN("Create MeshBuffer");
+        auto buf = tt::tt_metal::distributed::MeshBuffer::create(input_replicated_config, input_local_config, mesh_device.get());
+        return buf;
+    }();
     input_desc.dram_address = input_buffer->get_backing_buffer()->address();
 
     const auto scheme = ttwv::load_runtime_lifting_scheme(scheme_path);

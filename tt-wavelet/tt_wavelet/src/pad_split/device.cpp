@@ -8,6 +8,8 @@
 #include <tt_stl/assert.hpp>
 #include <vector>
 
+#include "tracy/Tracy.hpp"
+
 #include "tt-metalium/tensor_accessor_args.hpp"
 
 namespace ttwv {
@@ -39,6 +41,7 @@ PadSplit1DDeviceProgram create_pad_split_1d_program(
     const tt::tt_metal::Buffer& even_buffer,
     const tt::tt_metal::Buffer& odd_buffer,
     const PadSplit1DLayout& layout) {
+    ZoneScoped;
     TT_FATAL(layout.pad_config.mode == BoundaryMode::kSymmetric, "currently supports symmetric mode only");
     TT_FATAL(layout.input.element_size_bytes == sizeof(float), "is fp32-only");
     TT_FATAL(layout.input.stick_width == 32, "kernel expects 32 scalar samples per stick");
