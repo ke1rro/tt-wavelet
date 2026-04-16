@@ -4,6 +4,7 @@
 #include "compute_kernel_api/eltwise_binary_sfpu.h"
 #include "compute_kernel_api/eltwise_unary/eltwise_unary.h"
 #include "compute_kernel_api/tile_move_copy.h"
+#include <tools/profiler/kernel_profiler.hpp>
 
 void kernel_main() {
     constexpr uint32_t cb_in0 = get_compile_time_arg_val(0);
@@ -18,6 +19,7 @@ void kernel_main() {
     mul_binary_tile_init();
 
     for (uint32_t tile = 0; tile < n_tiles; ++tile) {
+        DeviceZoneScopedN("mul_tile");
         cb_wait_front(cb_in0, 1);
         cb_wait_front(cb_in1, 1);
 

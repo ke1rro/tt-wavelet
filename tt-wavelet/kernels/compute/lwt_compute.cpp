@@ -5,6 +5,7 @@
 #include "compute_kernel_api/eltwise_binary_sfpu.h"
 #include "compute_kernel_api/eltwise_unary/eltwise_unary.h"
 #include "compute_kernel_api/tile_move_copy.h"
+#include <tools/profiler/kernel_profiler.hpp>
 #include "lwt_compute_utils.hpp"
 
 namespace {
@@ -76,6 +77,7 @@ void kernel_main() {
     ckernel::init_sfpu(cb_base, cb_output);
 
     for (uint32_t step = 0; step < num_steps; ++step) {
+        DeviceZoneScopedN("compute_step");
         const uint32_t step_arg_base = 1 + step * kArgsPerStep;
         const uint32_t output_stick_count = get_arg_val<uint32_t>(step_arg_base);
         const uint32_t desc_arg_base = step_arg_base + 1;

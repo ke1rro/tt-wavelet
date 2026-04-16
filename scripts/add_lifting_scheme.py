@@ -26,9 +26,10 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
 JSON_DIR = REPO_ROOT / "ttnn-wavelet" / "lifting_schemes"
-INCLUDE_ROOT = REPO_ROOT / "tt-wavelet" / "include"
-WAVELET_DIR = INCLUDE_ROOT / "tt_wavelet" / "wavelets"
-REGISTRY_HPP = INCLUDE_ROOT / "tt_wavelet" / "wavelet_registry.hpp"
+INCLUDE_ROOT = REPO_ROOT / "tt-wavelet" / "tt_wavelet" / "include"
+WAVELET_DIR = INCLUDE_ROOT / "lifting" / "wavelets"
+REGISTRY_HPP = INCLUDE_ROOT / "lifting" / "wavelets" / "wavelet_registry.hpp"
+KERNEL_CHUNK_SIZE = 4
 
 # --------------------------------------------------------------------------------------
 
@@ -39,10 +40,6 @@ def ident(name: str) -> str:
 
 def hpp_filename(name: str) -> str:
     return f"{ident(name)}.hpp"
-
-
-def include_path(name: str) -> str:
-    return f"tt_wavelet/wavelets/{hpp_filename(name)}"
 
 
 def float_lit(v: float) -> str:
@@ -182,7 +179,7 @@ def generate_wavelet_header(spec: SchemeSpec, wavelet_id: int) -> str:
 def generate_registry(specs: list[SchemeSpec], sorted_specs: list[SchemeSpec]) -> str:
     count = len(sorted_specs)
 
-    includes = "\n".join(f'#include "wavelets/{hpp_filename(s.name)}"' for s in sorted_specs)
+    includes = "\n".join(f'#include "{hpp_filename(s.name)}"' for s in sorted_specs)
 
     wavelet_scheme_specs: list[str] = []
     for wavelet_id, s in enumerate(sorted_specs):
@@ -209,28 +206,35 @@ def generate_registry(specs: list[SchemeSpec], sorted_specs: list[SchemeSpec]) -
         "",
         includes,
         "",
-        "#include <span>",
+        "#ifndef TTWV_WAVELET_REGISTRY_KERNEL_ONLY",
         "#include <string_view>",
+        "#endif",
         "",
         "namespace ttwv {",
         "",
+        f"inline constexpr int kWaveletSchemeCount = {count};",
+        "",
         wavelet_scheme_block,
         "",
-        "[[nodiscard]] inline std::span<const SchemeInfo> all_schemes() noexcept {",
+        "#ifndef TTWV_WAVELET_REGISTRY_KERNEL_ONLY",
+        "[[nodiscard]] inline const SchemeInfo* scheme_table() noexcept {",
         f"    static constexpr SchemeInfo table[{count}] = {{",
         entries_block,
         "    };",
-        f"    return {{table, {count}}};",
+        "    return table;",
         "}",
         "",
         "[[nodiscard]] inline const SchemeInfo* find_scheme(std::string_view name) noexcept {",
-        "    for (const auto& info : all_schemes()) {",
+        "    const auto* table = scheme_table();",
+        "    for (int i = 0; i < kWaveletSchemeCount; ++i) {",
+        "        const auto& info = table[i];",
         "        if (name == info.name) {",
-        "            return &info;",
+        "            return &table[i];",
         "        }",
         "    }",
         "    return nullptr;",
         "}",
+        "#endif",
         "",
         "}",
         "",
@@ -289,8 +293,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
 
     include_root: Path = args.include_root
-    wavelet_dir = include_root / "tt_wavelet" / "wavelets"
-    registry_hpp = include_root / "tt_wavelet" / "wavelet_registry.hpp"
+    wavelet_dir = include_root / "lifting" / "wavelets"
+    registry_hpp = include_root / "lifting" / "wavelets" / "wavelet_registry.hpp"
     json_dir: Path = args.json_dir
 
     if args.json_file is not None:

@@ -1,6 +1,8 @@
+
 #include <cstdint>
 
 #include "api/dataflow/dataflow_api.h"
+#include <tools/profiler/kernel_profiler.hpp>
 #include "pad_split_1d_reader_utils.hpp"
 
 void kernel_main() {
