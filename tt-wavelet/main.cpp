@@ -7,8 +7,6 @@
 #include <string>
 #include <vector>
 
-#include "tracy/Tracy.hpp"
-
 #include "tt-metalium/distributed.hpp"
 #include "tt-metalium/host_api.hpp"
 #include "tt-metalium/mesh_buffer.hpp"
@@ -22,7 +20,7 @@ namespace {
 }
 
 [[nodiscard]] std::vector<float> default_signal() {
-    constexpr size_t default_signal_length = 19;
+    constexpr size_t default_signal_length = 10000000;
     std::vector<float> signal(default_signal_length);
     for (size_t i = 0; i < default_signal_length; ++i) {
         signal[i] = static_cast<float>(i + 1);
@@ -31,7 +29,6 @@ namespace {
 }
 
 [[nodiscard]] std::vector<float> parse_signal_arg(const char* raw_signal) {
-    ZoneScopedN("parse_signal_arg");
     std::vector<float> signal;
     std::string token;
     std::stringstream stream(raw_signal);
@@ -69,7 +66,6 @@ void print_coeffs(const char* label, const std::vector<float>& values, const siz
 
 [[nodiscard]] std::vector<float> canonicalize_forward_output(
     const std::vector<float>& values, const size_t logical_length, const size_t output_length) {
-    ZoneScopedN("canonicalize_forward_output");
     const size_t available_logical = std::min(values.size(), logical_length);
     std::vector<float> logical_values(values.begin(), values.begin() + static_cast<std::ptrdiff_t>(available_logical));
 
@@ -88,9 +84,6 @@ void print_coeffs(const char* label, const std::vector<float>& values, const siz
 
 int main(int argc, char** argv) {
     ZoneScoped;
-    std::cout << "Press ENTER to start execution (start Tracy GUI now)..." << std::flush;
-    std::cin.ignore();
-    
     const std::filesystem::path scheme_path = argc > 1 ? std::filesystem::path(argv[1]) : default_scheme_path();
     const std::vector<float> original_signal = argc > 2 ? parse_signal_arg(argv[2]) : default_signal();
 
@@ -115,33 +108,19 @@ int main(int argc, char** argv) {
     const tt::tt_metal::distributed::ReplicatedBufferConfig input_replicated_config{
         .size = static_cast<uint64_t>(input_desc.physical_nbytes()),
     };
-    auto input_buffer = [&]() {
-        ZoneScopedN("Create MeshBuffer");
-        auto buf = tt::tt_metal::distributed::MeshBuffer::create(input_replicated_config, input_local_config, mesh_device.get());
-        return buf;
-    }();
+    auto input_buffer =
+        tt::tt_metal::distributed::MeshBuffer::create(input_replicated_config, input_local_config, mesh_device.get());
     input_desc.dram_address = input_buffer->get_backing_buffer()->address();
 
     const auto scheme = ttwv::load_runtime_lifting_scheme(scheme_path);
-    auto bundle = [&]() {
-        ZoneScopedN("Create Lifting Preprocess Program");
-        return ttwv::create_lifting_preprocess_program(
-            TT_WAVELET_SOURCE_DIR, *mesh_device, core, *(input_buffer->get_backing_buffer()), input_desc, scheme);
-    }();
+    auto bundle = ttwv::create_lifting_preprocess_program(
+        TT_WAVELET_SOURCE_DIR, *mesh_device, core, *(input_buffer->get_backing_buffer()), input_desc, scheme);
 
-    {
-        ZoneScopedN("Write Input Buffer");
-        tt::tt_metal::distributed::EnqueueWriteMeshBuffer(command_queue, input_buffer, original_signal, false);
-    }
-    {
-        ZoneScopedN("Run Preprocess");
-        ttwv::run_preprocess(command_queue, *mesh_device, bundle);
-    }
+    tt::tt_metal::distributed::EnqueueWriteMeshBuffer(command_queue, input_buffer, original_signal, false);
+    ttwv::run_preprocess(command_queue, *mesh_device, bundle);
 
-    const auto active_streams = [&]() {
-        ZoneScopedN("Execute Forward Lifting");
-        return ttwv::execute_forward_lifting(TT_WAVELET_SOURCE_DIR, *mesh_device, command_queue, core, bundle);
-    }();
+    const auto active_streams =
+        ttwv::execute_forward_lifting(TT_WAVELET_SOURCE_DIR, *mesh_device, command_queue, core, bundle);
 
     std::vector<float> device_even_result;
     std::vector<float> device_odd_result;
@@ -152,11 +131,8 @@ int main(int argc, char** argv) {
     auto odd_buffer = active_streams.odd.family == ttwv::LogicalStream::kEven
                           ? bundle.buffers.even.at(active_streams.odd.slot)
                           : bundle.buffers.odd.at(active_streams.odd.slot);
-    {
-        ZoneScopedN("Read Output Buffers");
-        tt::tt_metal::distributed::EnqueueReadMeshBuffer(command_queue, device_even_result, even_buffer, true);
-        tt::tt_metal::distributed::EnqueueReadMeshBuffer(command_queue, device_odd_result, odd_buffer, true);
-    }
+    tt::tt_metal::distributed::EnqueueReadMeshBuffer(command_queue, device_even_result, even_buffer, true);
+    tt::tt_metal::distributed::EnqueueReadMeshBuffer(command_queue, device_odd_result, odd_buffer, true);
 
     const size_t canonical_length = bundle.plan.output_length;
 
