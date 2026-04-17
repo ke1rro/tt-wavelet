@@ -119,7 +119,9 @@ inline void _horizontal_stencil_block(
             // g_e += h[j] * f_o_1 (now shifted)
             TTI_SFPMAD(f_o_1, tmp, g_e, g_e, 0);
             // Rotate even columns: ROTATE(f_e_0, f_e_1)
-            _horizontal_stencil_rotate_(f_e_0, f_e_1);
+            if (j != K - 1) { // No need to rotate on the last iteration
+                _horizontal_stencil_rotate_(f_e_0, f_e_1);
+            }
         }
     }
 
