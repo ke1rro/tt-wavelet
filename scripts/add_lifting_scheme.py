@@ -52,6 +52,14 @@ def float_lit(v: float) -> str:
     return s + "f"
 
 
+<<<<<<< Updated upstream
+=======
+def float_u32_lit(v: float) -> str:
+    val = struct.unpack(">I", struct.pack(">f", v))[0]
+    return f"0x{val:08x}u"
+
+
+>>>>>>> Stashed changes
 # parse ---------------------------------------------------------------------------
 
 
