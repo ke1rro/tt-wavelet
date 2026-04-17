@@ -6,7 +6,7 @@
 //   LREG4: g_e (accumulator for even output)
 //   LREG5: g_o (accumulator for odd output)
 //   LREG6: tmp (broadcast coefficient)
-//   LREG14: lane mask for column 0, preloaded by _horizontal_stencil_init()
+//   LREG7: lane mask for column 0, preloaded by _horizontal_stencil_init()
 #pragma once
 
 #include <algorithm>
