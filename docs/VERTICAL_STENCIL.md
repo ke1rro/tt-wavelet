@@ -3,13 +3,15 @@
 The following derivation and implementation is closely related to described in the [horizontal stencil](./HORIZONTAL_STENCIL.md). The main difference is that we are working with columns instead of rows and stencil computation is done in reversed order (bottom-to-top) rather than top-to-bottom. This is related to hardware limitations and capabilities.
 
 The following assumptions are made:
-- s
+-  The stencil filter $h$ has a length $1 < k < 14$.
 
 The formula for the stencil is following (g and f are chosen columns).
 
 $$
 g[i] = \sum_{j=0}^{k-1} h[j] \cdot f[i-j]
 $$
+
+**Note**: as opposed to the horizontal stencil, we do not require any padding of the input signal $f$.
 
 ## Mathematical background
 
@@ -42,7 +44,7 @@ There are 3 similar kernels for vertical stencil, that differ by the size of the
 
 In this documentation we only focus on the case $k < 10$, but the other cases can be derived in a similar way.
 
-In the Tenstorrent setup we work with blocks 4x16, thus we can think about processing 4 elements of a column at a time. Kernel takes 4 such consecutive blocks and outputs (in case of $k<6$) 2 consecutive blocks of the stencil output.
+In the Tenstorrent setup we work with blocks 4x8, thus we can think about processing 4 elements of a column at a time. Kernel takes 4 such consecutive blocks and outputs (in case of $k<6$) 2 consecutive blocks of the stencil output.
 
 As opposed to the horizontal stencil, we define $R_{-1}$ instead of $R_1$, a shift backward, which we will call `ROTATE()`, this operation rotates 4 first LReg registers, using following instructions:
 
