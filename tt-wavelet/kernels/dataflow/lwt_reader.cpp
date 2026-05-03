@@ -3,6 +3,27 @@
 #include "api/dataflow/dataflow_api.h"
 #include "lwt_readers_utils.hpp"
 
+namespace {
+
+constexpr uint32_t kBlockElements = 16;
+constexpr uint32_t kRowsPerGroup = 32;
+constexpr uint32_t kInputTilesPerGroup = 2;
+constexpr uint32_t kInputBlocksPerRow = kInputTilesPerGroup * 2;
+constexpr uint32_t kOutputBlocksPerRow = kInputBlocksPerRow - 1;
+constexpr uint32_t kGroupOutputElements = kRowsPerGroup * kOutputBlocksPerRow * kBlockElements;
+
+template <typename SrcAccessor>
+float read_dense_or_zero(
+    const SrcAccessor& src,
+    ttwv::kernels::primitives::StickReadCache& cache,
+    const uint32_t logical_length,
+    const uint32_t logical_index) {
+    return logical_index < logical_length ? ttwv::kernels::primitives::read_source_value(src, cache, logical_index)
+                                          : 0.0F;
+}
+
+}  // namespace
+
 void kernel_main() {
     const uint32_t num_steps = get_arg_val<uint32_t>(0);
 
@@ -29,7 +50,8 @@ void kernel_main() {
         const uint32_t source_length = get_arg_val<uint32_t>(arg_base + 1);
         const uint32_t base_addr = get_arg_val<uint32_t>(arg_base + 2);
         const uint32_t base_length = get_arg_val<uint32_t>(arg_base + 3);
-        const uint32_t output_stick_count = get_arg_val<uint32_t>(arg_base + 5);
+        const uint32_t output_length = get_arg_val<uint32_t>(arg_base + 4);
+        const uint32_t output_group_count = get_arg_val<uint32_t>(arg_base + 5);
         const uint32_t source_offset = get_arg_val<uint32_t>(arg_base + 6);
         const uint32_t base_offset = get_arg_val<uint32_t>(arg_base + 7);
         const uint32_t source_left_pad = get_arg_val<uint32_t>(arg_base + 8);
@@ -42,57 +64,72 @@ void kernel_main() {
         ttwv::kernels::primitives::StickReadCache base_cache{
             cb_base_cache, stick_nbytes, stick_width, ttwv::kernels::primitives::kInvalidStick, false};
 
-        for (uint32_t stick = 0; stick < output_stick_count; ++stick) {
-            const uint32_t output_base = stick * stick_width;
+        for (uint32_t group = 0; group < output_group_count; ++group) {
+            const uint32_t group_base = group * kGroupOutputElements;
 
-            // Pack source tile 0 (32 elements)
             cb_reserve_back(cb_src_tile0, 1);
             auto* src_tile0 = reinterpret_cast<float*>(get_write_ptr(cb_src_tile0));
             ttwv::kernels::primitives::clear_tile(src_tile0);
 
-            for (uint32_t col = 0; col < stick_width; ++col) {
-                const int32_t packed_index = static_cast<int32_t>(output_base + col);
-                const int32_t source_logical_index = packed_index - static_cast<int32_t>(source_left_pad);
-                const float source_value =
-                    source_logical_index >= 0 && static_cast<uint32_t>(source_logical_index) < source_length
-                        ? ttwv::kernels::primitives::read_source_value(
-                              src, src_cache, source_offset + static_cast<uint32_t>(source_logical_index))
-                        : 0.0F;
-                ttwv::kernels::primitives::store_row0_value(src_tile0, col, source_value);
-            }
-
-            // Pack source tile 1 (next 16 elements for stencil overlap)
             cb_reserve_back(cb_src_tile1, 1);
             auto* src_tile1 = reinterpret_cast<float*>(get_write_ptr(cb_src_tile1));
             ttwv::kernels::primitives::clear_tile(src_tile1);
 
-            for (uint32_t col = 0; col < 16; ++col) {
-                const int32_t packed_index = static_cast<int32_t>(output_base + stick_width + col);
-                const int32_t source_logical_index = packed_index - static_cast<int32_t>(source_left_pad);
-                const float source_value =
-                    source_logical_index >= 0 && static_cast<uint32_t>(source_logical_index) < source_length
-                        ? ttwv::kernels::primitives::read_source_value(
-                              src, src_cache, source_offset + static_cast<uint32_t>(source_logical_index))
-                        : 0.0F;
-                ttwv::kernels::primitives::store_row0_value(src_tile1, col, source_value);
+            for (uint32_t tile = 0; tile < kInputTilesPerGroup; ++tile) {
+                auto* src_tile = tile == 0 ? src_tile0 : src_tile1;
+                for (uint32_t row = 0; row < kRowsPerGroup; ++row) {
+                    for (uint32_t local_block = 0; local_block < 2; ++local_block) {
+                        const uint32_t block_id = tile * 2 + local_block;
+                        for (uint32_t lane = 0; lane < kBlockElements; ++lane) {
+                            const int32_t packed_index = static_cast<int32_t>(
+                                group_base + (row * kOutputBlocksPerRow + block_id) * kBlockElements + lane);
+                            const int32_t source_logical_index = packed_index - static_cast<int32_t>(source_left_pad);
+
+                            float source_value = 0.0F;
+                            if (source_logical_index >= 0) {
+                                const uint32_t source_index =
+                                    source_offset + static_cast<uint32_t>(source_logical_index);
+                                source_value = read_dense_or_zero(src, src_cache, source_length, source_index);
+                            }
+
+                            ttwv::kernels::primitives::store_tile_value(
+                                src_tile, row, local_block * kBlockElements + lane, source_value);
+                        }
+                    }
+                }
             }
 
-            // Pack base tile (32 elements)
-            cb_reserve_back(cb_base_tile, 1);
-            auto* base_tile = reinterpret_cast<float*>(get_write_ptr(cb_base_tile));
-            ttwv::kernels::primitives::clear_tile(base_tile);
+            cb_reserve_back(cb_base_tile, 2);
+            const uint32_t base_tiles_addr = get_write_ptr(cb_base_tile);
+            auto* base_full_tile = reinterpret_cast<float*>(base_tiles_addr);
+            auto* base_tail_tile =
+                reinterpret_cast<float*>(base_tiles_addr + ttwv::kernels::primitives::kTileScalars * sizeof(float));
+            ttwv::kernels::primitives::clear_tile(base_full_tile);
+            ttwv::kernels::primitives::clear_tile(base_tail_tile);
 
-            for (uint32_t col = 0; col < stick_width; ++col) {
-                const uint32_t base_index = base_offset + output_base + col;
-                const float base_value = base_index < base_length ? ttwv::kernels::primitives::read_source_value(
-                                                                        base, base_cache, base_index)
-                                                                  : 0.0F;
-                ttwv::kernels::primitives::store_row0_value(base_tile, col, base_value);
+            for (uint32_t row = 0; row < kRowsPerGroup; ++row) {
+                for (uint32_t block = 0; block < kOutputBlocksPerRow; ++block) {
+                    for (uint32_t lane = 0; lane < kBlockElements; ++lane) {
+                        const uint32_t output_index =
+                            group_base + (row * kOutputBlocksPerRow + block) * kBlockElements + lane;
+                        const uint32_t base_index = base_offset + output_index;
+                        const float base_value = output_index < output_length
+                                                     ? read_dense_or_zero(base, base_cache, base_length, base_index)
+                                                     : 0.0F;
+
+                        if (block < 2) {
+                            ttwv::kernels::primitives::store_tile_value(
+                                base_full_tile, row, block * kBlockElements + lane, base_value);
+                        } else {
+                            ttwv::kernels::primitives::store_tile_value(base_tail_tile, row, lane, base_value);
+                        }
+                    }
+                }
             }
 
             cb_push_back(cb_src_tile0, 1);
             cb_push_back(cb_src_tile1, 1);
-            cb_push_back(cb_base_tile, 1);
+            cb_push_back(cb_base_tile, 2);
         }
 
         ttwv::kernels::primitives::release_cache(src_cache);

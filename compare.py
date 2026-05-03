@@ -23,7 +23,7 @@ VALID_STEP_TYPES = {"predict", "update", "scale-even", "scale-odd", "swap"}
 PU_HEADER_WORDS = 1
 PU_READER_ARGS_PER_STEP = 9
 PU_COMPUTE_ARGS_PER_STEP = 20
-PU_WRITER_ARGS_PER_STEP = 2
+PU_WRITER_ARGS_PER_STEP = 3
 
 try:
     from pywt import dwt
@@ -48,7 +48,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--wavelet",
-        default="sym12",
+        default="bior1.3",
         help="Wavelet name / JSON basename under ttnn-wavelet/lifting_schemes (default: %(default)s).",
     )
     parser.add_argument(

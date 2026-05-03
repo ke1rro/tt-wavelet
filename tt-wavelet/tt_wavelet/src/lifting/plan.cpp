@@ -344,7 +344,7 @@ LiftingForwardPlan make_forward_lifting_plan(
         .final_odd_shift = odd_state.shift,
         .final_even_length = even_state.length,
         .final_odd_length = odd_state.length,
-        .output_length = ceil_div(input.length + static_cast<size_t>(scheme.tap_size) - 1, size_t{2}),
+        .output_length = (input.length + static_cast<size_t>(scheme.tap_size) - 1) / size_t{2},
     };
 }
 

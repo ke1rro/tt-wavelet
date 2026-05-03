@@ -54,6 +54,10 @@ constexpr uint32_t kLwtSrcCacheCb = tt::CBIndex::c_3;
 constexpr uint32_t kLwtBaseCacheCb = tt::CBIndex::c_4;
 constexpr uint32_t kLwtSyncCb = tt::CBIndex::c_5;
 constexpr uint32_t kLwtSyncPageSize = 32;
+constexpr uint32_t kLwtRowsPerGroup = 32;
+constexpr uint32_t kLwtOutputBlocksPerRow = 3;
+constexpr uint32_t kLwtBlockElements = 16;
+constexpr uint32_t kLwtGroupOutputElements = kLwtRowsPerGroup * kLwtOutputBlocksPerRow * kLwtBlockElements;
 
 struct ScaleStepProgram {
     tt::tt_metal::Program program;
@@ -118,6 +122,10 @@ void create_circular_buffer(
 [[nodiscard]] uint32_t stencil_source_left_pad(const device_protocol::DeviceStepDesc& desc) {
     TT_FATAL(desc.k > 0U && desc.k <= device_protocol::step_coeff_capacity, "invalid stencil width {}", desc.k);
     return device_protocol::step_coeff_capacity - desc.k;
+}
+
+[[nodiscard]] uint32_t lwt_output_group_count(const size_t output_length) {
+    return checked_length(ceil_div(output_length, static_cast<size_t>(kLwtGroupOutputElements)), "output groups");
 }
 
 [[nodiscard]] const SignalBuffer& resolve_signal_buffer(const LiftingForwardPlan& plan, const StreamRef stream) {
@@ -326,9 +334,11 @@ void debug_print_signal(const char* label, const std::vector<float>& values, con
     const std::filesystem::path& kernel_root,
     const tt::tt_metal::CoreCoord& core,
     const tt::tt_metal::Buffer& any_working_buffer,
-    const SignalBuffer& output_desc) {
+    const SignalBuffer& output_desc,
+    const device_protocol::DeviceStepDesc& desc) {
     TT_FATAL(output_desc.element_size_bytes == sizeof(float), "LWT path is fp32-only");
     TT_FATAL(output_desc.stick_width == 32, "LWT path expects 32-element sticks");
+    TT_FATAL(desc.k > 0U && desc.k <= device_protocol::step_coeff_capacity, "invalid stencil width {}", desc.k);
 
     tt::tt_metal::Program program = tt::tt_metal::CreateProgram();
 
@@ -337,8 +347,8 @@ void debug_print_signal(const char* label, const std::vector<float>& values, con
 
     create_circular_buffer(program, core, kLwtSrcTile0Cb, 1, tile_size);
     create_circular_buffer(program, core, kLwtSrcTile1Cb, 1, tile_size);
-    create_circular_buffer(program, core, kLwtBaseTileCb, 1, tile_size);
-    create_circular_buffer(program, core, kLwtOutputCb, 1, tile_size);
+    create_circular_buffer(program, core, kLwtBaseTileCb, 2, tile_size);
+    create_circular_buffer(program, core, kLwtOutputCb, 2, tile_size);
     create_circular_buffer(program, core, kLwtSrcCacheCb, 1, stick_nbytes);
     create_circular_buffer(program, core, kLwtBaseCacheCb, 1, stick_nbytes);
     create_circular_buffer(program, core, kLwtSyncCb, 1, kLwtSyncPageSize);
@@ -367,6 +377,7 @@ void debug_print_signal(const char* label, const std::vector<float>& values, con
         kLwtSrcTile1Cb,
         kLwtBaseTileCb,
         kLwtOutputCb,
+        desc.k,
     };
     std::vector<UnpackToDestMode> unpack_to_dest_mode(NUM_CIRCULAR_BUFFERS, UnpackToDestMode::Default);
     // copy_tile(cb_input0/1/base, ...) should unpack directly to Dest in FP32.
@@ -411,7 +422,7 @@ void set_predict_update_runtime_args(
     const size_t num_pu_steps = pu_step_indices.size();
 
     // Reader runtime args:
-    // [num_steps, (src_addr, src_len, base_addr, base_len, out_len, out_sticks, src_off, base_off, src_left_pad) * N]
+    // [num_steps, (src_addr, src_len, base_addr, base_len, out_len, out_groups, src_off, base_off, src_left_pad) * N]
     constexpr uint32_t kReaderArgsPerStep = 9;
     std::vector<uint32_t> reader_rt(1 + num_pu_steps * kReaderArgsPerStep, 0);
     reader_rt[0] = static_cast<uint32_t>(num_pu_steps);
@@ -419,11 +430,9 @@ void set_predict_update_runtime_args(
     for (size_t i = 0; i < num_pu_steps; ++i) {
         const size_t step_index = pu_step_indices[i];
         const auto& route = bundle.plan.routes[step_index];
-        const auto& source_desc = resolve_signal_buffer(bundle.plan, route.source);
         const auto& src_buf = resolve_mesh_buffer(bundle.buffers, route.source);
         const auto& base_buf = resolve_mesh_buffer(bundle.buffers, route.base);
-        const uint32_t output_stick_count = checked_length(
-            (route.output_length + source_desc.stick_width - 1) / source_desc.stick_width, "output sticks");
+        const uint32_t output_group_count = lwt_output_group_count(route.output_length);
 
         const uint32_t off = static_cast<uint32_t>(1 + i * kReaderArgsPerStep);
         reader_rt[off + 0] = static_cast<uint32_t>(src_buf->address());
@@ -431,14 +440,14 @@ void set_predict_update_runtime_args(
         reader_rt[off + 2] = static_cast<uint32_t>(base_buf->address());
         reader_rt[off + 3] = checked_length(route.base_length, "base length");
         reader_rt[off + 4] = checked_length(route.output_length, "output length");
-        reader_rt[off + 5] = output_stick_count;
+        reader_rt[off + 5] = output_group_count;
         reader_rt[off + 6] = checked_length(route.source_offset, "source offset");
         reader_rt[off + 7] = checked_length(route.base_offset, "base offset");
         reader_rt[off + 8] = stencil_source_left_pad(bundle.plan.packed_steps[step_index]);
     }
     tt::tt_metal::SetRuntimeArgs(program_bundle.program, program_bundle.reader, core, reader_rt);
 
-    // Compute runtime args: [num_steps, (output_sticks, DeviceStepDesc[19]) * N]
+    // Compute runtime args: [num_steps, (output_groups, DeviceStepDesc[19]) * N]
     constexpr uint32_t kComputeArgsPerStep = 1 + device_protocol::step_desc_word_count;
     std::vector<uint32_t> compute_rt(1 + num_pu_steps * kComputeArgsPerStep, 0);
     compute_rt[0] = static_cast<uint32_t>(num_pu_steps);
@@ -447,12 +456,10 @@ void set_predict_update_runtime_args(
         const size_t step_index = pu_step_indices[i];
         const auto& route = bundle.plan.routes[step_index];
         const auto& packed = bundle.plan.packed_steps[step_index];
-        const auto& source_desc = resolve_signal_buffer(bundle.plan, route.source);
-        const uint32_t output_stick_count = checked_length(
-            (route.output_length + source_desc.stick_width - 1) / source_desc.stick_width, "output sticks");
+        const uint32_t output_group_count = lwt_output_group_count(route.output_length);
 
         const uint32_t off = static_cast<uint32_t>(1 + i * kComputeArgsPerStep);
-        compute_rt[off] = output_stick_count;
+        compute_rt[off] = output_group_count;
         auto desc_words = to_runtime_args(packed);
         for (size_t w = 0; w < desc_words.size(); ++w) {
             compute_rt[off + 1 + w] = desc_words[w];
@@ -460,22 +467,21 @@ void set_predict_update_runtime_args(
     }
     tt::tt_metal::SetRuntimeArgs(program_bundle.program, program_bundle.compute, core, compute_rt);
 
-    // Writer runtime args: [num_steps, (output_addr, output_sticks) * N]
-    constexpr uint32_t kWriterArgsPerStep = 2;
+    // Writer runtime args: [num_steps, (output_addr, output_len, output_groups) * N]
+    constexpr uint32_t kWriterArgsPerStep = 3;
     std::vector<uint32_t> writer_rt(1 + num_pu_steps * kWriterArgsPerStep, 0);
     writer_rt[0] = static_cast<uint32_t>(num_pu_steps);
 
     for (size_t i = 0; i < num_pu_steps; ++i) {
         const size_t step_index = pu_step_indices[i];
         const auto& route = bundle.plan.routes[step_index];
-        const auto& source_desc = resolve_signal_buffer(bundle.plan, route.source);
         const auto& out_buf = resolve_output_mesh_buffer(bundle.buffers, route);
-        const uint32_t output_stick_count = checked_length(
-            (route.output_length + source_desc.stick_width - 1) / source_desc.stick_width, "output sticks");
+        const uint32_t output_group_count = lwt_output_group_count(route.output_length);
 
         const uint32_t off = static_cast<uint32_t>(1 + i * kWriterArgsPerStep);
         writer_rt[off + 0] = static_cast<uint32_t>(out_buf->address());
-        writer_rt[off + 1] = output_stick_count;
+        writer_rt[off + 1] = checked_length(route.output_length, "output length");
+        writer_rt[off + 2] = output_group_count;
     }
     tt::tt_metal::SetRuntimeArgs(program_bundle.program, program_bundle.writer, core, writer_rt);
 }
@@ -503,32 +509,14 @@ LiftingActiveStreams execute_forward_lifting(
         }
 
         if (step.type == StepType::kPredict || step.type == StepType::kUpdate) {
-            std::vector<size_t> pu_step_indices;
-            size_t scan = step_index;
-            while (scan < bundle.plan.routes.size()) {
-                const auto& scan_step = bundle.scheme.steps[scan];
-                if (scan_step.type == StepType::kSwap) {
-                    ++scan;
-                    continue;
-                }
-                if (scan_step.type == StepType::kPredict || scan_step.type == StepType::kUpdate) {
-                    pu_step_indices.push_back(scan);
-                    ++scan;
-                    continue;
-                }
-                break;
-            }
-
-            TT_FATAL(!pu_step_indices.empty(), "empty predict/update segment at step {}", step_index);
-
-            const auto& first_route = bundle.plan.routes[pu_step_indices.front()];
-            const auto& first_output_desc = resolve_output_buffer_desc(bundle.plan, first_route);
+            const std::vector<size_t> pu_step_indices{step_index};
+            const auto& output_desc = resolve_output_buffer_desc(bundle.plan, route);
             auto program_bundle = create_predict_update_program(
-                kernel_root, core, *(bundle.buffers.even.ping->get_backing_buffer()), first_output_desc);
+                kernel_root, core, *(bundle.buffers.even.ping->get_backing_buffer()), output_desc, packed_step);
             set_predict_update_runtime_args(program_bundle, core, bundle, pu_step_indices);
             run_program(mesh_device, command_queue, std::move(program_bundle.program));
 
-            step_index = scan;
+            ++step_index;
             continue;
         }
 

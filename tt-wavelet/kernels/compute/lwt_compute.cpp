@@ -14,6 +14,7 @@ constexpr uint32_t kDstInput0 = 0;
 constexpr uint32_t kDstInput1 = 1;
 constexpr uint32_t kDstOutput = 2;
 constexpr uint32_t kDstBase = 3;
+constexpr uint32_t kDstTailOutput = 4;
 
 template <uint32_t K>
 inline void run_step(
@@ -22,14 +23,14 @@ inline void run_step(
     const uint32_t cb_base,
     const uint32_t cb_output,
     const uint32_t arg_coeff_base,
-    const uint32_t output_stick_count) {
+    const uint32_t output_group_count) {
     std::array<uint32_t, K> h_coeffs{};
 #pragma unroll 17
     for (uint32_t j = 0; j < K; ++j) {
         h_coeffs[j] = get_arg_val<uint32_t>(arg_coeff_base + j);
     }
 
-    for (uint32_t stick = 0; stick < output_stick_count; ++stick) {
+    for (uint32_t group = 0; group < output_group_count; ++group) {
         tile_regs_acquire();
 
         cb_wait_front(cb_input0, 1);
@@ -43,7 +44,7 @@ inline void run_step(
         cb_pop_front(cb_input1, 1);
 
         hstencil_init();
-        hstencil_row<K>(h_coeffs, kDstInput0, kDstInput1, kDstOutput);
+        hstencil_tile<K>(h_coeffs, kDstInput0, kDstInput1, kDstOutput);
 
         add_binary_tile_init();
         cb_wait_front(cb_base, 1);
@@ -52,12 +53,22 @@ inline void run_step(
         add_binary_tile(kDstOutput, kDstBase, kDstOutput);
         cb_pop_front(cb_base, 1);
 
+        // Only the first horizontal block of the tail tile is written by the writer.
+        hstencil_tile<K>(h_coeffs, kDstInput1, kDstInput0, kDstTailOutput);
+
+        cb_wait_front(cb_base, 1);
+        copy_tile_to_dst_init_short(cb_base);
+        copy_tile(cb_base, 0, kDstBase);
+        add_binary_tile(kDstTailOutput, kDstBase, kDstTailOutput);
+        cb_pop_front(cb_base, 1);
+
         tile_regs_commit();
         tile_regs_wait();
 
-        cb_reserve_back(cb_output, 1);
-        pack_tile(kDstOutput, cb_output);
-        cb_push_back(cb_output, 1);
+        cb_reserve_back(cb_output, 2);
+        pack_tile(kDstOutput, cb_output, 0);
+        pack_tile(kDstTailOutput, cb_output, 1);
+        cb_push_back(cb_output, 2);
 
         tile_regs_release();
     }
@@ -70,6 +81,7 @@ void kernel_main() {
     constexpr uint32_t cb_input1 = get_compile_time_arg_val(1);
     constexpr uint32_t cb_base = get_compile_time_arg_val(2);
     constexpr uint32_t cb_output = get_compile_time_arg_val(3);
+    constexpr uint8_t k_stencil_width = static_cast<uint8_t>(get_compile_time_arg_val(4));
 
     const uint32_t num_steps = get_arg_val<uint32_t>(0);
 
@@ -77,30 +89,10 @@ void kernel_main() {
 
     for (uint32_t step = 0; step < num_steps; ++step) {
         const uint32_t step_arg_base = 1 + step * kArgsPerStep;
-        const uint32_t output_stick_count = get_arg_val<uint32_t>(step_arg_base);
+        const uint32_t output_group_count = get_arg_val<uint32_t>(step_arg_base);
         const uint32_t desc_arg_base = step_arg_base + 1;
-        const uint32_t k = get_arg_val<uint32_t>(desc_arg_base + ttwv::device_protocol::step_k_arg_idx);
         const uint32_t coeff_arg_base = desc_arg_base + ttwv::device_protocol::step_coeffs_arg_idx;
 
-        switch (k) {
-            case 1: run_step<1>(cb_input0, cb_input1, cb_base, cb_output, coeff_arg_base, output_stick_count); break;
-            case 2: run_step<2>(cb_input0, cb_input1, cb_base, cb_output, coeff_arg_base, output_stick_count); break;
-            case 3: run_step<3>(cb_input0, cb_input1, cb_base, cb_output, coeff_arg_base, output_stick_count); break;
-            case 4: run_step<4>(cb_input0, cb_input1, cb_base, cb_output, coeff_arg_base, output_stick_count); break;
-            case 5: run_step<5>(cb_input0, cb_input1, cb_base, cb_output, coeff_arg_base, output_stick_count); break;
-            case 6: run_step<6>(cb_input0, cb_input1, cb_base, cb_output, coeff_arg_base, output_stick_count); break;
-            case 7: run_step<7>(cb_input0, cb_input1, cb_base, cb_output, coeff_arg_base, output_stick_count); break;
-            case 8: run_step<8>(cb_input0, cb_input1, cb_base, cb_output, coeff_arg_base, output_stick_count); break;
-            case 9: run_step<9>(cb_input0, cb_input1, cb_base, cb_output, coeff_arg_base, output_stick_count); break;
-            case 10: run_step<10>(cb_input0, cb_input1, cb_base, cb_output, coeff_arg_base, output_stick_count); break;
-            case 11: run_step<11>(cb_input0, cb_input1, cb_base, cb_output, coeff_arg_base, output_stick_count); break;
-            case 12: run_step<12>(cb_input0, cb_input1, cb_base, cb_output, coeff_arg_base, output_stick_count); break;
-            case 13: run_step<13>(cb_input0, cb_input1, cb_base, cb_output, coeff_arg_base, output_stick_count); break;
-            case 14: run_step<14>(cb_input0, cb_input1, cb_base, cb_output, coeff_arg_base, output_stick_count); break;
-            case 15: run_step<15>(cb_input0, cb_input1, cb_base, cb_output, coeff_arg_base, output_stick_count); break;
-            case 16: run_step<16>(cb_input0, cb_input1, cb_base, cb_output, coeff_arg_base, output_stick_count); break;
-            case 17: run_step<17>(cb_input0, cb_input1, cb_base, cb_output, coeff_arg_base, output_stick_count); break;
-            default: run_step<1>(cb_input0, cb_input1, cb_base, cb_output, coeff_arg_base, output_stick_count); break;
-        }
+        run_step<k_stencil_width>(cb_input0, cb_input1, cb_base, cb_output, coeff_arg_base, output_group_count);
     }
 }
