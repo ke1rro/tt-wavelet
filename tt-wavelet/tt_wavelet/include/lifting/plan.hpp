@@ -69,29 +69,18 @@ struct LiftingActiveStreams {
 };
 
 struct LiftingForwardPlan {
-    RuntimeLiftingScheme scheme{};
     PadSplit1DLayout preprocess_layout{};
     SignalBufferPair even_buffers{};
     SignalBufferPair odd_buffers{};
     std::vector<device_protocol::DeviceStepDesc> packed_steps;
     std::vector<LiftingStepRoute> routes;
     LiftingActiveStreams final_active{};
-    int final_even_shift{0};
-    int final_odd_shift{0};
     size_t final_even_length{0};
     size_t final_odd_length{0};
     size_t output_length{0};
 
     [[nodiscard]] constexpr const SignalBuffer& resolve_stream_buffer(const StreamRef stream) const noexcept {
         return stream.family == LogicalStream::kEven ? even_buffers.at(stream.slot) : odd_buffers.at(stream.slot);
-    }
-
-    [[nodiscard]] constexpr const SignalBuffer& even_active_buffer() const noexcept {
-        return resolve_stream_buffer(final_active.even);
-    }
-
-    [[nodiscard]] constexpr const SignalBuffer& odd_active_buffer() const noexcept {
-        return resolve_stream_buffer(final_active.odd);
     }
 };
 

@@ -21,9 +21,21 @@ struct MeshBufferPair {
     }
 };
 
+struct TileMeshBufferPair {
+    std::shared_ptr<tt::tt_metal::distributed::MeshBuffer> ping;
+    std::shared_ptr<tt::tt_metal::distributed::MeshBuffer> pong;
+
+    [[nodiscard]] const std::shared_ptr<tt::tt_metal::distributed::MeshBuffer>& at(
+        const StreamSlot slot) const noexcept {
+        return slot == StreamSlot::kPing ? ping : pong;
+    }
+};
+
 struct LiftingWorkingBuffers {
     MeshBufferPair even{};
     MeshBufferPair odd{};
+    TileMeshBufferPair even_tile{};
+    TileMeshBufferPair odd_tile{};
 };
 
 struct LiftingPreprocessDeviceProgram {

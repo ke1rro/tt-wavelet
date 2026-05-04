@@ -333,15 +333,12 @@ LiftingForwardPlan make_forward_lifting_plan(
     }
 
     return LiftingForwardPlan{
-        .scheme = scheme,
         .preprocess_layout = preprocess_layout,
         .even_buffers = SignalBufferPair{.ping = even_ping, .pong = even_pong},
         .odd_buffers = SignalBufferPair{.ping = odd_ping, .pong = odd_pong},
         .packed_steps = pack_device_step_descs(scheme.steps),
         .routes = std::move(routes),
         .final_active = active,
-        .final_even_shift = even_state.shift,
-        .final_odd_shift = odd_state.shift,
         .final_even_length = even_state.length,
         .final_odd_length = odd_state.length,
         .output_length = (input.length + static_cast<size_t>(scheme.tap_size) - 1) / size_t{2},

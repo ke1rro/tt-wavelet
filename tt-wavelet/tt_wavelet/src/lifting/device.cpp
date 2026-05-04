@@ -1,7 +1,6 @@
 #include "tt_wavelet/include/lifting/device.hpp"
 
 #include <array>
-#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -26,21 +25,12 @@ constexpr uint32_t kNocAlignmentBytes = 32;
 constexpr uint32_t kCircularBufferAlignmentBytes = 32;
 constexpr tt::DataFormat kDataFormat = tt::DataFormat::Float32;
 
-constexpr uint32_t kStencilInput0Cb = tt::CBIndex::c_0;
-constexpr uint32_t kStencilInput1Cb = tt::CBIndex::c_1;
-constexpr uint32_t kStencilBaseCb = tt::CBIndex::c_2;
-constexpr uint32_t kStencilOutputCb = tt::CBIndex::c_16;
-constexpr uint32_t kStencilSrcCacheCb = tt::CBIndex::c_4;
-constexpr uint32_t kStencilBaseCacheCb = tt::CBIndex::c_5;
-
 constexpr uint32_t kScaleInputCb = tt::CBIndex::c_0;
-constexpr uint32_t kScaleCoeffCb = tt::CBIndex::c_1;
 constexpr uint32_t kScaleOutputCb = tt::CBIndex::c_16;
-constexpr uint32_t kScaleSrcCacheCb = tt::CBIndex::c_2;
 
-constexpr const char* kScaleReaderKernelPath = "kernels/dataflow/lwt_scale_reader.cpp";
-constexpr const char* kRowMajorWriterKernelPath = "kernels/dataflow/lwt_row_major_writer.cpp";
-constexpr const char* kMulComputeKernelPath = "kernels/compute/lwt_mul_compute.cpp";
+constexpr const char* kTileScaleReaderKernelPath = "kernels/dataflow/lwt_scale_tile_reader.cpp";
+constexpr const char* kTileScaleComputeKernelPath = "kernels/compute/lwt_scale_compute.cpp";
+constexpr const char* kTileScaleWriterKernelPath = "kernels/dataflow/lwt_scale_tile_row_major_writer.cpp";
 
 constexpr const char* kLwtReaderKernelPath = "kernels/dataflow/lwt_reader.cpp";
 constexpr const char* kLwtComputeKernelPath = "kernels/compute/lwt_compute.cpp";
@@ -54,10 +44,6 @@ constexpr uint32_t kLwtSrcCacheCb = tt::CBIndex::c_3;
 constexpr uint32_t kLwtBaseCacheCb = tt::CBIndex::c_4;
 constexpr uint32_t kLwtSyncCb = tt::CBIndex::c_5;
 constexpr uint32_t kLwtSyncPageSize = 32;
-constexpr uint32_t kLwtRowsPerGroup = 32;
-constexpr uint32_t kLwtOutputBlocksPerRow = 3;
-constexpr uint32_t kLwtBlockElements = 16;
-constexpr uint32_t kLwtGroupOutputElements = kLwtRowsPerGroup * kLwtOutputBlocksPerRow * kLwtBlockElements;
 
 struct ScaleStepProgram {
     tt::tt_metal::Program program;
@@ -95,6 +81,19 @@ struct PredictUpdateProgram {
     return tt::tt_metal::distributed::MeshBuffer::create(replicated_config, local_config, &mesh_device);
 }
 
+[[nodiscard]] std::shared_ptr<tt::tt_metal::distributed::MeshBuffer> create_tile_signal_mesh_buffer(
+    tt::tt_metal::distributed::MeshDevice& mesh_device, const TileSignalBuffer& buffer) {
+    TT_FATAL(buffer.element_size_bytes == sizeof(float), "LWT tile sidecar path is fp32-only");
+    const tt::tt_metal::distributed::DeviceLocalBufferConfig local_config{
+        .page_size = buffer.page_bytes(),
+        .buffer_type = tt::tt_metal::BufferType::DRAM,
+    };
+    const tt::tt_metal::distributed::ReplicatedBufferConfig replicated_config{
+        .size = static_cast<uint64_t>(buffer.physical_nbytes()),
+    };
+    return tt::tt_metal::distributed::MeshBuffer::create(replicated_config, local_config, &mesh_device);
+}
+
 void create_circular_buffer(
     tt::tt_metal::Program& program,
     const tt::tt_metal::CoreCoord& core,
@@ -128,13 +127,63 @@ void create_circular_buffer(
     return checked_length(ceil_div(output_length, static_cast<size_t>(kLwtGroupOutputElements)), "output groups");
 }
 
-[[nodiscard]] const SignalBuffer& resolve_signal_buffer(const LiftingForwardPlan& plan, const StreamRef stream) {
-    return plan.resolve_stream_buffer(stream);
+[[nodiscard]] uint32_t lwt_tile_page_count(const size_t logical_length) {
+    return checked_length(
+        lwt_tile_group_count(logical_length) * static_cast<size_t>(kLwtTilePagesPerGroup), "tile pages");
+}
+
+[[nodiscard]] bool same_stream_ref(const StreamRef lhs, const StreamRef rhs) noexcept {
+    return lhs.family == rhs.family && lhs.slot == rhs.slot;
+}
+
+[[nodiscard]] bool is_predict_update_step(const StepType type) noexcept {
+    return type == StepType::kPredict || type == StepType::kUpdate;
+}
+
+[[nodiscard]] bool is_scale_step(const StepType type) noexcept {
+    return type == StepType::kScaleEven || type == StepType::kScaleOdd;
+}
+
+[[nodiscard]] std::vector<uint8_t> compute_tile_sidecar_routes(const LiftingForwardPlan& plan) {
+    std::vector<uint8_t> write_tile_sidecar(plan.routes.size(), 0);
+
+    for (size_t scale_index = 0; scale_index < plan.routes.size(); ++scale_index) {
+        const auto& scale_route = plan.routes[scale_index];
+        if (!is_scale_step(scale_route.type)) {
+            continue;
+        }
+
+        for (size_t scan = scale_index; scan > 0; --scan) {
+            const size_t producer_index = scan - 1;
+            const auto& producer = plan.routes[producer_index];
+            if (is_predict_update_step(producer.type) && same_stream_ref(producer.output, scale_route.source)) {
+                write_tile_sidecar[producer_index] = 1;
+                break;
+            }
+        }
+    }
+
+    return write_tile_sidecar;
+}
+
+[[nodiscard]] bool stream_has_tile_sidecar(
+    const LiftingForwardPlan& plan, const std::vector<uint8_t>& write_tile_sidecar, const StreamRef stream) {
+    for (size_t index = 0; index < plan.routes.size(); ++index) {
+        if (write_tile_sidecar[index] != 0 && same_stream_ref(plan.routes[index].output, stream)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 [[nodiscard]] const std::shared_ptr<tt::tt_metal::distributed::MeshBuffer>& resolve_mesh_buffer(
     const LiftingWorkingBuffers& buffers, const StreamRef stream) {
     return stream.family == LogicalStream::kEven ? buffers.even.at(stream.slot) : buffers.odd.at(stream.slot);
+}
+
+[[nodiscard]] const std::shared_ptr<tt::tt_metal::distributed::MeshBuffer>& resolve_tile_mesh_buffer(
+    const LiftingWorkingBuffers& buffers, const StreamRef stream) {
+    return stream.family == LogicalStream::kEven ? buffers.even_tile.at(stream.slot) : buffers.odd_tile.at(stream.slot);
 }
 
 [[nodiscard]] const SignalBuffer& resolve_output_buffer_desc(
@@ -145,6 +194,11 @@ void create_circular_buffer(
 [[nodiscard]] const std::shared_ptr<tt::tt_metal::distributed::MeshBuffer>& resolve_output_mesh_buffer(
     const LiftingWorkingBuffers& buffers, const LiftingStepRoute& route) {
     return resolve_mesh_buffer(buffers, route.output);
+}
+
+[[nodiscard]] const std::shared_ptr<tt::tt_metal::distributed::MeshBuffer>& resolve_output_tile_mesh_buffer(
+    const LiftingWorkingBuffers& buffers, const LiftingStepRoute& route) {
+    return resolve_tile_mesh_buffer(buffers, route.output);
 }
 
 void run_program(
@@ -158,55 +212,47 @@ void run_program(
     tt::tt_metal::distributed::Finish(command_queue);
 }
 
-[[nodiscard]] ScaleStepProgram create_scale_step_program(
+[[nodiscard]] ScaleStepProgram create_tile_scale_step_program(
     const std::filesystem::path& kernel_root,
     const tt::tt_metal::CoreCoord& core,
-    const tt::tt_metal::Buffer& source_buffer,
+    const tt::tt_metal::Buffer& source_tile_buffer,
     const tt::tt_metal::Buffer& output_buffer,
     const SignalBuffer& output_desc) {
-    TT_FATAL(output_desc.element_size_bytes == sizeof(float), "LWT scale path is fp32-only");
-    TT_FATAL(output_desc.stick_width == 32, "LWT scale path expects 32-element row-major sticks");
+    TT_FATAL(output_desc.element_size_bytes == sizeof(float), "LWT tile scale path is fp32-only");
+    TT_FATAL(output_desc.stick_width == 32, "LWT tile scale path expects 32-element row-major sticks");
 
     tt::tt_metal::Program program = tt::tt_metal::CreateProgram();
 
     const uint32_t tile_size = tt::tile_size(kDataFormat);
     const uint32_t stick_nbytes = output_desc.aligned_stick_bytes(kCircularBufferAlignmentBytes);
 
-    create_circular_buffer(program, core, kScaleInputCb, 1, tile_size);
-    create_circular_buffer(program, core, kScaleCoeffCb, 1, tile_size);
-    create_circular_buffer(program, core, kScaleOutputCb, 1, tile_size);
-    create_circular_buffer(program, core, kScaleSrcCacheCb, 1, stick_nbytes);
+    create_circular_buffer(program, core, kScaleInputCb, 2, tile_size);
+    create_circular_buffer(program, core, kScaleOutputCb, 2, tile_size);
 
-    std::vector<uint32_t> reader_compile_args = {
-        kScaleInputCb,
-        kScaleCoeffCb,
-        stick_nbytes,
-        kScaleSrcCacheCb,
-        output_desc.stick_width,
-    };
-    tt::tt_metal::TensorAccessorArgs(source_buffer).append_to(reader_compile_args);
+    std::vector<uint32_t> reader_compile_args = {kScaleInputCb};
+    tt::tt_metal::TensorAccessorArgs(source_tile_buffer).append_to(reader_compile_args);
+
+    const std::vector<uint32_t> compute_compile_args = {kScaleInputCb, kScaleOutputCb};
 
     std::vector<uint32_t> writer_compile_args = {kScaleOutputCb, stick_nbytes};
     tt::tt_metal::TensorAccessorArgs(output_buffer).append_to(writer_compile_args);
-    const std::vector<uint32_t> compute_compile_args = {kScaleInputCb, kScaleCoeffCb, kScaleOutputCb};
+
     std::vector<UnpackToDestMode> scale_unpack_to_dest_mode(NUM_CIRCULAR_BUFFERS, UnpackToDestMode::Default);
-    // Keep scale path input/coeff tile unpack in full FP32 precision.
     scale_unpack_to_dest_mode[kScaleInputCb] = UnpackToDestMode::UnpackToDestFp32;
-    scale_unpack_to_dest_mode[kScaleCoeffCb] = UnpackToDestMode::UnpackToDestFp32;
 
     const auto reader = tt::tt_metal::CreateKernel(
         program,
-        kernel_path(kernel_root, kScaleReaderKernelPath),
+        kernel_path(kernel_root, kTileScaleReaderKernelPath),
         core,
         tt::tt_metal::ReaderDataMovementConfig(reader_compile_args));
     const auto writer = tt::tt_metal::CreateKernel(
         program,
-        kernel_path(kernel_root, kRowMajorWriterKernelPath),
+        kernel_path(kernel_root, kTileScaleWriterKernelPath),
         core,
         tt::tt_metal::WriterDataMovementConfig(writer_compile_args));
     const auto compute = tt::tt_metal::CreateKernel(
         program,
-        kernel_path(kernel_root, kMulComputeKernelPath),
+        kernel_path(kernel_root, kTileScaleComputeKernelPath),
         core,
         tt::tt_metal::ComputeConfig{
             .math_fidelity = MathFidelity::HiFi4,
@@ -223,37 +269,47 @@ void run_program(
     };
 }
 
-void set_scale_step_runtime_args(
+void set_tile_scale_step_runtime_args(
     const ScaleStepProgram& program_bundle,
     const tt::tt_metal::CoreCoord& core,
-    const tt::tt_metal::Buffer& source_buffer,
+    const tt::tt_metal::Buffer& source_tile_buffer,
     const tt::tt_metal::Buffer& output_buffer,
-    const SignalBuffer& source_desc,
     const LiftingStepRoute& route,
     const device_protocol::DeviceStepDesc& desc) {
     TT_FATAL(desc.k == 1U, "Scale steps must provide exactly one coefficient");
-    const uint32_t output_stick_count = checked_length(
-        (route.output_length + source_desc.stick_width - 1) / source_desc.stick_width, "output stick count");
+    TT_FATAL(
+        route.source_length == route.output_length,
+        "Tile scale expects source/output lengths to match, got {} -> {}",
+        route.source_length,
+        route.output_length);
+
+    const uint32_t tile_page_count = lwt_tile_page_count(route.source_length);
+    const uint32_t output_group_count = lwt_output_group_count(route.output_length);
 
     tt::tt_metal::SetRuntimeArgs(
         program_bundle.program,
         program_bundle.reader,
         core,
-        std::array<uint32_t, 4>{
-            static_cast<uint32_t>(source_buffer.address()),
-            checked_length(route.source_length, "source length"),
-            output_stick_count,
-            desc.coeffs_packed[0],
+        std::array<uint32_t, 2>{
+            static_cast<uint32_t>(source_tile_buffer.address()),
+            tile_page_count,
         });
     tt::tt_metal::SetRuntimeArgs(
-        program_bundle.program, program_bundle.compute, core, std::array<uint32_t, 1>{output_stick_count});
+        program_bundle.program,
+        program_bundle.compute,
+        core,
+        std::array<uint32_t, 2>{
+            tile_page_count,
+            desc.coeffs_packed[0],
+        });
     tt::tt_metal::SetRuntimeArgs(
         program_bundle.program,
         program_bundle.writer,
         core,
-        std::array<uint32_t, 2>{
+        std::array<uint32_t, 3>{
             static_cast<uint32_t>(output_buffer.address()),
-            output_stick_count,
+            checked_length(route.output_length, "output length"),
+            output_group_count,
         });
 }
 
@@ -278,6 +334,14 @@ LiftingPreprocessDeviceProgram create_lifting_preprocess_program(
     auto even_pong = create_signal_mesh_buffer(mesh_device, provisional_layout.output.even);
     auto odd_ping = create_signal_mesh_buffer(mesh_device, provisional_layout.output.odd);
     auto odd_pong = create_signal_mesh_buffer(mesh_device, provisional_layout.output.odd);
+    auto even_tile_ping =
+        create_tile_signal_mesh_buffer(mesh_device, make_lwt_tile_signal_buffer(provisional_layout.output.even));
+    auto even_tile_pong =
+        create_tile_signal_mesh_buffer(mesh_device, make_lwt_tile_signal_buffer(provisional_layout.output.even));
+    auto odd_tile_ping =
+        create_tile_signal_mesh_buffer(mesh_device, make_lwt_tile_signal_buffer(provisional_layout.output.odd));
+    auto odd_tile_pong =
+        create_tile_signal_mesh_buffer(mesh_device, make_lwt_tile_signal_buffer(provisional_layout.output.odd));
 
     const LiftingForwardPlan plan = make_forward_lifting_plan(
         planned_input,
@@ -302,6 +366,8 @@ LiftingPreprocessDeviceProgram create_lifting_preprocess_program(
             LiftingWorkingBuffers{
                 .even = MeshBufferPair{.ping = std::move(even_ping), .pong = std::move(even_pong)},
                 .odd = MeshBufferPair{.ping = std::move(odd_ping), .pong = std::move(odd_pong)},
+                .even_tile = TileMeshBufferPair{.ping = std::move(even_tile_ping), .pong = std::move(even_tile_pong)},
+                .odd_tile = TileMeshBufferPair{.ping = std::move(odd_tile_ping), .pong = std::move(odd_tile_pong)},
             },
         .preprocess = std::move(preprocess),
     };
@@ -334,6 +400,7 @@ void debug_print_signal(const char* label, const std::vector<float>& values, con
     const std::filesystem::path& kernel_root,
     const tt::tt_metal::CoreCoord& core,
     const tt::tt_metal::Buffer& any_working_buffer,
+    const tt::tt_metal::Buffer& any_tile_buffer,
     const SignalBuffer& output_desc,
     const device_protocol::DeviceStepDesc& desc) {
     TT_FATAL(output_desc.element_size_bytes == sizeof(float), "LWT path is fp32-only");
@@ -371,6 +438,7 @@ void debug_print_signal(const char* label, const std::vector<float>& values, con
         kLwtSyncCb,
     };
     tt::tt_metal::TensorAccessorArgs(any_working_buffer).append_to(writer_ct_args);
+    tt::tt_metal::TensorAccessorArgs(any_tile_buffer).append_to(writer_ct_args);
 
     const std::vector<uint32_t> compute_ct_args = {
         kLwtSrcTile0Cb,
@@ -418,8 +486,14 @@ void set_predict_update_runtime_args(
     const PredictUpdateProgram& program_bundle,
     const tt::tt_metal::CoreCoord& core,
     const LiftingPreprocessDeviceProgram& bundle,
-    const std::vector<size_t>& pu_step_indices) {
+    const std::vector<size_t>& pu_step_indices,
+    const std::vector<uint8_t>& write_tile_sidecar) {
     const size_t num_pu_steps = pu_step_indices.size();
+    TT_FATAL(
+        write_tile_sidecar.size() == bundle.plan.routes.size(),
+        "Tile sidecar route mask size {} must match route count {}",
+        write_tile_sidecar.size(),
+        bundle.plan.routes.size());
 
     // Reader runtime args:
     // [num_steps, (src_addr, src_len, base_addr, base_len, out_len, out_groups, src_off, base_off, src_left_pad) * N]
@@ -467,8 +541,8 @@ void set_predict_update_runtime_args(
     }
     tt::tt_metal::SetRuntimeArgs(program_bundle.program, program_bundle.compute, core, compute_rt);
 
-    // Writer runtime args: [num_steps, (output_addr, output_len, output_groups) * N]
-    constexpr uint32_t kWriterArgsPerStep = 3;
+    // Writer runtime args: [num_steps, (output_addr, output_len, output_groups, tile_addr, write_tile) * N]
+    constexpr uint32_t kWriterArgsPerStep = 5;
     std::vector<uint32_t> writer_rt(1 + num_pu_steps * kWriterArgsPerStep, 0);
     writer_rt[0] = static_cast<uint32_t>(num_pu_steps);
 
@@ -476,12 +550,15 @@ void set_predict_update_runtime_args(
         const size_t step_index = pu_step_indices[i];
         const auto& route = bundle.plan.routes[step_index];
         const auto& out_buf = resolve_output_mesh_buffer(bundle.buffers, route);
+        const auto& out_tile_buf = resolve_output_tile_mesh_buffer(bundle.buffers, route);
         const uint32_t output_group_count = lwt_output_group_count(route.output_length);
 
         const uint32_t off = static_cast<uint32_t>(1 + i * kWriterArgsPerStep);
         writer_rt[off + 0] = static_cast<uint32_t>(out_buf->address());
         writer_rt[off + 1] = checked_length(route.output_length, "output length");
         writer_rt[off + 2] = output_group_count;
+        writer_rt[off + 3] = static_cast<uint32_t>(out_tile_buf->address());
+        writer_rt[off + 4] = write_tile_sidecar[step_index] != 0 ? 1U : 0U;
     }
     tt::tt_metal::SetRuntimeArgs(program_bundle.program, program_bundle.writer, core, writer_rt);
 }
@@ -498,6 +575,8 @@ LiftingActiveStreams execute_forward_lifting(
         bundle.plan.routes.size(),
         bundle.plan.packed_steps.size());
 
+    const std::vector<uint8_t> write_tile_sidecar = compute_tile_sidecar_routes(bundle.plan);
+
     for (size_t step_index = 0; step_index < bundle.plan.routes.size();) {
         const auto& step = bundle.scheme.steps[step_index];
         const auto& route = bundle.plan.routes[step_index];
@@ -511,37 +590,44 @@ LiftingActiveStreams execute_forward_lifting(
         if (step.type == StepType::kPredict || step.type == StepType::kUpdate) {
             const std::vector<size_t> pu_step_indices{step_index};
             const auto& output_desc = resolve_output_buffer_desc(bundle.plan, route);
+            const auto& output_tile_buffer = resolve_output_tile_mesh_buffer(bundle.buffers, route);
             auto program_bundle = create_predict_update_program(
-                kernel_root, core, *(bundle.buffers.even.ping->get_backing_buffer()), output_desc, packed_step);
-            set_predict_update_runtime_args(program_bundle, core, bundle, pu_step_indices);
+                kernel_root,
+                core,
+                *(bundle.buffers.even.ping->get_backing_buffer()),
+                *(output_tile_buffer->get_backing_buffer()),
+                output_desc,
+                packed_step);
+            set_predict_update_runtime_args(program_bundle, core, bundle, pu_step_indices, write_tile_sidecar);
             run_program(mesh_device, command_queue, std::move(program_bundle.program));
 
             ++step_index;
             continue;
         }
 
-        const auto& source_desc = resolve_signal_buffer(bundle.plan, route.source);
         const auto& output_desc = resolve_output_buffer_desc(bundle.plan, route);
-        const auto& source_buffer = resolve_mesh_buffer(bundle.buffers, route.source);
+        const auto& source_tile_buffer = resolve_tile_mesh_buffer(bundle.buffers, route.source);
         const auto& output_buffer = resolve_output_mesh_buffer(bundle.buffers, route);
 
         TT_FATAL(
             step.type == StepType::kScaleEven || step.type == StepType::kScaleOdd,
             "unexpected step type {} in scale path",
             static_cast<int>(step.type));
+        TT_FATAL(
+            stream_has_tile_sidecar(bundle.plan, write_tile_sidecar, route.source),
+            "Tile scale sidecar missing for terminal scale source");
 
-        auto program_bundle = create_scale_step_program(
+        auto program_bundle = create_tile_scale_step_program(
             kernel_root,
             core,
-            *(source_buffer->get_backing_buffer()),
+            *(source_tile_buffer->get_backing_buffer()),
             *(output_buffer->get_backing_buffer()),
             output_desc);
-        set_scale_step_runtime_args(
+        set_tile_scale_step_runtime_args(
             program_bundle,
             core,
-            *(source_buffer->get_backing_buffer()),
+            *(source_tile_buffer->get_backing_buffer()),
             *(output_buffer->get_backing_buffer()),
-            source_desc,
             route,
             packed_step);
         run_program(mesh_device, command_queue, std::move(program_bundle.program));
