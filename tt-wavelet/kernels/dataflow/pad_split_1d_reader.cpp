@@ -14,11 +14,18 @@ void kernel_main() {
     constexpr uint32_t stick_nbytes = get_compile_time_arg_val(2);
     constexpr uint32_t cb_id_cache = get_compile_time_arg_val(3);
     constexpr uint32_t stick_width = get_compile_time_arg_val(4);
-    constexpr auto src_args = TensorAccessorArgs<5>();
+    constexpr uint32_t cache_stick_capacity = get_compile_time_arg_val(5);
+    constexpr auto src_args = TensorAccessorArgs<6>();
     const auto src = TensorAccessor(src_args, src_addr, stick_nbytes);
 
     ttwv::kernels::primitives::StickReadCache read_cache{
-        cb_id_cache, stick_nbytes, stick_width, ttwv::kernels::primitives::kInvalidStick, false};
+        cb_id_cache,
+        stick_nbytes,
+        stick_width,
+        cache_stick_capacity,
+        ttwv::kernels::primitives::kInvalidStick,
+        0,
+        false};
 
     const uint32_t even_stick_count = ttwv::kernels::primitives::even_stick_count(padded_length, stick_width);
     const uint32_t odd_stick_count = ttwv::kernels::primitives::odd_stick_count(padded_length, stick_width);

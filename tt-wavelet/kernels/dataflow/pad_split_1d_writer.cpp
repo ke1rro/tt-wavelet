@@ -11,9 +11,10 @@ void kernel_main() {
     constexpr uint32_t cb_id_even = get_compile_time_arg_val(0);
     constexpr uint32_t cb_id_odd = get_compile_time_arg_val(1);
     constexpr uint32_t stick_nbytes = get_compile_time_arg_val(2);
-    constexpr auto dst_args = TensorAccessorArgs<3>();
-    const auto even_dst = TensorAccessor(dst_args, even_addr, stick_nbytes);
-    const auto odd_dst = TensorAccessor(dst_args, odd_addr, stick_nbytes);
+    constexpr auto even_dst_args = TensorAccessorArgs<3>();
+    constexpr auto odd_dst_args = TensorAccessorArgs<even_dst_args.next_compile_time_args_offset()>();
+    const auto even_dst = TensorAccessor(even_dst_args, even_addr, stick_nbytes);
+    const auto odd_dst = TensorAccessor(odd_dst_args, odd_addr, stick_nbytes);
 
     uint32_t even_written = 0;
     uint32_t odd_written = 0;

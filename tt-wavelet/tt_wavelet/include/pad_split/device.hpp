@@ -1,6 +1,7 @@
 #pragma once
 
 #include <filesystem>
+#include <optional>
 
 #include "tt-metalium/host_api.hpp"
 #include "tt_wavelet/include/pad_split/layout.hpp"
@@ -10,7 +11,8 @@ namespace ttwv {
 struct PadSplit1DDeviceProgram {
     tt::tt_metal::Program program;
     tt::tt_metal::KernelHandle reader;
-    tt::tt_metal::KernelHandle writer;
+    std::optional<tt::tt_metal::KernelHandle> writer;
+    bool writes_direct_to_l1{false};
 };
 
 [[nodiscard]] PadSplit1DDeviceProgram create_pad_split_1d_program(

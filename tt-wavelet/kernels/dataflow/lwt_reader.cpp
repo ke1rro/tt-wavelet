@@ -22,6 +22,23 @@ float read_dense_or_zero(
                                           : 0.0F;
 }
 
+float read_local_l1_dense_or_zero(
+    const uint32_t src_addr,
+    const uint32_t stick_nbytes,
+    const uint32_t stick_width,
+    const uint32_t logical_length,
+    const uint32_t logical_index) {
+    if (logical_index >= logical_length) {
+        return 0.0F;
+    }
+
+    const uint32_t stick = logical_index / stick_width;
+    const uint32_t lane = logical_index % stick_width;
+    const uint32_t value_addr = src_addr + stick * stick_nbytes + lane * static_cast<uint32_t>(sizeof(float));
+    const auto* value_ptr = reinterpret_cast<volatile tt_l1_ptr float*>(value_addr);
+    return *value_ptr;
+}
+
 }  // namespace
 
 void kernel_main() {
@@ -35,10 +52,13 @@ void kernel_main() {
     constexpr uint32_t cb_base_cache = get_compile_time_arg_val(5);
     constexpr uint32_t stick_width = get_compile_time_arg_val(6);
     constexpr uint32_t cb_sync = get_compile_time_arg_val(7);
-    constexpr auto accessor_args = TensorAccessorArgs<8>();
+    constexpr bool src_is_local_l1 = get_compile_time_arg_val(8) != 0;
+    constexpr bool base_is_local_l1 = get_compile_time_arg_val(9) != 0;
+    constexpr auto src_accessor_args = TensorAccessorArgs<10>();
+    constexpr auto base_accessor_args = TensorAccessorArgs<src_accessor_args.next_compile_time_args_offset()>();
 
     for (uint32_t step = 0; step < num_steps; ++step) {
-        // Wait for previous step's DRAM writes to complete before reading updated streams.
+        // Wait for previous step's output writes to complete before reading updated streams.
         if (step > 0) {
             cb_wait_front(cb_sync, 1);
             cb_pop_front(cb_sync, 1);
@@ -56,13 +76,13 @@ void kernel_main() {
         const uint32_t base_offset = get_arg_val<uint32_t>(arg_base + 7);
         const uint32_t source_left_pad = get_arg_val<uint32_t>(arg_base + 8);
 
-        const auto src = TensorAccessor(accessor_args, src_addr, stick_nbytes);
-        const auto base = TensorAccessor(accessor_args, base_addr, stick_nbytes);
+        const auto src = TensorAccessor(src_accessor_args, src_addr, stick_nbytes);
+        const auto base = TensorAccessor(base_accessor_args, base_addr, stick_nbytes);
 
         ttwv::kernels::primitives::StickReadCache src_cache{
-            cb_src_cache, stick_nbytes, stick_width, ttwv::kernels::primitives::kInvalidStick, false};
+            cb_src_cache, stick_nbytes, stick_width, 1, ttwv::kernels::primitives::kInvalidStick, 0, false};
         ttwv::kernels::primitives::StickReadCache base_cache{
-            cb_base_cache, stick_nbytes, stick_width, ttwv::kernels::primitives::kInvalidStick, false};
+            cb_base_cache, stick_nbytes, stick_width, 1, ttwv::kernels::primitives::kInvalidStick, 0, false};
 
         for (uint32_t group = 0; group < output_group_count; ++group) {
             const uint32_t group_base = group * kGroupOutputElements;
@@ -89,7 +109,12 @@ void kernel_main() {
                             if (source_logical_index >= 0) {
                                 const uint32_t source_index =
                                     source_offset + static_cast<uint32_t>(source_logical_index);
-                                source_value = read_dense_or_zero(src, src_cache, source_length, source_index);
+                                if constexpr (src_is_local_l1) {
+                                    source_value = read_local_l1_dense_or_zero(
+                                        src_addr, stick_nbytes, stick_width, source_length, source_index);
+                                } else {
+                                    source_value = read_dense_or_zero(src, src_cache, source_length, source_index);
+                                }
                             }
 
                             ttwv::kernels::primitives::store_tile_value(
@@ -113,9 +138,15 @@ void kernel_main() {
                         const uint32_t output_index =
                             group_base + (row * kOutputBlocksPerRow + block) * kBlockElements + lane;
                         const uint32_t base_index = base_offset + output_index;
-                        const float base_value = output_index < output_length
-                                                     ? read_dense_or_zero(base, base_cache, base_length, base_index)
-                                                     : 0.0F;
+                        float base_value = 0.0F;
+                        if (output_index < output_length) {
+                            if constexpr (base_is_local_l1) {
+                                base_value = read_local_l1_dense_or_zero(
+                                    base_addr, stick_nbytes, stick_width, base_length, base_index);
+                            } else {
+                                base_value = read_dense_or_zero(base, base_cache, base_length, base_index);
+                            }
+                        }
 
                         if (block < 2) {
                             ttwv::kernels::primitives::store_tile_value(
