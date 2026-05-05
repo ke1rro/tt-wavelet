@@ -181,9 +181,3 @@ inline void hstencil_tile(
     std::array<uint32_t, K> h_packed, const uint32_t input1, const uint32_t input2, const uint32_t output) {
     MATH((ckernel::sfpu::_horizontal_stencil<K, Rows>(h_packed.data(), input1, input2, output)));
 }
-
-template <uint8_t K>
-inline void hstencil_row(
-    std::array<uint32_t, K> h_packed, const uint32_t input1, const uint32_t input2, const uint32_t output) {
-    hstencil_tile<K, 1>(h_packed, input1, input2, output);
-}
