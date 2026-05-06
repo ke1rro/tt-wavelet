@@ -43,8 +43,8 @@ inline void run_step(
         copy_tile(cb_input1, 0, kDstInput1);
         cb_pop_front(cb_input1, 1);
 
-        hstencil_init();
-        hstencil_tile<K>(h_coeffs, kDstInput0, kDstInput1, kDstOutput, kDstTailOutput);
+        splice_ops_init();
+        hstencil_spline<K>(h_coeffs, kDstInput0, kDstInput1, kDstOutput, kDstTailOutput);
 
         add_binary_tile_init();
         cb_wait_front(cb_base, 1);
