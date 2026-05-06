@@ -1,6 +1,6 @@
 # Shift operation
 
-**Input**: 1x Splice
+**Input**: 1x Splice, K (number of elements to shift)
 **Output**: 1x Splice
 
 Shift operation shifts each row of the splice to the right by a given number of elements $K$. It assumes $K < 16$. The shifted elements are filled with garbage values.
