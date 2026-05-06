@@ -2,13 +2,16 @@
 
 The stencil on SFPI assumes the following:
 - The stencil filter $h$ has a length $1 < k < 18$.
-- The input signal $f$ is padded with $17-k$ (any) elements on the left and on the right to fit into tile sizes.
+- The input signal $f$ is padded with $17-k$ (any) elements on the left and on the right to fit into Tile sizes.
 
 Stencil uses the following formula:
 
 $$
 g[i] = \sum_{j=0}^{k-1} h[j] \cdot f[i-j]
 $$
+
+**Input**: 1x Splice, 1x kernel array
+**Output**: 1x Splice
 
 ## Mathematical background
 
@@ -62,7 +65,7 @@ So when you substitute $j=k-1$ you get $s[0]$. That means that the actual result
 
 Our kernel is the operator $g'[i:i+16] = g[i+16:i+32] = T(f[i:i+16], f[i+16:i+32], h)$, where $g$ and $f$ are 4 consecutive rows of the tensor (refer to the [Tenstorrent ISA Documentation](https://github.com/tenstorrent/tt-isa-documentation/) for details on the SFPU registers and the tile layout).
 
-We have implemented a 1-element shift operator for two consecutive stacks of columns (a, b). It produces a valid results for the second stack (b) while first stack is used as a halo for the elements to be shifted out to the right. You can do the same shift up to 8 elements for the same stacks (a, b).
+We have implemented a 1-element shift operator for two consecutive SRegisters (a, b). It produces a valid results for the SRegister (b) while first SRegister is used as a halo for the elements to be shifted out to the right. You can do the same shift up to 8 elements for the same pair of SRegisters (a, b).
 
 It is implemented as follows (call it `ROTATE(a, b)`):
 
@@ -94,7 +97,7 @@ It can also be viewed as in figure below.
 
 ![](./figs/HorizontalRotate.svg)
 
-The whole algorithm is implemented by alternating between doing the shift on even and odd columns and doing the multiplication and reduction for the stencil formula.
+The whole algorithm is implemented by alternating between doing the shift on even and odd SRegisters and doing the multiplication and reduction for the stencil formula.
 
 Recall the formulas:
 
@@ -129,10 +132,10 @@ SFPLOADI(r, SFPLOADI_MOD0_UPPER, c >> 16);
 SFPLOADI(r, SFPLOADI_MOD0_LOWER, c & 0xffff);
 ```
 
-### Processing tiles
+### Processing Tiles
 
-Above code works for two 4x16 blocks of the tile and outputs one 4x16 block of the output. On the figure below can be seen how choice of the input blocks (blue) influences where output block (red) is located. By sliding over the input blocks horizontally we compute whole tile of the output.
+Above code works for two DRegisters (4x16) of the Tile and outputs one DRegister (4x16) of the output. On the figure below can be seen how choice of the input DRegisters (blue) influences where output DRegister (red) is located. By sliding over the input DRegisters horizontally we compute whole Tile of the output.
 
 ![](./figs/HorizontalStencilExamples.svg)
 
-From tile 0 and tile 1 of the input, we compute tile 0 of the output. Then we can either add tile 2, and compute stenctil over tile 1 and tile 2 to produce tile 1 of the output, or we can just compute final stemcil over tile 1, whcih will produce half of the tile 1, with block 0 of face 1 (as show of figure) will not be valid.
+From Tile 0 and Tile 1 of the input, we compute Tile 0 of the output. Then we can either add Tile 2, and compute stenctil over Tile 1 and Tile 2 to produce Tile 1 of the output, or we can just compute final stencil over Tile 1, whcih will produce half of the Tile 1, with block 0 of face 1 (as show of figure) will not be valid.

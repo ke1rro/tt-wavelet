@@ -42,9 +42,9 @@ There are 3 similar kernels for vertical stencil, that differ by the size of the
 
 In this documentation we only focus on the case $k < 10$, but the other cases can be derived in a similar way.
 
-In the Tenstorrent setup we work with blocks 4x16, thus we can think about processing 4 elements of a column at a time. Kernel takes 4 such consecutive blocks and outputs (in case of $k<6$) 2 consecutive blocks of the stencil output.
+In the Tenstorrent setup we work with SRegisters (4x8), thus we can think about processing 4 elements of a column at a time. Kernel takes 4 such consecutive SRegisters and outputs (in case of $k<6$) 2 consecutive SRegisters of the stencil output.
 
-As opposed to the horizontal stencil, we define $R_{-1}$ instead of $R_1$, a shift backward, which we will call `ROTATE()`, this operation rotates 4 first LReg registers, using following instructions:
+As opposed to the horizontal stencil, we define $R_{-1}$ instead of $R_1$, a shift backward, which we will call `ROTATE()`, this operation rotates 4 first SRegisters, using following instructions:
 
 ```c++
 SFPTRANSP();
@@ -63,7 +63,7 @@ $$
 g'[i:i+8] = \sum_{j=0}^{k-1} h[(k-1)-j] \cdot (R_{-j} f)[i:i+8]
 $$
 
-Negative shifts require $k-1$ additional rows of the inpute column, so we need $f[i:i+8+(k-1)]$ as input. Since we assumed that $k<10$, we need at most $f[i:i+8+(9-1)] = f[i:i+16]$ as input, which is exactly what we get as an input of an operator.
+Negative shifts require $k-1$ additional rows of the input column, so we need $f[i:i+8+(k-1)]$ as input. Since we assumed that $k<10$, we need at most $f[i:i+8+(9-1)] = f[i:i+16]$ as input, which is exactly what we get as an input of an operator.
 
 By doing $R_{-1}$ shift we can get $R_{-j}$ for $j=0,1,...,k-1$ and thus compute the stencil output as a linear combination of these shifted versions of the input column.
 
@@ -85,4 +85,4 @@ SFPLOADI(r, SFPLOADI_MOD0_UPPER, c >> 16);
 SFPLOADI(r, SFPLOADI_MOD0_LOWER, c & 0xffff);
 ```
 
-Note that the vertical stencil does not require handling even/odd columns explicitly, does not require additional padding due to bottom-to-top processing and does not require masked movements, thus is more efficient than the horizontal stencil.
+Note that the vertical stencil does not require handling even/odd columns explicitly (DRegisters are processed as a set of SRegisters), does not require additional padding due to bottom-to-top processing and does not require masked movements, thus is more efficient than the horizontal stencil.
