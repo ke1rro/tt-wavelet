@@ -43,12 +43,13 @@ inline void _horizontal_stencil_init() {
 
     // Compute mask in programmable LREG14. SFPCONFIG copies the first eight
     // lanes of LREG0 and broadcasts them vertically, so seed only lane zero.
-    TTI_SFPMOV(0, p_sfpu::LCONST_0, p_sfpu::LREG0, 0);
-    v_if(vConstTileId == 0) { TT_SFPLOADI(p_sfpu::LREG0, sfpi::SFPLOADI_MOD0_LOWER, 0x0001); }
-    v_endif;
-    TTI_SFPENCC(0, 0, 0, sfpi::SFPENCC_MOD1_EU_R1);
-    TTI_SFPCONFIG(0, p_sfpu::LREG14, 0);
-    TTI_SFPNOP;
+    // TTI_SFPMOV(0, p_sfpu::LCONST_0, p_sfpu::LREG0, 0);
+    // v_if(vConstTileId == 0) { TT_SFPLOADI(p_sfpu::LREG0, sfpi::SFPLOADI_MOD0_LOWER, 0x0001); }
+    // v_endif;
+    // TTI_SFPENCC(0, 0, 0, sfpi::SFPENCC_MOD1_EU_R1);
+    // TTI_SFPCONFIG(0, p_sfpu::LREG14, 0);
+    // TTI_SFPNOP;
+    // This is not used right now
 }
 
 // _horizontal_stencil_rotate_(a, b): 1-element right shift within subvectors.
@@ -60,6 +61,8 @@ inline void _horizontal_stencil_rotate_(std::uint32_t a_reg, std::uint32_t b_reg
     TTI_SFPNOP;
     TTI_SFPSHFT2(0, b_reg, b_reg, sfpi::SFPSHFT2_MOD1_SUBVEC_SHFLSHR1);
     TTI_SFPNOP;
+    // Non-contractual behavior of SHFLSHR1 was abused here, thus if
+    // porting to future architectures, use masked SFPMOV to achieve the same effect
 }
 
 inline void _splice_shift_first_dreg_right_one(const std::uint32_t dreg) {
