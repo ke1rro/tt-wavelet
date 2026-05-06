@@ -44,7 +44,7 @@ inline void run_step(
         cb_pop_front(cb_input1, 1);
 
         hstencil_init();
-        hstencil_tile<K>(h_coeffs, kDstInput0, kDstInput1, kDstOutput);
+        hstencil_tile<K>(h_coeffs, kDstInput0, kDstInput1, kDstOutput, kDstTailOutput);
 
         add_binary_tile_init();
         cb_wait_front(cb_base, 1);
@@ -52,9 +52,6 @@ inline void run_step(
         copy_tile(cb_base, 0, kDstBase);
         add_binary_tile(kDstOutput, kDstBase, kDstOutput);
         cb_pop_front(cb_base, 1);
-
-        // Only the first horizontal block of the tail tile is written by the writer.
-        hstencil_tile<K>(h_coeffs, kDstInput1, kDstInput0, kDstTailOutput);
 
         cb_wait_front(cb_base, 1);
         copy_tile_to_dst_init_short(cb_base);
