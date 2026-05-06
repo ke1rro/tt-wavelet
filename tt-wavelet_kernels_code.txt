@@ -6,40 +6,45 @@
 // Forward to the real TT LLK kernel header.
 #include "../../tt-metal/tt_metal/third_party/tt_llk/tt_llk_wormhole_b0/common/inc/ckernel.h"
 
+===== tt-wavelet/kernels/compute/lwt_compute_utils.hpp =====
 
-===== tt-wavelet/kernels/compute/lwt_compute.cpp =====
+#pragma once
+
+#include "../../tt_wavelet/include/device_protocol/lwt_config.hpp"
+#include "../sfpi/stencil_sfpi.h"
+
+
+===== tt-wavelet/kernels/compute/lwt_fused_compute_template.hpp =====
+
+#pragma once
 
 #include <array>
 #include <cstdint>
 
+#include "../../tt_wavelet/include/lifting/static_scheme.hpp"
 #include "compute_kernel_api/common.h"
-#include "compute_kernel_api/eltwise_binary_sfpu.h"
 #include "compute_kernel_api/eltwise_unary/eltwise_unary.h"
 #include "compute_kernel_api/tile_move_copy.h"
 #include "lwt_compute_utils.hpp"
 
-namespace {
+namespace ttwv::kernels {
 
-constexpr uint32_t kArgsPerStep = 1 + ttwv::device_protocol::step_desc_word_count;
 constexpr uint32_t kDstInput0 = 0;
 constexpr uint32_t kDstInput1 = 1;
 constexpr uint32_t kDstOutput = 2;
-constexpr uint32_t kDstBase = 3;
-constexpr uint32_t kDstTailOutput = 4;
+constexpr uint32_t kDstTailOutput = 3;
+constexpr uint32_t kDstScale = 0;
 
 template <uint32_t K>
-inline void run_step(
+inline void run_predict_update_step(
     const uint32_t cb_input0,
     const uint32_t cb_input1,
     const uint32_t cb_base,
     const uint32_t cb_output,
-    const uint32_t arg_coeff_base,
+    const std::array<uint32_t, K> h_coeffs,
     const uint32_t output_group_count) {
-    std::array<uint32_t, K> h_coeffs{};
-#pragma unroll 17
-    for (uint32_t j = 0; j < K; ++j) {
-        h_coeffs[j] = get_arg_val<uint32_t>(arg_coeff_base + j);
-    }
+    static_assert(K > 0, "Predict/update steps must have at least one coefficient");
+    static_assert(K <= ttwv::device_protocol::step_coeff_capacity, "Step coefficient count exceeds device capacity");
 
     for (uint32_t group = 0; group < output_group_count; ++group) {
         tile_regs_acquire();
@@ -54,21 +59,19 @@ inline void run_step(
         copy_tile(cb_input1, 0, kDstInput1);
         cb_pop_front(cb_input1, 1);
 
+        cb_wait_front(cb_base, 1);
+        copy_tile_to_dst_init_short(cb_base);
+        copy_tile(cb_base, 0, kDstOutput);
+        cb_pop_front(cb_base, 1);
+
+        cb_wait_front(cb_base, 1);
+        copy_tile_to_dst_init_short(cb_base);
+        copy_tile(cb_base, 0, kDstTailOutput);
+        cb_pop_front(cb_base, 1);
+
         hstencil_init();
-        hstencil_tile<K>(h_coeffs, kDstInput0, kDstInput1, kDstOutput, kDstTailOutput);
-
-        add_binary_tile_init();
-        cb_wait_front(cb_base, 1);
-        copy_tile_to_dst_init_short(cb_base);
-        copy_tile(cb_base, 0, kDstBase);
-        add_binary_tile(kDstOutput, kDstBase, kDstOutput);
-        cb_pop_front(cb_base, 1);
-
-        cb_wait_front(cb_base, 1);
-        copy_tile_to_dst_init_short(cb_base);
-        copy_tile(cb_base, 0, kDstBase);
-        add_binary_tile(kDstTailOutput, kDstBase, kDstTailOutput);
-        cb_pop_front(cb_base, 1);
+        hstencil_plus_base_tile<K>(
+            h_coeffs, kDstInput0, kDstInput1, kDstOutput, kDstTailOutput, kDstOutput, kDstTailOutput);
 
         tile_regs_commit();
         tile_regs_wait();
@@ -82,75 +85,415 @@ inline void run_step(
     }
 }
 
-}  // namespace
+inline void run_scale_step(
+    const uint32_t cb_input,
+    const uint32_t cb_output,
+    const uint32_t scalar_packed,
+    const uint32_t output_group_count) {
+    for (uint32_t group = 0; group < output_group_count; ++group) {
+        cb_wait_front(cb_input, 2);
+        cb_reserve_back(cb_output, 2);
 
-void kernel_main() {
+        for (uint32_t tile = 0; tile < 2; ++tile) {
+            tile_regs_acquire();
+
+            copy_tile_to_dst_init_short(cb_input);
+            copy_tile(cb_input, tile, kDstScale);
+
+            scale_tile(kDstScale, scalar_packed);
+
+            tile_regs_commit();
+            tile_regs_wait();
+
+            pack_tile(kDstScale, cb_output, tile);
+            tile_regs_release();
+        }
+
+        cb_pop_front(cb_input, 2);
+        cb_push_back(cb_output, 2);
+    }
+}
+
+template <typename Scheme, uint32_t StepIndex, uint32_t ExecutableIndex>
+inline void run_static_steps(
+    const uint32_t cb_input0, const uint32_t cb_input1, const uint32_t cb_base, const uint32_t cb_output) {
+    if constexpr (StepIndex < Scheme::num_steps) {
+        using Step = SchemeStep<Scheme, StepIndex>;
+        if constexpr (Step::type == StepType::kSwap) {
+            run_static_steps<Scheme, StepIndex + 1, ExecutableIndex>(cb_input0, cb_input1, cb_base, cb_output);
+        } else if constexpr (Step::type == StepType::kPredict || Step::type == StepType::kUpdate) {
+            const uint32_t output_group_count = get_arg_val<uint32_t>(1 + ExecutableIndex);
+            run_predict_update_step<Step::k>(
+                cb_input0, cb_input1, cb_base, cb_output, Step::coeff_bits, output_group_count);
+            run_static_steps<Scheme, StepIndex + 1, ExecutableIndex + 1>(cb_input0, cb_input1, cb_base, cb_output);
+        } else if constexpr (Step::type == StepType::kScaleEven || Step::type == StepType::kScaleOdd) {
+            static_assert(Step::k == 1, "Scale steps must have exactly one coefficient");
+            const uint32_t output_group_count = get_arg_val<uint32_t>(1 + ExecutableIndex);
+            run_scale_step(cb_base, cb_output, Step::coeff_bits[0], output_group_count);
+            run_static_steps<Scheme, StepIndex + 1, ExecutableIndex + 1>(cb_input0, cb_input1, cb_base, cb_output);
+        } else {
+            static_assert(Step::type == StepType::kSwap, "Unsupported static lifting step type");
+        }
+    }
+}
+
+template <typename Scheme>
+void lwt_fused_compute() {
     constexpr uint32_t cb_input0 = get_compile_time_arg_val(0);
     constexpr uint32_t cb_input1 = get_compile_time_arg_val(1);
     constexpr uint32_t cb_base = get_compile_time_arg_val(2);
     constexpr uint32_t cb_output = get_compile_time_arg_val(3);
-    constexpr uint8_t k_stencil_width = static_cast<uint8_t>(get_compile_time_arg_val(4));
-
-    const uint32_t num_steps = get_arg_val<uint32_t>(0);
 
     ckernel::init_sfpu(cb_base, cb_output);
+    run_static_steps<Scheme, 0, 0>(cb_input0, cb_input1, cb_base, cb_output);
+}
 
-    for (uint32_t step = 0; step < num_steps; ++step) {
-        const uint32_t step_arg_base = 1 + step * kArgsPerStep;
-        const uint32_t output_group_count = get_arg_val<uint32_t>(step_arg_base);
-        const uint32_t desc_arg_base = step_arg_base + 1;
-        const uint32_t coeff_arg_base = desc_arg_base + ttwv::device_protocol::step_coeffs_arg_idx;
+}  // namespace ttwv::kernels
 
-        run_step<k_stencil_width>(cb_input0, cb_input1, cb_base, cb_output, coeff_arg_base, output_group_count);
+
+===== tt-wavelet/kernels/dataflow/lwt_fused_reader.cpp =====
+
+#include <cstdint>
+
+#include "../../tt_wavelet/include/device_protocol/lwt_config.hpp"
+#include "api/dataflow/dataflow_api.h"
+#include "lwt_readers_utils.hpp"
+
+namespace {
+
+constexpr uint32_t kStepPredict = 0;
+constexpr uint32_t kStepUpdate = 1;
+constexpr uint32_t kStepScaleEven = 2;
+constexpr uint32_t kStepScaleOdd = 3;
+
+constexpr uint32_t kBlockElements = 16;
+constexpr uint32_t kRowsPerGroup = 32;
+constexpr uint32_t kInputTilesPerGroup = 2;
+constexpr uint32_t kInputBlocksPerRow = kInputTilesPerGroup * 2;
+constexpr uint32_t kOutputBlocksPerRow = kInputBlocksPerRow - 1;
+constexpr uint32_t kGroupOutputElements = kRowsPerGroup * kOutputBlocksPerRow * kBlockElements;
+
+template <typename SrcAccessor>
+ALWI float read_dense_or_zero(
+    const SrcAccessor& src,
+    ttwv::kernels::primitives::StickReadCache& cache,
+    const uint32_t logical_length,
+    const uint32_t logical_index) {
+    return logical_index < logical_length ? ttwv::kernels::primitives::read_source_value(src, cache, logical_index)
+                                          : 0.0F;
+}
+
+template <typename ConfigAccessor>
+ALWI const uint32_t* load_route_config(
+    const ConfigAccessor& config,
+    const uint32_t cb_config,
+    const uint32_t config_page_bytes,
+    const uint32_t route_index) {
+    cb_reserve_back(cb_config, 1);
+    noc_async_read(config.get_noc_addr(route_index), get_write_ptr(cb_config), config_page_bytes);
+    noc_async_read_barrier();
+    cb_push_back(cb_config, 1);
+    cb_wait_front(cb_config, 1);
+    return reinterpret_cast<const uint32_t*>(get_read_ptr(cb_config));
+}
+
+template <typename DataAccessor>
+ALWI void emit_predict_update_tiles(
+    const DataAccessor& src,
+    const DataAccessor& base,
+    const uint32_t cb_src_tile0,
+    const uint32_t cb_src_tile1,
+    const uint32_t cb_base_tile,
+    const uint32_t stick_nbytes,
+    const uint32_t stick_width,
+    const uint32_t cb_src_cache,
+    const uint32_t cb_base_cache,
+    const uint32_t source_length,
+    const uint32_t base_length,
+    const uint32_t output_length,
+    const uint32_t output_group_count,
+    const uint32_t source_offset,
+    const uint32_t base_offset,
+    const uint32_t source_left_pad) {
+    ttwv::kernels::primitives::StickReadCache src_cache{
+        cb_src_cache, stick_nbytes, stick_width, 1, ttwv::kernels::primitives::kInvalidStick, 0, false};
+    ttwv::kernels::primitives::StickReadCache base_cache{
+        cb_base_cache, stick_nbytes, stick_width, 1, ttwv::kernels::primitives::kInvalidStick, 0, false};
+
+    for (uint32_t group = 0; group < output_group_count; ++group) {
+        const uint32_t group_base = group * kGroupOutputElements;
+
+        cb_reserve_back(cb_src_tile0, 1);
+        auto* src_tile0 = reinterpret_cast<float*>(get_write_ptr(cb_src_tile0));
+        ttwv::kernels::primitives::clear_tile(src_tile0);
+
+        cb_reserve_back(cb_src_tile1, 1);
+        auto* src_tile1 = reinterpret_cast<float*>(get_write_ptr(cb_src_tile1));
+        ttwv::kernels::primitives::clear_tile(src_tile1);
+
+        for (uint32_t tile = 0; tile < kInputTilesPerGroup; ++tile) {
+            auto* src_tile = tile == 0 ? src_tile0 : src_tile1;
+            for (uint32_t row = 0; row < kRowsPerGroup; ++row) {
+                for (uint32_t local_block = 0; local_block < 2; ++local_block) {
+                    const uint32_t block_id = tile * 2 + local_block;
+                    for (uint32_t lane = 0; lane < kBlockElements; ++lane) {
+                        const int32_t packed_index = static_cast<int32_t>(
+                            group_base + (row * kOutputBlocksPerRow + block_id) * kBlockElements + lane);
+                        const int32_t source_logical_index = packed_index - static_cast<int32_t>(source_left_pad);
+
+                        float source_value = 0.0F;
+                        if (source_logical_index >= 0) {
+                            const uint32_t source_index = source_offset + static_cast<uint32_t>(source_logical_index);
+                            source_value = read_dense_or_zero(src, src_cache, source_length, source_index);
+                        }
+
+                        ttwv::kernels::primitives::store_tile_value(
+                            src_tile, row, local_block * kBlockElements + lane, source_value);
+                    }
+                }
+            }
+        }
+
+        cb_reserve_back(cb_base_tile, 2);
+        const uint32_t base_tiles_addr = get_write_ptr(cb_base_tile);
+        auto* base_full_tile = reinterpret_cast<float*>(base_tiles_addr);
+        auto* base_tail_tile =
+            reinterpret_cast<float*>(base_tiles_addr + ttwv::kernels::primitives::kTileScalars * sizeof(float));
+        ttwv::kernels::primitives::clear_tile(base_full_tile);
+        ttwv::kernels::primitives::clear_tile(base_tail_tile);
+
+        for (uint32_t row = 0; row < kRowsPerGroup; ++row) {
+            for (uint32_t block = 0; block < kOutputBlocksPerRow; ++block) {
+                for (uint32_t lane = 0; lane < kBlockElements; ++lane) {
+                    const uint32_t output_index =
+                        group_base + (row * kOutputBlocksPerRow + block) * kBlockElements + lane;
+                    const uint32_t base_index = base_offset + output_index;
+                    const float base_value = output_index < output_length
+                                                 ? read_dense_or_zero(base, base_cache, base_length, base_index)
+                                                 : 0.0F;
+
+                    if (block < 2) {
+                        ttwv::kernels::primitives::store_tile_value(
+                            base_full_tile, row, block * kBlockElements + lane, base_value);
+                    } else {
+                        ttwv::kernels::primitives::store_tile_value(base_tail_tile, row, lane, base_value);
+                    }
+                }
+            }
+        }
+
+        cb_push_back(cb_src_tile0, 1);
+        cb_push_back(cb_src_tile1, 1);
+        cb_push_back(cb_base_tile, 2);
+    }
+
+    ttwv::kernels::primitives::release_cache(src_cache);
+    ttwv::kernels::primitives::release_cache(base_cache);
+}
+
+template <typename DataAccessor>
+ALWI void emit_scale_tiles(
+    const DataAccessor& src,
+    const uint32_t cb_scale_tile,
+    const uint32_t stick_nbytes,
+    const uint32_t stick_width,
+    const uint32_t cb_src_cache,
+    const uint32_t source_length,
+    const uint32_t output_group_count) {
+    ttwv::kernels::primitives::StickReadCache src_cache{
+        cb_src_cache, stick_nbytes, stick_width, 1, ttwv::kernels::primitives::kInvalidStick, 0, false};
+
+    for (uint32_t group = 0; group < output_group_count; ++group) {
+        const uint32_t group_base = group * kGroupOutputElements;
+
+        cb_reserve_back(cb_scale_tile, 2);
+        const uint32_t scale_tiles_addr = get_write_ptr(cb_scale_tile);
+        auto* scale_full_tile = reinterpret_cast<float*>(scale_tiles_addr);
+        auto* scale_tail_tile =
+            reinterpret_cast<float*>(scale_tiles_addr + ttwv::kernels::primitives::kTileScalars * sizeof(float));
+        ttwv::kernels::primitives::clear_tile(scale_full_tile);
+        ttwv::kernels::primitives::clear_tile(scale_tail_tile);
+
+        for (uint32_t row = 0; row < kRowsPerGroup; ++row) {
+            for (uint32_t block = 0; block < kOutputBlocksPerRow; ++block) {
+                for (uint32_t lane = 0; lane < kBlockElements; ++lane) {
+                    const uint32_t output_index =
+                        group_base + (row * kOutputBlocksPerRow + block) * kBlockElements + lane;
+                    const float value = read_dense_or_zero(src, src_cache, source_length, output_index);
+
+                    if (block < 2) {
+                        ttwv::kernels::primitives::store_tile_value(
+                            scale_full_tile, row, block * kBlockElements + lane, value);
+                    } else {
+                        ttwv::kernels::primitives::store_tile_value(scale_tail_tile, row, lane, value);
+                    }
+                }
+            }
+        }
+
+        cb_push_back(cb_scale_tile, 2);
+    }
+
+    ttwv::kernels::primitives::release_cache(src_cache);
+}
+
+}  // namespace
+
+void kernel_main() {
+    const uint32_t route_config_addr = get_arg_val<uint32_t>(0);
+    const uint32_t route_count = get_arg_val<uint32_t>(1);
+
+    constexpr uint32_t cb_config = get_compile_time_arg_val(0);
+    constexpr uint32_t config_page_bytes = get_compile_time_arg_val(1);
+    constexpr uint32_t cb_src_tile0 = get_compile_time_arg_val(2);
+    constexpr uint32_t cb_src_tile1 = get_compile_time_arg_val(3);
+    constexpr uint32_t cb_base_tile = get_compile_time_arg_val(4);
+    constexpr uint32_t stick_nbytes = get_compile_time_arg_val(5);
+    constexpr uint32_t cb_src_cache = get_compile_time_arg_val(6);
+    constexpr uint32_t cb_base_cache = get_compile_time_arg_val(7);
+    constexpr uint32_t stick_width = get_compile_time_arg_val(8);
+    constexpr uint32_t cb_sync = get_compile_time_arg_val(9);
+    constexpr auto config_args = TensorAccessorArgs<10>();
+    constexpr auto data_args = TensorAccessorArgs<config_args.next_compile_time_args_offset()>();
+
+    const auto config = TensorAccessor(config_args, route_config_addr, config_page_bytes);
+
+    for (uint32_t route_index = 0; route_index < route_count; ++route_index) {
+        if (route_index > 0) {
+            cb_wait_front(cb_sync, 1);
+            cb_pop_front(cb_sync, 1);
+        }
+
+        const uint32_t* route = load_route_config(config, cb_config, config_page_bytes, route_index);
+        const uint32_t route_type = route[ttwv::device_protocol::kRouteType];
+        const uint32_t source_addr = route[ttwv::device_protocol::kRouteSourceAddr];
+        const uint32_t source_length = route[ttwv::device_protocol::kRouteSourceLength];
+        const uint32_t base_addr = route[ttwv::device_protocol::kRouteBaseAddr];
+        const uint32_t base_length = route[ttwv::device_protocol::kRouteBaseLength];
+        const uint32_t output_length = route[ttwv::device_protocol::kRouteOutputLength];
+        const uint32_t output_group_count = route[ttwv::device_protocol::kRouteOutputGroupCount];
+        const uint32_t source_offset = route[ttwv::device_protocol::kRouteSourceOffset];
+        const uint32_t base_offset = route[ttwv::device_protocol::kRouteBaseOffset];
+        const uint32_t source_left_pad = route[ttwv::device_protocol::kRouteSourceLeftPad];
+
+        const auto src = TensorAccessor(data_args, source_addr, stick_nbytes);
+
+        if (route_type == kStepPredict || route_type == kStepUpdate) {
+            const auto base = TensorAccessor(data_args, base_addr, stick_nbytes);
+            emit_predict_update_tiles(
+                src,
+                base,
+                cb_src_tile0,
+                cb_src_tile1,
+                cb_base_tile,
+                stick_nbytes,
+                stick_width,
+                cb_src_cache,
+                cb_base_cache,
+                source_length,
+                base_length,
+                output_length,
+                output_group_count,
+                source_offset,
+                base_offset,
+                source_left_pad);
+        } else if (route_type == kStepScaleEven || route_type == kStepScaleOdd) {
+            emit_scale_tiles(
+                src, cb_base_tile, stick_nbytes, stick_width, cb_src_cache, source_length, output_group_count);
+        }
+
+        cb_pop_front(cb_config, 1);
     }
 }
 
 
-===== tt-wavelet/kernels/compute/lwt_compute_utils.hpp =====
-
-#pragma once
-
-#include "../../tt_wavelet/include/device_protocol/step_desc.hpp"
-#include "../sfpi/stencil_sfpi.h"
-
-
-===== tt-wavelet/kernels/compute/lwt_scale_compute.cpp =====
+===== tt-wavelet/kernels/dataflow/lwt_fused_writer.cpp =====
 
 #include <cstdint>
 
-#include "compute_kernel_api/common.h"
-#include "compute_kernel_api/eltwise_unary/binop_with_scalar.h"
-#include "compute_kernel_api/eltwise_unary/eltwise_unary.h"
-#include "compute_kernel_api/tile_move_copy.h"
+#include "../../tt_wavelet/include/device_protocol/lwt_config.hpp"
+#include "api/dataflow/dataflow_api.h"
+#include "lwt_tile_row_major_utils.hpp"
+
+namespace row_major = ttwv::kernels::primitives;
+
+namespace {
+
+template <typename ConfigAccessor>
+ALWI const uint32_t* load_route_config(
+    const ConfigAccessor& config,
+    const uint32_t cb_config,
+    const uint32_t config_page_bytes,
+    const uint32_t route_index) {
+    cb_reserve_back(cb_config, 1);
+    noc_async_read(config.get_noc_addr(route_index), get_write_ptr(cb_config), config_page_bytes);
+    noc_async_read_barrier();
+    cb_push_back(cb_config, 1);
+    cb_wait_front(cb_config, 1);
+    return reinterpret_cast<const uint32_t*>(get_read_ptr(cb_config));
+}
+
+}  // namespace
 
 void kernel_main() {
-    constexpr uint32_t cb_input = get_compile_time_arg_val(0);
-    constexpr uint32_t cb_output = get_compile_time_arg_val(1);
-    constexpr uint32_t dst = 0;
+    const uint32_t route_config_addr = get_arg_val<uint32_t>(0);
+    const uint32_t route_count = get_arg_val<uint32_t>(1);
 
-    const uint32_t tile_page_count = get_arg_val<uint32_t>(0);
-    const uint32_t scalar_packed = get_arg_val<uint32_t>(1);
+    constexpr uint32_t cb_config = get_compile_time_arg_val(0);
+    constexpr uint32_t config_page_bytes = get_compile_time_arg_val(1);
+    constexpr uint32_t cb_output = get_compile_time_arg_val(2);
+    constexpr uint32_t stick_nbytes = get_compile_time_arg_val(3);
+    constexpr uint32_t cb_sync = get_compile_time_arg_val(4);
+    constexpr uint32_t tile_nbytes = get_tile_size(cb_output);
+    constexpr uint32_t stick_width = stick_nbytes / sizeof(float);
+    constexpr auto config_args = TensorAccessorArgs<5>();
+    constexpr auto dst_args = TensorAccessorArgs<config_args.next_compile_time_args_offset()>();
 
-    for (uint32_t page = 0; page < tile_page_count; ++page) {
-        cb_wait_front(cb_input, 1);
+    const auto config = TensorAccessor(config_args, route_config_addr, config_page_bytes);
 
-        tile_regs_acquire();
+    for (uint32_t route_index = 0; route_index < route_count; ++route_index) {
+        const uint32_t* route = load_route_config(config, cb_config, config_page_bytes, route_index);
+        const uint32_t output_addr = route[ttwv::device_protocol::kRouteOutputAddr];
+        const uint32_t output_length = route[ttwv::device_protocol::kRouteOutputLength];
+        const uint32_t output_group_count = route[ttwv::device_protocol::kRouteOutputGroupCount];
 
-        copy_tile_to_dst_init_short(cb_input);
-        copy_tile(cb_input, 0, dst);
+        const auto dst = TensorAccessor(dst_args, output_addr, stick_nbytes);
 
-        binop_with_scalar_tile_init();
-        mul_unary_tile(dst, scalar_packed);
+        for (uint32_t group = 0; group < output_group_count; ++group) {
+            cb_wait_front(cb_output, 2);
+            const uint32_t output_full_tile = get_read_ptr(cb_output);
+            const uint32_t output_tail_tile = output_full_tile + tile_nbytes;
+            const uint32_t group_base = group * row_major::kLwtGroupOutputElements;
 
-        tile_regs_commit();
-        tile_regs_wait();
+            for (uint32_t row = 0; row < row_major::kLwtRowsPerGroup; ++row) {
+                const uint32_t row_base =
+                    group_base + row * row_major::kLwtOutputBlocksPerRow * row_major::kLwtHalfStickElements;
+                row_major::write_lwt_half_block(dst, output_full_tile, row, 0, row_base, output_length, stick_width);
+                row_major::write_lwt_half_block(
+                    dst,
+                    output_full_tile,
+                    row,
+                    row_major::kLwtHalfStickElements,
+                    row_base + row_major::kLwtHalfStickElements,
+                    output_length,
+                    stick_width);
+                row_major::write_lwt_half_block(
+                    dst,
+                    output_tail_tile,
+                    row,
+                    0,
+                    row_base + 2 * row_major::kLwtHalfStickElements,
+                    output_length,
+                    stick_width);
+            }
 
-        cb_reserve_back(cb_output, 1);
-        pack_tile(dst, cb_output);
-        cb_push_back(cb_output, 1);
+            cb_pop_front(cb_output, 2);
+        }
 
-        cb_pop_front(cb_input, 1);
-        tile_regs_release();
+        noc_async_write_barrier();
+        cb_pop_front(cb_config, 1);
+        cb_reserve_back(cb_sync, 1);
+        cb_push_back(cb_sync, 1);
     }
 }
 
@@ -358,86 +701,6 @@ void kernel_main() {
         cb_push_back(cb_input, 1);
     }
 }
-
-
-===== tt-wavelet/kernels/dataflow/lwt_scale_tile_row_major_writer.cpp =====
-
-#include <cstdint>
-
-#include "api/dataflow/dataflow_api.h"
-#include "lwt_tile_row_major_utils.hpp"
-
-namespace row_major = ttwv::kernels::primitives;
-
-void kernel_main() {
-    const uint32_t output_addr = get_arg_val<uint32_t>(0);
-    const uint32_t output_length = get_arg_val<uint32_t>(1);
-    const uint32_t output_group_count = get_arg_val<uint32_t>(2);
-
-    constexpr uint32_t cb_output = get_compile_time_arg_val(0);
-    constexpr uint32_t stick_nbytes = get_compile_time_arg_val(1);
-    constexpr bool output_is_local_l1 = get_compile_time_arg_val(2) != 0;
-    constexpr uint32_t tile_nbytes = get_tile_size(cb_output);
-    constexpr uint32_t stick_width = stick_nbytes / sizeof(float);
-    constexpr auto dst_args = TensorAccessorArgs<3>();
-    const auto dst = TensorAccessor(dst_args, output_addr, stick_nbytes);
-
-    for (uint32_t group = 0; group < output_group_count; ++group) {
-        cb_wait_front(cb_output, 2);
-        const uint32_t output_full_tile = get_read_ptr(cb_output);
-        const uint32_t output_tail_tile = output_full_tile + tile_nbytes;
-        const uint32_t group_base = group * row_major::kLwtGroupOutputElements;
-
-        for (uint32_t row = 0; row < row_major::kLwtRowsPerGroup; ++row) {
-            const uint32_t row_base =
-                group_base + row * row_major::kLwtOutputBlocksPerRow * row_major::kLwtHalfStickElements;
-            if constexpr (output_is_local_l1) {
-                row_major::write_lwt_half_block_local_l1(
-                    output_addr, stick_nbytes, output_full_tile, row, 0, row_base, output_length, stick_width);
-                row_major::write_lwt_half_block_local_l1(
-                    output_addr,
-                    stick_nbytes,
-                    output_full_tile,
-                    row,
-                    row_major::kLwtHalfStickElements,
-                    row_base + row_major::kLwtHalfStickElements,
-                    output_length,
-                    stick_width);
-                row_major::write_lwt_half_block_local_l1(
-                    output_addr,
-                    stick_nbytes,
-                    output_tail_tile,
-                    row,
-                    0,
-                    row_base + 2 * row_major::kLwtHalfStickElements,
-                    output_length,
-                    stick_width);
-            } else {
-                row_major::write_lwt_half_block(dst, output_full_tile, row, 0, row_base, output_length, stick_width);
-                row_major::write_lwt_half_block(
-                    dst,
-                    output_full_tile,
-                    row,
-                    row_major::kLwtHalfStickElements,
-                    row_base + row_major::kLwtHalfStickElements,
-                    output_length,
-                    stick_width);
-                row_major::write_lwt_half_block(
-                    dst,
-                    output_tail_tile,
-                    row,
-                    0,
-                    row_base + 2 * row_major::kLwtHalfStickElements,
-                    output_length,
-                    stick_width);
-                noc_async_write_barrier();
-            }
-        }
-
-        cb_pop_front(cb_output, 2);
-    }
-}
-
 
 ===== tt-wavelet/kernels/dataflow/lwt_tile_row_major_utils.hpp =====
 
@@ -1025,6 +1288,7 @@ ALWI void write_lwt_half_block_local_l1(
 //   LREG4: g_e (accumulator for even output)
 //   LREG5: g_o (accumulator for odd output)
 //   LREG6: tmp (broadcast coefficient)
+//   LREG7: tmp_acc (temporary MAD destination for fused plus-base)
 //   LREG14: programmable column-zero mask preloaded by _horizontal_stencil_init()
 #pragma once
 
@@ -1056,6 +1320,7 @@ inline void _horizontal_stencil_init() {
 
     addr_mod_t addr_mod{.dest = {.incr = 0}};
     addr_mod.set(ADDR_MOD_3);
+    math::reset_counters(p_setrwc::SET_ABD_F);
 
     // Enable all lanes
     TTI_SFPENCC(sfpi::SFPENCC_IMM12_BOTH, 0, 0, sfpi::SFPENCC_MOD1_EI_RI);
@@ -1079,6 +1344,16 @@ inline void _horizontal_stencil_rotate_(std::uint32_t a_reg, std::uint32_t b_reg
     TTI_SFPNOP;
     TTI_SFPSHFT2(0, b_reg, b_reg, sfpi::SFPSHFT2_MOD1_SUBVEC_SHFLSHR1);
     TTI_SFPNOP;
+}
+
+inline void _horizontal_stencil_mad_accumulate_(
+    const std::uint32_t source_reg,
+    const std::uint32_t coeff_reg,
+    const std::uint32_t accumulator_reg,
+    const std::uint32_t tmp_acc_reg) {
+    TTI_SFPMAD(source_reg, coeff_reg, accumulator_reg, tmp_acc_reg, 0);
+    TTI_NOP;
+    TTI_SFPMOV(0, tmp_acc_reg, accumulator_reg, 0);
 }
 
 inline void _splice_shift_first_dreg_right_one(const std::uint32_t dreg) {
@@ -1277,6 +1552,59 @@ inline void _horizontal_stencil_block(
     TT_SFPSTORE(g_o, sfpi::SFPSTORE_MOD0_FMT_FP32, ADDR_MOD_3, dst_g + 2);  // g_o
 }
 
+// Same stencil as _horizontal_stencil_block, but initializes the output
+// accumulators from a base tile so the lifting step is base + stencil(source)
+// in one SFPU accumulation chain.
+template <uint8_t K>
+inline void _horizontal_stencil_plus_base_block(
+    const uint32_t h_packed[K],
+    const uint32_t dst_f0,
+    const uint32_t dst_f1,
+    const uint32_t dst_base,
+    const uint32_t dst_g) {
+    const auto& f_e_0 = p_sfpu::LREG0;
+    const auto& f_o_0 = p_sfpu::LREG1;
+    const auto& f_e_1 = p_sfpu::LREG2;
+    const auto& f_o_1 = p_sfpu::LREG3;
+    const auto& g_e = p_sfpu::LREG4;
+    const auto& g_o = p_sfpu::LREG5;
+    const auto& tmp = p_sfpu::LREG6;
+    const auto& tmp_acc = p_sfpu::LREG7;
+
+    TT_SFPLOAD(f_e_0, sfpi::SFPLOAD_MOD0_FMT_FP32, ADDR_MOD_3, dst_f0);
+    TT_SFPLOAD(f_o_0, sfpi::SFPLOAD_MOD0_FMT_FP32, ADDR_MOD_3, dst_f0 + 2);
+    TT_SFPLOAD(f_e_1, sfpi::SFPLOAD_MOD0_FMT_FP32, ADDR_MOD_3, dst_f1);
+    TT_SFPLOAD(f_o_1, sfpi::SFPLOAD_MOD0_FMT_FP32, ADDR_MOD_3, dst_f1 + 2);
+
+    TTI_SFPMOV(0, p_sfpu::LCONST_0, g_e, 0);
+    TTI_SFPMOV(0, p_sfpu::LCONST_0, g_o, 0);
+    TT_SFPLOAD(g_e, sfpi::SFPLOAD_MOD0_FMT_FP32, ADDR_MOD_3, dst_base);
+    TT_SFPLOAD(g_o, sfpi::SFPLOAD_MOD0_FMT_FP32, ADDR_MOD_3, dst_base + 2);
+    TTI_SFPNOP;
+    TTI_SFPNOP;
+
+#pragma unroll 17
+    for (uint8_t j = 0; j < K; j++) {
+        TT_SFPLOADI(tmp, sfpi::SFPLOADI_MOD0_UPPER, (h_packed[j]) >> 16);
+        TT_SFPLOADI(tmp, sfpi::SFPLOADI_MOD0_LOWER, (h_packed[j]) & 0xFFFF);
+
+        if ((j & 1) == 0) {
+            _horizontal_stencil_mad_accumulate_(f_e_1, tmp, g_e, tmp_acc);
+            _horizontal_stencil_mad_accumulate_(f_o_1, tmp, g_o, tmp_acc);
+        } else {
+            _horizontal_stencil_mad_accumulate_(f_e_1, tmp, g_o, tmp_acc);
+            _horizontal_stencil_rotate_(f_o_0, f_o_1);
+            _horizontal_stencil_mad_accumulate_(f_o_1, tmp, g_e, tmp_acc);
+            _horizontal_stencil_rotate_(f_e_0, f_e_1);
+        }
+    }
+
+    TTI_SFPNOP;
+    TTI_SFPNOP;
+    TT_SFPSTORE(g_e, sfpi::SFPSTORE_MOD0_FMT_FP32, ADDR_MOD_3, dst_g);
+    TT_SFPSTORE(g_o, sfpi::SFPSTORE_MOD0_FMT_FP32, ADDR_MOD_3, dst_g + 2);
+}
+
 template <uint8_t K, uint32_t Rows>
 inline void _horizontal_stencil_face(
     const uint32_t h_packed[K], const uint32_t input1, const uint32_t input2, const uint32_t output) {
@@ -1286,6 +1614,22 @@ inline void _horizontal_stencil_face(
 #pragma unroll 4
     for (uint32_t row = 0; row < ROWS; row += ROW_STRIDE) {
         _horizontal_stencil_block<K>(h_packed, input1 + row, input2 + row, output + row);
+    }
+}
+
+template <uint8_t K, uint32_t Rows>
+inline void _horizontal_stencil_plus_base_face(
+    const uint32_t h_packed[K],
+    const uint32_t input1,
+    const uint32_t input2,
+    const uint32_t base,
+    const uint32_t output) {
+    constexpr uint32_t ROWS = std::min(Rows, static_cast<uint32_t>(16));
+    constexpr uint32_t ROW_STRIDE = 4;
+
+#pragma unroll 4
+    for (uint32_t row = 0; row < ROWS; row += ROW_STRIDE) {
+        _horizontal_stencil_plus_base_block<K>(h_packed, input1 + row, input2 + row, base + row, output + row);
     }
 }
 
@@ -1328,6 +1672,94 @@ inline void _horizontal_stencil(
     TTI_STALLWAIT(p_stall::STALL_CFG, p_stall::WAIT_SFPU);
 }
 
+template <uint8_t K, uint32_t Rows>
+inline void _horizontal_stencil_plus_base(
+    const uint32_t h_packed[K],
+    const uint32_t input1,
+    const uint32_t input2,
+    const uint32_t base1,
+    const uint32_t base2,
+    const uint32_t output1,
+    const uint32_t output2) {
+    math::set_dst_write_addr<DstTileShape::Tile32x32, UnpackDestination::SrcRegs>(0);
+    ckernel::math::clear_addr_mod_base();
+    TTI_STALLWAIT(p_stall::STALL_SFPU, p_stall::MATH);
+
+    _horizontal_stencil_plus_base_face<K, Rows>(
+        h_packed, _get_dst_base(input1, 0), _get_dst_base(input1, 1), _get_dst_base(base1, 0), _get_dst_base(output1, 0));
+    _horizontal_stencil_plus_base_face<K, Rows>(
+        h_packed, _get_dst_base(input1, 1), _get_dst_base(input2, 0), _get_dst_base(base1, 1), _get_dst_base(output1, 1));
+    _horizontal_stencil_plus_base_face<K, Rows>(
+        h_packed, _get_dst_base(input2, 0), _get_dst_base(input2, 1), _get_dst_base(base2, 0), _get_dst_base(output2, 0));
+
+    if constexpr (Rows > 16) {
+        _horizontal_stencil_plus_base_face<K, Rows - 16>(
+            h_packed,
+            _get_dst_base(input1, 2),
+            _get_dst_base(input1, 3),
+            _get_dst_base(base1, 2),
+            _get_dst_base(output1, 2));
+        _horizontal_stencil_plus_base_face<K, Rows - 16>(
+            h_packed,
+            _get_dst_base(input1, 3),
+            _get_dst_base(input2, 2),
+            _get_dst_base(base1, 3),
+            _get_dst_base(output1, 3));
+        _horizontal_stencil_plus_base_face<K, Rows>(
+            h_packed,
+            _get_dst_base(input2, 2),
+            _get_dst_base(input2, 3),
+            _get_dst_base(base2, 2),
+            _get_dst_base(output2, 2));
+    }
+
+    TTI_STALLWAIT(p_stall::STALL_CFG, p_stall::WAIT_SFPU);
+}
+
+inline void _scale_tile(const uint32_t tile, const uint32_t scalar_packed) {
+    _init_sfpu_config_reg();
+
+    addr_mod_t addr_mod{
+        .srca = {.incr = 0},
+        .srcb = {.incr = 0},
+        .dest = {.incr = 0},
+    };
+    addr_mod.set(ADDR_MOD_3);
+
+    TTI_SFPENCC(sfpi::SFPENCC_IMM12_BOTH, 0, 0, sfpi::SFPENCC_MOD1_EI_RI);
+    math::reset_counters(p_setrwc::SET_ABD_F);
+    math::set_dst_write_addr<DstTileShape::Tile32x32, UnpackDestination::SrcRegs>(0);
+    ckernel::math::clear_addr_mod_base();
+    TTI_STALLWAIT(p_stall::STALL_SFPU, p_stall::MATH);
+
+    const auto& value = p_sfpu::LREG0;
+    const auto& scalar = p_sfpu::LREG1;
+    const auto& product = p_sfpu::LREG2;
+
+    TT_SFPLOADI(scalar, sfpi::SFPLOADI_MOD0_UPPER, scalar_packed >> 16);
+    TT_SFPLOADI(scalar, sfpi::SFPLOADI_MOD0_LOWER, scalar_packed & 0xFFFF);
+
+#pragma unroll 4
+    for (uint32_t face = 0; face < 4; ++face) {
+        const uint32_t face_base = _get_dst_base(tile, face);
+#pragma unroll 8
+        for (uint32_t row = 0; row < 16; row += 4) {
+            TT_SFPLOAD(value, sfpi::SFPLOAD_MOD0_FMT_FP32, ADDR_MOD_3, face_base + row);
+            TTI_SFPMUL(value, scalar, p_sfpu::LCONST_0, product, 0);
+            TTI_NOP;
+            TT_SFPSTORE(product, sfpi::SFPSTORE_MOD0_FMT_FP32, ADDR_MOD_3, face_base + row);
+
+            TT_SFPLOAD(value, sfpi::SFPLOAD_MOD0_FMT_FP32, ADDR_MOD_3, face_base + row + 2);
+            TTI_SFPMUL(value, scalar, p_sfpu::LCONST_0, product, 0);
+            TTI_NOP;
+            TT_SFPSTORE(product, sfpi::SFPSTORE_MOD0_FMT_FP32, ADDR_MOD_3, face_base + row + 2);
+        }
+    }
+
+    math::clear_dst_reg_addr();
+    TTI_STALLWAIT(p_stall::STALL_CFG, p_stall::WAIT_SFPU);
+}
+
 }  // namespace sfpu
 }  // namespace ckernel
 
@@ -1345,6 +1777,23 @@ inline void hstencil_tile(
     MATH((ckernel::sfpu::_horizontal_stencil<K, Rows>(h_packed.data(), input1, input2, output1, output2)));
 }
 
+template <uint8_t K, uint32_t Rows = 32>
+inline void hstencil_plus_base_tile(
+    std::array<uint32_t, K> h_packed,
+    const uint32_t input1,
+    const uint32_t input2,
+    const uint32_t base1,
+    const uint32_t base2,
+    const uint32_t output1,
+    const uint32_t output2) {
+    MATH((ckernel::sfpu::_horizontal_stencil_plus_base<K, Rows>(
+        h_packed.data(), input1, input2, base1, base2, output1, output2)));
+}
+
+inline void scale_tile(const uint32_t tile, const uint32_t scalar_packed) {
+    MATH((ckernel::sfpu::_scale_tile(tile, scalar_packed)));
+}
+
 template <uint8_t K>
 inline void splice_shift(const uint32_t tile0, const uint32_t tile1) {
     MATH((ckernel::sfpu::_splice_shift<K>(tile0, tile1)));
@@ -1356,125 +1805,5 @@ inline void splice_recover1(const uint32_t tile0, const uint32_t tile1, const ui
 
 inline void splice_recover2(const uint32_t tile0, const uint32_t tile1, const uint32_t tmp_tile) {
     MATH((ckernel::sfpu::_splice_recover2(tile0, tile1, tmp_tile)));
-}
-
-
-===== tt-wavelet/kernels/test/splice_ops_compute.cpp =====
-
-#include <cstdint>
-
-#include "../sfpi/stencil_sfpi.h"
-#include "compute_kernel_api/common.h"
-#include "compute_kernel_api/eltwise_unary/eltwise_unary.h"
-#include "compute_kernel_api/tile_move_copy.h"
-
-namespace {
-
-constexpr uint32_t kOpShift = 0;
-constexpr uint32_t kOpRecover1 = 1;
-constexpr uint32_t kOpRecover2 = 2;
-
-}  // namespace
-
-void kernel_main() {
-    const uint32_t case_count = get_arg_val<uint32_t>(0);
-
-    constexpr uint32_t cb_input = get_compile_time_arg_val(0);
-    constexpr uint32_t cb_output = get_compile_time_arg_val(1);
-    constexpr uint32_t op = get_compile_time_arg_val(2);
-    constexpr uint8_t shift_k = static_cast<uint8_t>(get_compile_time_arg_val(3));
-
-    ckernel::init_sfpu(cb_input, cb_output);
-
-    for (uint32_t test_case = 0; test_case < case_count; ++test_case) {
-        cb_wait_front(cb_input, 3);
-
-        tile_regs_acquire();
-        copy_tile_to_dst_init_short(cb_input);
-        copy_tile(cb_input, 0, 0);
-        copy_tile(cb_input, 1, 1);
-        copy_tile(cb_input, 2, 2);
-
-        splice_ops_init();
-        if constexpr (op == kOpShift) {
-            splice_shift<shift_k>(0, 1);
-        } else if constexpr (op == kOpRecover1) {
-            splice_recover1(0, 1, 2);
-        } else if constexpr (op == kOpRecover2) {
-            splice_recover2(0, 1, 2);
-        }
-
-        tile_regs_commit();
-        tile_regs_wait();
-
-        cb_reserve_back(cb_output, 3);
-        pack_tile(0, cb_output, 0);
-        pack_tile(1, cb_output, 1);
-        pack_tile(2, cb_output, 2);
-        cb_push_back(cb_output, 3);
-
-        cb_pop_front(cb_input, 3);
-        tile_regs_release();
-    }
-}
-
-
-===== tt-wavelet/kernels/test/splice_ops_reader.cpp =====
-
-#include <cstdint>
-
-#include "api/dataflow/dataflow_api.h"
-
-void kernel_main() {
-    const uint32_t src_addr = get_arg_val<uint32_t>(0);
-    const uint32_t case_count = get_arg_val<uint32_t>(1);
-
-    constexpr uint32_t cb_input = get_compile_time_arg_val(0);
-    constexpr uint32_t tile_nbytes = get_tile_size(cb_input);
-    constexpr auto src_args = TensorAccessorArgs<1>();
-    const auto src = TensorAccessor(src_args, src_addr, tile_nbytes);
-
-    for (uint32_t test_case = 0; test_case < case_count; ++test_case) {
-        cb_reserve_back(cb_input, 3);
-        const uint32_t cb_addr = get_write_ptr(cb_input);
-        const uint32_t tile_base = test_case * 3;
-
-        noc_async_read_tile(tile_base + 0, src, cb_addr + 0 * tile_nbytes);
-        noc_async_read_tile(tile_base + 1, src, cb_addr + 1 * tile_nbytes);
-        noc_async_read_tile(tile_base + 2, src, cb_addr + 2 * tile_nbytes);
-        noc_async_read_barrier();
-
-        cb_push_back(cb_input, 3);
-    }
-}
-
-
-===== tt-wavelet/kernels/test/splice_ops_writer.cpp =====
-
-#include <cstdint>
-
-#include "api/dataflow/dataflow_api.h"
-
-void kernel_main() {
-    const uint32_t dst_addr = get_arg_val<uint32_t>(0);
-    const uint32_t case_count = get_arg_val<uint32_t>(1);
-
-    constexpr uint32_t cb_output = get_compile_time_arg_val(0);
-    constexpr uint32_t tile_nbytes = get_tile_size(cb_output);
-    constexpr auto dst_args = TensorAccessorArgs<1>();
-    const auto dst = TensorAccessor(dst_args, dst_addr, tile_nbytes);
-
-    for (uint32_t test_case = 0; test_case < case_count; ++test_case) {
-        cb_wait_front(cb_output, 3);
-        const uint32_t cb_addr = get_read_ptr(cb_output);
-        const uint32_t tile_base = test_case * 3;
-
-        noc_async_write_tile(tile_base + 0, dst, cb_addr + 0 * tile_nbytes);
-        noc_async_write_tile(tile_base + 1, dst, cb_addr + 1 * tile_nbytes);
-        noc_async_write_tile(tile_base + 2, dst, cb_addr + 2 * tile_nbytes);
-        noc_async_write_barrier();
-
-        cb_pop_front(cb_output, 3);
-    }
 }
 

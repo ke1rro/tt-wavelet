@@ -74,12 +74,12 @@ void kernel_main() {
                     row_base + 2 * row_major::kLwtHalfStickElements,
                     output_length,
                     stick_width);
-                noc_async_write_barrier();
             }
 
             cb_pop_front(cb_output, 2);
         }
 
+        noc_async_write_barrier();
         cb_pop_front(cb_config, 1);
         cb_reserve_back(cb_sync, 1);
         cb_push_back(cb_sync, 1);

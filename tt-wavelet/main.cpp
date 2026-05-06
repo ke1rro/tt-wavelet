@@ -54,19 +54,27 @@ void print_coeffs(const char* label, const std::vector<float>& values, const siz
 }
 
 [[nodiscard]] std::vector<float> canonicalize_forward_output(
-    const std::vector<float>& values, const size_t logical_length, const size_t output_length) {
+    const std::vector<float>& values,
+    const size_t logical_length,
+    const size_t output_length,
+    const int stream_shift,
+    const int canonical_start) {
     const size_t available_logical = std::min(values.size(), logical_length);
     std::vector<float> logical_values(values.begin(), values.begin() + static_cast<std::ptrdiff_t>(available_logical));
 
-    if (logical_values.size() <= output_length) {
-        return logical_values;
+    std::vector<float> canonical(output_length, 0.0F);
+    const int64_t src_offset = static_cast<int64_t>(canonical_start) - static_cast<int64_t>(stream_shift);
+    const size_t src_begin = src_offset > 0 ? static_cast<size_t>(src_offset) : size_t{0};
+    const size_t dst_begin = src_offset < 0 ? static_cast<size_t>(-src_offset) : size_t{0};
+
+    if (src_begin >= logical_values.size() || dst_begin >= canonical.size()) {
+        return canonical;
     }
 
-    const size_t extra = logical_values.size() - output_length;
-    const size_t crop_offset = (extra + 1) / 2;
-    return std::vector<float>(
-        logical_values.begin() + static_cast<std::ptrdiff_t>(crop_offset),
-        logical_values.begin() + static_cast<std::ptrdiff_t>(crop_offset + output_length));
+    const size_t copy_count = std::min(logical_values.size() - src_begin, canonical.size() - dst_begin);
+    std::copy_n(
+        logical_values.begin() + static_cast<std::ptrdiff_t>(src_begin), copy_count, canonical.begin() + dst_begin);
+    return canonical;
 }
 
 [[nodiscard]] std::string canonical_wavelet_name(const std::string_view raw_name) {
@@ -139,11 +147,20 @@ int main(int argc, char** argv) {
             const auto stop = std::chrono::steady_clock::now();
 
             const size_t canonical_length = bundle.plan.output_length;
+            constexpr int canonical_start = static_cast<int>(Scheme::tap_size / 2);
 
-            const auto even_canonical =
-                canonicalize_forward_output(device_even_result, bundle.plan.final_even_length, canonical_length);
-            const auto odd_canonical =
-                canonicalize_forward_output(device_odd_result, bundle.plan.final_odd_length, canonical_length);
+            const auto even_canonical = canonicalize_forward_output(
+                device_even_result,
+                bundle.plan.final_even_length,
+                canonical_length,
+                bundle.plan.final_even_shift,
+                canonical_start);
+            const auto odd_canonical = canonicalize_forward_output(
+                device_odd_result,
+                bundle.plan.final_odd_length,
+                canonical_length,
+                bundle.plan.final_odd_shift,
+                canonical_start);
 
             print_coeffs("tt-wavelet approximation coefficients", even_canonical, canonical_length);
             print_coeffs("tt-wavelet detail coefficients", odd_canonical, canonical_length);

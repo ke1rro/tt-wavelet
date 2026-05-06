@@ -2,7 +2,7 @@
 
 #include <cstdint>
 
-#include "tt_wavelet/include/device_protocol/lwt_config.hpp"
+#include "lwt_config.hpp"
 
 namespace ttwv::device_protocol {
 

@@ -5,8 +5,6 @@
 
 #include "../../tt_wavelet/include/lifting/static_scheme.hpp"
 #include "compute_kernel_api/common.h"
-#include "compute_kernel_api/eltwise_binary_sfpu.h"
-#include "compute_kernel_api/eltwise_unary/binop_with_scalar.h"
 #include "compute_kernel_api/eltwise_unary/eltwise_unary.h"
 #include "compute_kernel_api/tile_move_copy.h"
 #include "lwt_compute_utils.hpp"
@@ -16,8 +14,7 @@ namespace ttwv::kernels {
 constexpr uint32_t kDstInput0 = 0;
 constexpr uint32_t kDstInput1 = 1;
 constexpr uint32_t kDstOutput = 2;
-constexpr uint32_t kDstBase = 3;
-constexpr uint32_t kDstTailOutput = 4;
+constexpr uint32_t kDstTailOutput = 3;
 constexpr uint32_t kDstScale = 0;
 
 template <uint32_t K>
@@ -44,21 +41,19 @@ inline void run_predict_update_step(
         copy_tile(cb_input1, 0, kDstInput1);
         cb_pop_front(cb_input1, 1);
 
+        cb_wait_front(cb_base, 1);
+        copy_tile_to_dst_init_short(cb_base);
+        copy_tile(cb_base, 0, kDstOutput);
+        cb_pop_front(cb_base, 1);
+
+        cb_wait_front(cb_base, 1);
+        copy_tile_to_dst_init_short(cb_base);
+        copy_tile(cb_base, 0, kDstTailOutput);
+        cb_pop_front(cb_base, 1);
+
         hstencil_init();
-        hstencil_tile<K>(h_coeffs, kDstInput0, kDstInput1, kDstOutput, kDstTailOutput);
-
-        add_binary_tile_init();
-        cb_wait_front(cb_base, 1);
-        copy_tile_to_dst_init_short(cb_base);
-        copy_tile(cb_base, 0, kDstBase);
-        add_binary_tile(kDstOutput, kDstBase, kDstOutput);
-        cb_pop_front(cb_base, 1);
-
-        cb_wait_front(cb_base, 1);
-        copy_tile_to_dst_init_short(cb_base);
-        copy_tile(cb_base, 0, kDstBase);
-        add_binary_tile(kDstTailOutput, kDstBase, kDstTailOutput);
-        cb_pop_front(cb_base, 1);
+        hstencil_plus_base_tile<K>(
+            h_coeffs, kDstInput0, kDstInput1, kDstOutput, kDstTailOutput, kDstOutput, kDstTailOutput);
 
         tile_regs_commit();
         tile_regs_wait();
@@ -87,8 +82,7 @@ inline void run_scale_step(
             copy_tile_to_dst_init_short(cb_input);
             copy_tile(cb_input, tile, kDstScale);
 
-            binop_with_scalar_tile_init();
-            mul_unary_tile(kDstScale, scalar_packed);
+            scale_tile(kDstScale, scalar_packed);
 
             tile_regs_commit();
             tile_regs_wait();

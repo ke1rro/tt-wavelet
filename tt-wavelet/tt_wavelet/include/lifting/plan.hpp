@@ -67,6 +67,8 @@ struct LiftingForwardPlan {
     LiftingActiveStreams final_active{};
     size_t final_even_length{0};
     size_t final_odd_length{0};
+    int final_even_shift{0};
+    int final_odd_shift{0};
     size_t output_length{0};
 
     [[nodiscard]] constexpr const SignalBuffer& resolve_stream_buffer(const StreamRef stream) const noexcept {
@@ -277,6 +279,8 @@ template <typename Scheme>
         .final_active = active,
         .final_even_length = even_state.length,
         .final_odd_length = odd_state.length,
+        .final_even_shift = even_state.shift,
+        .final_odd_shift = odd_state.shift,
         .output_length = (input.length + static_cast<size_t>(Scheme::tap_size) - 1) / size_t{2},
     };
 }
