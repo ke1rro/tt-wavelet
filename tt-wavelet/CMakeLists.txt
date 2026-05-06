@@ -6,6 +6,9 @@ if(BUILD_TT_WAVELET)
         tt_wavelet/src/pad_split/device.cpp tt_wavelet/src/lifting/device.cpp)
   set_target_properties(${PROJECT_NAME} PROPERTIES RUNTIME_OUTPUT_DIRECTORY
                                                    "${CMAKE_BINARY_DIR}")
+  add_executable(lwt_shift_recover_test tests/shift_recover_test.cpp)
+  set_target_properties(lwt_shift_recover_test PROPERTIES RUNTIME_OUTPUT_DIRECTORY
+                                                          "${CMAKE_BINARY_DIR}")
 
   set(TT_WAVELET_LLK_INCLUDE_CANDIDATES
       ${CMAKE_SOURCE_DIR}/tt-metal/tt_metal/third_party/tt_llk/tt_llk_wormhole_b0/llk_lib
@@ -49,4 +52,9 @@ if(BUILD_TT_WAVELET)
   target_include_directories(${PROJECT_NAME}
                              PRIVATE ${TT_WAVELET_INCLUDE_DIRS})
   target_link_libraries(${PROJECT_NAME} PRIVATE Metalium::Metal)
+  target_include_directories(lwt_shift_recover_test
+                             PRIVATE ${TT_WAVELET_LLK_INCLUDE_DIRS})
+  target_include_directories(lwt_shift_recover_test
+                             PRIVATE ${TT_WAVELET_INCLUDE_DIRS})
+  target_link_libraries(lwt_shift_recover_test PRIVATE Metalium::Metal)
 endif()
