@@ -56,7 +56,8 @@ ALWI void emit_predict_update_tiles(
     const uint32_t source_length,
     const uint32_t base_length,
     const uint32_t output_length,
-    const uint32_t output_group_count,
+    const uint32_t global_group_begin,
+    const uint32_t local_group_count,
     const uint32_t source_offset,
     const uint32_t base_offset,
     const uint32_t source_left_pad) {
@@ -65,8 +66,9 @@ ALWI void emit_predict_update_tiles(
     ttwv::kernels::primitives::StickReadCache base_cache{
         cb_base_cache, stick_nbytes, stick_width, 1, ttwv::kernels::primitives::kInvalidStick, 0, false};
 
-    for (uint32_t group = 0; group < output_group_count; ++group) {
-        const uint32_t group_base = group * kGroupOutputElements;
+    for (uint32_t local_group = 0; local_group < local_group_count; ++local_group) {
+        const uint32_t global_group = global_group_begin + local_group;
+        const uint32_t group_base = global_group * kGroupOutputElements;
 
         cb_reserve_back(cb_src_tile0, 1);
         auto* src_tile0 = reinterpret_cast<float*>(get_write_ptr(cb_src_tile0));
@@ -144,12 +146,14 @@ ALWI void emit_scale_tiles(
     const uint32_t stick_width,
     const uint32_t cb_src_cache,
     const uint32_t source_length,
-    const uint32_t output_group_count) {
+    const uint32_t global_group_begin,
+    const uint32_t local_group_count) {
     ttwv::kernels::primitives::StickReadCache src_cache{
         cb_src_cache, stick_nbytes, stick_width, 1, ttwv::kernels::primitives::kInvalidStick, 0, false};
 
-    for (uint32_t group = 0; group < output_group_count; ++group) {
-        const uint32_t group_base = group * kGroupOutputElements;
+    for (uint32_t local_group = 0; local_group < local_group_count; ++local_group) {
+        const uint32_t global_group = global_group_begin + local_group;
+        const uint32_t group_base = global_group * kGroupOutputElements;
 
         cb_reserve_back(cb_scale_tile, 2);
         const uint32_t scale_tiles_addr = get_write_ptr(cb_scale_tile);
@@ -216,10 +220,12 @@ void kernel_main() {
         const uint32_t base_addr = route[ttwv::device_protocol::kRouteBaseAddr];
         const uint32_t base_length = route[ttwv::device_protocol::kRouteBaseLength];
         const uint32_t output_length = route[ttwv::device_protocol::kRouteOutputLength];
-        const uint32_t output_group_count = route[ttwv::device_protocol::kRouteOutputGroupCount];
         const uint32_t source_offset = route[ttwv::device_protocol::kRouteSourceOffset];
         const uint32_t base_offset = route[ttwv::device_protocol::kRouteBaseOffset];
         const uint32_t source_left_pad = route[ttwv::device_protocol::kRouteSourceLeftPad];
+        const uint32_t route_range_arg_base = 2 + route_index * 2;
+        const uint32_t global_group_begin = get_arg_val<uint32_t>(route_range_arg_base);
+        const uint32_t local_group_count = get_arg_val<uint32_t>(route_range_arg_base + 1);
 
         const auto src = TensorAccessor(data_args, source_addr, stick_nbytes);
 
@@ -238,13 +244,21 @@ void kernel_main() {
                 source_length,
                 base_length,
                 output_length,
-                output_group_count,
+                global_group_begin,
+                local_group_count,
                 source_offset,
                 base_offset,
                 source_left_pad);
         } else if (route_type == kStepScaleEven || route_type == kStepScaleOdd) {
             emit_scale_tiles(
-                src, cb_base_tile, stick_nbytes, stick_width, cb_src_cache, source_length, output_group_count);
+                src,
+                cb_base_tile,
+                stick_nbytes,
+                stick_width,
+                cb_src_cache,
+                source_length,
+                global_group_begin,
+                local_group_count);
         }
 
         cb_pop_front(cb_config, 1);

@@ -49,6 +49,13 @@ struct LiftingPreprocessDeviceProgram {
     const LiftingPreprocessDeviceProgram& bundle,
     const char* compute_kernel_path);
 
+[[nodiscard]] LiftingActiveStreams lwt_static(
+    const std::filesystem::path& kernel_root,
+    tt::tt_metal::distributed::MeshDevice& mesh_device,
+    tt::tt_metal::distributed::MeshCommandQueue& command_queue,
+    const LiftingPreprocessDeviceProgram& bundle,
+    const char* compute_kernel_path);
+
 template <typename Scheme>
 [[nodiscard]] LiftingPreprocessDeviceProgram create_lifting_preprocess_program(
     const std::filesystem::path& kernel_root,
@@ -101,6 +108,15 @@ template <typename Scheme>
     const tt::tt_metal::CoreCoord& core,
     const LiftingPreprocessDeviceProgram& bundle) {
     return lwt_static(kernel_root, mesh_device, command_queue, core, bundle, Scheme::compute_kernel_path);
+}
+
+template <typename Scheme>
+[[nodiscard]] LiftingActiveStreams lwt(
+    const std::filesystem::path& kernel_root,
+    tt::tt_metal::distributed::MeshDevice& mesh_device,
+    tt::tt_metal::distributed::MeshCommandQueue& command_queue,
+    const LiftingPreprocessDeviceProgram& bundle) {
+    return lwt_static(kernel_root, mesh_device, command_queue, bundle, Scheme::compute_kernel_path);
 }
 
 }  // namespace ttwv
