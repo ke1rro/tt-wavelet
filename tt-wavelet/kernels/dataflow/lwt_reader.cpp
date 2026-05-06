@@ -74,7 +74,8 @@ void kernel_main() {
         const uint32_t output_group_count = get_arg_val<uint32_t>(arg_base + 5);
         const uint32_t source_offset = get_arg_val<uint32_t>(arg_base + 6);
         const uint32_t base_offset = get_arg_val<uint32_t>(arg_base + 7);
-        const uint32_t source_left_pad = get_arg_val<uint32_t>(arg_base + 8);
+        // const uint32_t source_left_pad = get_arg_val<uint32_t>(arg_base + 8);
+        const uint32_t source_left_pad = 0;
 
         const auto src = TensorAccessor(src_accessor_args, src_addr, stick_nbytes);
         const auto base = TensorAccessor(base_accessor_args, base_addr, stick_nbytes);

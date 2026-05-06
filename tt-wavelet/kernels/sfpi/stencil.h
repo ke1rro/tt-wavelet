@@ -40,10 +40,10 @@ inline void _horizontal_stencil_block(
     const uint32_t dst_g    // dst index for output
 ) {
     // Register allocations
-    const auto& f_e_0 = p_sfpu::LREG0;
-    const auto& f_o_0 = p_sfpu::LREG1;
-    const auto& f_e_1 = p_sfpu::LREG2;
-    const auto& f_o_1 = p_sfpu::LREG3;
+    auto f_e_0 = p_sfpu::LREG0;
+    auto f_o_0 = p_sfpu::LREG1;
+    auto f_e_1 = p_sfpu::LREG2;
+    auto f_o_1 = p_sfpu::LREG3;
     const auto& g_e = p_sfpu::LREG4;
     const auto& g_o = p_sfpu::LREG5;
     const auto& tmp = p_sfpu::LREG6;
@@ -57,6 +57,18 @@ inline void _horizontal_stencil_block(
     // Zero the output accumulators
     TTI_SFPMOV(0, p_sfpu::LCONST_0, g_e, 0);  // g_e = 0
     TTI_SFPMOV(0, p_sfpu::LCONST_0, g_o, 0);  // g_o = 0
+
+#pragma unroll 17
+    for (uint8_t j = 0; j < 17-K; j++) {
+        _horizontal_rotate(f_o_0, f_o_1);
+        auto tmp = f_e_0;
+        f_e_0 = f_o_0;
+        f_o_0 = tmp;
+
+        tmp = f_e_1;
+        f_e_1 = f_o_1;
+        f_o_1 = tmp;
+    }
 
 #pragma unroll 17
     for (uint8_t j = 0; j < K; j++) {
