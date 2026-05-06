@@ -1,0 +1,794 @@
+2026-05-06 16:10:24.867 | info     |             UMD | Established firmware bundle version: 19.6.0 (topology_discovery.cpp:369)
+2026-05-06 16:10:24.867 | info     |             UMD | Firmware bundle version 19.6.0 on the system is newer than the latest fully tested version 19.4.0 for wormhole_b0 architecture. Newest features may not be supported. (topology_discovery.cpp:395)
+2026-05-06 16:10:24.873 | info     |          Device | Opening user mode device driver (tt_cluster.cpp:223)
+2026-05-06 16:10:24.875 | info     |             UMD | Established firmware bundle version: 19.6.0 (topology_discovery.cpp:369)
+2026-05-06 16:10:24.875 | info     |             UMD | Firmware bundle version 19.6.0 on the system is newer than the latest fully tested version 19.4.0 for wormhole_b0 architecture. Newest features may not be supported. (topology_discovery.cpp:395)
+2026-05-06 16:10:24.889 | info     |             UMD | Established firmware bundle version: 19.6.0 (topology_discovery.cpp:369)
+2026-05-06 16:10:24.889 | info     |             UMD | Firmware bundle version 19.6.0 on the system is newer than the latest fully tested version 19.4.0 for wormhole_b0 architecture. Newest features may not be supported. (topology_discovery.cpp:395)
+2026-05-06 16:10:24.901 | info     |             UMD | Harvesting masks for chip 0 tensix: 0x201 dram: 0x0 eth: 0x0 pcie: 0x0 l2cpu: 0x0 (cluster.cpp:338)
+2026-05-06 16:10:24.923 | info     |             UMD | Harvesting masks for chip 1 tensix: 0x280 dram: 0x0 eth: 0x0 pcie: 0x0 l2cpu: 0x0 (cluster.cpp:338)
+2026-05-06 16:10:24.932 | info     |             UMD | Opening local chip ids/PCIe ids: {0}/[0] and remote chip ids {1} (cluster.cpp:185)
+2026-05-06 16:10:24.932 | info     |             UMD | IOMMU: disabled (cluster.cpp:161)
+2026-05-06 16:10:24.932 | info     |             UMD | KMD version: 2.5.0 (cluster.cpp:164)
+2026-05-06 16:10:24.933 | info     |             UMD | Starting devices in cluster (cluster.cpp:964)
+2026-05-06 16:10:24.933 | info     |             UMD | Mapped hugepage 0x200000000 to NOC address 0x800000000 (silicon_sysmem_manager.cpp:207)
+2026-05-06 16:10:24.934 | info     |             UMD | Mapped hugepage 0x1c0000000 to NOC address 0x840000000 (silicon_sysmem_manager.cpp:207)
+2026-05-06 16:10:24.953 | info     |     Distributed | Using auto discovery to generate mesh graph. (metal_context.cpp:863)
+2026-05-06 16:10:24.953 | info     |     Distributed | Constructing control plane using auto-discovery (no mesh graph descriptor). (metal_context.cpp:840)
+2026-05-06 16:10:24.953 | info     |          Fabric | TopologyMapper mapping start (mesh=0): n_log=2, n_phys=2, log_deg_hist={1:2}, phys_deg_hist={1:2} (topology_mapper_utils.cpp:171)
+2026-05-06 16:10:24.953 | info     |          Fabric | Fast-path path-graph mapping succeeded for mesh 0 (topology_mapper_utils.cpp:401)
+2026-05-06 16:10:24.953 | info     |          Fabric | TopologyMapper mapping start (mesh=0): n_log=2, n_phys=2, log_deg_hist={1:2}, phys_deg_hist={1:2} (topology_mapper_utils.cpp:171)
+2026-05-06 16:10:24.953 | info     |          Fabric | Fast-path path-graph mapping succeeded for mesh 0 (topology_mapper_utils.cpp:401)
+2026-05-06 16:10:24.982 | info     |           Metal | While initializing device 0, active ethernet dispatch core (x=21,y=17) detected as still running, issuing exit signal. (metal_context.cpp:902)
+2026-05-06 16:10:24.982 | info     |           Metal | While initializing device 0, active ethernet dispatch core (x=18,y=17) detected as still running, issuing exit signal. (metal_context.cpp:902)
+2026-05-06 16:10:24.982 | info     |           Metal | While initializing device 0, active ethernet dispatch core (x=25,y=17) detected as still running, issuing exit signal. (metal_context.cpp:902)
+2026-05-06 16:10:24.982 | critical |          Always | TT_FATAL: Read unexpected run_mailbox value from core (x=25,y=17) (assert.hpp:104)
+2026-05-06 16:10:24.983 | warning  |          Always | Detected dispatch kernels still running but failed to complete an early exit. This may happen from time to time following a reset, continuing to FW initialization... (metal_context.cpp:936)
+2026-05-06 16:10:24.985 | info     |           Metal | While initializing device 1, active ethernet dispatch core (x=18,y=16) detected as still running, issuing exit signal. (metal_context.cpp:902)
+2026-05-06 16:10:24.986 | info     |           Metal | While initializing device 1, active ethernet dispatch core (x=25,y=16) detected as still running, issuing exit signal. (metal_context.cpp:902)
+2026-05-06 16:10:24.986 | critical |          Always | TT_FATAL: Read unexpected run_mailbox value from core (x=25,y=16) (assert.hpp:104)
+2026-05-06 16:10:24.986 | warning  |          Always | Detected dispatch kernels still running but failed to complete an early exit. This may happen from time to time following a reset, continuing to FW initialization... (metal_context.cpp:936)
+2026-05-06 16:10:25.325 | error    |    BuildKernels | ncrisc compile failure -- cmd: cd /root/.cache/tt-metal-cache/f87c34a93e/11358605694596585868/kernels/pad_split_1d_reader/16754480021006889933/ncrisc/ && /opt/tenstorrent/sfpi/compiler/bin/riscv-tt-elf-g++ -O2 -std=c++17 -flto=auto -ffast-math -fno-exceptions -g -MMD -fno-use-cxa-atexit -Wall -Werror -Wno-unknown-pragmas -Wno-deprecated-declarations -Wno-error=multistatement-macros -Wno-error=parentheses -Wno-error=unused-but-set-variable -Wno-unused-variable -Wno-unused-function -mcpu=tt-wh -fno-tree-loop-distribute-patterns -I. -I.. -I/root/tt-wavelet/tt-metal/ -I/root/tt-wavelet/tt-metal/ttnn -I/root/tt-wavelet/tt-metal/ttnn/cpp -I/root/tt-wavelet/tt-metal/tt_metal -I/root/tt-wavelet/tt-metal/tt_metal/include -I/root/tt-wavelet/tt-metal/tt_metal/hw/inc -I/root/tt-wavelet/tt-metal/tt_metal/hostdevcommon/api -I/root/tt-wavelet/tt-metal/tt_metal/hw/inc/debug -I/root/tt-wavelet/tt-metal/tt_metal/api/ -I/root/tt-wavelet/tt-metal/tt_metal/hw/ckernels/wormhole_b0/metal/common -I/root/tt-wavelet/tt-metal/tt_metal/hw/ckernels/wormhole_b0/metal/llk_io -I/root/tt-wavelet/tt-metal/tt_metal/hw/inc/internal/tt-1xx -I/root/tt-wavelet/tt-metal/tt_metal/hw/inc/internal/tt-1xx/wormhole -I/root/tt-wavelet/tt-metal/tt_metal/hw/inc/internal/tt-1xx/wormhole/wormhole_b0_defines -I/root/tt-wavelet/tt-metal/tt_metal/hw/inc/internal/tt-1xx/wormhole/noc -I/root/tt-wavelet/tt-metal/tt_metal/third_party/tt_llk/tt_llk_wormhole_b0/common/inc -I/root/tt-wavelet/tt-metal/tt_metal/third_party/tt_llk/tt_llk_wormhole_b0/llk_lib -I/root/tt-wavelet/tt-metal/tt_metal/hw/firmware/src/tt-1xx -I/root/tt-wavelet/tt-wavelet/kernels/dataflow -c -o ncrisck.o /root/tt-wavelet/tt-metal/tt_metal/hw/firmware/src/tt-1xx/ncrisck.cc -DIS_NOT_POW2_NUM_DRAM_BANKS=1 -DIS_NOT_POW2_NUM_L1_BANKS=1 -DNUM_DRAM_BANKS=12 -DNUM_L1_BANKS=56 -DPCIE_NOC_X=0 -DPCIE_NOC_Y=3 -DTENSIX_FIRMWARE -DLOCAL_MEM_EN=0 -DROUTING_FW_ENABLED -DPROCESSOR_INDEX=1 -DCOMPILE_FOR_NCRISC -DARCH_WORMHOLE -DDISPATCH_MESSAGE_ADDR=4290183304 -DKERNEL_BUILD -DNOC_INDEX='0' -DNOC_MODE='0' -DKERNEL_COMPILE_TIME_ARGS=0,1,128,2,32,2  (build.cpp:51)
+2026-05-06 16:10:25.325 | critical |          Always | TT_THROW: ncrisc build failed. Log: In file included from /root/tt-wavelet/tt-metal/tt_metal/hw/inc/internal/firmware_common.h:12,
+                 from /root/tt-wavelet/tt-metal/tt_metal/hw/firmware/src/tt-1xx/ncrisck.cc:17:
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/compile_time_args.h: In instantiation of 'constexpr uint32_t get_ct_arg() [with long unsigned int Idx = 6; uint32_t = long unsigned int]':
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h:23:62:   required from 'constexpr const Flags<tensor_accessor::ArgConfig> TensorAccessorArgs<6>::args_config'
+   62 | #define get_compile_time_arg_val(arg_idx) get_ct_arg<arg_idx>()
+      |                                           ~~~~~~~~~~~~~~~~~~~^~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h:25:40:   required from 'constexpr const bool TensorAccessorArgs<6>::is_sharded'
+   25 |     static constexpr bool is_sharded = args_config.test(tensor_accessor::ArgConfig::Sharded);
+      |                                        ^~~~~~~~~~~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h:36:10:   required from 'struct TensorAccessorArgs<6>'
+   36 |         !is_sharded || !rank_is_crta || (rank_is_crta && tensor_shape_is_crta && shard_shape_is_crta),
+      |          ^~~~~~~~~~
+/root/tt-wavelet/tt-wavelet/kernels/dataflow/pad_split_1d_reader.cpp:18:53:   required from here
+   18 |     constexpr auto src_args = TensorAccessorArgs<6>();
+      |                                                     ^
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/compile_time_args.h:25:23: error: static assertion failed: Index out of range
+   25 |     static_assert(Idx < kernel_compile_time_args.size(), "Index out of range");
+      |                   ~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/compile_time_args.h:25:23: note: the comparison reduces to '(6 < 6)'
+In file included from /root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor.h:8,
+                 from /root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/dataflow/dataflow_api.h:29,
+                 from /root/tt-wavelet/tt-metal/tt_metal/hw/inc/internal/firmware_common.h:21:
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h: In instantiation of 'struct TensorAccessorArgs<6>':
+/root/tt-wavelet/tt-wavelet/kernels/dataflow/pad_split_1d_reader.cpp:18:53:   required from here
+   18 |     constexpr auto src_args = TensorAccessorArgs<6>();
+      |                                                     ^
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h:36:38: error: non-constant condition for static assertion
+   36 |         !is_sharded || !rank_is_crta || (rank_is_crta && tensor_shape_is_crta && shard_shape_is_crta),
+      |         ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h:39:43: error: non-constant condition for static assertion
+   39 |         !is_sharded || !num_banks_is_crta || (num_banks_is_crta && bank_coords_is_crta),
+      |         ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h: In instantiation of 'constexpr const uint32_t TensorAccessorArgs<6>::RankCT':
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h:64:50:   required from 'struct TensorAccessorArgs<6>'
+   64 |     static_assert(!is_sharded || rank_is_crta || RankCT > 0, "Rank must be greater than 0!");
+      |                                                  ^~~~~~
+/root/tt-wavelet/tt-wavelet/kernels/dataflow/pad_split_1d_reader.cpp:18:53:   required from here
+   18 |     constexpr auto src_args = TensorAccessorArgs<6>();
+      |                                                     ^
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/compile_time_args.h:62:62: error: inconsistent types 'int' and 'long unsigned int' deduced for lambda return type
+   62 | #define get_compile_time_arg_val(arg_idx) get_ct_arg<arg_idx>()
+      |                                           ~~~~~~~~~~~~~~~~~~~^~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h:50:20: note: in expansion of macro 'get_compile_time_arg_val'
+   50 |             return get_compile_time_arg_val(RankCTAOffset);
+      |                    ^~~~~~~~~~~~~~~~~~~~~~~~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/compile_time_args.h: In instantiation of 'constexpr uint32_t get_ct_arg() [with long unsigned int Idx = 7; uint32_t = long unsigned int]':
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h:50:20:   required from 'constexpr const uint32_t TensorAccessorArgs<6>::RankCT'
+   62 | #define get_compile_time_arg_val(arg_idx) get_ct_arg<arg_idx>()
+      |                                           ~~~~~~~~~~~~~~~~~~~^~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h:64:50:   required from 'struct TensorAccessorArgs<6>'
+   64 |     static_assert(!is_sharded || rank_is_crta || RankCT > 0, "Rank must be greater than 0!");
+      |                                                  ^~~~~~
+/root/tt-wavelet/tt-wavelet/kernels/dataflow/pad_split_1d_reader.cpp:18:53:   required from here
+   18 |     constexpr auto src_args = TensorAccessorArgs<6>();
+      |                                                     ^
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/compile_time_args.h:25:23: error: static assertion failed: Index out of range
+   25 |     static_assert(Idx < kernel_compile_time_args.size(), "Index out of range");
+      |                   ~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/compile_time_args.h:25:23: note: the comparison reduces to '(7 < 6)'
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h: In instantiation of 'constexpr const uint32_t TensorAccessorArgs<6>::RankCT':
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h:64:50:   required from 'struct TensorAccessorArgs<6>'
+   64 |     static_assert(!is_sharded || rank_is_crta || RankCT > 0, "Rank must be greater than 0!");
+      |                                                  ^~~~~~
+/root/tt-wavelet/tt-wavelet/kernels/dataflow/pad_split_1d_reader.cpp:18:53:   required from here
+   18 |     constexpr auto src_args = TensorAccessorArgs<6>();
+      |                                                     ^
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h:52:6: error: 'TensorAccessorArgs<6>::<lambda()>' called in a constant expression
+   46 |     static constexpr uint32_t RankCT = [] {
+      |                                        ~~~~
+   47 |         if constexpr (!is_sharded || rank_is_crta) {
+      |         ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+   48 |             return 0;
+      |             ~~~~~~~~~
+   49 |         } else {
+      |         ~~~~~~~~
+   50 |             return get_compile_time_arg_val(RankCTAOffset);
+      |             ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+   51 |         }
+      |         ~
+   52 |     }();
+      |     ~^~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h:46:40: note: 'TensorAccessorArgs<6>::<lambda()>' is not usable as a 'constexpr' function because:
+   46 |     static constexpr uint32_t RankCT = [] {
+      |                                        ^
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h: In instantiation of 'struct TensorAccessorArgs<6>':
+/root/tt-wavelet/tt-wavelet/kernels/dataflow/pad_split_1d_reader.cpp:18:53:   required from here
+   18 |     constexpr auto src_args = TensorAccessorArgs<6>();
+      |                                                     ^
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h:64:47: error: non-constant condition for static assertion
+   64 |     static_assert(!is_sharded || rank_is_crta || RankCT > 0, "Rank must be greater than 0!");
+      |                   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h: In instantiation of 'constexpr const uint32_t TensorAccessorArgs<6>::NumBanksCT':
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h:65:55:   required from 'struct TensorAccessorArgs<6>'
+   65 |     static_assert(!is_sharded || num_banks_is_crta || NumBanksCT > 0, "Number of banks must be greater than 0!");
+      |                                                       ^~~~~~~~~~
+/root/tt-wavelet/tt-wavelet/kernels/dataflow/pad_split_1d_reader.cpp:18:53:   required from here
+   18 |     constexpr auto src_args = TensorAccessorArgs<6>();
+      |                                                     ^
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/compile_time_args.h:62:62: error: no matching function for call to 'get_ct_arg<TensorAccessorArgs<6>::NumBanksCTAOffset>()'
+   62 | #define get_compile_time_arg_val(arg_idx) get_ct_arg<arg_idx>()
+      |                                           ~~~~~~~~~~~~~~~~~~~^~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h:58:20: note: in expansion of macro 'get_compile_time_arg_val'
+   58 |             return get_compile_time_arg_val(NumBanksCTAOffset);
+      |                    ^~~~~~~~~~~~~~~~~~~~~~~~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/compile_time_args.h:62:62: note: there is 1 candidate
+   62 | #define get_compile_time_arg_val(arg_idx) get_ct_arg<arg_idx>()
+      |                                           ~~~~~~~~~~~~~~~~~~~^~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h:58:20: note: in expansion of macro 'get_compile_time_arg_val'
+   58 |             return get_compile_time_arg_val(NumBanksCTAOffset);
+      |                    ^~~~~~~~~~~~~~~~~~~~~~~~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/compile_time_args.h:24:20: note: candidate 1: 'template<long unsigned int Idx> constexpr uint32_t get_ct_arg()'
+   24 | constexpr uint32_t get_ct_arg() {
+      |                    ^~~~~~~~~~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/compile_time_args.h:24:20: note: template argument deduction/substitution failed:
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h:60:6: error: 'TensorAccessorArgs<6>::<lambda()>' called in a constant expression
+   54 |     static constexpr uint32_t NumBanksCT = [] {
+      |                                            ~~~~
+   55 |         if constexpr (!is_sharded || num_banks_is_crta) {
+      |         ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+   56 |             return 0;
+      |             ~~~~~~~~~
+   57 |         } else {
+      |         ~~~~~~~~
+   58 |             return get_compile_time_arg_val(NumBanksCTAOffset);
+      |             ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+   59 |         }
+      |         ~
+   60 |     }();
+      |     ~^~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h:54:44: note: 'TensorAccessorArgs<6>::<lambda()>' is not usable as a 'constexpr' function because:
+   54 |     static constexpr uint32_t NumBanksCT = [] {
+      |                                            ^
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h: In instantiation of 'struct TensorAccessorArgs<6>':
+/root/tt-wavelet/tt-wavelet/kernels/dataflow/pad_split_1d_reader.cpp:18:53:   required from here
+   18 |     constexpr auto src_args = TensorAccessorArgs<6>();
+      |                                                     ^
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h:65:52: error: non-constant condition for static assertion
+   65 |     static_assert(!is_sharded || num_banks_is_crta || NumBanksCT > 0, "Number of banks must be greater than 0!");
+      |                   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~
+In file included from ../kernel_includes.hpp:1,
+                 from /root/tt-wavelet/tt-metal/tt_metal/hw/firmware/src/tt-1xx/ncrisck.cc:22:
+/root/tt-wavelet/tt-wavelet/kernels/dataflow/pad_split_1d_reader.cpp: In function 'void kernel_main()':
+/root/tt-wavelet/tt-wavelet/kernels/dataflow/pad_split_1d_reader.cpp:19:69: error: class template argument deduction failed:
+   19 |     const auto src = TensorAccessor(src_args, src_addr, stick_nbytes);
+      |                                                                     ^
+/root/tt-wavelet/tt-wavelet/kernels/dataflow/pad_split_1d_reader.cpp:19:69: error: no matching function for call to 'TensorAccessor(const TensorAccessorArgs<6>&, const uint32_t&, const uint32_t&)'
+/root/tt-wavelet/tt-wavelet/kernels/dataflow/pad_split_1d_reader.cpp:19:69: note: there are 6 candidates
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor.h:76:5: note: candidate 1: 'template<class DSpecT, unsigned int CTA_OFFSET, unsigned int CRTA_OFFSET> TensorAccessor(const TensorAccessorArgs<CTA_OFFSET, CRTA_OFFSET>&, size_t, uint32_t) -> TensorAccessor<DSpecT>'
+   76 |     TensorAccessor(
+      |     ^~~~~~~~~~~~~~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor.h:76:5: note: template argument deduction/substitution failed:
+/root/tt-wavelet/tt-wavelet/kernels/dataflow/pad_split_1d_reader.cpp:19:69: note:   couldn't deduce template parameter 'DSpecT'
+   19 |     const auto src = TensorAccessor(src_args, src_addr, stick_nbytes);
+      |                                                                     ^
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor.h:72:5: note: candidate 2: 'template<class DSpecT, class DSpec_, typename std::enable_if<DSpec_::is_static, int>::type <anonymous> > TensorAccessor(size_t, uint32_t) -> TensorAccessor<DSpecT>'
+   72 |     TensorAccessor(const size_t bank_base_address_in = 0, uint32_t page_size_in = 0) :
+      |     ^~~~~~~~~~~~~~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor.h:72:5: note: candidate expects 2 arguments, 3 provided
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor.h:67:24: note: candidate 3: 'template<class DSpecT, class DSpec_, typename std::enable_if<is_same_v<typename std::decay<_Tp2>::type, DSpecT>, int>::type <anonymous> > TensorAccessor(DSpec_&&, size_t, uint32_t) -> TensorAccessor<DSpecT>'
+   67 |     constexpr explicit TensorAccessor(
+      |                        ^~~~~~~~~~~~~~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor.h:67:24: note: template argument deduction/substitution failed:
+/root/tt-wavelet/tt-wavelet/kernels/dataflow/pad_split_1d_reader.cpp:19:69: note:   couldn't deduce template parameter 'DSpecT'
+   19 |     const auto src = TensorAccessor(src_args, src_addr, stick_nbytes);
+      |                                                                     ^
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor.h:53:8: note: candidate 4: 'template<class DSpecT> TensorAccessor(TensorAccessor<DSpecT>) -> TensorAccessor<DSpecT>'
+   53 | struct TensorAccessor {
+      |        ^~~~~~~~~~~~~~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor.h:53:8: note: candidate expects 1 argument, 3 provided
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor.h:412:1: note: candidate 5: 'template<long unsigned int RankCT, long unsigned int NumBanksCT, class TensorShapeWrapper, class ShardShapeWrapper, class BankCoordsWrapper, bool IsInterleaved, bool IsDram> TensorAccessor(tensor_accessor::DistributionSpec<RankCT, NumBanksCT, TensorShapeWrapper, ShardShapeWrapper, BankCoordsWrapper, IsInterleaved, IsDram>, size_t, uint32_t) -> TensorAccessor<tensor_accessor::DistributionSpec<RankCT, NumBanksCT, TensorShapeWrapper, ShardShapeWrapper, BankCoordsWrapper, IsInterleaved, IsDram> >'
+  412 | TensorAccessor(
+      | ^~~~~~~~~~~~~~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor.h:412:1: note: template argument deduction/substitution failed:
+/root/tt-wavelet/tt-wavelet/kernels/dataflow/pad_split_1d_reader.cpp:19:69: note:   'TensorAccessorArgs<6>' is not derived from 'tensor_accessor::DistributionSpec<RankCT, NumBanksCT, TensorShapeWrapper, ShardShapeWrapper, BankCoordsWrapper, IsInterleaved, IsDram>'
+   19 |     const auto src = TensorAccessor(src_args, src_addr, stick_nbytes);
+      |                                                                     ^
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor.h:382:1: note: candidate 6: 'template<unsigned int CTA_OFFSET, unsigned int CRTA_OFFSET> TensorAccessor(const TensorAccessorArgs<CTA_OFFSET, CRTA_OFFSET>&, size_t, uint32_t) -> TensorAccessor<tensor_accessor::DistributionSpec<TensorAccessorArgs<CTA_OFFSET, CRTA_OFFSET>::RankCT, TensorAccessorArgs<CTA_OFFSET, CRTA_OFFSET>::NumBanksCT, typename tensor_accessor::ArrayWrapperTypeSelectorU32<(! TensorAccessorArgs<CTA_OFFSET, CRTA_OFFSET>::tensor_shape_is_crta), TensorAccessorArgs<CTA_OFFSET, CRTA_OFFSET>::TensorShapeCTAOffset, TensorAccessorArgs<CTA_OFFSET, CRTA_OFFSET>::RankCT>::type, typename tensor_accessor::ArrayWrapperTypeSelectorU32<(! TensorAccessorArgs<CTA_OFFSET, CRTA_OFFSET>::shard_shape_is_crta), TensorAccessorArgs<CTA_OFFSET, CRTA_OFFSET>::ShardShapeCTAOffset, TensorAccessorArgs<CTA_OFFSET, CRTA_OFFSET>::RankCT>::type, typename tensor_accessor::ArrayWrapperTypeSelectorPackedU16<(! TensorAccessorArgs<CTA_OFFSET, CRTA_OFFSET>::bank_coords_is_crta), TensorAccessorArgs<CTA_OFFSET, CRTA_OFFSET>::BankCoordsCTAOffset, TensorAccessorArgs<CTA_OFFSET, CRTA_OFFSET>::NumBanksCT>::type, (! TensorAccessorArgs<CTA_OFFSET, CRTA_OFFSET>::is_sharded), TensorAccessorArgs<CTA_OFFSET, CRTA_OFFSET>::is_dram> >'
+  382 | TensorAccessor(const TensorAccessorArgs<CTA_OFFSET, CRTA_OFFSET>& args, size_t, uint32_t)
+      | ^~~~~~~~~~~~~~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor.h:382:1: note: template argument deduction/substitution failed:
+ (assert.hpp:104)
+2026-05-06 16:10:25.326 | critical |          Always | TT_THROW: Failed to generate binaries for pad_split_1d_reader TT_THROW @ /root/tt-wavelet/tt-metal/tt_metal/jit_build/build.cpp:55: tt::exception
+info:
+ncrisc build failed. Log: In file included from /root/tt-wavelet/tt-metal/tt_metal/hw/inc/internal/firmware_common.h:12,
+                 from /root/tt-wavelet/tt-metal/tt_metal/hw/firmware/src/tt-1xx/ncrisck.cc:17:
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/compile_time_args.h: In instantiation of 'constexpr uint32_t get_ct_arg() [with long unsigned int Idx = 6; uint32_t = long unsigned int]':
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h:23:62:   required from 'constexpr const Flags<tensor_accessor::ArgConfig> TensorAccessorArgs<6>::args_config'
+   62 | #define get_compile_time_arg_val(arg_idx) get_ct_arg<arg_idx>()
+      |                                           ~~~~~~~~~~~~~~~~~~~^~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h:25:40:   required from 'constexpr const bool TensorAccessorArgs<6>::is_sharded'
+   25 |     static constexpr bool is_sharded = args_config.test(tensor_accessor::ArgConfig::Sharded);
+      |                                        ^~~~~~~~~~~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h:36:10:   required from 'struct TensorAccessorArgs<6>'
+   36 |         !is_sharded || !rank_is_crta || (rank_is_crta && tensor_shape_is_crta && shard_shape_is_crta),
+      |          ^~~~~~~~~~
+/root/tt-wavelet/tt-wavelet/kernels/dataflow/pad_split_1d_reader.cpp:18:53:   required from here
+   18 |     constexpr auto src_args = TensorAccessorArgs<6>();
+      |                                                     ^
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/compile_time_args.h:25:23: error: static assertion failed: Index out of range
+   25 |     static_assert(Idx < kernel_compile_time_args.size(), "Index out of range");
+      |                   ~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/compile_time_args.h:25:23: note: the comparison reduces to '(6 < 6)'
+In file included from /root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor.h:8,
+                 from /root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/dataflow/dataflow_api.h:29,
+                 from /root/tt-wavelet/tt-metal/tt_metal/hw/inc/internal/firmware_common.h:21:
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h: In instantiation of 'struct TensorAccessorArgs<6>':
+/root/tt-wavelet/tt-wavelet/kernels/dataflow/pad_split_1d_reader.cpp:18:53:   required from here
+   18 |     constexpr auto src_args = TensorAccessorArgs<6>();
+      |                                                     ^
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h:36:38: error: non-constant condition for static assertion
+   36 |         !is_sharded || !rank_is_crta || (rank_is_crta && tensor_shape_is_crta && shard_shape_is_crta),
+      |         ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h:39:43: error: non-constant condition for static assertion
+   39 |         !is_sharded || !num_banks_is_crta || (num_banks_is_crta && bank_coords_is_crta),
+      |         ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h: In instantiation of 'constexpr const uint32_t TensorAccessorArgs<6>::RankCT':
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h:64:50:   required from 'struct TensorAccessorArgs<6>'
+   64 |     static_assert(!is_sharded || rank_is_crta || RankCT > 0, "Rank must be greater than 0!");
+      |                                                  ^~~~~~
+/root/tt-wavelet/tt-wavelet/kernels/dataflow/pad_split_1d_reader.cpp:18:53:   required from here
+   18 |     constexpr auto src_args = TensorAccessorArgs<6>();
+      |                                                     ^
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/compile_time_args.h:62:62: error: inconsistent types 'int' and 'long unsigned int' deduced for lambda return type
+   62 | #define get_compile_time_arg_val(arg_idx) get_ct_arg<arg_idx>()
+      |                                           ~~~~~~~~~~~~~~~~~~~^~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h:50:20: note: in expansion of macro 'get_compile_time_arg_val'
+   50 |             return get_compile_time_arg_val(RankCTAOffset);
+      |                    ^~~~~~~~~~~~~~~~~~~~~~~~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/compile_time_args.h: In instantiation of 'constexpr uint32_t get_ct_arg() [with long unsigned int Idx = 7; uint32_t = long unsigned int]':
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h:50:20:   required from 'constexpr const uint32_t TensorAccessorArgs<6>::RankCT'
+   62 | #define get_compile_time_arg_val(arg_idx) get_ct_arg<arg_idx>()
+      |                                           ~~~~~~~~~~~~~~~~~~~^~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h:64:50:   required from 'struct TensorAccessorArgs<6>'
+   64 |     static_assert(!is_sharded || rank_is_crta || RankCT > 0, "Rank must be greater than 0!");
+      |                                                  ^~~~~~
+/root/tt-wavelet/tt-wavelet/kernels/dataflow/pad_split_1d_reader.cpp:18:53:   required from here
+   18 |     constexpr auto src_args = TensorAccessorArgs<6>();
+      |                                                     ^
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/compile_time_args.h:25:23: error: static assertion failed: Index out of range
+   25 |     static_assert(Idx < kernel_compile_time_args.size(), "Index out of range");
+      |                   ~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/compile_time_args.h:25:23: note: the comparison reduces to '(7 < 6)'
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h: In instantiation of 'constexpr const uint32_t TensorAccessorArgs<6>::RankCT':
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h:64:50:   required from 'struct TensorAccessorArgs<6>'
+   64 |     static_assert(!is_sharded || rank_is_crta || RankCT > 0, "Rank must be greater than 0!");
+      |                                                  ^~~~~~
+/root/tt-wavelet/tt-wavelet/kernels/dataflow/pad_split_1d_reader.cpp:18:53:   required from here
+   18 |     constexpr auto src_args = TensorAccessorArgs<6>();
+      |                                                     ^
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h:52:6: error: 'TensorAccessorArgs<6>::<lambda()>' called in a constant expression
+   46 |     static constexpr uint32_t RankCT = [] {
+      |                                        ~~~~
+   47 |         if constexpr (!is_sharded || rank_is_crta) {
+      |         ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+   48 |             return 0;
+      |             ~~~~~~~~~
+   49 |         } else {
+      |         ~~~~~~~~
+   50 |             return get_compile_time_arg_val(RankCTAOffset);
+      |             ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+   51 |         }
+      |         ~
+   52 |     }();
+      |     ~^~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h:46:40: note: 'TensorAccessorArgs<6>::<lambda()>' is not usable as a 'constexpr' function because:
+   46 |     static constexpr uint32_t RankCT = [] {
+      |                                        ^
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h: In instantiation of 'struct TensorAccessorArgs<6>':
+/root/tt-wavelet/tt-wavelet/kernels/dataflow/pad_split_1d_reader.cpp:18:53:   required from here
+   18 |     constexpr auto src_args = TensorAccessorArgs<6>();
+      |                                                     ^
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h:64:47: error: non-constant condition for static assertion
+   64 |     static_assert(!is_sharded || rank_is_crta || RankCT > 0, "Rank must be greater than 0!");
+      |                   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h: In instantiation of 'constexpr const uint32_t TensorAccessorArgs<6>::NumBanksCT':
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h:65:55:   required from 'struct TensorAccessorArgs<6>'
+   65 |     static_assert(!is_sharded || num_banks_is_crta || NumBanksCT > 0, "Number of banks must be greater than 0!");
+      |                                                       ^~~~~~~~~~
+/root/tt-wavelet/tt-wavelet/kernels/dataflow/pad_split_1d_reader.cpp:18:53:   required from here
+   18 |     constexpr auto src_args = TensorAccessorArgs<6>();
+      |                                                     ^
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/compile_time_args.h:62:62: error: no matching function for call to 'get_ct_arg<TensorAccessorArgs<6>::NumBanksCTAOffset>()'
+   62 | #define get_compile_time_arg_val(arg_idx) get_ct_arg<arg_idx>()
+      |                                           ~~~~~~~~~~~~~~~~~~~^~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h:58:20: note: in expansion of macro 'get_compile_time_arg_val'
+   58 |             return get_compile_time_arg_val(NumBanksCTAOffset);
+      |                    ^~~~~~~~~~~~~~~~~~~~~~~~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/compile_time_args.h:62:62: note: there is 1 candidate
+   62 | #define get_compile_time_arg_val(arg_idx) get_ct_arg<arg_idx>()
+      |                                           ~~~~~~~~~~~~~~~~~~~^~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h:58:20: note: in expansion of macro 'get_compile_time_arg_val'
+   58 |             return get_compile_time_arg_val(NumBanksCTAOffset);
+      |                    ^~~~~~~~~~~~~~~~~~~~~~~~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/compile_time_args.h:24:20: note: candidate 1: 'template<long unsigned int Idx> constexpr uint32_t get_ct_arg()'
+   24 | constexpr uint32_t get_ct_arg() {
+      |                    ^~~~~~~~~~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/compile_time_args.h:24:20: note: template argument deduction/substitution failed:
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h:60:6: error: 'TensorAccessorArgs<6>::<lambda()>' called in a constant expression
+   54 |     static constexpr uint32_t NumBanksCT = [] {
+      |                                            ~~~~
+   55 |         if constexpr (!is_sharded || num_banks_is_crta) {
+      |         ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+   56 |             return 0;
+      |             ~~~~~~~~~
+   57 |         } else {
+      |         ~~~~~~~~
+   58 |             return get_compile_time_arg_val(NumBanksCTAOffset);
+      |             ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+   59 |         }
+      |         ~
+   60 |     }();
+      |     ~^~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h:54:44: note: 'TensorAccessorArgs<6>::<lambda()>' is not usable as a 'constexpr' function because:
+   54 |     static constexpr uint32_t NumBanksCT = [] {
+      |                                            ^
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h: In instantiation of 'struct TensorAccessorArgs<6>':
+/root/tt-wavelet/tt-wavelet/kernels/dataflow/pad_split_1d_reader.cpp:18:53:   required from here
+   18 |     constexpr auto src_args = TensorAccessorArgs<6>();
+      |                                                     ^
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h:65:52: error: non-constant condition for static assertion
+   65 |     static_assert(!is_sharded || num_banks_is_crta || NumBanksCT > 0, "Number of banks must be greater than 0!");
+      |                   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~
+In file included from ../kernel_includes.hpp:1,
+                 from /root/tt-wavelet/tt-metal/tt_metal/hw/firmware/src/tt-1xx/ncrisck.cc:22:
+/root/tt-wavelet/tt-wavelet/kernels/dataflow/pad_split_1d_reader.cpp: In function 'void kernel_main()':
+/root/tt-wavelet/tt-wavelet/kernels/dataflow/pad_split_1d_reader.cpp:19:69: error: class template argument deduction failed:
+   19 |     const auto src = TensorAccessor(src_args, src_addr, stick_nbytes);
+      |                                                                     ^
+/root/tt-wavelet/tt-wavelet/kernels/dataflow/pad_split_1d_reader.cpp:19:69: error: no matching function for call to 'TensorAccessor(const TensorAccessorArgs<6>&, const uint32_t&, const uint32_t&)'
+/root/tt-wavelet/tt-wavelet/kernels/dataflow/pad_split_1d_reader.cpp:19:69: note: there are 6 candidates
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor.h:76:5: note: candidate 1: 'template<class DSpecT, unsigned int CTA_OFFSET, unsigned int CRTA_OFFSET> TensorAccessor(const TensorAccessorArgs<CTA_OFFSET, CRTA_OFFSET>&, size_t, uint32_t) -> TensorAccessor<DSpecT>'
+   76 |     TensorAccessor(
+      |     ^~~~~~~~~~~~~~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor.h:76:5: note: template argument deduction/substitution failed:
+/root/tt-wavelet/tt-wavelet/kernels/dataflow/pad_split_1d_reader.cpp:19:69: note:   couldn't deduce template parameter 'DSpecT'
+   19 |     const auto src = TensorAccessor(src_args, src_addr, stick_nbytes);
+      |                                                                     ^
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor.h:72:5: note: candidate 2: 'template<class DSpecT, class DSpec_, typename std::enable_if<DSpec_::is_static, int>::type <anonymous> > TensorAccessor(size_t, uint32_t) -> TensorAccessor<DSpecT>'
+   72 |     TensorAccessor(const size_t bank_base_address_in = 0, uint32_t page_size_in = 0) :
+      |     ^~~~~~~~~~~~~~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor.h:72:5: note: candidate expects 2 arguments, 3 provided
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor.h:67:24: note: candidate 3: 'template<class DSpecT, class DSpec_, typename std::enable_if<is_same_v<typename std::decay<_Tp2>::type, DSpecT>, int>::type <anonymous> > TensorAccessor(DSpec_&&, size_t, uint32_t) -> TensorAccessor<DSpecT>'
+   67 |     constexpr explicit TensorAccessor(
+      |                        ^~~~~~~~~~~~~~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor.h:67:24: note: template argument deduction/substitution failed:
+/root/tt-wavelet/tt-wavelet/kernels/dataflow/pad_split_1d_reader.cpp:19:69: note:   couldn't deduce template parameter 'DSpecT'
+   19 |     const auto src = TensorAccessor(src_args, src_addr, stick_nbytes);
+      |                                                                     ^
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor.h:53:8: note: candidate 4: 'template<class DSpecT> TensorAccessor(TensorAccessor<DSpecT>) -> TensorAccessor<DSpecT>'
+   53 | struct TensorAccessor {
+      |        ^~~~~~~~~~~~~~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor.h:53:8: note: candidate expects 1 argument, 3 provided
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor.h:412:1: note: candidate 5: 'template<long unsigned int RankCT, long unsigned int NumBanksCT, class TensorShapeWrapper, class ShardShapeWrapper, class BankCoordsWrapper, bool IsInterleaved, bool IsDram> TensorAccessor(tensor_accessor::DistributionSpec<RankCT, NumBanksCT, TensorShapeWrapper, ShardShapeWrapper, BankCoordsWrapper, IsInterleaved, IsDram>, size_t, uint32_t) -> TensorAccessor<tensor_accessor::DistributionSpec<RankCT, NumBanksCT, TensorShapeWrapper, ShardShapeWrapper, BankCoordsWrapper, IsInterleaved, IsDram> >'
+  412 | TensorAccessor(
+      | ^~~~~~~~~~~~~~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor.h:412:1: note: template argument deduction/substitution failed:
+/root/tt-wavelet/tt-wavelet/kernels/dataflow/pad_split_1d_reader.cpp:19:69: note:   'TensorAccessorArgs<6>' is not derived from 'tensor_accessor::DistributionSpec<RankCT, NumBanksCT, TensorShapeWrapper, ShardShapeWrapper, BankCoordsWrapper, IsInterleaved, IsDram>'
+   19 |     const auto src = TensorAccessor(src_args, src_addr, stick_nbytes);
+      |                                                                     ^
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor.h:382:1: note: candidate 6: 'template<unsigned int CTA_OFFSET, unsigned int CRTA_OFFSET> TensorAccessor(const TensorAccessorArgs<CTA_OFFSET, CRTA_OFFSET>&, size_t, uint32_t) -> TensorAccessor<tensor_accessor::DistributionSpec<TensorAccessorArgs<CTA_OFFSET, CRTA_OFFSET>::RankCT, TensorAccessorArgs<CTA_OFFSET, CRTA_OFFSET>::NumBanksCT, typename tensor_accessor::ArrayWrapperTypeSelectorU32<(! TensorAccessorArgs<CTA_OFFSET, CRTA_OFFSET>::tensor_shape_is_crta), TensorAccessorArgs<CTA_OFFSET, CRTA_OFFSET>::TensorShapeCTAOffset, TensorAccessorArgs<CTA_OFFSET, CRTA_OFFSET>::RankCT>::type, typename tensor_accessor::ArrayWrapperTypeSelectorU32<(! TensorAccessorArgs<CTA_OFFSET, CRTA_OFFSET>::shard_shape_is_crta), TensorAccessorArgs<CTA_OFFSET, CRTA_OFFSET>::ShardShapeCTAOffset, TensorAccessorArgs<CTA_OFFSET, CRTA_OFFSET>::RankCT>::type, typename tensor_accessor::ArrayWrapperTypeSelectorPackedU16<(! TensorAccessorArgs<CTA_OFFSET, CRTA_OFFSET>::bank_coords_is_crta), TensorAccessorArgs<CTA_OFFSET, CRTA_OFFSET>::BankCoordsCTAOffset, TensorAccessorArgs<CTA_OFFSET, CRTA_OFFSET>::NumBanksCT>::type, (! TensorAccessorArgs<CTA_OFFSET, CRTA_OFFSET>::is_sharded), TensorAccessorArgs<CTA_OFFSET, CRTA_OFFSET>::is_dram> >'
+  382 | TensorAccessor(const TensorAccessorArgs<CTA_OFFSET, CRTA_OFFSET>& args, size_t, uint32_t)
+      | ^~~~~~~~~~~~~~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor.h:382:1: note: template argument deduction/substitution failed:
+
+backtrace:
+ --- /root/tt-wavelet/build/tt-metal/tt_metal/libtt_metal.so(+0x4067a9) [0x7f06975597a9]
+ --- /root/tt-wavelet/build/tt-metal/tt_metal/libtt_metal.so(+0x5bb54f) [0x7f069770e54f]
+ --- tt::tt_metal::JitBuildState::compile_one(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&, tt::tt_metal::JitBuildSettings const*, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&) const
+ --- /root/tt-wavelet/build/tt-metal/tt_metal/libtt_metal.so(+0x5c1824) [0x7f0697714824]
+ --- /root/tt-wavelet/build/tt-metal/tt_metal/libtt_metal.so(+0x5c17c9) [0x7f06977147c9]
+ --- /root/tt-wavelet/build/tt-metal/tt_metal/libtt_metal.so(+0x363a47) [0x7f06974b6a47]
+ --- /lib/x86_64-linux-gnu/libc.so.6(+0x99ee8) [0x7f06968e2ee8]
+ --- /root/tt-wavelet/build/tt-metal/tt_metal/libtt_metal.so(+0x3639c2) [0x7f06974b69c2]
+ --- /root/tt-wavelet/build/tt-metal/tt_metal/libtt_metal.so(+0x5c1601) [0x7f0697714601]
+ --- /root/tt-wavelet/build/tt-metal/tt_metal/libtt_metal.so(+0x367c65) [0x7f06974bac65]
+ --- /root/tt-wavelet/build/tt-metal/tt_metal/libtt_metal.so(+0x366781) [0x7f06974b9781]
+ --- /root/tt-wavelet/build/tt-metal/tt_metal/libtt_metal.so(+0x365c79) [0x7f06974b8c79]
+ --- /lib/x86_64-linux-gnu/libstdc++.so.6(+0xdc253) [0x7f0696c57253]
+ --- /lib/x86_64-linux-gnu/libc.so.6(+0x94ac3) [0x7f06968ddac3]
+ --- /lib/x86_64-linux-gnu/libc.so.6(+0x1268d0) [0x7f069696f8d0]
+ (assert.hpp:104)
+2026-05-06 16:10:25.334 | error    |    BuildKernels | brisc compile failure -- cmd: cd /root/.cache/tt-metal-cache/f87c34a93e/11358605694596585868/kernels/pad_split_1d_writer/12346642091530275596/brisc/ && /opt/tenstorrent/sfpi/compiler/bin/riscv-tt-elf-g++ -O2 -std=c++17 -flto=auto -ffast-math -fno-exceptions -g -MMD -fno-use-cxa-atexit -Wall -Werror -Wno-unknown-pragmas -Wno-deprecated-declarations -Wno-error=multistatement-macros -Wno-error=parentheses -Wno-error=unused-but-set-variable -Wno-unused-variable -Wno-unused-function -mcpu=tt-wh -fno-tree-loop-distribute-patterns -I. -I.. -I/root/tt-wavelet/tt-metal/ -I/root/tt-wavelet/tt-metal/ttnn -I/root/tt-wavelet/tt-metal/ttnn/cpp -I/root/tt-wavelet/tt-metal/tt_metal -I/root/tt-wavelet/tt-metal/tt_metal/include -I/root/tt-wavelet/tt-metal/tt_metal/hw/inc -I/root/tt-wavelet/tt-metal/tt_metal/hostdevcommon/api -I/root/tt-wavelet/tt-metal/tt_metal/hw/inc/debug -I/root/tt-wavelet/tt-metal/tt_metal/api/ -I/root/tt-wavelet/tt-metal/tt_metal/hw/ckernels/wormhole_b0/metal/common -I/root/tt-wavelet/tt-metal/tt_metal/hw/ckernels/wormhole_b0/metal/llk_io -I/root/tt-wavelet/tt-metal/tt_metal/hw/inc/internal/tt-1xx -I/root/tt-wavelet/tt-metal/tt_metal/hw/inc/internal/tt-1xx/wormhole -I/root/tt-wavelet/tt-metal/tt_metal/hw/inc/internal/tt-1xx/wormhole/wormhole_b0_defines -I/root/tt-wavelet/tt-metal/tt_metal/hw/inc/internal/tt-1xx/wormhole/noc -I/root/tt-wavelet/tt-metal/tt_metal/third_party/tt_llk/tt_llk_wormhole_b0/common/inc -I/root/tt-wavelet/tt-metal/tt_metal/third_party/tt_llk/tt_llk_wormhole_b0/llk_lib -I/root/tt-wavelet/tt-metal/tt_metal/hw/firmware/src/tt-1xx -I/root/tt-wavelet/tt-wavelet/kernels/dataflow -c -o brisck.o /root/tt-wavelet/tt-metal/tt_metal/hw/firmware/src/tt-1xx/brisck.cc -DIS_NOT_POW2_NUM_DRAM_BANKS=1 -DIS_NOT_POW2_NUM_L1_BANKS=1 -DNUM_DRAM_BANKS=12 -DNUM_L1_BANKS=56 -DPCIE_NOC_X=0 -DPCIE_NOC_Y=3 -DTENSIX_FIRMWARE -DLOCAL_MEM_EN=0 -DROUTING_FW_ENABLED -DPROCESSOR_INDEX=0 -DCOMPILE_FOR_BRISC -DARCH_WORMHOLE -DDISPATCH_MESSAGE_ADDR=4290183304 -DKERNEL_BUILD -DNOC_INDEX='1' -DNOC_MODE='0' -DKERNEL_COMPILE_TIME_ARGS=0,1,128,2  (build.cpp:51)
+2026-05-06 16:10:25.334 | critical |          Always | TT_THROW: brisc build failed. Log: In file included from /root/tt-wavelet/tt-metal/tt_metal/hw/inc/internal/firmware_common.h:12,
+                 from /root/tt-wavelet/tt-metal/tt_metal/hw/firmware/src/tt-1xx/brisck.cc:17:
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/compile_time_args.h: In instantiation of 'constexpr uint32_t get_ct_arg() [with long unsigned int Idx = 4; uint32_t = long unsigned int]':
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h:23:62:   required from 'constexpr const Flags<tensor_accessor::ArgConfig> TensorAccessorArgs<4>::args_config'
+   62 | #define get_compile_time_arg_val(arg_idx) get_ct_arg<arg_idx>()
+      |                                           ~~~~~~~~~~~~~~~~~~~^~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h:25:40:   required from 'constexpr const bool TensorAccessorArgs<4>::is_sharded'
+   25 |     static constexpr bool is_sharded = args_config.test(tensor_accessor::ArgConfig::Sharded);
+      |                                        ^~~~~~~~~~~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h:36:10:   required from 'struct TensorAccessorArgs<4>'
+   36 |         !is_sharded || !rank_is_crta || (rank_is_crta && tensor_shape_is_crta && shard_shape_is_crta),
+      |          ^~~~~~~~~~
+/root/tt-wavelet/tt-wavelet/kernels/dataflow/pad_split_1d_writer.cpp:15:101:   required from here
+   15 |     constexpr auto odd_dst_args = TensorAccessorArgs<even_dst_args.next_compile_time_args_offset()>();
+      |                                                                                                     ^
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/compile_time_args.h:25:23: error: static assertion failed: Index out of range
+   25 |     static_assert(Idx < kernel_compile_time_args.size(), "Index out of range");
+      |                   ~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/compile_time_args.h:25:23: note: the comparison reduces to '(4 < 4)'
+In file included from /root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor.h:8,
+                 from /root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/dataflow/dataflow_api.h:29,
+                 from /root/tt-wavelet/tt-metal/tt_metal/hw/inc/internal/firmware_common.h:21:
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h: In instantiation of 'struct TensorAccessorArgs<4>':
+/root/tt-wavelet/tt-wavelet/kernels/dataflow/pad_split_1d_writer.cpp:15:101:   required from here
+   15 |     constexpr auto odd_dst_args = TensorAccessorArgs<even_dst_args.next_compile_time_args_offset()>();
+      |                                                                                                     ^
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h:36:38: error: non-constant condition for static assertion
+   36 |         !is_sharded || !rank_is_crta || (rank_is_crta && tensor_shape_is_crta && shard_shape_is_crta),
+      |         ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h:39:43: error: non-constant condition for static assertion
+   39 |         !is_sharded || !num_banks_is_crta || (num_banks_is_crta && bank_coords_is_crta),
+      |         ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h: In instantiation of 'constexpr const uint32_t TensorAccessorArgs<4>::RankCT':
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h:64:50:   required from 'struct TensorAccessorArgs<4>'
+   64 |     static_assert(!is_sharded || rank_is_crta || RankCT > 0, "Rank must be greater than 0!");
+      |                                                  ^~~~~~
+/root/tt-wavelet/tt-wavelet/kernels/dataflow/pad_split_1d_writer.cpp:15:101:   required from here
+   15 |     constexpr auto odd_dst_args = TensorAccessorArgs<even_dst_args.next_compile_time_args_offset()>();
+      |                                                                                                     ^
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/compile_time_args.h:62:62: error: inconsistent types 'int' and 'long unsigned int' deduced for lambda return type
+   62 | #define get_compile_time_arg_val(arg_idx) get_ct_arg<arg_idx>()
+      |                                           ~~~~~~~~~~~~~~~~~~~^~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h:50:20: note: in expansion of macro 'get_compile_time_arg_val'
+   50 |             return get_compile_time_arg_val(RankCTAOffset);
+      |                    ^~~~~~~~~~~~~~~~~~~~~~~~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/compile_time_args.h: In instantiation of 'constexpr uint32_t get_ct_arg() [with long unsigned int Idx = 5; uint32_t = long unsigned int]':
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h:50:20:   required from 'constexpr const uint32_t TensorAccessorArgs<4>::RankCT'
+   62 | #define get_compile_time_arg_val(arg_idx) get_ct_arg<arg_idx>()
+      |                                           ~~~~~~~~~~~~~~~~~~~^~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h:64:50:   required from 'struct TensorAccessorArgs<4>'
+   64 |     static_assert(!is_sharded || rank_is_crta || RankCT > 0, "Rank must be greater than 0!");
+      |                                                  ^~~~~~
+/root/tt-wavelet/tt-wavelet/kernels/dataflow/pad_split_1d_writer.cpp:15:101:   required from here
+   15 |     constexpr auto odd_dst_args = TensorAccessorArgs<even_dst_args.next_compile_time_args_offset()>();
+      |                                                                                                     ^
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/compile_time_args.h:25:23: error: static assertion failed: Index out of range
+   25 |     static_assert(Idx < kernel_compile_time_args.size(), "Index out of range");
+      |                   ~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/compile_time_args.h:25:23: note: the comparison reduces to '(5 < 4)'
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h: In instantiation of 'constexpr const uint32_t TensorAccessorArgs<4>::RankCT':
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h:64:50:   required from 'struct TensorAccessorArgs<4>'
+   64 |     static_assert(!is_sharded || rank_is_crta || RankCT > 0, "Rank must be greater than 0!");
+      |                                                  ^~~~~~
+/root/tt-wavelet/tt-wavelet/kernels/dataflow/pad_split_1d_writer.cpp:15:101:   required from here
+   15 |     constexpr auto odd_dst_args = TensorAccessorArgs<even_dst_args.next_compile_time_args_offset()>();
+      |                                                                                                     ^
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h:52:6: error: 'TensorAccessorArgs<4>::<lambda()>' called in a constant expression
+   46 |     static constexpr uint32_t RankCT = [] {
+      |                                        ~~~~
+   47 |         if constexpr (!is_sharded || rank_is_crta) {
+      |         ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+   48 |             return 0;
+      |             ~~~~~~~~~
+   49 |         } else {
+      |         ~~~~~~~~
+   50 |             return get_compile_time_arg_val(RankCTAOffset);
+      |             ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+   51 |         }
+      |         ~
+   52 |     }();
+      |     ~^~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h:46:40: note: 'TensorAccessorArgs<4>::<lambda()>' is not usable as a 'constexpr' function because:
+   46 |     static constexpr uint32_t RankCT = [] {
+      |                                        ^
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h: In instantiation of 'struct TensorAccessorArgs<4>':
+/root/tt-wavelet/tt-wavelet/kernels/dataflow/pad_split_1d_writer.cpp:15:101:   required from here
+   15 |     constexpr auto odd_dst_args = TensorAccessorArgs<even_dst_args.next_compile_time_args_offset()>();
+      |                                                                                                     ^
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h:64:47: error: non-constant condition for static assertion
+   64 |     static_assert(!is_sharded || rank_is_crta || RankCT > 0, "Rank must be greater than 0!");
+      |                   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h: In instantiation of 'constexpr const uint32_t TensorAccessorArgs<4>::NumBanksCT':
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h:65:55:   required from 'struct TensorAccessorArgs<4>'
+   65 |     static_assert(!is_sharded || num_banks_is_crta || NumBanksCT > 0, "Number of banks must be greater than 0!");
+      |                                                       ^~~~~~~~~~
+/root/tt-wavelet/tt-wavelet/kernels/dataflow/pad_split_1d_writer.cpp:15:101:   required from here
+   15 |     constexpr auto odd_dst_args = TensorAccessorArgs<even_dst_args.next_compile_time_args_offset()>();
+      |                                                                                                     ^
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/compile_time_args.h:62:62: error: no matching function for call to 'get_ct_arg<TensorAccessorArgs<4>::NumBanksCTAOffset>()'
+   62 | #define get_compile_time_arg_val(arg_idx) get_ct_arg<arg_idx>()
+      |                                           ~~~~~~~~~~~~~~~~~~~^~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h:58:20: note: in expansion of macro 'get_compile_time_arg_val'
+   58 |             return get_compile_time_arg_val(NumBanksCTAOffset);
+      |                    ^~~~~~~~~~~~~~~~~~~~~~~~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/compile_time_args.h:62:62: note: there is 1 candidate
+   62 | #define get_compile_time_arg_val(arg_idx) get_ct_arg<arg_idx>()
+      |                                           ~~~~~~~~~~~~~~~~~~~^~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h:58:20: note: in expansion of macro 'get_compile_time_arg_val'
+   58 |             return get_compile_time_arg_val(NumBanksCTAOffset);
+      |                    ^~~~~~~~~~~~~~~~~~~~~~~~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/compile_time_args.h:24:20: note: candidate 1: 'template<long unsigned int Idx> constexpr uint32_t get_ct_arg()'
+   24 | constexpr uint32_t get_ct_arg() {
+      |                    ^~~~~~~~~~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/compile_time_args.h:24:20: note: template argument deduction/substitution failed:
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h:60:6: error: 'TensorAccessorArgs<4>::<lambda()>' called in a constant expression
+   54 |     static constexpr uint32_t NumBanksCT = [] {
+      |                                            ~~~~
+   55 |         if constexpr (!is_sharded || num_banks_is_crta) {
+      |         ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+   56 |             return 0;
+      |             ~~~~~~~~~
+   57 |         } else {
+      |         ~~~~~~~~
+   58 |             return get_compile_time_arg_val(NumBanksCTAOffset);
+      |             ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+   59 |         }
+      |         ~
+   60 |     }();
+      |     ~^~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h:54:44: note: 'TensorAccessorArgs<4>::<lambda()>' is not usable as a 'constexpr' function because:
+   54 |     static constexpr uint32_t NumBanksCT = [] {
+      |                                            ^
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h: In instantiation of 'struct TensorAccessorArgs<4>':
+/root/tt-wavelet/tt-wavelet/kernels/dataflow/pad_split_1d_writer.cpp:15:101:   required from here
+   15 |     constexpr auto odd_dst_args = TensorAccessorArgs<even_dst_args.next_compile_time_args_offset()>();
+      |                                                                                                     ^
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h:65:52: error: non-constant condition for static assertion
+   65 |     static_assert(!is_sharded || num_banks_is_crta || NumBanksCT > 0, "Number of banks must be greater than 0!");
+      |                   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~
+In file included from ../kernel_includes.hpp:1,
+                 from /root/tt-wavelet/tt-metal/tt_metal/hw/firmware/src/tt-1xx/brisck.cc:21:
+/root/tt-wavelet/tt-wavelet/kernels/dataflow/pad_split_1d_writer.cpp: In function 'void kernel_main()':
+/root/tt-wavelet/tt-wavelet/kernels/dataflow/pad_split_1d_writer.cpp:17:77: error: class template argument deduction failed:
+   17 |     const auto odd_dst = TensorAccessor(odd_dst_args, odd_addr, stick_nbytes);
+      |                                                                             ^
+/root/tt-wavelet/tt-wavelet/kernels/dataflow/pad_split_1d_writer.cpp:17:77: error: no matching function for call to 'TensorAccessor(const TensorAccessorArgs<4>&, const uint32_t&, const uint32_t&)'
+/root/tt-wavelet/tt-wavelet/kernels/dataflow/pad_split_1d_writer.cpp:17:77: note: there are 6 candidates
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor.h:76:5: note: candidate 1: 'template<class DSpecT, unsigned int CTA_OFFSET, unsigned int CRTA_OFFSET> TensorAccessor(const TensorAccessorArgs<CTA_OFFSET, CRTA_OFFSET>&, size_t, uint32_t) -> TensorAccessor<DSpecT>'
+   76 |     TensorAccessor(
+      |     ^~~~~~~~~~~~~~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor.h:76:5: note: template argument deduction/substitution failed:
+/root/tt-wavelet/tt-wavelet/kernels/dataflow/pad_split_1d_writer.cpp:17:77: note:   couldn't deduce template parameter 'DSpecT'
+   17 |     const auto odd_dst = TensorAccessor(odd_dst_args, odd_addr, stick_nbytes);
+      |                                                                             ^
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor.h:72:5: note: candidate 2: 'template<class DSpecT, class DSpec_, typename std::enable_if<DSpec_::is_static, int>::type <anonymous> > TensorAccessor(size_t, uint32_t) -> TensorAccessor<DSpecT>'
+   72 |     TensorAccessor(const size_t bank_base_address_in = 0, uint32_t page_size_in = 0) :
+      |     ^~~~~~~~~~~~~~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor.h:72:5: note: candidate expects 2 arguments, 3 provided
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor.h:67:24: note: candidate 3: 'template<class DSpecT, class DSpec_, typename std::enable_if<is_same_v<typename std::decay<_Tp2>::type, DSpecT>, int>::type <anonymous> > TensorAccessor(DSpec_&&, size_t, uint32_t) -> TensorAccessor<DSpecT>'
+   67 |     constexpr explicit TensorAccessor(
+      |                        ^~~~~~~~~~~~~~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor.h:67:24: note: template argument deduction/substitution failed:
+/root/tt-wavelet/tt-wavelet/kernels/dataflow/pad_split_1d_writer.cpp:17:77: note:   couldn't deduce template parameter 'DSpecT'
+   17 |     const auto odd_dst = TensorAccessor(odd_dst_args, odd_addr, stick_nbytes);
+      |                                                                             ^
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor.h:53:8: note: candidate 4: 'template<class DSpecT> TensorAccessor(TensorAccessor<DSpecT>) -> TensorAccessor<DSpecT>'
+   53 | struct TensorAccessor {
+      |        ^~~~~~~~~~~~~~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor.h:53:8: note: candidate expects 1 argument, 3 provided
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor.h:412:1: note: candidate 5: 'template<long unsigned int RankCT, long unsigned int NumBanksCT, class TensorShapeWrapper, class ShardShapeWrapper, class BankCoordsWrapper, bool IsInterleaved, bool IsDram> TensorAccessor(tensor_accessor::DistributionSpec<RankCT, NumBanksCT, TensorShapeWrapper, ShardShapeWrapper, BankCoordsWrapper, IsInterleaved, IsDram>, size_t, uint32_t) -> TensorAccessor<tensor_accessor::DistributionSpec<RankCT, NumBanksCT, TensorShapeWrapper, ShardShapeWrapper, BankCoordsWrapper, IsInterleaved, IsDram> >'
+  412 | TensorAccessor(
+      | ^~~~~~~~~~~~~~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor.h:412:1: note: template argument deduction/substitution failed:
+/root/tt-wavelet/tt-wavelet/kernels/dataflow/pad_split_1d_writer.cpp:17:77: note:   'TensorAccessorArgs<4>' is not derived from 'tensor_accessor::DistributionSpec<RankCT, NumBanksCT, TensorShapeWrapper, ShardShapeWrapper, BankCoordsWrapper, IsInterleaved, IsDram>'
+   17 |     const auto odd_dst = TensorAccessor(odd_dst_args, odd_addr, stick_nbytes);
+      |                                                                             ^
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor.h:382:1: note: candidate 6: 'template<unsigned int CTA_OFFSET, unsigned int CRTA_OFFSET> TensorAccessor(const TensorAccessorArgs<CTA_OFFSET, CRTA_OFFSET>&, size_t, uint32_t) -> TensorAccessor<tensor_accessor::DistributionSpec<TensorAccessorArgs<CTA_OFFSET, CRTA_OFFSET>::RankCT, TensorAccessorArgs<CTA_OFFSET, CRTA_OFFSET>::NumBanksCT, typename tensor_accessor::ArrayWrapperTypeSelectorU32<(! TensorAccessorArgs<CTA_OFFSET, CRTA_OFFSET>::tensor_shape_is_crta), TensorAccessorArgs<CTA_OFFSET, CRTA_OFFSET>::TensorShapeCTAOffset, TensorAccessorArgs<CTA_OFFSET, CRTA_OFFSET>::RankCT>::type, typename tensor_accessor::ArrayWrapperTypeSelectorU32<(! TensorAccessorArgs<CTA_OFFSET, CRTA_OFFSET>::shard_shape_is_crta), TensorAccessorArgs<CTA_OFFSET, CRTA_OFFSET>::ShardShapeCTAOffset, TensorAccessorArgs<CTA_OFFSET, CRTA_OFFSET>::RankCT>::type, typename tensor_accessor::ArrayWrapperTypeSelectorPackedU16<(! TensorAccessorArgs<CTA_OFFSET, CRTA_OFFSET>::bank_coords_is_crta), TensorAccessorArgs<CTA_OFFSET, CRTA_OFFSET>::BankCoordsCTAOffset, TensorAccessorArgs<CTA_OFFSET, CRTA_OFFSET>::NumBanksCT>::type, (! TensorAccessorArgs<CTA_OFFSET, CRTA_OFFSET>::is_sharded), TensorAccessorArgs<CTA_OFFSET, CRTA_OFFSET>::is_dram> >'
+  382 | TensorAccessor(const TensorAccessorArgs<CTA_OFFSET, CRTA_OFFSET>& args, size_t, uint32_t)
+      | ^~~~~~~~~~~~~~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor.h:382:1: note: template argument deduction/substitution failed:
+ (assert.hpp:104)
+2026-05-06 16:10:25.335 | critical |          Always | TT_THROW: Failed to generate binaries for pad_split_1d_writer TT_THROW @ /root/tt-wavelet/tt-metal/tt_metal/jit_build/build.cpp:55: tt::exception
+info:
+brisc build failed. Log: In file included from /root/tt-wavelet/tt-metal/tt_metal/hw/inc/internal/firmware_common.h:12,
+                 from /root/tt-wavelet/tt-metal/tt_metal/hw/firmware/src/tt-1xx/brisck.cc:17:
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/compile_time_args.h: In instantiation of 'constexpr uint32_t get_ct_arg() [with long unsigned int Idx = 4; uint32_t = long unsigned int]':
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h:23:62:   required from 'constexpr const Flags<tensor_accessor::ArgConfig> TensorAccessorArgs<4>::args_config'
+   62 | #define get_compile_time_arg_val(arg_idx) get_ct_arg<arg_idx>()
+      |                                           ~~~~~~~~~~~~~~~~~~~^~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h:25:40:   required from 'constexpr const bool TensorAccessorArgs<4>::is_sharded'
+   25 |     static constexpr bool is_sharded = args_config.test(tensor_accessor::ArgConfig::Sharded);
+      |                                        ^~~~~~~~~~~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h:36:10:   required from 'struct TensorAccessorArgs<4>'
+   36 |         !is_sharded || !rank_is_crta || (rank_is_crta && tensor_shape_is_crta && shard_shape_is_crta),
+      |          ^~~~~~~~~~
+/root/tt-wavelet/tt-wavelet/kernels/dataflow/pad_split_1d_writer.cpp:15:101:   required from here
+   15 |     constexpr auto odd_dst_args = TensorAccessorArgs<even_dst_args.next_compile_time_args_offset()>();
+      |                                                                                                     ^
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/compile_time_args.h:25:23: error: static assertion failed: Index out of range
+   25 |     static_assert(Idx < kernel_compile_time_args.size(), "Index out of range");
+      |                   ~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/compile_time_args.h:25:23: note: the comparison reduces to '(4 < 4)'
+In file included from /root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor.h:8,
+                 from /root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/dataflow/dataflow_api.h:29,
+                 from /root/tt-wavelet/tt-metal/tt_metal/hw/inc/internal/firmware_common.h:21:
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h: In instantiation of 'struct TensorAccessorArgs<4>':
+/root/tt-wavelet/tt-wavelet/kernels/dataflow/pad_split_1d_writer.cpp:15:101:   required from here
+   15 |     constexpr auto odd_dst_args = TensorAccessorArgs<even_dst_args.next_compile_time_args_offset()>();
+      |                                                                                                     ^
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h:36:38: error: non-constant condition for static assertion
+   36 |         !is_sharded || !rank_is_crta || (rank_is_crta && tensor_shape_is_crta && shard_shape_is_crta),
+      |         ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h:39:43: error: non-constant condition for static assertion
+   39 |         !is_sharded || !num_banks_is_crta || (num_banks_is_crta && bank_coords_is_crta),
+      |         ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h: In instantiation of 'constexpr const uint32_t TensorAccessorArgs<4>::RankCT':
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h:64:50:   required from 'struct TensorAccessorArgs<4>'
+   64 |     static_assert(!is_sharded || rank_is_crta || RankCT > 0, "Rank must be greater than 0!");
+      |                                                  ^~~~~~
+/root/tt-wavelet/tt-wavelet/kernels/dataflow/pad_split_1d_writer.cpp:15:101:   required from here
+   15 |     constexpr auto odd_dst_args = TensorAccessorArgs<even_dst_args.next_compile_time_args_offset()>();
+      |                                                                                                     ^
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/compile_time_args.h:62:62: error: inconsistent types 'int' and 'long unsigned int' deduced for lambda return type
+   62 | #define get_compile_time_arg_val(arg_idx) get_ct_arg<arg_idx>()
+      |                                           ~~~~~~~~~~~~~~~~~~~^~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h:50:20: note: in expansion of macro 'get_compile_time_arg_val'
+   50 |             return get_compile_time_arg_val(RankCTAOffset);
+      |                    ^~~~~~~~~~~~~~~~~~~~~~~~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/compile_time_args.h: In instantiation of 'constexpr uint32_t get_ct_arg() [with long unsigned int Idx = 5; uint32_t = long unsigned int]':
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h:50:20:   required from 'constexpr const uint32_t TensorAccessorArgs<4>::RankCT'
+   62 | #define get_compile_time_arg_val(arg_idx) get_ct_arg<arg_idx>()
+      |                                           ~~~~~~~~~~~~~~~~~~~^~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h:64:50:   required from 'struct TensorAccessorArgs<4>'
+   64 |     static_assert(!is_sharded || rank_is_crta || RankCT > 0, "Rank must be greater than 0!");
+      |                                                  ^~~~~~
+/root/tt-wavelet/tt-wavelet/kernels/dataflow/pad_split_1d_writer.cpp:15:101:   required from here
+   15 |     constexpr auto odd_dst_args = TensorAccessorArgs<even_dst_args.next_compile_time_args_offset()>();
+      |                                                                                                     ^
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/compile_time_args.h:25:23: error: static assertion failed: Index out of range
+   25 |     static_assert(Idx < kernel_compile_time_args.size(), "Index out of range");
+      |                   ~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/compile_time_args.h:25:23: note: the comparison reduces to '(5 < 4)'
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h: In instantiation of 'constexpr const uint32_t TensorAccessorArgs<4>::RankCT':
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h:64:50:   required from 'struct TensorAccessorArgs<4>'
+   64 |     static_assert(!is_sharded || rank_is_crta || RankCT > 0, "Rank must be greater than 0!");
+      |                                                  ^~~~~~
+/root/tt-wavelet/tt-wavelet/kernels/dataflow/pad_split_1d_writer.cpp:15:101:   required from here
+   15 |     constexpr auto odd_dst_args = TensorAccessorArgs<even_dst_args.next_compile_time_args_offset()>();
+      |                                                                                                     ^
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h:52:6: error: 'TensorAccessorArgs<4>::<lambda()>' called in a constant expression
+   46 |     static constexpr uint32_t RankCT = [] {
+      |                                        ~~~~
+   47 |         if constexpr (!is_sharded || rank_is_crta) {
+      |         ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+   48 |             return 0;
+      |             ~~~~~~~~~
+   49 |         } else {
+      |         ~~~~~~~~
+   50 |             return get_compile_time_arg_val(RankCTAOffset);
+      |             ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+   51 |         }
+      |         ~
+   52 |     }();
+      |     ~^~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h:46:40: note: 'TensorAccessorArgs<4>::<lambda()>' is not usable as a 'constexpr' function because:
+   46 |     static constexpr uint32_t RankCT = [] {
+      |                                        ^
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h: In instantiation of 'struct TensorAccessorArgs<4>':
+/root/tt-wavelet/tt-wavelet/kernels/dataflow/pad_split_1d_writer.cpp:15:101:   required from here
+   15 |     constexpr auto odd_dst_args = TensorAccessorArgs<even_dst_args.next_compile_time_args_offset()>();
+      |                                                                                                     ^
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h:64:47: error: non-constant condition for static assertion
+   64 |     static_assert(!is_sharded || rank_is_crta || RankCT > 0, "Rank must be greater than 0!");
+      |                   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h: In instantiation of 'constexpr const uint32_t TensorAccessorArgs<4>::NumBanksCT':
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h:65:55:   required from 'struct TensorAccessorArgs<4>'
+   65 |     static_assert(!is_sharded || num_banks_is_crta || NumBanksCT > 0, "Number of banks must be greater than 0!");
+      |                                                       ^~~~~~~~~~
+/root/tt-wavelet/tt-wavelet/kernels/dataflow/pad_split_1d_writer.cpp:15:101:   required from here
+   15 |     constexpr auto odd_dst_args = TensorAccessorArgs<even_dst_args.next_compile_time_args_offset()>();
+      |                                                                                                     ^
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/compile_time_args.h:62:62: error: no matching function for call to 'get_ct_arg<TensorAccessorArgs<4>::NumBanksCTAOffset>()'
+   62 | #define get_compile_time_arg_val(arg_idx) get_ct_arg<arg_idx>()
+      |                                           ~~~~~~~~~~~~~~~~~~~^~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h:58:20: note: in expansion of macro 'get_compile_time_arg_val'
+   58 |             return get_compile_time_arg_val(NumBanksCTAOffset);
+      |                    ^~~~~~~~~~~~~~~~~~~~~~~~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/compile_time_args.h:62:62: note: there is 1 candidate
+   62 | #define get_compile_time_arg_val(arg_idx) get_ct_arg<arg_idx>()
+      |                                           ~~~~~~~~~~~~~~~~~~~^~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h:58:20: note: in expansion of macro 'get_compile_time_arg_val'
+   58 |             return get_compile_time_arg_val(NumBanksCTAOffset);
+      |                    ^~~~~~~~~~~~~~~~~~~~~~~~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/compile_time_args.h:24:20: note: candidate 1: 'template<long unsigned int Idx> constexpr uint32_t get_ct_arg()'
+   24 | constexpr uint32_t get_ct_arg() {
+      |                    ^~~~~~~~~~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/compile_time_args.h:24:20: note: template argument deduction/substitution failed:
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h:60:6: error: 'TensorAccessorArgs<4>::<lambda()>' called in a constant expression
+   54 |     static constexpr uint32_t NumBanksCT = [] {
+      |                                            ~~~~
+   55 |         if constexpr (!is_sharded || num_banks_is_crta) {
+      |         ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+   56 |             return 0;
+      |             ~~~~~~~~~
+   57 |         } else {
+      |         ~~~~~~~~
+   58 |             return get_compile_time_arg_val(NumBanksCTAOffset);
+      |             ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+   59 |         }
+      |         ~
+   60 |     }();
+      |     ~^~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h:54:44: note: 'TensorAccessorArgs<4>::<lambda()>' is not usable as a 'constexpr' function because:
+   54 |     static constexpr uint32_t NumBanksCT = [] {
+      |                                            ^
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h: In instantiation of 'struct TensorAccessorArgs<4>':
+/root/tt-wavelet/tt-wavelet/kernels/dataflow/pad_split_1d_writer.cpp:15:101:   required from here
+   15 |     constexpr auto odd_dst_args = TensorAccessorArgs<even_dst_args.next_compile_time_args_offset()>();
+      |                                                                                                     ^
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor_args.h:65:52: error: non-constant condition for static assertion
+   65 |     static_assert(!is_sharded || num_banks_is_crta || NumBanksCT > 0, "Number of banks must be greater than 0!");
+      |                   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~
+In file included from ../kernel_includes.hpp:1,
+                 from /root/tt-wavelet/tt-metal/tt_metal/hw/firmware/src/tt-1xx/brisck.cc:21:
+/root/tt-wavelet/tt-wavelet/kernels/dataflow/pad_split_1d_writer.cpp: In function 'void kernel_main()':
+/root/tt-wavelet/tt-wavelet/kernels/dataflow/pad_split_1d_writer.cpp:17:77: error: class template argument deduction failed:
+   17 |     const auto odd_dst = TensorAccessor(odd_dst_args, odd_addr, stick_nbytes);
+      |                                                                             ^
+/root/tt-wavelet/tt-wavelet/kernels/dataflow/pad_split_1d_writer.cpp:17:77: error: no matching function for call to 'TensorAccessor(const TensorAccessorArgs<4>&, const uint32_t&, const uint32_t&)'
+/root/tt-wavelet/tt-wavelet/kernels/dataflow/pad_split_1d_writer.cpp:17:77: note: there are 6 candidates
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor.h:76:5: note: candidate 1: 'template<class DSpecT, unsigned int CTA_OFFSET, unsigned int CRTA_OFFSET> TensorAccessor(const TensorAccessorArgs<CTA_OFFSET, CRTA_OFFSET>&, size_t, uint32_t) -> TensorAccessor<DSpecT>'
+   76 |     TensorAccessor(
+      |     ^~~~~~~~~~~~~~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor.h:76:5: note: template argument deduction/substitution failed:
+/root/tt-wavelet/tt-wavelet/kernels/dataflow/pad_split_1d_writer.cpp:17:77: note:   couldn't deduce template parameter 'DSpecT'
+   17 |     const auto odd_dst = TensorAccessor(odd_dst_args, odd_addr, stick_nbytes);
+      |                                                                             ^
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor.h:72:5: note: candidate 2: 'template<class DSpecT, class DSpec_, typename std::enable_if<DSpec_::is_static, int>::type <anonymous> > TensorAccessor(size_t, uint32_t) -> TensorAccessor<DSpecT>'
+   72 |     TensorAccessor(const size_t bank_base_address_in = 0, uint32_t page_size_in = 0) :
+      |     ^~~~~~~~~~~~~~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor.h:72:5: note: candidate expects 2 arguments, 3 provided
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor.h:67:24: note: candidate 3: 'template<class DSpecT, class DSpec_, typename std::enable_if<is_same_v<typename std::decay<_Tp2>::type, DSpecT>, int>::type <anonymous> > TensorAccessor(DSpec_&&, size_t, uint32_t) -> TensorAccessor<DSpecT>'
+   67 |     constexpr explicit TensorAccessor(
+      |                        ^~~~~~~~~~~~~~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor.h:67:24: note: template argument deduction/substitution failed:
+/root/tt-wavelet/tt-wavelet/kernels/dataflow/pad_split_1d_writer.cpp:17:77: note:   couldn't deduce template parameter 'DSpecT'
+   17 |     const auto odd_dst = TensorAccessor(odd_dst_args, odd_addr, stick_nbytes);
+      |                                                                             ^
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor.h:53:8: note: candidate 4: 'template<class DSpecT> TensorAccessor(TensorAccessor<DSpecT>) -> TensorAccessor<DSpecT>'
+   53 | struct TensorAccessor {
+      |        ^~~~~~~~~~~~~~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor.h:53:8: note: candidate expects 1 argument, 3 provided
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor.h:412:1: note: candidate 5: 'template<long unsigned int RankCT, long unsigned int NumBanksCT, class TensorShapeWrapper, class ShardShapeWrapper, class BankCoordsWrapper, bool IsInterleaved, bool IsDram> TensorAccessor(tensor_accessor::DistributionSpec<RankCT, NumBanksCT, TensorShapeWrapper, ShardShapeWrapper, BankCoordsWrapper, IsInterleaved, IsDram>, size_t, uint32_t) -> TensorAccessor<tensor_accessor::DistributionSpec<RankCT, NumBanksCT, TensorShapeWrapper, ShardShapeWrapper, BankCoordsWrapper, IsInterleaved, IsDram> >'
+  412 | TensorAccessor(
+      | ^~~~~~~~~~~~~~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor.h:412:1: note: template argument deduction/substitution failed:
+/root/tt-wavelet/tt-wavelet/kernels/dataflow/pad_split_1d_writer.cpp:17:77: note:   'TensorAccessorArgs<4>' is not derived from 'tensor_accessor::DistributionSpec<RankCT, NumBanksCT, TensorShapeWrapper, ShardShapeWrapper, BankCoordsWrapper, IsInterleaved, IsDram>'
+   17 |     const auto odd_dst = TensorAccessor(odd_dst_args, odd_addr, stick_nbytes);
+      |                                                                             ^
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor.h:382:1: note: candidate 6: 'template<unsigned int CTA_OFFSET, unsigned int CRTA_OFFSET> TensorAccessor(const TensorAccessorArgs<CTA_OFFSET, CRTA_OFFSET>&, size_t, uint32_t) -> TensorAccessor<tensor_accessor::DistributionSpec<TensorAccessorArgs<CTA_OFFSET, CRTA_OFFSET>::RankCT, TensorAccessorArgs<CTA_OFFSET, CRTA_OFFSET>::NumBanksCT, typename tensor_accessor::ArrayWrapperTypeSelectorU32<(! TensorAccessorArgs<CTA_OFFSET, CRTA_OFFSET>::tensor_shape_is_crta), TensorAccessorArgs<CTA_OFFSET, CRTA_OFFSET>::TensorShapeCTAOffset, TensorAccessorArgs<CTA_OFFSET, CRTA_OFFSET>::RankCT>::type, typename tensor_accessor::ArrayWrapperTypeSelectorU32<(! TensorAccessorArgs<CTA_OFFSET, CRTA_OFFSET>::shard_shape_is_crta), TensorAccessorArgs<CTA_OFFSET, CRTA_OFFSET>::ShardShapeCTAOffset, TensorAccessorArgs<CTA_OFFSET, CRTA_OFFSET>::RankCT>::type, typename tensor_accessor::ArrayWrapperTypeSelectorPackedU16<(! TensorAccessorArgs<CTA_OFFSET, CRTA_OFFSET>::bank_coords_is_crta), TensorAccessorArgs<CTA_OFFSET, CRTA_OFFSET>::BankCoordsCTAOffset, TensorAccessorArgs<CTA_OFFSET, CRTA_OFFSET>::NumBanksCT>::type, (! TensorAccessorArgs<CTA_OFFSET, CRTA_OFFSET>::is_sharded), TensorAccessorArgs<CTA_OFFSET, CRTA_OFFSET>::is_dram> >'
+  382 | TensorAccessor(const TensorAccessorArgs<CTA_OFFSET, CRTA_OFFSET>& args, size_t, uint32_t)
+      | ^~~~~~~~~~~~~~
+/root/tt-wavelet/tt-metal/tt_metal/hw/inc/api/tensor/tensor_accessor.h:382:1: note: template argument deduction/substitution failed:
+
+backtrace:
+ --- /root/tt-wavelet/build/tt-metal/tt_metal/libtt_metal.so(+0x4067a9) [0x7f06975597a9]
+ --- /root/tt-wavelet/build/tt-metal/tt_metal/libtt_metal.so(+0x5bb54f) [0x7f069770e54f]
+ --- tt::tt_metal::JitBuildState::compile_one(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&, tt::tt_metal::JitBuildSettings const*, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&) const
+ --- /root/tt-wavelet/build/tt-metal/tt_metal/libtt_metal.so(+0x5c1824) [0x7f0697714824]
+ --- /root/tt-wavelet/build/tt-metal/tt_metal/libtt_metal.so(+0x5c17c9) [0x7f06977147c9]
+ --- /root/tt-wavelet/build/tt-metal/tt_metal/libtt_metal.so(+0x363a47) [0x7f06974b6a47]
+ --- /lib/x86_64-linux-gnu/libc.so.6(+0x99ee8) [0x7f06968e2ee8]
+ --- /root/tt-wavelet/build/tt-metal/tt_metal/libtt_metal.so(+0x3639c2) [0x7f06974b69c2]
+ --- /root/tt-wavelet/build/tt-metal/tt_metal/libtt_metal.so(+0x5c1601) [0x7f0697714601]
+ --- /root/tt-wavelet/build/tt-metal/tt_metal/libtt_metal.so(+0x367c65) [0x7f06974bac65]
+ --- /root/tt-wavelet/build/tt-metal/tt_metal/libtt_metal.so(+0x366781) [0x7f06974b9781]
+ --- /root/tt-wavelet/build/tt-metal/tt_metal/libtt_metal.so(+0x365c79) [0x7f06974b8c79]
+ --- /lib/x86_64-linux-gnu/libstdc++.so.6(+0xdc253) [0x7f0696c57253]
+ --- /lib/x86_64-linux-gnu/libc.so.6(+0x94ac3) [0x7f06968ddac3]
+ --- /lib/x86_64-linux-gnu/libc.so.6(+0x1268d0) [0x7f069696f8d0]
+ (assert.hpp:104)

@@ -2,6 +2,8 @@
 
 #include <cstdint>
 
+#include "tt_wavelet/include/device_protocol/lwt_config.hpp"
+
 namespace ttwv::device_protocol {
 
 enum class DeviceStepType : uint32_t {
@@ -12,7 +14,6 @@ enum class DeviceStepType : uint32_t {
     kSwap = 4,
 };
 
-constexpr uint32_t step_coeff_capacity = 17;
 constexpr uint32_t step_desc_header_words = 2;
 constexpr uint32_t step_desc_word_count = step_desc_header_words + step_coeff_capacity;
 constexpr uint32_t step_k_arg_idx = 1;

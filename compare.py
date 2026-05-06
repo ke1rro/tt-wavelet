@@ -40,8 +40,9 @@ if LIFTING_USAGE_DIR.exists():
     if str(LIFTING_USAGE_DIR) not in sys.path:
         sys.path.insert(0, str(LIFTING_USAGE_DIR))
     try:
-        import dtypes  # noqa: E402  # type: ignore[import-not-found]
         from lifting import LiftingScheme  # noqa: E402  # type: ignore[import-not-found]
+
+        import dtypes  # noqa: E402  # type: ignore[import-not-found]
 
         LIFTING_AVAILABLE = True
     except ModuleNotFoundError:
@@ -77,13 +78,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--all-green",
         action="store_true",
-        help="Run comparisons for all runtime-capacity green schemes.",
+        help="Run comparisons for all generated static schemes (legacy option name).",
     )
     parser.add_argument(
         "--runtime-limit",
         type=int,
         default=341,
-        help="Runtime-args limit used to classify green schemes (default: %(default)s).",
+        help="Ignored legacy runtime-args limit (static schemes use a route-config buffer).",
     )
     parser.add_argument(
         "--schemes-dir",
@@ -273,18 +274,6 @@ def is_green_scheme(scheme_path: Path, runtime_limit: int) -> tuple[bool, list[s
 
         steps.append(step)
 
-    max_segment = max_predict_update_segment_steps(steps)
-    pu_reader_args = PU_HEADER_WORDS + max_segment * PU_READER_ARGS_PER_STEP
-    pu_compute_args = PU_HEADER_WORDS + max_segment * PU_COMPUTE_ARGS_PER_STEP
-    pu_writer_args = PU_HEADER_WORDS + max_segment * PU_WRITER_ARGS_PER_STEP
-
-    if pu_reader_args > runtime_limit:
-        errors.append(f"predict/update reader args {pu_reader_args} > limit {runtime_limit}")
-    if pu_compute_args > runtime_limit:
-        errors.append(f"predict/update compute args {pu_compute_args} > limit {runtime_limit}")
-    if pu_writer_args > runtime_limit:
-        errors.append(f"predict/update writer args {pu_writer_args} > limit {runtime_limit}")
-
     return len(errors) == 0, errors
 
 
@@ -429,8 +418,8 @@ def main() -> int:
             print(f"Red schemes: {len(red)}")
             return 1
 
-        print(f"Runtime-args green schemes ({len(green)}): {', '.join(green)}")
-        print(f"Runtime-args red schemes ({len(red)}): {', '.join(red)}")
+        print(f"Generated static schemes ({len(green)}): {', '.join(green)}")
+        print(f"Invalid schemes ({len(red)}): {', '.join(red)}")
         print()
 
         passed: list[str] = []

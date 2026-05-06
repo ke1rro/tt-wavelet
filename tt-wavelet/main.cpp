@@ -16,20 +16,9 @@
 #include "tt-metalium/mesh_buffer.hpp"
 #include "tt-metalium/mesh_device.hpp"
 #include "tt_wavelet/include/lifting/device.hpp"
+#include "tt_wavelet/include/schemes/generated/registry.hpp"
 
 namespace {
-
-[[nodiscard]] std::filesystem::path resolve_scheme_path(const std::string_view scheme) {
-    const std::string scheme_name{scheme};
-    std::filesystem::path raw_path{scheme_name};
-    if (std::filesystem::exists(raw_path)) {
-        return raw_path;
-    }
-
-    const std::filesystem::path schemes_dir =
-        std::filesystem::path(TT_WAVELET_SOURCE_DIR) / "../ttnn-wavelet/lifting_schemes";
-    return schemes_dir / (scheme_name.ends_with(".json") ? scheme_name : scheme_name + ".json");
-}
 
 [[nodiscard]] std::vector<float> read_signal_file(const std::filesystem::path& path) {
     std::ifstream handle(path);
@@ -80,6 +69,14 @@ void print_coeffs(const char* label, const std::vector<float>& values, const siz
         logical_values.begin() + static_cast<std::ptrdiff_t>(crop_offset + output_length));
 }
 
+[[nodiscard]] std::string canonical_wavelet_name(const std::string_view raw_name) {
+    const std::filesystem::path raw_path{std::string{raw_name}};
+    if (raw_path.extension() == ".json") {
+        return raw_path.stem().string();
+    }
+    return std::string{raw_name};
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -89,9 +86,8 @@ int main(int argc, char** argv) {
         }
         setenv("TT_LOGGER_LEVEL", "error", 0);
 
-        const std::filesystem::path scheme_path = resolve_scheme_path(argv[1]);
+        const std::string wavelet_name = canonical_wavelet_name(argv[1]);
         const std::vector<float> original_signal = read_signal_file(argv[2]);
-        const auto scheme = ttwv::load_runtime_lifting_scheme(scheme_path);
         const auto start = std::chrono::steady_clock::now();
 
         constexpr int device_id = 0;
@@ -119,41 +115,44 @@ int main(int argc, char** argv) {
             input_replicated_config, input_local_config, mesh_device.get());
         input_desc.dram_address = input_buffer->get_backing_buffer()->address();
 
-        auto bundle = ttwv::create_lifting_preprocess_program(
-            TT_WAVELET_SOURCE_DIR, *mesh_device, core, *(input_buffer->get_backing_buffer()), input_desc, scheme);
+        return ttwv::dispatch_scheme(wavelet_name, [&]<typename Scheme>() -> int {
+            auto bundle = ttwv::create_lifting_preprocess_program<Scheme>(
+                TT_WAVELET_SOURCE_DIR, *mesh_device, core, *(input_buffer->get_backing_buffer()), input_desc);
 
-        tt::tt_metal::distributed::EnqueueWriteMeshBuffer(command_queue, input_buffer, original_signal, false);
-        ttwv::run_preprocess(command_queue, *mesh_device, bundle);
+            tt::tt_metal::distributed::EnqueueWriteMeshBuffer(command_queue, input_buffer, original_signal, false);
+            ttwv::run_preprocess(command_queue, *mesh_device, bundle);
 
-        const auto active_streams = ttwv::lwt(TT_WAVELET_SOURCE_DIR, *mesh_device, command_queue, core, bundle);
+            const auto active_streams =
+                ttwv::lwt<Scheme>(TT_WAVELET_SOURCE_DIR, *mesh_device, command_queue, core, bundle);
 
-        std::vector<float> device_even_result;
-        std::vector<float> device_odd_result;
+            std::vector<float> device_even_result;
+            std::vector<float> device_odd_result;
 
-        auto even_buffer = active_streams.even.family == ttwv::LogicalStream::kEven
-                               ? bundle.buffers.even.at(active_streams.even.slot)
-                               : bundle.buffers.odd.at(active_streams.even.slot);
-        auto odd_buffer = active_streams.odd.family == ttwv::LogicalStream::kEven
-                              ? bundle.buffers.even.at(active_streams.odd.slot)
-                              : bundle.buffers.odd.at(active_streams.odd.slot);
-        tt::tt_metal::distributed::EnqueueReadMeshBuffer(command_queue, device_even_result, even_buffer, true);
-        tt::tt_metal::distributed::EnqueueReadMeshBuffer(command_queue, device_odd_result, odd_buffer, true);
-        const auto stop = std::chrono::steady_clock::now();
+            auto even_buffer = active_streams.even.family == ttwv::LogicalStream::kEven
+                                   ? bundle.buffers.even.at(active_streams.even.slot)
+                                   : bundle.buffers.odd.at(active_streams.even.slot);
+            auto odd_buffer = active_streams.odd.family == ttwv::LogicalStream::kEven
+                                  ? bundle.buffers.even.at(active_streams.odd.slot)
+                                  : bundle.buffers.odd.at(active_streams.odd.slot);
+            tt::tt_metal::distributed::EnqueueReadMeshBuffer(command_queue, device_even_result, even_buffer, true);
+            tt::tt_metal::distributed::EnqueueReadMeshBuffer(command_queue, device_odd_result, odd_buffer, true);
+            const auto stop = std::chrono::steady_clock::now();
 
-        const size_t canonical_length = bundle.plan.output_length;
+            const size_t canonical_length = bundle.plan.output_length;
 
-        const auto even_canonical =
-            canonicalize_forward_output(device_even_result, bundle.plan.final_even_length, canonical_length);
-        const auto odd_canonical =
-            canonicalize_forward_output(device_odd_result, bundle.plan.final_odd_length, canonical_length);
+            const auto even_canonical =
+                canonicalize_forward_output(device_even_result, bundle.plan.final_even_length, canonical_length);
+            const auto odd_canonical =
+                canonicalize_forward_output(device_odd_result, bundle.plan.final_odd_length, canonical_length);
 
-        print_coeffs("tt-wavelet approximation coefficients", even_canonical, canonical_length);
-        print_coeffs("tt-wavelet detail coefficients", odd_canonical, canonical_length);
-        std::cout << std::flush;
+            print_coeffs("tt-wavelet approximation coefficients", even_canonical, canonical_length);
+            print_coeffs("tt-wavelet detail coefficients", odd_canonical, canonical_length);
+            std::cout << std::flush;
 
-        const std::chrono::duration<double, std::milli> elapsed_ms = stop - start;
-        std::cerr << "lwt_execution_time_ms: " << std::fixed << std::setprecision(6) << elapsed_ms.count() << '\n';
-        return EXIT_SUCCESS;
+            const std::chrono::duration<double, std::milli> elapsed_ms = stop - start;
+            std::cerr << "lwt_execution_time_ms: " << std::fixed << std::setprecision(6) << elapsed_ms.count() << '\n';
+            return EXIT_SUCCESS;
+        });
     } catch (const std::exception& exc) {
         std::cerr << exc.what() << '\n';
         return EXIT_FAILURE;
