@@ -17,19 +17,13 @@ constexpr uint32_t kDstBase = 3;
 constexpr uint32_t kDstTailOutput = 4;
 
 template <uint32_t K>
-inline void run_step(
+void run_step(
     const uint32_t cb_input0,
     const uint32_t cb_input1,
     const uint32_t cb_base,
     const uint32_t cb_output,
-    const uint32_t arg_coeff_base,
-    const uint32_t output_group_count) {
-    std::array<uint32_t, K> h_coeffs{};
-#pragma unroll 17
-    for (uint32_t j = 0; j < K; ++j) {
-        h_coeffs[j] = get_arg_val<uint32_t>(arg_coeff_base + j);
-    }
-
+    const uint32_t output_group_count,
+    const std::array<uint32_t, K>& h_coeffs) {
     for (uint32_t group = 0; group < output_group_count; ++group) {
         tile_regs_acquire();
 
@@ -76,23 +70,38 @@ inline void run_step(
 
 }  // namespace
 
-void kernel_main() {
-    constexpr uint32_t cb_input0 = get_compile_time_arg_val(0);
-    constexpr uint32_t cb_input1 = get_compile_time_arg_val(1);
-    constexpr uint32_t cb_base = get_compile_time_arg_val(2);
-    constexpr uint32_t cb_output = get_compile_time_arg_val(3);
-    constexpr uint8_t k_stencil_width = static_cast<uint8_t>(get_compile_time_arg_val(4));
+template <uint32_t const_arg_base, uint32_t var_arg_base, uint32_t num_steps>
+inline void unroll_step(
+    const uint32_t cb_input0,
+    const uint32_t cb_input1,
+    const uint32_t cb_base,
+    const uint32_t cb_output) {
 
-    const uint32_t num_steps = get_arg_val<uint32_t>(0);
+    if constexpr (num_steps > 0) {
+        constexpr uint32_t K = get_compile_time_arg_val(const_arg_base);
+
+        std::array<uint32_t, K> h_coeffs{};
+        #pragma unroll 17
+        for (uint32_t j = 0; j < K; ++j) {
+            h_coeffs[j] = get_compile_time_arg_val(const_arg_base + 1 + j);
+        }
+
+        const uint32_t output_group_count = get_arg_val<uint32_t>(var_arg_base);
+
+        run_step<K>(cb_input0, cb_input1, cb_base, cb_output, output_group_count, h_coeffs);
+        unroll_step<const_arg_base + 1 + K, var_arg_base + 1, num_steps - 1>(cb_input0, cb_input1, cb_base, cb_output);
+    }
+}
+
+
+void kernel_main() {
+    constexpr uint32_t cb_input0 = get_named_compile_time_arg_val("cb_input0");
+    constexpr uint32_t cb_input1 = get_named_compile_time_arg_val("cb_input1");
+    constexpr uint32_t cb_base = get_named_compile_time_arg_val("cb_base");
+    constexpr uint32_t cb_output = get_named_compile_time_arg_val("cb_output");
+    constexpr uint32_t num_steps = get_named_compile_time_arg_val("num_steps");
 
     ckernel::init_sfpu(cb_base, cb_output);
 
-    for (uint32_t step = 0; step < num_steps; ++step) {
-        const uint32_t step_arg_base = 1 + step * kArgsPerStep;
-        const uint32_t output_group_count = get_arg_val<uint32_t>(step_arg_base);
-        const uint32_t desc_arg_base = step_arg_base + 1;
-        const uint32_t coeff_arg_base = desc_arg_base + ttwv::device_protocol::step_coeffs_arg_idx;
-
-        run_step<k_stencil_width>(cb_input0, cb_input1, cb_base, cb_output, coeff_arg_base, output_group_count);
-    }
+    unroll_step<0, 0, num_steps>(cb_input0, cb_input1, cb_base, cb_output);
 }
