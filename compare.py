@@ -12,7 +12,7 @@ from typing import Sequence
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 LIFTING_USAGE_DIR = PROJECT_ROOT / "lifting-factorization" / "usage"
-TT_WAVELET_BINARY = PROJECT_ROOT / "build" / "tt-wavelet" / "lwt"
+TT_WAVELET_BINARY = PROJECT_ROOT / "build" / "lwt"
 TT_WAVELET_ENV = PROJECT_ROOT / "scripts" / "set_env.sh"
 VENV_PYTHON = PROJECT_ROOT / ".venv" / "bin" / "python3"
 
@@ -35,11 +35,17 @@ except ModuleNotFoundError as exc:
         "Use /root/tt-wavelet/.venv/bin/python3 compare_all_lifting.py ..."
     ) from exc
 
-if str(LIFTING_USAGE_DIR) not in sys.path:
-    sys.path.insert(0, str(LIFTING_USAGE_DIR))
+LIFTING_AVAILABLE = False
+if LIFTING_USAGE_DIR.exists():
+    if str(LIFTING_USAGE_DIR) not in sys.path:
+        sys.path.insert(0, str(LIFTING_USAGE_DIR))
+    try:
+        import dtypes  # noqa: E402  # type: ignore[import-not-found]
+        from lifting import LiftingScheme  # noqa: E402  # type: ignore[import-not-found]
 
-import dtypes  # noqa: E402  # type: ignore[import-not-found]
-from lifting import LiftingScheme  # noqa: E402  # type: ignore[import-not-found]
+        LIFTING_AVAILABLE = True
+    except ModuleNotFoundError:
+        pass
 
 
 def parse_args() -> argparse.Namespace:
@@ -52,9 +58,10 @@ def parse_args() -> argparse.Namespace:
         help="Wavelet name / JSON basename under ttnn-wavelet/lifting_schemes (default: %(default)s).",
     )
     parser.add_argument(
-        "--signal",
-        default="1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19",
-        help="Comma-separated list of numeric samples.",
+        "--signal-file",
+        type=Path,
+        default=PROJECT_ROOT / "signal.txt",
+        help="Whitespace-separated signal file (default: %(default)s).",
     )
     parser.add_argument(
         "--tolerance",
@@ -87,8 +94,8 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def parse_signal(raw_signal: str) -> list[float]:
-    return [float(token.strip()) for token in raw_signal.split(",") if token.strip()]
+def read_signal_file(path: Path) -> list[float]:
+    return [float(token) for token in path.read_text(encoding="utf-8").split()]
 
 
 def format_coeffs(values: Sequence[float]) -> str:
@@ -141,7 +148,7 @@ def print_error_metrics(reference: Sequence[float], candidate: Sequence[float], 
     )
 
 
-def run_tt_wavelet(scheme_path: Path, raw_signal: str) -> dict[str, list[float]]:
+def run_tt_wavelet(wavelet: str, signal_file: Path) -> dict[str, list[float]]:
     if not TT_WAVELET_BINARY.exists():
         raise FileNotFoundError(
             f"TT-wavelet binary not found at {TT_WAVELET_BINARY}. Rebuild with ./update.sh Release lwt"
@@ -149,7 +156,7 @@ def run_tt_wavelet(scheme_path: Path, raw_signal: str) -> dict[str, list[float]]
 
     command = (
         f"source {sh_quote(str(TT_WAVELET_ENV))} "
-        f"&& {sh_quote(str(TT_WAVELET_BINARY))} {sh_quote(str(scheme_path))} {sh_quote(raw_signal)}"
+        f"&& {sh_quote(str(TT_WAVELET_BINARY))} {sh_quote(wavelet)} {sh_quote(str(signal_file))}"
     )
     completed = subprocess.run(
         ["bash", "-lc", command],
@@ -302,32 +309,39 @@ def discover_green_wavelets(schemes_dir: Path, runtime_limit: int) -> tuple[list
 
 
 def run_single_comparison(args: argparse.Namespace, wavelet: str) -> bool:
-    signal = parse_signal(args.signal)
+    signal = read_signal_file(args.signal_file)
     scheme_path = args.schemes_dir / f"{wavelet}.json"
 
     if not scheme_path.exists():
         raise FileNotFoundError(f"Wavelet scheme file not found: {scheme_path}")
 
     print(f"signal: {signal}")
+    print(f"signal file: {args.signal_file}")
     print(f"scheme path: {scheme_path}")
     print()
 
     cA_pywt, cD_pywt = dwt(signal, wavelet, mode="symmetric")
 
-    scheme = LiftingScheme.from_file(
-        str(scheme_path),
-        mode="symmetric",
-        dtype=dtypes.float32,
-    )
-    cA_lifting, cD_lifting = scheme.forward(signal)
+    cA_lifting = None
+    cD_lifting = None
+    if LIFTING_AVAILABLE:
+        scheme = LiftingScheme.from_file(
+            str(scheme_path),
+            mode="symmetric",
+            dtype=dtypes.float32,
+        )
+        cA_lifting, cD_lifting = scheme.forward(signal)
 
     print(f"pywt approximation coefficients: {format_coeffs(cA_pywt)}")
     print(f"pywt detail coefficients: {format_coeffs(cD_pywt)}")
     print(f"pywt lengths: cA={len(cA_pywt)}, cD={len(cD_pywt)}")
     print()
-    print(f"lifting-factorization approximation coefficients: {format_coeffs(cA_lifting)}")
-    print(f"lifting-factorization detail coefficients: {format_coeffs(cD_lifting)}")
-    print(f"lifting-factorization lengths: cA={len(cA_lifting)}, cD={len(cD_lifting)}")
+    if cA_lifting is not None and cD_lifting is not None:
+        print(f"lifting-factorization approximation coefficients: {format_coeffs(cA_lifting)}")
+        print(f"lifting-factorization detail coefficients: {format_coeffs(cD_lifting)}")
+        print(f"lifting-factorization lengths: cA={len(cA_lifting)}, cD={len(cD_lifting)}")
+    else:
+        print("lifting-factorization skipped: lifting-factorization/usage is not available.")
     print()
 
     tt_wavelet = None
@@ -335,7 +349,7 @@ def run_single_comparison(args: argparse.Namespace, wavelet: str) -> bool:
         print("tt-wavelet run skipped.")
         print()
     else:
-        tt_wavelet = run_tt_wavelet(scheme_path, args.signal)
+        tt_wavelet = run_tt_wavelet(wavelet, args.signal_file)
         print(
             f"tt-wavelet approximation coefficients: {format_coeffs(tt_wavelet['approximation'])}"
         )
@@ -347,16 +361,17 @@ def run_single_comparison(args: argparse.Namespace, wavelet: str) -> bool:
         print()
 
     print("Pairwise comparison")
-    pywt_vs_lifting_a = print_pairwise_mismatches(
-        cA_pywt, cA_lifting, "Approximation pywt vs lifting-factorization", args.tolerance
-    )
-    pywt_vs_lifting_d = print_pairwise_mismatches(
-        cD_pywt, cD_lifting, "Detail pywt vs lifting-factorization", args.tolerance
-    )
-    print_error_metrics(cA_pywt, cA_lifting, "Approximation pywt -> lifting-factorization")
-    print_error_metrics(cD_pywt, cD_lifting, "Detail pywt -> lifting-factorization")
-
-    checks_ok = pywt_vs_lifting_a == 0 and pywt_vs_lifting_d == 0
+    checks_ok = True
+    if cA_lifting is not None and cD_lifting is not None:
+        pywt_vs_lifting_a = print_pairwise_mismatches(
+            cA_pywt, cA_lifting, "Approximation pywt vs lifting-factorization", args.tolerance
+        )
+        pywt_vs_lifting_d = print_pairwise_mismatches(
+            cD_pywt, cD_lifting, "Detail pywt vs lifting-factorization", args.tolerance
+        )
+        print_error_metrics(cA_pywt, cA_lifting, "Approximation pywt -> lifting-factorization")
+        print_error_metrics(cD_pywt, cD_lifting, "Detail pywt -> lifting-factorization")
+        checks_ok = pywt_vs_lifting_a == 0 and pywt_vs_lifting_d == 0
 
     if tt_wavelet is not None:
         pywt_vs_tt_a = print_pairwise_mismatches(
@@ -369,18 +384,21 @@ def run_single_comparison(args: argparse.Namespace, wavelet: str) -> bool:
             cA_pywt, tt_wavelet["approximation"], "Approximation pywt -> tt-wavelet"
         )
         print_error_metrics(cD_pywt, tt_wavelet["detail"], "Detail pywt -> tt-wavelet")
-        lifting_vs_tt_a = print_pairwise_mismatches(
-            cA_lifting,
-            tt_wavelet["approximation"],
-            "Approximation lifting-factorization vs tt-wavelet",
-            args.tolerance,
-        )
-        lifting_vs_tt_d = print_pairwise_mismatches(
-            cD_lifting,
-            tt_wavelet["detail"],
-            "Detail lifting-factorization vs tt-wavelet",
-            args.tolerance,
-        )
+        lifting_vs_tt_a = 0
+        lifting_vs_tt_d = 0
+        if cA_lifting is not None and cD_lifting is not None:
+            lifting_vs_tt_a = print_pairwise_mismatches(
+                cA_lifting,
+                tt_wavelet["approximation"],
+                "Approximation lifting-factorization vs tt-wavelet",
+                args.tolerance,
+            )
+            lifting_vs_tt_d = print_pairwise_mismatches(
+                cD_lifting,
+                tt_wavelet["detail"],
+                "Detail lifting-factorization vs tt-wavelet",
+                args.tolerance,
+            )
         if len(cA_pywt) != len(tt_wavelet["approximation"]) or len(cD_pywt) != len(
             tt_wavelet["detail"]
         ):
@@ -450,15 +468,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
-
-# from pywt import dwt
-
-
-# signal = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
-# cA, cD = dwt(signal, "coif2", mode="symmetric")
-
-# print(f"signal: {signal}")
-# print(f"pywt approximation coefficients: {cA}")
-# print(f"pywt detail coefficients: {cD}")
-# print(len(cA), len(cD))

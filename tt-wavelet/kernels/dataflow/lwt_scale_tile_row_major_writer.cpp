@@ -1,7 +1,7 @@
 #include <cstdint>
 
-#include "../primitives/tile_row_major.hpp"
 #include "api/dataflow/dataflow_api.h"
+#include "lwt_tile_row_major_utils.hpp"
 
 namespace row_major = ttwv::kernels::primitives;
 

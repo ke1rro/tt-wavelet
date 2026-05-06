@@ -10,9 +10,10 @@ from pathlib import Path
 from typing import Callable
 
 PROJECT_ROOT = Path(__file__).resolve().parent
-TT_WAVELET_BINARY = PROJECT_ROOT / "build" / "tt-wavelet" / "lwt"
+TT_WAVELET_BINARY = PROJECT_ROOT / "build" / "lwt"
 TT_WAVELET_ENV = PROJECT_ROOT / "scripts" / "set_env.sh"
 DEFAULT_SCHEMES_DIR = PROJECT_ROOT / "ttnn-wavelet" / "lifting_schemes"
+TT_TIME_PATTERN = re.compile(r"lwt_execution_time_ms:\s*([0-9eE+.\-]+)")
 DEFAULT_LOG_CANDIDATES = [
     PROJECT_ROOT / "wavelets.log",
     PROJECT_ROOT / "wavelets (1).log",
@@ -163,27 +164,25 @@ def generate_signal(length: int, start: float, step: float) -> list[float]:
     return [start + i * step for i in range(length)]
 
 
+def write_signal_file(path: Path, signal: list[float]) -> None:
+    path.write_text(" ".join(repr(value) for value in signal), encoding="utf-8")
+
+
 def sh_quote(value: str) -> str:
     return "'" + value.replace("'", "'\"'\"'") + "'"
 
 
-def build_tt_command(scheme_path: Path, length: int, start: float, step: float) -> str:
+def build_tt_command(wavelet: str, signal_file: Path) -> str:
     args = [
         str(TT_WAVELET_BINARY),
-        "--quiet",
-        "--signal-length",
-        str(length),
-        "--signal-start",
-        repr(start),
-        "--signal-step",
-        repr(step),
-        str(scheme_path),
+        wavelet,
+        str(signal_file),
     ]
     command = " ".join(sh_quote(arg) for arg in args)
     return f"source {sh_quote(str(TT_WAVELET_ENV))} && {command}"
 
 
-def run_tt_wavelet(command: str) -> None:
+def run_tt_wavelet(command: str) -> float:
     completed = subprocess.run(
         ["bash", "-lc", command],
         cwd=PROJECT_ROOT,
@@ -197,6 +196,10 @@ def run_tt_wavelet(command: str) -> None:
         raise RuntimeError(
             f"TT-wavelet run failed with exit code {completed.returncode}.\n{completed.stderr}"
         )
+    match = TT_TIME_PATTERN.search(completed.stderr)
+    if match is None:
+        raise RuntimeError("TT-wavelet output did not include lwt_execution_time_ms.")
+    return float(match.group(1)) / 1000.0
 
 
 def time_repeats(run_once: Callable[[], None], repeats: int) -> tuple[float | None, float | None]:
@@ -211,14 +214,20 @@ def time_repeats(run_once: Callable[[], None], repeats: int) -> tuple[float | No
     return mean, min(times)
 
 
+def value_repeats(run_once: Callable[[], float], repeats: int) -> tuple[float | None, float | None]:
+    if repeats <= 0:
+        return None, None
+    times = [run_once() for _ in range(repeats)]
+    return sum(times) / len(times), min(times)
+
+
 def should_warmup(
     scope: str,
     wavelet: str,
     length: int,
     warmed: set[str],
-    warmed_lengths: set[int],
     warmed_global: list[bool],
-    warmed_pairs: set[tuple],
+    warmed_pairs: set[tuple[str, int]],
 ) -> bool:
     if scope == "global":
         if warmed_global[0]:
@@ -226,7 +235,7 @@ def should_warmup(
         warmed_global[0] = True
         return True
     if scope == "length":
-        # Each lwt call is a new process — kernel loading happens per (wavelet, length) pair.
+        # Each lwt call is a new process; kernel loading happens per (wavelet, length) pair.
         key = (wavelet, length)
         if key in warmed_pairs:
             return False
@@ -292,9 +301,9 @@ def main() -> int:
     ]
 
     warmed_wavelets: set[str] = set()
-    warmed_lengths: set[int] = set()
     warmed_global = [False]
-    warmed_pairs: set[tuple] = set()
+    warmed_pairs: set[tuple[str, int]] = set()
+    signal_file = csv_path.with_suffix(".signal.txt")
 
     with csv_path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
@@ -304,6 +313,7 @@ def main() -> int:
         with tqdm(total=total_runs, desc="Benchmarking", unit="run") as progress:
             for length in lengths:
                 signal_list = generate_signal(length, args.signal_start, args.signal_step)
+                write_signal_file(signal_file, signal_list)
                 try:
                     import numpy as np
 
@@ -336,9 +346,7 @@ def main() -> int:
                         progress.update(1)
                         continue
 
-                    command = build_tt_command(
-                        scheme_path, length, args.signal_start, args.signal_step
-                    )
+                    command = build_tt_command(wavelet, signal_file)
 
                     status = "ok"
                     error_message = ""
@@ -353,7 +361,6 @@ def main() -> int:
                             wavelet,
                             length,
                             warmed_wavelets,
-                            warmed_lengths,
                             warmed_global,
                             warmed_pairs,
                         ):
@@ -364,7 +371,7 @@ def main() -> int:
                             lambda: pywt.dwt(signal, wavelet, mode=args.pywt_mode),
                             args.pywt_repeats,
                         )
-                        tt_mean, tt_min = time_repeats(
+                        tt_mean, tt_min = value_repeats(
                             lambda: run_tt_wavelet(command),
                             args.tt_repeats,
                         )

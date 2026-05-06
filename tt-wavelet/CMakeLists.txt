@@ -4,6 +4,8 @@ if(BUILD_TT_WAVELET)
   add_executable(
     ${PROJECT_NAME} main.cpp tt_wavelet/src/lifting/plan.cpp
         tt_wavelet/src/pad_split/device.cpp tt_wavelet/src/lifting/device.cpp)
+  set_target_properties(${PROJECT_NAME} PROPERTIES RUNTIME_OUTPUT_DIRECTORY
+                                                   "${CMAKE_BINARY_DIR}")
 
   set(TT_WAVELET_LLK_INCLUDE_CANDIDATES
       ${CMAKE_SOURCE_DIR}/tt-metal/tt_metal/third_party/tt_llk/tt_llk_wormhole_b0/llk_lib

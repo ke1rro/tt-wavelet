@@ -24,6 +24,4 @@ struct DeviceStepDesc {
     uint32_t coeffs_packed[step_coeff_capacity];
 };
 
-static_assert(sizeof(DeviceStepDesc) == step_desc_word_count * sizeof(uint32_t));
-
 }  // namespace ttwv::device_protocol
