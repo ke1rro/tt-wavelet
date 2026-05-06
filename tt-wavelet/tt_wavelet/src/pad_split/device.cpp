@@ -24,12 +24,8 @@ constexpr uint32_t kSourceCacheStickCount = 8;
 constexpr const char* kReaderKernelPath = "kernels/dataflow/pad_split_1d_reader.cpp";
 constexpr const char* kWriterKernelPath = "kernels/dataflow/pad_split_1d_writer.cpp";
 
-[[nodiscard]] std::filesystem::path reader_kernel_path(const std::filesystem::path& kernel_root) {
-    return kernel_root / kReaderKernelPath;
-}
-
-[[nodiscard]] std::filesystem::path writer_kernel_path(const std::filesystem::path& kernel_root) {
-    return kernel_root / kWriterKernelPath;
+[[nodiscard]] std::filesystem::path kernel_path(const std::filesystem::path& kernel_root, const char* relative_path) {
+    return kernel_root / relative_path;
 }
 
 [[nodiscard]] uint32_t checked_stick_count(const size_t value, const char* label) {
@@ -97,7 +93,10 @@ PadSplit1DDeviceProgram create_pad_split_1d_program(
     tt::tt_metal::TensorAccessorArgs(input_buffer).append_to(reader_compile_args);
 
     const auto reader_kernel = tt::tt_metal::CreateKernel(
-        program, reader_kernel_path(kernel_root), core, tt::tt_metal::ReaderDataMovementConfig(reader_compile_args));
+        program,
+        kernel_path(kernel_root, kReaderKernelPath),
+        core,
+        tt::tt_metal::ReaderDataMovementConfig(reader_compile_args));
 
     std::optional<tt::tt_metal::KernelHandle> writer_kernel;
     if (!direct_l1_output) {
@@ -109,7 +108,7 @@ PadSplit1DDeviceProgram create_pad_split_1d_program(
         tt::tt_metal::TensorAccessorArgs(odd_buffer).append_to(writer_compile_args);
         writer_kernel = tt::tt_metal::CreateKernel(
             program,
-            writer_kernel_path(kernel_root),
+            kernel_path(kernel_root, kWriterKernelPath),
             core,
             tt::tt_metal::WriterDataMovementConfig(writer_compile_args));
     }

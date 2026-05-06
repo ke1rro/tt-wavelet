@@ -1,7 +1,7 @@
 #include <cstdint>
 
-#include "../primitives/tile_row_major.hpp"
 #include "api/dataflow/dataflow_api.h"
+#include "lwt_tile_row_major_utils.hpp"
 
 namespace row_major = ttwv::kernels::primitives;
 
@@ -83,8 +83,11 @@ void kernel_main() {
                         row_base + 2 * row_major::kLwtHalfStickElements,
                         output_length,
                         stick_width);
-                    noc_async_write_barrier();
                 }
+            }
+
+            if constexpr (!output_is_local_l1) {
+                noc_async_write_barrier();
             }
 
             cb_pop_front(cb_output, 2);

@@ -13,7 +13,7 @@ constexpr uint32_t kOutputBlocksPerRow = kInputBlocksPerRow - 1;
 constexpr uint32_t kGroupOutputElements = kRowsPerGroup * kOutputBlocksPerRow * kBlockElements;
 
 template <typename SrcAccessor>
-float read_dense_or_zero(
+ALWI float read_dense_or_zero(
     const SrcAccessor& src,
     ttwv::kernels::primitives::StickReadCache& cache,
     const uint32_t logical_length,
@@ -22,7 +22,7 @@ float read_dense_or_zero(
                                           : 0.0F;
 }
 
-float read_local_l1_dense_or_zero(
+ALWI float read_local_l1_dense_or_zero(
     const uint32_t src_addr,
     const uint32_t stick_nbytes,
     const uint32_t stick_width,

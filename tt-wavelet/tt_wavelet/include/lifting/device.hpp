@@ -39,7 +39,6 @@ struct LiftingWorkingBuffers {
 };
 
 struct LiftingPreprocessDeviceProgram {
-    RuntimeLiftingScheme scheme{};
     LiftingForwardPlan plan{};
     LiftingWorkingBuffers buffers{};
     PadSplit1DDeviceProgram preprocess{};
@@ -58,7 +57,7 @@ void run_preprocess(
     tt::tt_metal::distributed::MeshDevice& mesh_device,
     LiftingPreprocessDeviceProgram& bundle);
 
-[[nodiscard]] LiftingActiveStreams execute_forward_lifting(
+[[nodiscard]] LiftingActiveStreams lwt(
     const std::filesystem::path& kernel_root,
     tt::tt_metal::distributed::MeshDevice& mesh_device,
     tt::tt_metal::distributed::MeshCommandQueue& command_queue,

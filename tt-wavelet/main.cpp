@@ -1,11 +1,14 @@
+#include <algorithm>
+#include <chrono>
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <iomanip>
 #include <iostream>
-#include <optional>
-#include <sstream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "tt-metalium/distributed.hpp"
@@ -16,50 +19,34 @@
 
 namespace {
 
-[[nodiscard]] std::filesystem::path default_scheme_path() {
-    return std::filesystem::path(TT_WAVELET_SOURCE_DIR) / "../ttnn-wavelet/lifting_schemes/coif2.json";
-}
-
-[[nodiscard]] std::vector<float> default_signal() {
-    constexpr size_t default_signal_length = 19;
-    std::vector<float> signal(default_signal_length);
-    for (size_t i = 0; i < default_signal_length; ++i) {
-        signal[i] = static_cast<float>(i + 1);
-    }
-    return signal;
-}
-
-[[nodiscard]] std::vector<float> generate_signal(const size_t length, const float start, const float step) {
-    if (length == 0) {
-        throw std::runtime_error("Signal length must be positive.");
+[[nodiscard]] std::filesystem::path resolve_scheme_path(const std::string_view scheme) {
+    const std::string scheme_name{scheme};
+    std::filesystem::path raw_path{scheme_name};
+    if (std::filesystem::exists(raw_path)) {
+        return raw_path;
     }
 
-    std::vector<float> signal(length);
-    for (size_t i = 0; i < length; ++i) {
-        signal[i] = start + static_cast<float>(i) * step;
-    }
-    return signal;
+    const std::filesystem::path schemes_dir =
+        std::filesystem::path(TT_WAVELET_SOURCE_DIR) / "../ttnn-wavelet/lifting_schemes";
+    return schemes_dir / (scheme_name.ends_with(".json") ? scheme_name : scheme_name + ".json");
 }
 
-[[nodiscard]] std::vector<float> parse_signal_arg(const char* raw_signal) {
+[[nodiscard]] std::vector<float> read_signal_file(const std::filesystem::path& path) {
+    std::ifstream handle(path);
+    if (!handle.good()) {
+        throw std::runtime_error("Failed to open signal file: " + path.string());
+    }
+
     std::vector<float> signal;
-    std::string token;
-    std::stringstream stream(raw_signal);
-    while (std::getline(stream, token, ',')) {
-        if (token.empty()) {
-            continue;
-        }
-
-        size_t parsed_chars = 0;
-        const float value = std::stof(token, &parsed_chars);
-        if (parsed_chars != token.size()) {
-            throw std::runtime_error("Failed to parse signal token: " + token);
-        }
+    for (float value = 0.0F; handle >> value;) {
         signal.push_back(value);
     }
 
     if (signal.empty()) {
-        throw std::runtime_error("Signal argument is empty.");
+        throw std::runtime_error("Signal file is empty: " + path.string());
+    }
+    if (!handle.eof()) {
+        throw std::runtime_error("Signal file contains a non-numeric token: " + path.string());
     }
 
     return signal;
@@ -93,189 +80,82 @@ void print_coeffs(const char* label, const std::vector<float>& values, const siz
         logical_values.begin() + static_cast<std::ptrdiff_t>(crop_offset + output_length));
 }
 
-struct CliOptions {
-    bool quiet = false;
-    std::optional<std::filesystem::path> scheme_path;
-    std::optional<std::string> raw_signal;
-    std::optional<size_t> signal_length;
-    float signal_start = 1.0f;
-    float signal_step = 1.0f;
-    bool signal_start_set = false;
-    bool signal_step_set = false;
-};
-
-[[noreturn]] void print_usage(const char* program, const int exit_code) {
-    std::cout << "Usage: " << program << " [options] [scheme_path] [signal_csv]\n"
-              << "\nOptions:\n"
-              << "  --quiet            Skip printing coefficient lists and summary.\n"
-              << "  --signal-length N  Generate N samples instead of parsing signal_csv.\n"
-              << "  --signal-start V   Start value for generated signal (default: 1).\n"
-              << "  --signal-step V    Step value for generated signal (default: 1).\n"
-              << "  -h, --help         Show this help message.\n";
-    std::exit(exit_code);
-}
-
-[[nodiscard]] CliOptions parse_cli(const int argc, char** argv) {
-    CliOptions options;
-
-    for (int i = 1; i < argc; ++i) {
-        const std::string arg = argv[i];
-
-        if (arg == "--quiet") {
-            options.quiet = true;
-            continue;
-        }
-
-        if (arg == "-h" || arg == "--help") {
-            print_usage(argv[0], EXIT_SUCCESS);
-        }
-
-        if (arg == "--signal-length") {
-            if (i + 1 >= argc) {
-                throw std::runtime_error("--signal-length expects a value.");
-            }
-            const std::string value = argv[++i];
-            size_t parsed_chars = 0;
-            const size_t length = std::stoull(value, &parsed_chars);
-            if (parsed_chars != value.size()) {
-                throw std::runtime_error("Invalid --signal-length value: " + value);
-            }
-            options.signal_length = length;
-            continue;
-        }
-
-        if (arg == "--signal-start") {
-            if (i + 1 >= argc) {
-                throw std::runtime_error("--signal-start expects a value.");
-            }
-            const std::string value = argv[++i];
-            size_t parsed_chars = 0;
-            const float parsed = std::stof(value, &parsed_chars);
-            if (parsed_chars != value.size()) {
-                throw std::runtime_error("Invalid --signal-start value: " + value);
-            }
-            options.signal_start = parsed;
-            options.signal_start_set = true;
-            continue;
-        }
-
-        if (arg == "--signal-step") {
-            if (i + 1 >= argc) {
-                throw std::runtime_error("--signal-step expects a value.");
-            }
-            const std::string value = argv[++i];
-            size_t parsed_chars = 0;
-            const float parsed = std::stof(value, &parsed_chars);
-            if (parsed_chars != value.size()) {
-                throw std::runtime_error("Invalid --signal-step value: " + value);
-            }
-            options.signal_step = parsed;
-            options.signal_step_set = true;
-            continue;
-        }
-
-        if (!arg.empty() && arg[0] == '-') {
-            throw std::runtime_error("Unknown option: " + arg);
-        }
-
-        if (!options.scheme_path) {
-            options.scheme_path = std::filesystem::path(arg);
-            continue;
-        }
-
-        if (!options.raw_signal) {
-            options.raw_signal = arg;
-            continue;
-        }
-
-        throw std::runtime_error("Unexpected argument: " + arg);
-    }
-
-    if (!options.signal_length && (options.signal_start_set || options.signal_step_set)) {
-        throw std::runtime_error("--signal-start/--signal-step require --signal-length.");
-    }
-
-    return options;
-}
-
 }  // namespace
 
 int main(int argc, char** argv) {
-    const CliOptions options = parse_cli(argc, argv);
-    const std::filesystem::path scheme_path = options.scheme_path.value_or(default_scheme_path());
-    const std::vector<float> original_signal = [&options]() {
-        if (options.signal_length) {
-            return generate_signal(*options.signal_length, options.signal_start, options.signal_step);
+    try {
+        if (argc != 3) {
+            throw std::runtime_error("Usage: lwt <scheme|scheme_path> <signal_file>");
         }
-        if (options.raw_signal) {
-            return parse_signal_arg(options.raw_signal->c_str());
-        }
-        return default_signal();
-    }();
+        setenv("TT_LOGGER_LEVEL", "error", 0);
 
-    constexpr int device_id = 0;
-    constexpr tt::tt_metal::CoreCoord core{0, 0};
-    const size_t signal_length = original_signal.size();
+        const std::filesystem::path scheme_path = resolve_scheme_path(argv[1]);
+        const std::vector<float> original_signal = read_signal_file(argv[2]);
+        const auto scheme = ttwv::load_runtime_lifting_scheme(scheme_path);
+        const auto start = std::chrono::steady_clock::now();
 
-    auto mesh_device = tt::tt_metal::distributed::MeshDevice::create_unit_mesh(device_id);
-    tt::tt_metal::distributed::MeshCommandQueue& command_queue = mesh_device->mesh_command_queue();
+        constexpr int device_id = 0;
+        constexpr tt::tt_metal::CoreCoord core{0, 0};
+        const size_t signal_length = original_signal.size();
 
-    ttwv::SignalBuffer input_desc{
-        .dram_address = 0,
-        .length = signal_length,
-        .stick_width = 32,
-        .element_size_bytes = sizeof(float),
-    };
+        auto mesh_device = tt::tt_metal::distributed::MeshDevice::create_unit_mesh(device_id);
+        tt::tt_metal::distributed::MeshCommandQueue& command_queue = mesh_device->mesh_command_queue();
 
-    const tt::tt_metal::distributed::DeviceLocalBufferConfig input_local_config{
-        .page_size = input_desc.aligned_stick_bytes(32),
-        .buffer_type = tt::tt_metal::BufferType::DRAM,
-    };
-    const tt::tt_metal::distributed::ReplicatedBufferConfig input_replicated_config{
-        .size = static_cast<uint64_t>(input_desc.physical_nbytes()),
-    };
-    auto input_buffer =
-        tt::tt_metal::distributed::MeshBuffer::create(input_replicated_config, input_local_config, mesh_device.get());
-    input_desc.dram_address = input_buffer->get_backing_buffer()->address();
+        ttwv::SignalBuffer input_desc{
+            .dram_address = 0,
+            .length = signal_length,
+            .stick_width = 32,
+            .element_size_bytes = sizeof(float),
+        };
 
-    const auto scheme = ttwv::load_runtime_lifting_scheme(scheme_path);
-    auto bundle = ttwv::create_lifting_preprocess_program(
-        TT_WAVELET_SOURCE_DIR, *mesh_device, core, *(input_buffer->get_backing_buffer()), input_desc, scheme);
+        const tt::tt_metal::distributed::DeviceLocalBufferConfig input_local_config{
+            .page_size = input_desc.aligned_stick_bytes(32),
+            .buffer_type = tt::tt_metal::BufferType::DRAM,
+        };
+        const tt::tt_metal::distributed::ReplicatedBufferConfig input_replicated_config{
+            .size = static_cast<uint64_t>(input_desc.physical_nbytes()),
+        };
+        auto input_buffer = tt::tt_metal::distributed::MeshBuffer::create(
+            input_replicated_config, input_local_config, mesh_device.get());
+        input_desc.dram_address = input_buffer->get_backing_buffer()->address();
 
-    tt::tt_metal::distributed::EnqueueWriteMeshBuffer(command_queue, input_buffer, original_signal, false);
-    ttwv::run_preprocess(command_queue, *mesh_device, bundle);
+        auto bundle = ttwv::create_lifting_preprocess_program(
+            TT_WAVELET_SOURCE_DIR, *mesh_device, core, *(input_buffer->get_backing_buffer()), input_desc, scheme);
 
-    const auto active_streams =
-        ttwv::execute_forward_lifting(TT_WAVELET_SOURCE_DIR, *mesh_device, command_queue, core, bundle);
+        tt::tt_metal::distributed::EnqueueWriteMeshBuffer(command_queue, input_buffer, original_signal, false);
+        ttwv::run_preprocess(command_queue, *mesh_device, bundle);
 
-    std::vector<float> device_even_result;
-    std::vector<float> device_odd_result;
+        const auto active_streams = ttwv::lwt(TT_WAVELET_SOURCE_DIR, *mesh_device, command_queue, core, bundle);
 
-    auto even_buffer = active_streams.even.family == ttwv::LogicalStream::kEven
-                           ? bundle.buffers.even.at(active_streams.even.slot)
-                           : bundle.buffers.odd.at(active_streams.even.slot);
-    auto odd_buffer = active_streams.odd.family == ttwv::LogicalStream::kEven
-                          ? bundle.buffers.even.at(active_streams.odd.slot)
-                          : bundle.buffers.odd.at(active_streams.odd.slot);
-    tt::tt_metal::distributed::EnqueueReadMeshBuffer(command_queue, device_even_result, even_buffer, true);
-    tt::tt_metal::distributed::EnqueueReadMeshBuffer(command_queue, device_odd_result, odd_buffer, true);
+        std::vector<float> device_even_result;
+        std::vector<float> device_odd_result;
 
-    const size_t canonical_length = bundle.plan.output_length;
+        auto even_buffer = active_streams.even.family == ttwv::LogicalStream::kEven
+                               ? bundle.buffers.even.at(active_streams.even.slot)
+                               : bundle.buffers.odd.at(active_streams.even.slot);
+        auto odd_buffer = active_streams.odd.family == ttwv::LogicalStream::kEven
+                              ? bundle.buffers.even.at(active_streams.odd.slot)
+                              : bundle.buffers.odd.at(active_streams.odd.slot);
+        tt::tt_metal::distributed::EnqueueReadMeshBuffer(command_queue, device_even_result, even_buffer, true);
+        tt::tt_metal::distributed::EnqueueReadMeshBuffer(command_queue, device_odd_result, odd_buffer, true);
+        const auto stop = std::chrono::steady_clock::now();
 
-    const auto even_canonical =
-        canonicalize_forward_output(device_even_result, bundle.plan.final_even_length, canonical_length);
-    const auto odd_canonical =
-        canonicalize_forward_output(device_odd_result, bundle.plan.final_odd_length, canonical_length);
+        const size_t canonical_length = bundle.plan.output_length;
 
-    if (!options.quiet) {
-        print_coeffs("input signal", original_signal, original_signal.size());
+        const auto even_canonical =
+            canonicalize_forward_output(device_even_result, bundle.plan.final_even_length, canonical_length);
+        const auto odd_canonical =
+            canonicalize_forward_output(device_odd_result, bundle.plan.final_odd_length, canonical_length);
+
         print_coeffs("tt-wavelet approximation coefficients", even_canonical, canonical_length);
         print_coeffs("tt-wavelet detail coefficients", odd_canonical, canonical_length);
+        std::cout << std::flush;
 
-        std::cout << "Scheme: " << scheme_path << '\n';
-        std::cout << "Steps executed: " << bundle.scheme.steps.size() << '\n';
-        std::cout << "Even logical length: " << canonical_length << '\n';
-        std::cout << "Odd logical length: " << canonical_length << '\n';
+        const std::chrono::duration<double, std::milli> elapsed_ms = stop - start;
+        std::cerr << "lwt_execution_time_ms: " << std::fixed << std::setprecision(6) << elapsed_ms.count() << '\n';
+        return EXIT_SUCCESS;
+    } catch (const std::exception& exc) {
+        std::cerr << exc.what() << '\n';
+        return EXIT_FAILURE;
     }
-    return EXIT_SUCCESS;
 }

@@ -227,14 +227,3 @@ inline void hstencil_tile(
         output2
     )));
 }
-
-template<uint8_t K>
-inline void hstencil_row(
-    std::array<uint32_t, K> h_packed,
-    const uint32_t input1,
-    const uint32_t input2,
-    const uint32_t output1,
-    const uint32_t output2
-) {
-    hstencil_tile<K, 1>(h_packed, input1, input2, output1, output2);
-}

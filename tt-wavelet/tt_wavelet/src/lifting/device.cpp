@@ -82,7 +82,7 @@ struct PredictUpdateProgram {
     const size_t physical_nbytes = std::max(buffer.physical_nbytes(kNocAlignmentBytes), static_cast<size_t>(page_size));
 
     tt::tt_metal::distributed::DeviceLocalBufferConfig local_config{
-        .page_size = buffer.aligned_stick_bytes(kNocAlignmentBytes),
+        .page_size = page_size,
         .buffer_type = buffer_type,
     };
 
@@ -411,7 +411,6 @@ LiftingPreprocessDeviceProgram create_lifting_preprocess_program(
         plan.preprocess_layout);
 
     return LiftingPreprocessDeviceProgram{
-        .scheme = scheme,
         .plan = plan,
         .buffers =
             LiftingWorkingBuffers{
@@ -632,7 +631,7 @@ void set_predict_update_runtime_args(
     tt::tt_metal::SetRuntimeArgs(program_bundle.program, program_bundle.writer, core, writer_rt);
 }
 
-LiftingActiveStreams execute_forward_lifting(
+LiftingActiveStreams lwt(
     const std::filesystem::path& kernel_root,
     tt::tt_metal::distributed::MeshDevice& mesh_device,
     tt::tt_metal::distributed::MeshCommandQueue& command_queue,
@@ -647,16 +646,15 @@ LiftingActiveStreams execute_forward_lifting(
     const std::vector<uint8_t> write_tile_sidecar = compute_tile_sidecar_routes(bundle.plan);
 
     for (size_t step_index = 0; step_index < bundle.plan.routes.size();) {
-        const auto& step = bundle.scheme.steps[step_index];
         const auto& route = bundle.plan.routes[step_index];
         const auto& packed_step = bundle.plan.packed_steps[step_index];
 
-        if (step.type == StepType::kSwap) {
+        if (route.type == StepType::kSwap) {
             ++step_index;
             continue;
         }
 
-        if (step.type == StepType::kPredict || step.type == StepType::kUpdate) {
+        if (route.type == StepType::kPredict || route.type == StepType::kUpdate) {
             const std::vector<size_t> pu_step_indices{step_index};
             const auto& source_buffer = resolve_mesh_buffer(bundle.buffers, route.source);
             const auto& base_buffer = resolve_mesh_buffer(bundle.buffers, route.base);
@@ -684,9 +682,9 @@ LiftingActiveStreams execute_forward_lifting(
         const auto& output_buffer = resolve_output_mesh_buffer(bundle.buffers, route);
 
         TT_FATAL(
-            step.type == StepType::kScaleEven || step.type == StepType::kScaleOdd,
+            route.type == StepType::kScaleEven || route.type == StepType::kScaleOdd,
             "unexpected step type {} in scale path",
-            static_cast<int>(step.type));
+            static_cast<int>(route.type));
         TT_FATAL(
             stream_has_tile_sidecar(bundle.plan, write_tile_sidecar, route.source),
             "Tile scale sidecar missing for terminal scale source");
