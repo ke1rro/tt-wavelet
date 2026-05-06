@@ -4,59 +4,44 @@ The stencil on SFPI assumes the following:
 - The stencil filter $h$ has a length $1 < k < 18$.
 - The input signal $f$ is padded with $17-k$ (any) elements on the left and on the right to fit into tile sizes.
 
-Stencil uses the following formula:
+Convolution (called stencil in our documentation) in a valid mode (which includes only elements that do not depend on the out-of-the-bound signal elements) is defined by the following formula:
 
 $$
-g[i] = \sum_{j=0}^{k-1} h[j] \cdot f[i-j]
+    g[i] = (h*f)[i+k-1] = \sum_{j=0}^{k-1}h[j]f[i+k-1-j]
 $$
+
+By introducing linear operator $(R_jf)[i] = f[i-j]$ we can rewrite formula as:
+
+$$
+    g = R_{k-1}(h*f) = \sum_{j=0}^{k-1}h[j]R_j(R_{-(k-1)}f)
+$$
+
+Thus, convolution is a linear combination of shifts of $f$.
 
 ## Mathematical background
 
-Define linear operator $R_k$ as follows, that is the shift to the right by $k$ elements:
+For the horizontal convolution consider $f' = R_{16}(R_{-(k-1)}f) = R_{17-k}f$, then:
 
 $$
-(R_kf)[i] = f[i - k]
+    g = R_{-16}\sum_{j=0}^{k-1}h[j]R_jf'
 $$
 
-Then we can rewrite the stencil formula as follows:
+That is to compute first block of $16$ elements ($0-15$) of $g$ we can start with second block of $16$ elements of $f'$ and progressively shift it to the right using $R_1$ $k-1$ times, multiplying by $h[j]$ and accumulating. But since SFPU can only operate on even and odd columns separately, we need to rewrite the formula. For now, we compute $g' = \sum_{j=0}^{k-1}h[j]R_jf'$, but only starting from the position $i=16$, because later we simply do $g = R_{-16}g'$.
+
+Define: $f_e'[i] = f'[2i]$ and $f_o'[i] = f'[2i+1]$. Then we easily derive the following formulas:
 
 $$
-g = \sum_{j=0}^{k-1} h[j] \cdot R_j f
+g_e' = \sum_{j=0}^{\lfloor (k-1)/2 \rfloor} h[2j] \cdot (R_j f_e') + \sum_{j=0}^{\lfloor (k-2)/2 \rfloor} h[2j+1] \cdot (R_{j+1} f_o')
 $$
 
-That is, the stencil is a linear combination of shifted versions of the input signal $f$.
-
-Taking into account the hardware limitations (i.e. processing even and odd columns seperately), we can split the stencil into two parts: one for even columns and one for odd columns.
-
-Define: $f_e[i] = f[2i]$ and $f_o[i] = f[2i+1]$. Then we can rewrite the stencil as follows:
-
 $$
-g[2i] = \sum_{j=0}^{k-1} h[j] \cdot f[2i-j] = \sum_{j=0}^{\lfloor (k-1)/2 \rfloor} h[2j] \cdot f[2i-2j] + \sum_{j=0}^{\lfloor (k-2)/2 \rfloor} h[2j+1] \cdot f[2i-(2j+1)] =
-\sum_{j=0}^{\lfloor (k-1)/2 \rfloor} h[2j] \cdot f_e[i-j] + \sum_{j=0}^{\lfloor (k-2)/2 \rfloor} h[2j+1] \cdot f_o[i-j-1]
+g_o' = \sum_{j=0}^{\lfloor (k-1)/2 \rfloor} h[2j] \cdot (R_j f_o') + \sum_{j=0}^{\lfloor (k-2)/2 \rfloor} h[2j+1] \cdot (R_j f_e')
 $$
 
-So
+$R_1f_e'$ for example is computed for two consecutive horizontal 4x8 blocks, thus we shift 4x8 to the right, but the first column is not valid. Only second block participates in the computation, thus we can do at most 8 such shifts on $f_e'$. Given above formula we derive that $k\leq 17$, but this limitation is sufficient for our LWT problem, which requires support of  $k\leq9$.
 
-$$
-g_e = \sum_{j=0}^{\lfloor (k-1)/2 \rfloor} h[2j] \cdot (R_j f_e)[i] + \sum_{j=0}^{\lfloor (k-2)/2 \rfloor} h[2j+1] \cdot (R_{j+1} f_o)[i]
-$$
+Also this requires physical padding by $17-k$ elements to the left for $f$ to get $f'$.
 
-With the same reasoning we can derive the formula for odd columns:
-
-$$
-g_o = \sum_{j=0}^{\lfloor (k-1)/2 \rfloor} h[2j] \cdot (R_j f_o)[i] + \sum_{j=0}^{\lfloor (k-2)/2 \rfloor} h[2j+1] \cdot (R_j f_e)[i]
-$$
-
-
-### Padding
-
-As was mentioned for our original signal $s$ we have that: $f = R_{17-k} s$. Consider $g[16]$:
-
-$$
-g[16] = \sum_{j=0}^{k-1} h[j] \cdot f[16-j] = \sum_{j=0}^{k-1} h[j] \cdot s[k-1-j]
-$$
-
-So when you substitute $j=k-1$ you get $s[0]$. That means that the actual result of stencil between $s$ and $h$ is $R_{16}g' = g$. I.e. the $g$ is the result of the stencil between $s$ and $h$ shifted to the right by 16 elements. To compensate for this, we skip the first 16 elements (first face) of the output and start computing directly from the second face ($g[t], t>16$), and what you get as the output is $g'$.
 
 ## Implementation details
 
