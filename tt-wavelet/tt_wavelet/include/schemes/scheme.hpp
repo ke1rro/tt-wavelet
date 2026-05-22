@@ -32,14 +32,14 @@ private:
 
 class LiftingScheme {
 public:
-    LiftingScheme(std::vector<LiftingStep>&& steps, int32_t delay_even, int32_t delay_odd) :
-        _steps(std::move(steps)), delay_even(delay_even), delay_odd(delay_odd) {}
-    LiftingScheme(const std::vector<LiftingStep>& steps, int32_t delay_even, int32_t delay_odd) :
-        _steps(steps), delay_even(delay_even), delay_odd(delay_odd) {}
-    LiftingScheme(std::initializer_list<LiftingStep> steps, int32_t delay_even, int32_t delay_odd) :
-        _steps(steps), delay_even(delay_even), delay_odd(delay_odd) {}
-    LiftingScheme(LiftingStep&&... steps, int32_t delay_even, int32_t delay_odd) :
-        _steps(std::forward<LiftingStep>(steps)...), delay_even(delay_even), delay_odd(delay_odd) {}
+    LiftingScheme(int32_t delay_even, int32_t delay_odd, uint32_t tap_size, std::vector<LiftingStep>&& steps) :
+        _steps(std::move(steps)), delay_even(delay_even), delay_odd(delay_odd), tap_size(tap_size) {}
+    LiftingScheme(int32_t delay_even, int32_t delay_odd, uint32_t tap_size, const std::vector<LiftingStep>& steps) :
+        _steps(steps), delay_even(delay_even), delay_odd(delay_odd), tap_size(tap_size) {}
+    LiftingScheme(int32_t delay_even, int32_t delay_odd, uint32_t tap_size, std::initializer_list<LiftingStep> steps) :
+        _steps(steps), delay_even(delay_even), delay_odd(delay_odd), tap_size(tap_size) {}
+    LiftingScheme(int32_t delay_even, int32_t delay_odd, uint32_t tap_size, LiftingStep&&... steps) :
+        _steps(std::forward<LiftingStep>(steps)...), delay_even(delay_even), delay_odd(delay_odd), tap_size(tap_size) {}
 
     ~LiftingScheme() = default;
 
@@ -49,6 +49,7 @@ private:
     std::vector<LiftingStep> _steps;
     int32_t delay_even;
     int32_t delay_odd;
+    uint32_t tap_size;
 };
 
 }  // namespace ttwv
