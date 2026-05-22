@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <utility>
 
 #include "ckernel.h"
 #include "ckernel_defs.h"
@@ -61,13 +62,8 @@ inline void _horizontal_stencil_block(
 #pragma unroll 17
     for (uint8_t j = 0; j < 17-K; j++) {
         _horizontal_rotate(f_o_0, f_o_1);
-        auto tmp = f_e_0;
-        f_e_0 = f_o_0;
-        f_o_0 = tmp;
-
-        tmp = f_e_1;
-        f_e_1 = f_o_1;
-        f_o_1 = tmp;
+        std::swap(f_e_0, f_e_1);
+        std::swap(f_o_0, f_o_1);
     }
 
 #pragma unroll 17
@@ -157,5 +153,6 @@ inline void hstencil_spline(
     const uint32_t input2,
     const uint32_t output1,
     const uint32_t output2) {
+    static_assert(K > 1 && K <= 17, "K must be in the range [2, 17]");
     MATH((ckernel::sfpu::_horizontal_stencil<K, Rows>(h_packed.data(), input1, input2, output1, output2)));
 }

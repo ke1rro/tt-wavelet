@@ -42,10 +42,8 @@ inline void _splice_shift_row_band_right_one(
 }
 
 template <uint8_t K>
-inline void _splice_shift(const std::uint32_t tile0, const std::uint32_t tile1) {
-    static_assert(K < 16, "splice_shift only supports K < 16");
-
-    if constexpr (K == 0) {
+inline void _splice_shift(const std::uint32_t tile0, const std::uint32_t tile1, const uint32_t k = K) {
+    if (k == 0) {
         return;
     }
 
@@ -62,8 +60,7 @@ inline void _splice_shift(const std::uint32_t tile0, const std::uint32_t tile1) 
     const std::uint32_t tile1_face2 = _get_dst_base(tile1, 2);
     const std::uint32_t tile1_face3 = _get_dst_base(tile1, 3);
 
-#pragma unroll 15
-    for (std::uint8_t step = 0; step < K; ++step) {
+    for (std::uint8_t step = 0; step < k; ++step) {
 #pragma unroll 4
         for (std::uint32_t row = 0; row < 16; row += 4) {
             _splice_shift_row_band_right_one(
@@ -78,7 +75,11 @@ inline void _splice_shift(const std::uint32_t tile0, const std::uint32_t tile1) 
 
 } // namespace ckernel::sfpu
 
-template <uint8_t K>
-inline void shift_splice(const uint32_t tile0, const uint32_t tile1) {
-    MATH((ckernel::sfpu::_splice_shift<K>(tile0, tile1)));
+inline void shift_splice(const uint32_t tile0, const uint32_t tile1, const uint32_t k) {
+    if (k > 16) {
+        // TODO: Raise some kind of error
+        return;
+    }
+
+    MATH((ckernel::sfpu::_splice_shift(tile0, tile1, k)));
 }
