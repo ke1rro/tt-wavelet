@@ -125,8 +125,8 @@ inline void step_scale(
     const uint32_t splice_number,
     const uint32_t s_packed) {
 
-    cb_wait_front(cb_even, splice_number);
-    cb_reserve_back(cb_even, splice_number);
+    cb_wait_front(cb_even, splice_number * 2);
+    cb_reserve_back(cb_even, splice_number * 2);
 
     for (uint32_t splice = 0; splice < splice_number; splice++) {
         tile_regs_acquire();
@@ -148,8 +148,8 @@ inline void step_scale(
         tile_regs_release();
     }
 
-    cb_pop_front(cb_even, splice_number);
-    cb_push_back(cb_even, splice_number);
+    cb_pop_front(cb_even, splice_number * 2);
+    cb_push_back(cb_even, splice_number * 2);
 }
 
 template <uint32_t arg_base, uint32_t num_steps>
