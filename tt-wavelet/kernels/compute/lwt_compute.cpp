@@ -196,8 +196,8 @@ inline void unroll_step(
     } else {
         cb_reserve_back(cb_out, 1);
 
-        uint32_t write_ptr = get_write_ptr(cb);  
-        
+        uint32_t write_ptr = get_write_ptr(cb_out);  
+
         volatile uint32_t* ptr32 = (volatile uint32_t*)write_ptr;  
         ptr32[0] = even_shift;  
         ptr32[1] = odd_shift;
