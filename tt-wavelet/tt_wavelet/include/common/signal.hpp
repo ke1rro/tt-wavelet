@@ -33,9 +33,9 @@ namespace ttwv {
 }
 
 constexpr size_t kLwtTileRowsPerGroup = 32;
-constexpr size_t kLwtTileOutputBlocksPerRow = 3;
-constexpr size_t kLwtTileBlockElements = 16;
-constexpr size_t kLwtGroupOutputElements = kLwtTileRowsPerGroup * kLwtTileOutputBlocksPerRow * kLwtTileBlockElements;
+constexpr size_t kLwtTileOutputHSticksPerRow = 3;
+constexpr size_t kLwtTileHStickElements = 16;
+constexpr size_t kLwtGroupOutputElements = kLwtTileRowsPerGroup * kLwtTileOutputHSticksPerRow * kLwtTileHStickElements;
 constexpr size_t kLwtTilePagesPerGroup = 2;
 constexpr size_t kLwtTilePageElements = 32 * 32;
 
@@ -122,8 +122,6 @@ struct SignalBuffer {
  * @brief LWT grouped tile-page sidecar for terminal scale.
  *
  * Predict/update emits two 32x32 fp32 tile pages per 1536 logical output samples:
- * one full tile containing output blocks 0 and 1 for each row, and one tail tile
- * containing output block 2 in the first half-stick of each row.
  */
 struct TileSignalBuffer {
     uint64_t dram_address{0};

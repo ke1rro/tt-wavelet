@@ -16,10 +16,10 @@ constexpr uint32_t kFaceHeight = 16;
 constexpr uint32_t kFaceElements = kFaceWidth * kFaceHeight;
 constexpr uint32_t kTileScalars = kTileWidth * kTileHeight;
 constexpr uint32_t kLwtRowsPerGroup = 32;
-constexpr uint32_t kLwtOutputBlocksPerRow = 3;
-constexpr uint32_t kLwtHalfStickElements = 16;
-constexpr uint32_t kLwtHalfStickBytes = kLwtHalfStickElements * sizeof(float);
-constexpr uint32_t kLwtGroupOutputElements = kLwtRowsPerGroup * kLwtOutputBlocksPerRow * kLwtHalfStickElements;
+constexpr uint32_t kLwtOutputHSticksPerRow = 3;
+constexpr uint32_t kLwtHStickElements = 16;
+constexpr uint32_t kLwtHStickBytes = kLwtHStickElements * sizeof(float);
+constexpr uint32_t kLwtGroupOutputElements = kLwtRowsPerGroup * kLwtOutputHSticksPerRow * kLwtHStickElements;
 
 [[nodiscard]] ALWI constexpr uint32_t tile_offset(const uint32_t row, const uint32_t col) {
     const uint32_t face_row = row / kFaceHeight;
@@ -35,7 +35,7 @@ ALWI void store_tile_value(float* tile_ptr, const uint32_t row, const uint32_t c
 }
 
 template <typename DstAccessor>
-ALWI void write_lwt_half_block(
+ALWI void write_lwt_hstick(
     const DstAccessor& dst,
     const uint32_t tile_addr,
     const uint32_t row,
@@ -51,10 +51,10 @@ ALWI void write_lwt_half_block(
     const uint32_t dst_lane = output_index % stick_width;
     const uint32_t src_offset = tile_offset(row, col) * static_cast<uint32_t>(sizeof(float));
     const uint64_t noc_addr = dst.get_noc_addr(dst_stick) + dst_lane * sizeof(float);
-    noc_async_write(tile_addr + src_offset, noc_addr, kLwtHalfStickBytes);
+    noc_async_write(tile_addr + src_offset, noc_addr, kLwtHStickBytes);
 }
 
-ALWI void write_lwt_half_block_local_l1(
+ALWI void write_lwt_hstick_local_l1(
     const uint32_t dst_addr,
     const uint32_t stick_nbytes,
     const uint32_t tile_addr,
@@ -74,7 +74,7 @@ ALWI void write_lwt_half_block_local_l1(
         dst_addr + dst_stick * stick_nbytes + dst_lane * static_cast<uint32_t>(sizeof(float)));
     const auto* src_values = reinterpret_cast<volatile tt_l1_ptr float*>(tile_addr + src_offset);
 
-    for (uint32_t i = 0; i < kLwtHalfStickElements; ++i) {
+    for (uint32_t i = 0; i < kLwtHStickElements; ++i) {
         dst_values[i] = src_values[i];
     }
 }

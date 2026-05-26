@@ -1,7 +1,7 @@
 #include <cstdint>
 
+#include "../primitives/tile_row_major.hpp"
 #include "api/dataflow/dataflow_api.h"
-#include "lwt_tile_row_major_utils.hpp"
 
 namespace row_major = ttwv::kernels::primitives;
 
@@ -42,45 +42,44 @@ void kernel_main() {
 
             for (uint32_t row = 0; row < row_major::kLwtRowsPerGroup; ++row) {
                 const uint32_t row_base =
-                    group_base + row * row_major::kLwtOutputBlocksPerRow * row_major::kLwtHalfStickElements;
+                    group_base + row * row_major::kLwtOutputHSticksPerRow * row_major::kLwtHStickElements;
                 if constexpr (output_is_local_l1) {
-                    row_major::write_lwt_half_block_local_l1(
+                    row_major::write_lwt_hstick_local_l1(
                         output_addr, stick_nbytes, output_full_tile, row, 0, row_base, output_length, stick_width);
-                    row_major::write_lwt_half_block_local_l1(
+                    row_major::write_lwt_hstick_local_l1(
                         output_addr,
                         stick_nbytes,
                         output_full_tile,
                         row,
-                        row_major::kLwtHalfStickElements,
-                        row_base + row_major::kLwtHalfStickElements,
+                        row_major::kLwtHStickElements,
+                        row_base + row_major::kLwtHStickElements,
                         output_length,
                         stick_width);
-                    row_major::write_lwt_half_block_local_l1(
+                    row_major::write_lwt_hstick_local_l1(
                         output_addr,
                         stick_nbytes,
                         output_tail_tile,
                         row,
                         0,
-                        row_base + 2 * row_major::kLwtHalfStickElements,
+                        row_base + 2 * row_major::kLwtHStickElements,
                         output_length,
                         stick_width);
                 } else {
-                    row_major::write_lwt_half_block(
-                        dst, output_full_tile, row, 0, row_base, output_length, stick_width);
-                    row_major::write_lwt_half_block(
+                    row_major::write_lwt_hstick(dst, output_full_tile, row, 0, row_base, output_length, stick_width);
+                    row_major::write_lwt_hstick(
                         dst,
                         output_full_tile,
                         row,
-                        row_major::kLwtHalfStickElements,
-                        row_base + row_major::kLwtHalfStickElements,
+                        row_major::kLwtHStickElements,
+                        row_base + row_major::kLwtHStickElements,
                         output_length,
                         stick_width);
-                    row_major::write_lwt_half_block(
+                    row_major::write_lwt_hstick(
                         dst,
                         output_tail_tile,
                         row,
                         0,
-                        row_base + 2 * row_major::kLwtHalfStickElements,
+                        row_base + 2 * row_major::kLwtHStickElements,
                         output_length,
                         stick_width);
                 }
