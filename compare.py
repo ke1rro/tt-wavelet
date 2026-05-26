@@ -41,7 +41,9 @@ if LIFTING_USAGE_DIR.exists():
         sys.path.insert(0, str(LIFTING_USAGE_DIR))
     try:
         import dtypes  # noqa: E402  # type: ignore[import-not-found]
-        from lifting import LiftingScheme  # noqa: E402  # type: ignore[import-not-found]
+        from lifting import (
+            LiftingScheme,
+        )  # noqa: E402  # type: ignore[import-not-found]
 
         LIFTING_AVAILABLE = True
     except ModuleNotFoundError:
@@ -114,14 +116,18 @@ def print_pairwise_mismatches(
     for i, (lhs_val, rhs_val) in enumerate(zip(lhs, rhs)):
         if abs(float(lhs_val) - float(rhs_val)) > tolerance:
             mismatches += 1
-            print(f"{name} coeff {i} differs: lhs={float(lhs_val):.8e} vs rhs={float(rhs_val):.8e}")
+            print(
+                f"{name} coeff {i} differs: lhs={float(lhs_val):.8e} vs rhs={float(rhs_val):.8e}"
+            )
 
     if mismatches == 0:
         print(f"{name}: all coefficients match within tolerance {tolerance}")
     return mismatches
 
 
-def print_error_metrics(reference: Sequence[float], candidate: Sequence[float], name: str) -> None:
+def print_error_metrics(
+    reference: Sequence[float], candidate: Sequence[float], name: str
+) -> None:
     if len(reference) == 0 or len(candidate) == 0:
         print(f"{name} error metrics: skipped (empty sequence)")
         return
@@ -209,7 +215,9 @@ def extract_coeff_line(output: str, candidate_labels: Sequence[str]) -> list[flo
         logical_length = int(match.group(1))
         return [float(value) for value in parsed[:logical_length]]
 
-    raise ValueError(f"Unable to find coefficient line for labels: {', '.join(candidate_labels)}")
+    raise ValueError(
+        f"Unable to find coefficient line for labels: {', '.join(candidate_labels)}"
+    )
 
 
 def sh_quote(value: str) -> str:
@@ -279,16 +287,24 @@ def is_green_scheme(scheme_path: Path, runtime_limit: int) -> tuple[bool, list[s
     pu_writer_args = PU_HEADER_WORDS + max_segment * PU_WRITER_ARGS_PER_STEP
 
     if pu_reader_args > runtime_limit:
-        errors.append(f"predict/update reader args {pu_reader_args} > limit {runtime_limit}")
+        errors.append(
+            f"predict/update reader args {pu_reader_args} > limit {runtime_limit}"
+        )
     if pu_compute_args > runtime_limit:
-        errors.append(f"predict/update compute args {pu_compute_args} > limit {runtime_limit}")
+        errors.append(
+            f"predict/update compute args {pu_compute_args} > limit {runtime_limit}"
+        )
     if pu_writer_args > runtime_limit:
-        errors.append(f"predict/update writer args {pu_writer_args} > limit {runtime_limit}")
+        errors.append(
+            f"predict/update writer args {pu_writer_args} > limit {runtime_limit}"
+        )
 
     return len(errors) == 0, errors
 
 
-def discover_green_wavelets(schemes_dir: Path, runtime_limit: int) -> tuple[list[str], list[str]]:
+def discover_green_wavelets(
+    schemes_dir: Path, runtime_limit: int
+) -> tuple[list[str], list[str]]:
     if not schemes_dir.exists() or not schemes_dir.is_dir():
         raise FileNotFoundError(f"Schemes directory not found: {schemes_dir}")
 
@@ -337,11 +353,17 @@ def run_single_comparison(args: argparse.Namespace, wavelet: str) -> bool:
     print(f"pywt lengths: cA={len(cA_pywt)}, cD={len(cD_pywt)}")
     print()
     if cA_lifting is not None and cD_lifting is not None:
-        print(f"lifting-factorization approximation coefficients: {format_coeffs(cA_lifting)}")
+        print(
+            f"lifting-factorization approximation coefficients: {format_coeffs(cA_lifting)}"
+        )
         print(f"lifting-factorization detail coefficients: {format_coeffs(cD_lifting)}")
-        print(f"lifting-factorization lengths: cA={len(cA_lifting)}, cD={len(cD_lifting)}")
+        print(
+            f"lifting-factorization lengths: cA={len(cA_lifting)}, cD={len(cD_lifting)}"
+        )
     else:
-        print("lifting-factorization skipped: lifting-factorization/usage is not available.")
+        print(
+            "lifting-factorization skipped: lifting-factorization/usage is not available."
+        )
     print()
 
     tt_wavelet = None
@@ -364,18 +386,26 @@ def run_single_comparison(args: argparse.Namespace, wavelet: str) -> bool:
     checks_ok = True
     if cA_lifting is not None and cD_lifting is not None:
         pywt_vs_lifting_a = print_pairwise_mismatches(
-            cA_pywt, cA_lifting, "Approximation pywt vs lifting-factorization", args.tolerance
+            cA_pywt,
+            cA_lifting,
+            "Approximation pywt vs lifting-factorization",
+            args.tolerance,
         )
         pywt_vs_lifting_d = print_pairwise_mismatches(
             cD_pywt, cD_lifting, "Detail pywt vs lifting-factorization", args.tolerance
         )
-        print_error_metrics(cA_pywt, cA_lifting, "Approximation pywt -> lifting-factorization")
+        print_error_metrics(
+            cA_pywt, cA_lifting, "Approximation pywt -> lifting-factorization"
+        )
         print_error_metrics(cD_pywt, cD_lifting, "Detail pywt -> lifting-factorization")
         checks_ok = pywt_vs_lifting_a == 0 and pywt_vs_lifting_d == 0
 
     if tt_wavelet is not None:
         pywt_vs_tt_a = print_pairwise_mismatches(
-            cA_pywt, tt_wavelet["approximation"], "Approximation pywt vs tt-wavelet", args.tolerance
+            cA_pywt,
+            tt_wavelet["approximation"],
+            "Approximation pywt vs tt-wavelet",
+            args.tolerance,
         )
         pywt_vs_tt_d = print_pairwise_mismatches(
             cD_pywt, tt_wavelet["detail"], "Detail pywt vs tt-wavelet", args.tolerance
