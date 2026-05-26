@@ -18,8 +18,10 @@ constexpr uint32_t kSpliceRowStride = kSpliceWidth - kSpliceOverlap;
 constexpr uint32_t kDefaultCacheBytes = 2048;
 
 struct StreamReadState {
-    uint32_t length;
-    uint32_t next_index;
+    uint32_t source_length;
+    uint32_t source_start;
+    uint32_t local_length;
+    uint32_t prefix_length;
     uint32_t cache_l1_addr;
     uint32_t cache_bytes;
     uint32_t cache_start_index;
@@ -52,15 +54,31 @@ ALWI void copy_fp32(float* dst, const float* src, const uint32_t count) {
 }
 
 template <typename Accessor>
-ALWI void load_signal_l1(const Accessor& accessor, StreamReadState& state) {
-    const uint32_t logical_bytes = state.length * sizeof(float);
+ALWI float read_signal_value(const Accessor& accessor, StreamReadState& state, const uint32_t index) {
+    if (index >= state.local_length) {
+        return 0.0F;
+    }
 
-    noc_async_read(accessor.get_noc_addr(0), state.cache_l1_addr, logical_bytes);
-    noc_async_read_barrier();
+    if (index < state.prefix_length) {
+        return 0.0F;
+    }
 
-    state.cache_start_index = 0;
-    state.cache_valid_bytes = min_u32(state.cache_bytes, logical_bytes);
-    state.cache_valid = state.cache_valid_bytes == logical_bytes;
+    const uint32_t source_index = state.source_start + index - state.prefix_length;
+    if (source_index >= state.source_length) {
+        return 0.0F;
+    }
+    const uint32_t values_per_page = state.cache_bytes / sizeof(float);
+    const uint32_t page_start = (source_index / values_per_page) * values_per_page;
+    if (!state.cache_valid || page_start != state.cache_start_index) {
+        noc_async_read(accessor.get_noc_addr(page_start / values_per_page), state.cache_l1_addr, state.cache_bytes);
+        noc_async_read_barrier();
+        state.cache_start_index = page_start;
+        state.cache_valid_bytes = state.cache_bytes;
+        state.cache_valid = true;
+    }
+
+    const auto* cached_signal = reinterpret_cast<const volatile tt_l1_ptr float*>(state.cache_l1_addr);
+    return cached_signal[source_index - page_start];
 }
 
 template <typename Accessor>
@@ -70,11 +88,6 @@ ALWI void build_splice_chain(
     StreamReadState& state,
     const uint32_t splice_number,
     const uint32_t tile_nbytes) {
-    if (!state.cache_valid) {
-        load_signal_l1(accessor, state);
-    }
-
-    const auto* cached_signal = reinterpret_cast<const float*>(state.cache_l1_addr);
     for (uint32_t splice = 0; splice < splice_number; ++splice) {
         cb_reserve_back(cb_id, kSpliceTiles);
         const uint32_t tiles_addr = get_write_ptr(cb_id);
@@ -86,14 +99,9 @@ ALWI void build_splice_chain(
             for (uint32_t hstick = 0; hstick < kSpliceHSticksPerRow; ++hstick) {
                 float* dst = tile_hstick_addr(tile0, tile1, row, hstick);
                 const uint32_t logical_index = global_row * kSpliceRowStride + hstick * kHStickElements;
-                const uint32_t src_index = logical_index % state.length;
-                const uint32_t contiguous = min_u32(kHStickElements, state.length - src_index);
-
-                copy_fp32(dst, cached_signal + src_index, contiguous);
-                if (contiguous != kHStickElements) {
-                    copy_fp32(dst + contiguous, cached_signal, kHStickElements - contiguous);
+                for (uint32_t lane = 0; lane < kHStickElements; ++lane) {
+                    dst[lane] = read_signal_value(accessor, state, logical_index + lane);
                 }
-                state.next_index = (src_index + kHStickElements) % state.length;
             }
         }
 

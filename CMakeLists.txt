@@ -4,6 +4,8 @@ project(tt-wavelet LANGUAGES CXX C)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+enable_testing()
+
 # Option to build with TT-Metal (Wormhole) support
 option(BUILD_TT_WAVELET "Build with TT-Metal (Wormhole) support" OFF)
 

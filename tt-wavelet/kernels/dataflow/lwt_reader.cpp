@@ -11,6 +11,9 @@ void kernel_main() {
     const uint32_t odd_addr = get_arg_val<uint32_t>(2);
     const uint32_t even_length = get_arg_val<uint32_t>(3);
     const uint32_t odd_length = get_arg_val<uint32_t>(4);
+    const uint32_t source_start = get_arg_val<uint32_t>(5);
+    const uint32_t source_length = get_arg_val<uint32_t>(6);
+    const uint32_t source_prefix = get_arg_val<uint32_t>(7);
 
     constexpr uint32_t cb_even = get_named_compile_time_arg_val("cb_even");
     constexpr uint32_t cb_odd = get_named_compile_time_arg_val("cb_odd");
@@ -32,8 +35,10 @@ void kernel_main() {
     cb_push_back(cb_odd_cache, 1);
     cb_wait_front(cb_odd_cache, 1);
 
-    splice::StreamReadState even_state{even_length, 0, get_read_ptr(cb_even_cache), cache_bytes, 0, 0, false};
-    splice::StreamReadState odd_state{odd_length, 0, get_read_ptr(cb_odd_cache), cache_bytes, 0, 0, false};
+    splice::StreamReadState even_state{
+        even_length, source_start, source_length, source_prefix, get_read_ptr(cb_even_cache), cache_bytes, 0, 0, false};
+    splice::StreamReadState odd_state{
+        odd_length, source_start, source_length, source_prefix, get_read_ptr(cb_odd_cache), cache_bytes, 0, 0, false};
 
     splice::build_splice_chain(cb_even, even_accessor, even_state, splice_number, tile_nbytes);
     splice::build_splice_chain(cb_odd, odd_accessor, odd_state, splice_number, tile_nbytes);

@@ -22,17 +22,16 @@ inline uint32_t _get_dst_base(const std::uint32_t tile_index, const std::uint32_
     return (tile_index << 6) + (face_index << 4);
 }
 
-// horizontal_rotate(a, b): 1-element right shift within DoubleRegs
+// horizontal_rotate(a, b): 1-element right shift within DoubleRegs.
 // After rotation, column 0 of b gets the element shifted out of a.
 inline void _horizontal_rotate(std::uint32_t a_reg, std::uint32_t b_reg) {
-    // Shift a to the right. The following SHFLSHR1 uses this instruction's
-    // source register as its lane-zero halo, giving b a non-wrapping shift.
     TTI_SFPSHFT2(0, a_reg, a_reg, sfpi::SFPSHFT2_MOD1_SUBVEC_SHFLROR1);
     TTI_SFPNOP;
-    TTI_SFPSHFT2(0, b_reg, b_reg, sfpi::SFPSHFT2_MOD1_SUBVEC_SHFLSHR1);
+    TTI_SFPSHFT2(0, b_reg, b_reg, sfpi::SFPSHFT2_MOD1_SUBVEC_SHFLROR1);
     TTI_SFPNOP;
-    // Non-contractual behavior of SHFLSHR1 was abused here, thus if
-    // porting to future architectures, use masked SFPMOV to achieve the same effect
+    TTI_SFPSETCC(0, p_sfpu::LREG14, 0, sfpi::SFPSETCC_MOD1_LREG_NE0);
+    TTI_SFPMOV(0, a_reg, b_reg, 0);
+    TTI_SFPENCC(0, 0, 0, sfpi::SFPENCC_MOD1_EU_R1);
 }
 
-} // namespace ckernel::sfpu
+}  // namespace ckernel::sfpu

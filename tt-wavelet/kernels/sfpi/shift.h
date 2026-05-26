@@ -73,7 +73,7 @@ inline void _splice_shift(const std::uint32_t tile0, const std::uint32_t tile1, 
     TTI_STALLWAIT(p_stall::STALL_CFG, p_stall::WAIT_SFPU);
 }
 
-} // namespace ckernel::sfpu
+}  // namespace ckernel::sfpu
 
 inline void shift_splice(const uint32_t tile0, const uint32_t tile1, const uint32_t k) {
     if (k > 16) {
@@ -81,5 +81,5 @@ inline void shift_splice(const uint32_t tile0, const uint32_t tile1, const uint3
         return;
     }
 
-    MATH((ckernel::sfpu::_splice_shift(tile0, tile1, k)));
+    MATH((ckernel::sfpu::_splice_shift<16>(tile0, tile1, k)));
 }

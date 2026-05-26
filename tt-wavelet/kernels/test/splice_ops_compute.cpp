@@ -1,6 +1,8 @@
 #include <cstdint>
 
-#include "../sfpi/stencil_sfpi.h"
+#include "../sfpi/recovers.h"
+#include "../sfpi/shift.h"
+#include "../sfpi/splice.h"
 #include "compute_kernel_api/common.h"
 #include "compute_kernel_api/eltwise_unary/eltwise_unary.h"
 #include "compute_kernel_api/tile_move_copy.h"
@@ -22,6 +24,7 @@ void kernel_main() {
     constexpr uint8_t shift_k = static_cast<uint8_t>(get_compile_time_arg_val(3));
 
     ckernel::init_sfpu(cb_input, cb_output);
+    splice_pipeline_init();
 
     for (uint32_t test_case = 0; test_case < case_count; ++test_case) {
         cb_wait_front(cb_input, 3);
@@ -34,11 +37,11 @@ void kernel_main() {
 
         splice_ops_init();
         if constexpr (op == kOpShift) {
-            splice_shift<shift_k>(0, 1);
+            shift_splice(0, 1, shift_k);
         } else if constexpr (op == kOpRecover1) {
-            splice_recover1(0, 1, 2);
+            recover1_splice(0, 1, 2);
         } else if constexpr (op == kOpRecover2) {
-            splice_recover2(0, 1, 2);
+            recover2_splice(0, 1, 2);
         }
 
         tile_regs_commit();

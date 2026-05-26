@@ -2,723 +2,685 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cstddef>
 #include <cstdint>
-#include <cstdlib>
-#include <cstring>
 #include <filesystem>
-#include <iomanip>
-#include <iostream>
 #include <limits>
 #include <memory>
 #include <optional>
+#include <stdexcept>
+#include <string>
 #include <tt_stl/assert.hpp>
+#include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "tt-metalium/buffer.hpp"
-#include "tt-metalium/buffer_distribution_spec.hpp"
 #include "tt-metalium/circular_buffer_constants.h"
 #include "tt-metalium/host_api.hpp"
+#include "tt-metalium/mesh_buffer.hpp"
 #include "tt-metalium/tensor_accessor_args.hpp"
+#include "tt_wavelet/include/common/padding.hpp"
+#include "tt_wavelet/include/common/signal.hpp"
+#include "tt_wavelet/include/pad_split/device.hpp"
 
 namespace ttwv {
 
 namespace {
 
+constexpr uint32_t kStickWidth = 32;
 constexpr uint32_t kNocAlignmentBytes = 32;
-constexpr uint32_t kCircularBufferAlignmentBytes = 32;
+constexpr uint32_t kSpliceAdvanceElements = 32 * 48;
+constexpr uint32_t kSpliceTailElements = 16;
+constexpr uint32_t kTilePagesPerSplice = 2;
+constexpr uint32_t kL1ReserveBytes = 128 * 1024;
 constexpr tt::DataFormat kDataFormat = tt::DataFormat::Float32;
 
-constexpr uint32_t kScaleInputCb = tt::CBIndex::c_0;
-constexpr uint32_t kScaleOutputCb = tt::CBIndex::c_16;
+constexpr uint32_t kCbEven = tt::CBIndex::c_0;
+constexpr uint32_t kCbOdd = tt::CBIndex::c_1;
+constexpr uint32_t kCbEvenCache = tt::CBIndex::c_2;
+constexpr uint32_t kCbOddCache = tt::CBIndex::c_3;
+constexpr uint32_t kCbDone = tt::CBIndex::c_16;
+constexpr uint32_t kCbWriterScratch = tt::CBIndex::c_17;
+constexpr uint32_t kCbEvenWork = tt::CBIndex::c_24;
+constexpr uint32_t kCbOddWork = tt::CBIndex::c_25;
+constexpr uint32_t kCbFinalEven = tt::CBIndex::c_26;
+constexpr uint32_t kCbFinalOdd = tt::CBIndex::c_27;
+constexpr uint32_t kCbPrediction = tt::CBIndex::c_28;
+constexpr uint32_t kCbBaseRecoverState = tt::CBIndex::c_29;
+constexpr uint32_t kCbPredictionRecoverState = tt::CBIndex::c_30;
 
-constexpr const char* kTileScaleReaderKernelPath = "kernels/dataflow/lwt_scale_tile_reader.cpp";
-constexpr const char* kTileScaleComputeKernelPath = "kernels/compute/lwt_scale_compute.cpp";
-constexpr const char* kTileScaleWriterKernelPath = "kernels/dataflow/lwt_scale_tile_row_major_writer.cpp";
+constexpr const char* kLwtReaderKernel = "kernels/dataflow/lwt_reader.cpp";
+constexpr const char* kLwtComputeKernel = "kernels/compute/lwt_compute.cpp";
+constexpr const char* kLwtWriterKernel = "kernels/dataflow/lwt_writer.cpp";
 
-constexpr const char* kLwtReaderKernelPath = "kernels/dataflow/lwt_reader.cpp";
-constexpr const char* kLwtComputeKernelPath = "kernels/compute/lwt_compute.cpp";
-constexpr const char* kLwtWriterKernelPath = "kernels/dataflow/lwt_writer.cpp";
-
-constexpr uint32_t kLwtSrcTile0Cb = tt::CBIndex::c_0;
-constexpr uint32_t kLwtSrcTile1Cb = tt::CBIndex::c_1;
-constexpr uint32_t kLwtBaseTileCb = tt::CBIndex::c_2;
-constexpr uint32_t kLwtOutputCb = tt::CBIndex::c_16;
-constexpr uint32_t kLwtSrcCacheCb = tt::CBIndex::c_3;
-constexpr uint32_t kLwtBaseCacheCb = tt::CBIndex::c_4;
-constexpr uint32_t kLwtSyncCb = tt::CBIndex::c_5;
-constexpr uint32_t kLwtSyncPageSize = 32;
-
-struct ScaleStepProgram {
-    tt::tt_metal::Program program;
-    tt::tt_metal::KernelHandle reader{};
-    tt::tt_metal::KernelHandle compute{};
-    tt::tt_metal::KernelHandle writer{};
+struct StreamState {
+    int32_t shift{0};
+    size_t length{0};
 };
 
-struct PredictUpdateProgram {
-    tt::tt_metal::Program program;
-    tt::tt_metal::KernelHandle reader{};
-    tt::tt_metal::KernelHandle compute{};
-    tt::tt_metal::KernelHandle writer{};
+struct TransformGeometry {
+    PadSplit1DLayout pad_split{};
+    StreamState final_even{};
+    StreamState final_odd{};
+    uint32_t even_crop{0};
+    uint32_t odd_crop{0};
+    uint32_t output_length{0};
+    uint32_t splice_count{0};
+    bool swapped{false};
 };
 
-[[nodiscard]] std::filesystem::path kernel_path(const std::filesystem::path& kernel_root, const char* relative_path) {
-    return kernel_root / relative_path;
-}
+struct LogicalInterval {
+    int64_t begin{0};
+    int64_t end{-1};
 
-[[nodiscard]] SignalBuffer with_address(const SignalBuffer& buffer, const uint64_t dram_address) {
-    SignalBuffer out = buffer;
-    out.dram_address = dram_address;
-    return out;
-}
+    [[nodiscard]] bool empty() const noexcept { return end < begin; }
+};
 
-[[nodiscard]] std::shared_ptr<tt::tt_metal::distributed::MeshBuffer> create_signal_mesh_buffer(
-    tt::tt_metal::distributed::MeshDevice& mesh_device,
-    const SignalBuffer& buffer,
-    const tt::tt_metal::BufferType buffer_type = tt::tt_metal::BufferType::DRAM,
-    const std::optional<tt::tt_metal::CoreRangeSet>& l1_shard_cores = std::nullopt) {
-    const uint32_t page_size = buffer.aligned_stick_bytes(kNocAlignmentBytes);
-    const size_t physical_nbytes = std::max(buffer.physical_nbytes(kNocAlignmentBytes), static_cast<size_t>(page_size));
+struct CorePiece {
+    uint32_t source_start{0};
+    uint32_t source_length{0};
+    uint32_t source_prefix{0};
+    uint32_t splice_count{0};
+    uint32_t approximation_offset{0};
+    uint32_t detail_offset{0};
+    uint32_t output_stick_start{0};
+    uint32_t output_length{0};
+};
 
-    tt::tt_metal::distributed::DeviceLocalBufferConfig local_config{
-        .page_size = page_size,
-        .buffer_type = buffer_type,
-    };
-
-    if (buffer_type == tt::tt_metal::BufferType::L1) {
-        TT_FATAL(l1_shard_cores.has_value(), "L1 signal buffers require owning cores");
-        TT_FATAL(buffer.stick_width > 0, "L1 signal buffers require a non-zero stick width");
-        TT_FATAL(
-            buffer.stick_count() <= static_cast<size_t>(std::numeric_limits<uint32_t>::max()),
-            "signal stick_count {} overflows uint32_t",
-            buffer.stick_count());
-
-        const uint32_t physical_stick_count =
-            static_cast<uint32_t>(std::max(buffer.stick_count(), static_cast<size_t>(1)));
-        const uint32_t shard_core_count = l1_shard_cores->num_cores();
-        TT_FATAL(shard_core_count > 0, "L1 signal buffers require at least one shard core");
-        const uint32_t shard_stick_count = ceil_div(physical_stick_count, shard_core_count);
-        auto distribution_spec = tt::tt_metal::BufferDistributionSpec::from_shard_spec(
-            tt::tt_metal::Shape{physical_stick_count, buffer.stick_width},
-            tt::tt_metal::Shape{shard_stick_count, buffer.stick_width},
-            tt::tt_metal::Shape2D{1, buffer.stick_width},
-            *l1_shard_cores,
-            tt::tt_metal::ShardOrientation::ROW_MAJOR);
-        local_config.sharding_args = tt::tt_metal::BufferShardingArgs(std::move(distribution_spec));
-    }
-
-    const tt::tt_metal::distributed::ReplicatedBufferConfig replicated_config{
-        .size = static_cast<uint64_t>(physical_nbytes),
-    };
-    return tt::tt_metal::distributed::MeshBuffer::create(replicated_config, local_config, &mesh_device);
-}
-
-[[nodiscard]] tt::tt_metal::CoreRangeSet all_worker_cores(const tt::tt_metal::distributed::MeshDevice& mesh_device) {
-    const auto& sub_device_ids = mesh_device.get_sub_device_ids();
-    TT_FATAL(!sub_device_ids.empty(), "mesh device has no sub-devices");
-    return mesh_device.worker_cores(tt::tt_metal::HalProgrammableCoreType::TENSIX, sub_device_ids.front());
-}
-
-[[nodiscard]] bool is_single_core_l1_buffer(const tt::tt_metal::Buffer& buffer) {
-    return buffer.is_l1() && buffer.has_shard_spec() && buffer.num_cores().value_or(0) == 1;
-}
-
-[[nodiscard]] std::shared_ptr<tt::tt_metal::distributed::MeshBuffer> create_tile_signal_mesh_buffer(
-    tt::tt_metal::distributed::MeshDevice& mesh_device, const TileSignalBuffer& buffer) {
-    TT_FATAL(buffer.element_size_bytes == sizeof(float), "LWT tile sidecar path is fp32-only");
-    const tt::tt_metal::distributed::DeviceLocalBufferConfig local_config{
-        .page_size = buffer.page_bytes(),
-        .buffer_type = tt::tt_metal::BufferType::DRAM,
-    };
-    const tt::tt_metal::distributed::ReplicatedBufferConfig replicated_config{
-        .size = static_cast<uint64_t>(buffer.physical_nbytes()),
-    };
-    return tt::tt_metal::distributed::MeshBuffer::create(replicated_config, local_config, &mesh_device);
-}
-
-void create_circular_buffer(
-    tt::tt_metal::Program& program,
-    const tt::tt_metal::CoreCoord& core,
-    const uint32_t cb_index,
-    const uint32_t entry_count,
-    const uint32_t page_size,
-    const tt::DataFormat data_format = kDataFormat) {
-    const auto config = tt::tt_metal::CircularBufferConfig(entry_count * page_size, {{cb_index, data_format}})
-                            .set_page_size(cb_index, page_size);
-    static_cast<void>(tt::tt_metal::CreateCircularBuffer(program, core, config));
-}
-
-[[nodiscard]] std::vector<uint32_t> to_runtime_args(const device_protocol::DeviceStepDesc& desc) {
-    std::vector<uint32_t> args(device_protocol::step_desc_word_count, 0);
-    std::memcpy(args.data(), &desc, sizeof(desc));
-    return args;
-}
-
-[[nodiscard]] uint32_t checked_length(const size_t value, const char* label) {
+[[nodiscard]] uint32_t checked_u32(const size_t value, const char* label) {
     TT_FATAL(
-        value <= static_cast<size_t>(std::numeric_limits<uint32_t>::max()), "{} {} overflows uint32_t", label, value);
+        value <= static_cast<size_t>(std::numeric_limits<uint32_t>::max()), "{} {} exceeds uint32_t", label, value);
     return static_cast<uint32_t>(value);
 }
 
-[[nodiscard]] uint32_t stencil_source_left_pad(const device_protocol::DeviceStepDesc& desc) {
-    TT_FATAL(desc.k > 0U && desc.k <= device_protocol::step_coeff_capacity, "invalid stencil width {}", desc.k);
-    return device_protocol::step_coeff_capacity - desc.k;
+[[nodiscard]] std::filesystem::path kernel_path(const std::filesystem::path& root, const char* relative) {
+    return root / relative;
 }
 
-[[nodiscard]] uint32_t lwt_output_group_count(const size_t output_length) {
-    return checked_length(ceil_div(output_length, static_cast<size_t>(kLwtGroupOutputElements)), "output groups");
+[[nodiscard]] std::shared_ptr<tt::tt_metal::distributed::MeshBuffer> make_signal_buffer(
+    tt::tt_metal::distributed::MeshDevice& mesh_device, const SignalBuffer& signal) {
+    const uint32_t page_size = signal.aligned_stick_bytes(kNocAlignmentBytes);
+    const tt::tt_metal::distributed::DeviceLocalBufferConfig local{
+        .page_size = page_size,
+        .buffer_type = tt::tt_metal::BufferType::DRAM,
+    };
+    const tt::tt_metal::distributed::ReplicatedBufferConfig replicated{
+        .size = static_cast<uint64_t>(std::max(signal.physical_nbytes(), static_cast<size_t>(page_size))),
+    };
+    return tt::tt_metal::distributed::MeshBuffer::create(replicated, local, &mesh_device);
 }
 
-[[nodiscard]] uint32_t lwt_tile_page_count(const size_t logical_length) {
-    return checked_length(
-        lwt_tile_group_count(logical_length) * static_cast<size_t>(kLwtTilePagesPerGroup), "tile pages");
+void include_interval(LogicalInterval& target, const LogicalInterval source) {
+    if (source.empty()) {
+        return;
+    }
+    if (target.empty()) {
+        target = source;
+        return;
+    }
+    target.begin = std::min(target.begin, source.begin);
+    target.end = std::max(target.end, source.end);
 }
 
-[[nodiscard]] bool same_stream_ref(const StreamRef lhs, const StreamRef rhs) noexcept {
-    return lhs.family == rhs.family && lhs.slot == rhs.slot;
+[[nodiscard]] LogicalInterval predict_source_requirement(
+    const LogicalInterval& output, const LiftingStep& step) noexcept {
+    if (output.empty()) {
+        return output;
+    }
+    const int64_t width = static_cast<int64_t>(step.coeffs().size());
+    return LogicalInterval{
+        .begin = output.begin - static_cast<int64_t>(step.shift()) - (width - 1),
+        .end = output.end - static_cast<int64_t>(step.shift()),
+    };
 }
 
-[[nodiscard]] bool is_predict_update_step(const StepType type) noexcept {
-    return type == StepType::kPredict || type == StepType::kUpdate;
-}
-
-[[nodiscard]] bool is_scale_step(const StepType type) noexcept {
-    return type == StepType::kScaleEven || type == StepType::kScaleOdd;
-}
-
-[[nodiscard]] std::vector<uint8_t> compute_tile_sidecar_routes(const LiftingForwardPlan& plan) {
-    std::vector<uint8_t> write_tile_sidecar(plan.routes.size(), 0);
-
-    for (size_t scale_index = 0; scale_index < plan.routes.size(); ++scale_index) {
-        const auto& scale_route = plan.routes[scale_index];
-        if (!is_scale_step(scale_route.type)) {
-            continue;
+[[nodiscard]] std::pair<LogicalInterval, LogicalInterval> reverse_initial_requirements(
+    const LiftingScheme& scheme, const LogicalInterval final_interval) {
+    LogicalInterval even = final_interval;
+    LogicalInterval odd = final_interval;
+    for (auto step = scheme.steps().rbegin(); step != scheme.steps().rend(); ++step) {
+        switch (step->type()) {
+            case LiftingStepType::kPredict: include_interval(even, predict_source_requirement(odd, *step)); break;
+            case LiftingStepType::kUpdate: include_interval(odd, predict_source_requirement(even, *step)); break;
+            case LiftingStepType::kSwap: std::swap(even, odd); break;
+            case LiftingStepType::kScaleEven:
+            case LiftingStepType::kScaleOdd: break;
         }
+    }
+    return {even, odd};
+}
 
-        for (size_t scan = scale_index; scan > 0; --scan) {
-            const size_t producer_index = scan - 1;
-            const auto& producer = plan.routes[producer_index];
-            if (is_predict_update_step(producer.type) && same_stream_ref(producer.output, scale_route.source)) {
-                write_tile_sidecar[producer_index] = 1;
+[[nodiscard]] uint32_t predict_update_count(const LiftingScheme& scheme) noexcept {
+    uint32_t count = 0;
+    for (const auto& step : scheme.steps()) {
+        if (step.type() == LiftingStepType::kPredict || step.type() == LiftingStepType::kUpdate) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+[[nodiscard]] std::vector<CorePiece> make_core_pieces(
+    const TransformGeometry& geometry, const LiftingScheme& scheme, const uint32_t core_count) {
+    TT_FATAL(core_count > 0, "WaveletProgram requires at least one output core");
+    const uint32_t output_sticks =
+        checked_u32(ceil_div(geometry.output_length, static_cast<size_t>(kStickWidth)), "output sticks");
+    TT_FATAL(core_count <= output_sticks, "cannot assign empty output ranges to LWT cores");
+    const uint32_t quotient = output_sticks / core_count;
+    const uint32_t remainder = output_sticks % core_count;
+    const int64_t direct_shift = static_cast<int64_t>(scheme.tap_size() / 2);
+    const int64_t even_length = static_cast<int64_t>(geometry.pad_split.output.even.length);
+    const int64_t odd_length = static_cast<int64_t>(geometry.pad_split.output.odd.length);
+    const int64_t maximum_length = std::max(even_length, odd_length);
+    const int64_t guard =
+        static_cast<int64_t>(predict_update_count(scheme)) * static_cast<int64_t>(kSpliceAdvanceElements);
+    const int64_t terminal_tail =
+        static_cast<int64_t>(predict_update_count(scheme)) * static_cast<int64_t>(kSpliceTailElements);
+
+    std::vector<CorePiece> pieces;
+    pieces.reserve(core_count);
+    uint32_t output_stick_start = 0;
+    for (uint32_t index = 0; index < core_count; ++index) {
+        const uint32_t stick_count = quotient + (index < remainder ? 1U : 0U);
+        const uint32_t output_begin = output_stick_start * kStickWidth;
+        const uint32_t output_length = std::min(stick_count * kStickWidth, geometry.output_length - output_begin);
+        const LogicalInterval final_interval{
+            .begin = direct_shift + output_begin,
+            .end = direct_shift + output_begin + output_length - 1,
+        };
+        const auto [required_even, required_odd] = reverse_initial_requirements(scheme, final_interval);
+        TT_FATAL(!required_even.empty() && !required_odd.empty(), "empty LWT reverse-propagated source interval");
+
+        const int64_t initial_begin = std::min(
+            required_even.begin - static_cast<int64_t>(scheme.delay_even()),
+            required_odd.begin - static_cast<int64_t>(scheme.delay_odd()));
+        const int64_t initial_end = std::max(
+            required_even.end - static_cast<int64_t>(scheme.delay_even()),
+            required_odd.end - static_cast<int64_t>(scheme.delay_odd()));
+        const int64_t output_source_begin =
+            std::min<int64_t>(geometry.even_crop + output_begin, geometry.odd_crop + output_begin);
+        int64_t source_start = 0;
+        int64_t source_end = maximum_length - 1;
+        int64_t virtual_prefix = terminal_tail;
+        int64_t virtual_suffix = terminal_tail;
+        if (core_count > 1) {
+            const int64_t requested_start = std::min(initial_begin - guard, output_source_begin);
+            source_start = std::max<int64_t>(0, requested_start);
+            virtual_prefix = std::min<int64_t>(guard, source_start - requested_start);
+            const int64_t guarded_end = initial_end + guard;
+            source_end = std::min<int64_t>(maximum_length - 1, guarded_end);
+            virtual_suffix = std::min<int64_t>(guard, std::max<int64_t>(0, guarded_end - source_end));
+        }
+        TT_FATAL(source_end >= source_start, "empty guarded LWT input piece");
+        const uint32_t source_length = checked_u32(
+            static_cast<size_t>(virtual_prefix + source_end - source_start + 1 + virtual_suffix), "piece length");
+        const uint32_t splice_count = checked_u32(
+            ceil_div(source_length + kSpliceTailElements, static_cast<size_t>(kSpliceAdvanceElements)),
+            "piece splices");
+
+        const int64_t approximation_forward_offset = virtual_prefix + geometry.even_crop + output_begin - source_start;
+        const int64_t detail_forward_offset = virtual_prefix + geometry.odd_crop + output_begin - source_start;
+        TT_FATAL(
+            approximation_forward_offset >= 0 &&
+                approximation_forward_offset + output_length <= static_cast<int64_t>(source_length) &&
+                detail_forward_offset >= 0 &&
+                detail_forward_offset + output_length <= static_cast<int64_t>(source_length),
+            "owned output interval is outside its guarded LWT input piece");
+        pieces.push_back(
+            CorePiece{
+                .source_start = checked_u32(static_cast<size_t>(source_start), "piece start"),
+                .source_length = source_length,
+                .source_prefix = checked_u32(static_cast<size_t>(virtual_prefix), "piece prefix"),
+                .splice_count = splice_count,
+                .approximation_offset =
+                    checked_u32(static_cast<size_t>(approximation_forward_offset), "approximation offset"),
+                .detail_offset = checked_u32(static_cast<size_t>(detail_forward_offset), "detail offset"),
+                .output_stick_start = output_stick_start,
+                .output_length = output_length,
+            });
+        output_stick_start += stick_count;
+    }
+    return pieces;
+}
+
+[[nodiscard]] uint64_t piece_working_bytes(
+    const uint32_t maximum_splices, const uint32_t tile_bytes, const uint32_t stick_bytes) {
+    const uint32_t chain_pages = maximum_splices * kTilePagesPerSplice;
+    return static_cast<uint64_t>(chain_pages) * 10U * tile_bytes + static_cast<uint64_t>(tile_bytes) * 3U +
+           static_cast<uint64_t>(stick_bytes) * 3U;
+}
+
+void create_cb(
+    tt::tt_metal::Program& program,
+    const tt::tt_metal::CoreRangeSet& cores,
+    const uint32_t index,
+    const uint32_t pages,
+    const uint32_t page_bytes) {
+    auto config =
+        tt::tt_metal::CircularBufferConfig(pages * page_bytes, {{index, kDataFormat}}).set_page_size(index, page_bytes);
+    static_cast<void>(tt::tt_metal::CreateCircularBuffer(program, cores, config));
+}
+
+[[nodiscard]] StreamState apply_predict_update(
+    const StreamState source, const StreamState base, const LiftingStep& step) {
+    const size_t width = step.coeffs().size();
+    TT_FATAL(width > 0 && source.length >= width, "lifting stencil is wider than its source stream");
+
+    const int32_t convolution_shift = source.shift + step.shift() + static_cast<int32_t>(width) - 1;
+    const size_t convolution_length = source.length - width + 1;
+    const int64_t output_start = std::max<int64_t>(base.shift, convolution_shift);
+    const int64_t output_end = std::min<int64_t>(
+        static_cast<int64_t>(base.shift) + static_cast<int64_t>(base.length),
+        static_cast<int64_t>(convolution_shift) + static_cast<int64_t>(convolution_length));
+    TT_FATAL(output_end >= output_start, "lifting step has an empty valid support");
+    return StreamState{
+        .shift = static_cast<int32_t>(output_start),
+        .length = static_cast<size_t>(output_end - output_start),
+    };
+}
+
+[[nodiscard]] TransformGeometry make_geometry(const SignalBuffer& input, const LiftingScheme& scheme) {
+    const uint32_t pad = scheme.tap_size() - 1;
+    TransformGeometry geometry{
+        .pad_split = make_pad_split_1d_layout(
+            input, 0, 0, Pad1DConfig{.mode = BoundaryMode::kSymmetric, .left = pad, .right = pad}),
+    };
+    StreamState even{.shift = scheme.delay_even(), .length = geometry.pad_split.output.even.length};
+    StreamState odd{.shift = scheme.delay_odd(), .length = geometry.pad_split.output.odd.length};
+    int32_t device_even_shift = scheme.delay_even();
+    int32_t device_odd_shift = scheme.delay_odd();
+
+    for (const auto& step : scheme.steps()) {
+        switch (step.type()) {
+            case LiftingStepType::kPredict:
+                odd = apply_predict_update(even, odd, step);
+                device_odd_shift = std::min(
+                    device_odd_shift,
+                    device_even_shift + step.shift() + static_cast<int32_t>(step.coeffs().size()) - 1);
                 break;
-            }
+            case LiftingStepType::kUpdate:
+                even = apply_predict_update(odd, even, step);
+                device_even_shift = std::min(
+                    device_even_shift,
+                    device_odd_shift + step.shift() + static_cast<int32_t>(step.coeffs().size()) - 1);
+                break;
+            case LiftingStepType::kScaleEven:
+            case LiftingStepType::kScaleOdd: break;
+            case LiftingStepType::kSwap:
+                std::swap(even, odd);
+                std::swap(device_even_shift, device_odd_shift);
+                geometry.swapped = !geometry.swapped;
+                break;
         }
     }
 
-    return write_tile_sidecar;
+    const size_t output_length = canonical_output_length(input.length, scheme);
+    const int32_t direct_shift = static_cast<int32_t>(scheme.tap_size() / 2);
+    TT_FATAL(direct_shift >= even.shift && direct_shift >= odd.shift, "canonical crop begins outside device support");
+    const size_t even_valid_crop = static_cast<size_t>(direct_shift - even.shift);
+    const size_t odd_valid_crop = static_cast<size_t>(direct_shift - odd.shift);
+    TT_FATAL(
+        even_valid_crop + output_length <= even.length && odd_valid_crop + output_length <= odd.length,
+        "canonical coefficient window is outside computed support");
+    TT_FATAL(
+        direct_shift >= device_even_shift && direct_shift >= device_odd_shift,
+        "canonical crop precedes computed device-chain origins");
+
+    const size_t chain_length =
+        std::max(geometry.pad_split.output.even.length, geometry.pad_split.output.odd.length) + kSpliceTailElements;
+    geometry.final_even = even;
+    geometry.final_odd = odd;
+    geometry.even_crop = checked_u32(static_cast<size_t>(direct_shift - device_even_shift), "even crop");
+    geometry.odd_crop = checked_u32(static_cast<size_t>(direct_shift - device_odd_shift), "odd crop");
+    geometry.output_length = checked_u32(output_length, "coefficient length");
+    geometry.splice_count = checked_u32(ceil_div(chain_length, static_cast<size_t>(kSpliceAdvanceElements)), "splices");
+    return geometry;
 }
 
-[[nodiscard]] bool stream_has_tile_sidecar(
-    const LiftingForwardPlan& plan, const std::vector<uint8_t>& write_tile_sidecar, const StreamRef stream) {
-    for (size_t index = 0; index < plan.routes.size(); ++index) {
-        if (write_tile_sidecar[index] != 0 && same_stream_ref(plan.routes[index].output, stream)) {
-            return true;
-        }
-    }
-    return false;
-}
-
-[[nodiscard]] const std::shared_ptr<tt::tt_metal::distributed::MeshBuffer>& resolve_mesh_buffer(
-    const LiftingWorkingBuffers& buffers, const StreamRef stream) {
-    return stream.family == LogicalStream::kEven ? buffers.even.at(stream.slot) : buffers.odd.at(stream.slot);
-}
-
-[[nodiscard]] const std::shared_ptr<tt::tt_metal::distributed::MeshBuffer>& resolve_tile_mesh_buffer(
-    const LiftingWorkingBuffers& buffers, const StreamRef stream) {
-    return stream.family == LogicalStream::kEven ? buffers.even_tile.at(stream.slot) : buffers.odd_tile.at(stream.slot);
-}
-
-[[nodiscard]] const SignalBuffer& resolve_output_buffer_desc(
-    const LiftingForwardPlan& plan, const LiftingStepRoute& route) {
-    return plan.resolve_stream_buffer(route.output);
-}
-
-[[nodiscard]] const std::shared_ptr<tt::tt_metal::distributed::MeshBuffer>& resolve_output_mesh_buffer(
-    const LiftingWorkingBuffers& buffers, const LiftingStepRoute& route) {
-    return resolve_mesh_buffer(buffers, route.output);
-}
-
-[[nodiscard]] const std::shared_ptr<tt::tt_metal::distributed::MeshBuffer>& resolve_output_tile_mesh_buffer(
-    const LiftingWorkingBuffers& buffers, const LiftingStepRoute& route) {
-    return resolve_tile_mesh_buffer(buffers, route.output);
-}
-
-void run_program(
-    tt::tt_metal::distributed::MeshDevice& mesh_device,
-    tt::tt_metal::distributed::MeshCommandQueue& command_queue,
-    tt::tt_metal::Program&& program) {
-    tt::tt_metal::distributed::MeshWorkload workload;
-    const auto device_range = tt::tt_metal::distributed::MeshCoordinateRange(mesh_device.shape());
-    workload.add_program(device_range, std::move(program));
+void run_workload(
+    tt::tt_metal::distributed::MeshCommandQueue& command_queue, tt::tt_metal::distributed::MeshWorkload& workload) {
     tt::tt_metal::distributed::EnqueueMeshWorkload(command_queue, workload, false);
     tt::tt_metal::distributed::Finish(command_queue);
 }
 
-[[nodiscard]] ScaleStepProgram create_tile_scale_step_program(
-    const std::filesystem::path& kernel_root,
-    const tt::tt_metal::CoreCoord& core,
-    const tt::tt_metal::Buffer& source_tile_buffer,
-    const tt::tt_metal::Buffer& output_buffer,
-    const SignalBuffer& output_desc) {
-    TT_FATAL(output_desc.element_size_bytes == sizeof(float), "LWT tile scale path is fp32-only");
-    TT_FATAL(output_desc.stick_width == 32, "LWT tile scale path expects 32-element row-major sticks");
-
-    tt::tt_metal::Program program = tt::tt_metal::CreateProgram();
-
-    const uint32_t tile_size = tt::tile_size(kDataFormat);
-    const uint32_t stick_nbytes = output_desc.aligned_stick_bytes(kCircularBufferAlignmentBytes);
-
-    create_circular_buffer(program, core, kScaleInputCb, 2, tile_size);
-    create_circular_buffer(program, core, kScaleOutputCb, 2, tile_size);
-
-    std::vector<uint32_t> reader_compile_args = {kScaleInputCb};
-    tt::tt_metal::TensorAccessorArgs(source_tile_buffer).append_to(reader_compile_args);
-
-    const std::vector<uint32_t> compute_compile_args = {kScaleInputCb, kScaleOutputCb};
-
-    std::vector<uint32_t> writer_compile_args = {
-        kScaleOutputCb,
-        stick_nbytes,
-        is_single_core_l1_buffer(output_buffer) ? 1U : 0U,
-    };
-    tt::tt_metal::TensorAccessorArgs(output_buffer).append_to(writer_compile_args);
-
-    std::vector<UnpackToDestMode> scale_unpack_to_dest_mode(NUM_CIRCULAR_BUFFERS, UnpackToDestMode::Default);
-    scale_unpack_to_dest_mode[kScaleInputCb] = UnpackToDestMode::UnpackToDestFp32;
-
-    const auto reader = tt::tt_metal::CreateKernel(
-        program,
-        kernel_path(kernel_root, kTileScaleReaderKernelPath),
-        core,
-        tt::tt_metal::ReaderDataMovementConfig(reader_compile_args));
-    const auto writer = tt::tt_metal::CreateKernel(
-        program,
-        kernel_path(kernel_root, kTileScaleWriterKernelPath),
-        core,
-        tt::tt_metal::WriterDataMovementConfig(writer_compile_args));
-    const auto compute = tt::tt_metal::CreateKernel(
-        program,
-        kernel_path(kernel_root, kTileScaleComputeKernelPath),
-        core,
-        tt::tt_metal::ComputeConfig{
-            .math_fidelity = MathFidelity::HiFi4,
-            .fp32_dest_acc_en = true,
-            .unpack_to_dest_mode = scale_unpack_to_dest_mode,
-            .compile_args = compute_compile_args,
-        });
-
-    return ScaleStepProgram{
-        .program = std::move(program),
-        .reader = reader,
-        .compute = compute,
-        .writer = writer,
-    };
-}
-
-void set_tile_scale_step_runtime_args(
-    const ScaleStepProgram& program_bundle,
-    const tt::tt_metal::CoreCoord& core,
-    const tt::tt_metal::Buffer& source_tile_buffer,
-    const tt::tt_metal::Buffer& output_buffer,
-    const LiftingStepRoute& route,
-    const device_protocol::DeviceStepDesc& desc) {
-    TT_FATAL(desc.k == 1U, "Scale steps must provide exactly one coefficient");
-    TT_FATAL(
-        route.source_length == route.output_length,
-        "Tile scale expects source/output lengths to match, got {} -> {}",
-        route.source_length,
-        route.output_length);
-
-    const uint32_t tile_page_count = lwt_tile_page_count(route.source_length);
-    const uint32_t output_group_count = lwt_output_group_count(route.output_length);
-
-    tt::tt_metal::SetRuntimeArgs(
-        program_bundle.program,
-        program_bundle.reader,
-        core,
-        std::array<uint32_t, 2>{
-            static_cast<uint32_t>(source_tile_buffer.address()),
-            tile_page_count,
-        });
-    tt::tt_metal::SetRuntimeArgs(
-        program_bundle.program,
-        program_bundle.compute,
-        core,
-        std::array<uint32_t, 2>{
-            tile_page_count,
-            desc.coeffs_packed[0],
-        });
-    tt::tt_metal::SetRuntimeArgs(
-        program_bundle.program,
-        program_bundle.writer,
-        core,
-        std::array<uint32_t, 3>{
-            static_cast<uint32_t>(output_buffer.address()),
-            checked_length(route.output_length, "output length"),
-            output_group_count,
-        });
-}
-
 }  // namespace
 
-LiftingPreprocessDeviceProgram create_lifting_preprocess_program(
-    const std::filesystem::path& kernel_root,
-    tt::tt_metal::distributed::MeshDevice& mesh_device,
-    const tt::tt_metal::CoreCoord& core,
-    const tt::tt_metal::Buffer& input_buffer,
-    const SignalBuffer& input_desc,
-    const RuntimeLiftingScheme& scheme) {
-    TT_FATAL(input_desc.length > 0, "Input signal must be non-empty");
-    TT_FATAL(input_desc.element_size_bytes == sizeof(float), "Lifting preprocess currently supports fp32 only");
-
-    const SignalBuffer planned_input = with_address(input_desc, input_buffer.address());
-    const uint32_t wavelet_pad = static_cast<uint32_t>(scheme.tap_size - 1);
-    const PadSplit1DLayout provisional_layout = make_pad_split_1d_layout(
-        planned_input, 0, 0, Pad1DConfig{.mode = scheme.mode, .left = wavelet_pad, .right = wavelet_pad});
-
-    const auto l1_shard_cores = all_worker_cores(mesh_device);
-
-    auto even_ping = create_signal_mesh_buffer(
-        mesh_device, provisional_layout.output.even, tt::tt_metal::BufferType::L1, l1_shard_cores);
-    auto even_pong = create_signal_mesh_buffer(mesh_device, provisional_layout.output.even);
-    auto odd_ping = create_signal_mesh_buffer(
-        mesh_device, provisional_layout.output.odd, tt::tt_metal::BufferType::L1, l1_shard_cores);
-    auto odd_pong = create_signal_mesh_buffer(mesh_device, provisional_layout.output.odd);
-    auto even_tile_ping =
-        create_tile_signal_mesh_buffer(mesh_device, make_lwt_tile_signal_buffer(provisional_layout.output.even));
-    auto even_tile_pong =
-        create_tile_signal_mesh_buffer(mesh_device, make_lwt_tile_signal_buffer(provisional_layout.output.even));
-    auto odd_tile_ping =
-        create_tile_signal_mesh_buffer(mesh_device, make_lwt_tile_signal_buffer(provisional_layout.output.odd));
-    auto odd_tile_pong =
-        create_tile_signal_mesh_buffer(mesh_device, make_lwt_tile_signal_buffer(provisional_layout.output.odd));
-
-    const LiftingForwardPlan plan = make_forward_lifting_plan(
-        planned_input,
-        scheme,
-        even_ping->get_backing_buffer()->address(),
-        even_pong->get_backing_buffer()->address(),
-        odd_ping->get_backing_buffer()->address(),
-        odd_pong->get_backing_buffer()->address());
-
-    PadSplit1DDeviceProgram preprocess = create_pad_split_1d_program(
-        kernel_root,
-        core,
-        input_buffer,
-        *(even_ping->get_backing_buffer()),
-        *(odd_ping->get_backing_buffer()),
-        plan.preprocess_layout);
-
-    return LiftingPreprocessDeviceProgram{
-        .plan = plan,
-        .buffers =
-            LiftingWorkingBuffers{
-                .even = MeshBufferPair{.ping = std::move(even_ping), .pong = std::move(even_pong)},
-                .odd = MeshBufferPair{.ping = std::move(odd_ping), .pong = std::move(odd_pong)},
-                .even_tile = TileMeshBufferPair{.ping = std::move(even_tile_ping), .pong = std::move(even_tile_pong)},
-                .odd_tile = TileMeshBufferPair{.ping = std::move(odd_tile_ping), .pong = std::move(odd_tile_pong)},
-            },
-        .preprocess = std::move(preprocess),
-    };
-}
-
-[[nodiscard]] bool debug_step_readback_enabled() {
-    const char* raw = std::getenv("TT_WAVELET_DEBUG_STEP_READBACK");
-    return raw != nullptr && raw[0] != '\0' && raw[0] != '0';
-}
-
-void debug_print_signal(const char* label, const std::vector<float>& values, const size_t logical_length) {
-    std::cout << label << " (" << logical_length << "): [";
-    for (size_t i = 0; i < logical_length; ++i) {
-        if (i > 0) {
-            std::cout << ", ";
-        }
-        std::cout << std::scientific << std::setprecision(8) << static_cast<double>(values[i]);
+bool validate_lifting_scheme(const LiftingScheme& scheme) {
+    if (scheme.tap_size() == 0 || scheme.steps().empty()) {
+        return false;
     }
-    std::cout << std::defaultfloat << "]\n";
-}
-
-void run_preprocess(
-    tt::tt_metal::distributed::MeshCommandQueue& command_queue,
-    tt::tt_metal::distributed::MeshDevice& mesh_device,
-    LiftingPreprocessDeviceProgram& bundle) {
-    run_program(mesh_device, command_queue, std::move(bundle.preprocess.program));
-
-    if (debug_step_readback_enabled()) {
-        std::vector<float> even_output;
-        auto even_buffer = bundle.buffers.even.ping;
-        tt::tt_metal::distributed::EnqueueReadMeshBuffer(command_queue, even_output, even_buffer, true);
-        debug_print_signal("preprocess even", even_output, bundle.plan.preprocess_layout.output.even.length);
-
-        std::vector<float> odd_output;
-        auto odd_buffer = bundle.buffers.odd.ping;
-        tt::tt_metal::distributed::EnqueueReadMeshBuffer(command_queue, odd_output, odd_buffer, true);
-        debug_print_signal("preprocess odd", odd_output, bundle.plan.preprocess_layout.output.odd.length);
-    }
-}
-
-[[nodiscard]] PredictUpdateProgram create_predict_update_program(
-    const std::filesystem::path& kernel_root,
-    const tt::tt_metal::CoreCoord& core,
-    const tt::tt_metal::Buffer& source_buffer,
-    const tt::tt_metal::Buffer& base_buffer,
-    const tt::tt_metal::Buffer& output_buffer,
-    const tt::tt_metal::Buffer& output_tile_buffer,
-    const SignalBuffer& output_desc,
-    const device_protocol::DeviceStepDesc& desc) {
-    TT_FATAL(output_desc.element_size_bytes == sizeof(float), "LWT path is fp32-only");
-    TT_FATAL(output_desc.stick_width == 32, "LWT path expects 32-element sticks");
-    TT_FATAL(desc.k > 0U && desc.k <= device_protocol::step_coeff_capacity, "invalid stencil width {}", desc.k);
-
-    tt::tt_metal::Program program = tt::tt_metal::CreateProgram();
-
-    const uint32_t tile_size = tt::tile_size(kDataFormat);
-    const uint32_t stick_nbytes = output_desc.aligned_stick_bytes(kCircularBufferAlignmentBytes);
-
-    create_circular_buffer(program, core, kLwtSrcTile0Cb, 1, tile_size);
-    create_circular_buffer(program, core, kLwtSrcTile1Cb, 1, tile_size);
-    create_circular_buffer(program, core, kLwtBaseTileCb, 2, tile_size);
-    create_circular_buffer(program, core, kLwtOutputCb, 2, tile_size);
-    create_circular_buffer(program, core, kLwtSrcCacheCb, 1, stick_nbytes);
-    create_circular_buffer(program, core, kLwtBaseCacheCb, 1, stick_nbytes);
-    create_circular_buffer(program, core, kLwtSyncCb, 1, kLwtSyncPageSize);
-
-    std::vector<uint32_t> reader_ct_args = {
-        kLwtSrcTile0Cb,
-        kLwtSrcTile1Cb,
-        kLwtBaseTileCb,
-        stick_nbytes,
-        kLwtSrcCacheCb,
-        kLwtBaseCacheCb,
-        output_desc.stick_width,
-        kLwtSyncCb,
-        is_single_core_l1_buffer(source_buffer) ? 1U : 0U,
-        is_single_core_l1_buffer(base_buffer) ? 1U : 0U,
-    };
-    tt::tt_metal::TensorAccessorArgs(source_buffer).append_to(reader_ct_args);
-    tt::tt_metal::TensorAccessorArgs(base_buffer).append_to(reader_ct_args);
-
-    std::vector<uint32_t> writer_ct_args = {
-        kLwtOutputCb,
-        stick_nbytes,
-        kLwtSyncCb,
-        is_single_core_l1_buffer(output_buffer) ? 1U : 0U,
-    };
-    tt::tt_metal::TensorAccessorArgs(output_buffer).append_to(writer_ct_args);
-    tt::tt_metal::TensorAccessorArgs(output_tile_buffer).append_to(writer_ct_args);
-
-    const std::vector<uint32_t> compute_ct_args = {
-        kLwtSrcTile0Cb,
-        kLwtSrcTile1Cb,
-        kLwtBaseTileCb,
-        kLwtOutputCb,
-        desc.k,
-    };
-    std::vector<UnpackToDestMode> unpack_to_dest_mode(NUM_CIRCULAR_BUFFERS, UnpackToDestMode::Default);
-    // copy_tile(cb_input0/1/base, ...) should unpack directly to Dest in FP32.
-    unpack_to_dest_mode[kLwtSrcTile0Cb] = UnpackToDestMode::UnpackToDestFp32;
-    unpack_to_dest_mode[kLwtSrcTile1Cb] = UnpackToDestMode::UnpackToDestFp32;
-    unpack_to_dest_mode[kLwtBaseTileCb] = UnpackToDestMode::UnpackToDestFp32;
-
-    const auto reader = tt::tt_metal::CreateKernel(
-        program,
-        kernel_path(kernel_root, kLwtReaderKernelPath),
-        core,
-        tt::tt_metal::ReaderDataMovementConfig(reader_ct_args));
-    const auto writer = tt::tt_metal::CreateKernel(
-        program,
-        kernel_path(kernel_root, kLwtWriterKernelPath),
-        core,
-        tt::tt_metal::WriterDataMovementConfig(writer_ct_args));
-    const auto compute = tt::tt_metal::CreateKernel(
-        program,
-        kernel_path(kernel_root, kLwtComputeKernelPath),
-        core,
-        tt::tt_metal::ComputeConfig{
-            .math_fidelity = MathFidelity::HiFi4,
-            .fp32_dest_acc_en = true,
-            .unpack_to_dest_mode = unpack_to_dest_mode,
-            .compile_args = compute_ct_args,
-        });
-
-    return PredictUpdateProgram{
-        .program = std::move(program),
-        .reader = reader,
-        .compute = compute,
-        .writer = writer,
-    };
-}
-
-void set_predict_update_runtime_args(
-    const PredictUpdateProgram& program_bundle,
-    const tt::tt_metal::CoreCoord& core,
-    const LiftingPreprocessDeviceProgram& bundle,
-    const std::vector<size_t>& pu_step_indices,
-    const std::vector<uint8_t>& write_tile_sidecar) {
-    const size_t num_pu_steps = pu_step_indices.size();
-    TT_FATAL(
-        write_tile_sidecar.size() == bundle.plan.routes.size(),
-        "Tile sidecar route mask size {} must match route count {}",
-        write_tile_sidecar.size(),
-        bundle.plan.routes.size());
-
-    // Reader runtime args:
-    // [num_steps, (src_addr, src_len, base_addr, base_len, out_len, out_groups, src_off, base_off, src_left_pad) * N]
-    constexpr uint32_t kReaderArgsPerStep = 9;
-    std::vector<uint32_t> reader_rt(1 + num_pu_steps * kReaderArgsPerStep, 0);
-    reader_rt[0] = static_cast<uint32_t>(num_pu_steps);
-
-    for (size_t i = 0; i < num_pu_steps; ++i) {
-        const size_t step_index = pu_step_indices[i];
-        const auto& route = bundle.plan.routes[step_index];
-        const auto& src_buf = resolve_mesh_buffer(bundle.buffers, route.source);
-        const auto& base_buf = resolve_mesh_buffer(bundle.buffers, route.base);
-        const uint32_t output_group_count = lwt_output_group_count(route.output_length);
-
-        const uint32_t off = static_cast<uint32_t>(1 + i * kReaderArgsPerStep);
-        reader_rt[off + 0] = static_cast<uint32_t>(src_buf->address());
-        reader_rt[off + 1] = checked_length(route.source_length, "source length");
-        reader_rt[off + 2] = static_cast<uint32_t>(base_buf->address());
-        reader_rt[off + 3] = checked_length(route.base_length, "base length");
-        reader_rt[off + 4] = checked_length(route.output_length, "output length");
-        reader_rt[off + 5] = output_group_count;
-        reader_rt[off + 6] = checked_length(route.source_offset, "source offset");
-        reader_rt[off + 7] = checked_length(route.base_offset, "base offset");
-        reader_rt[off + 8] = stencil_source_left_pad(bundle.plan.packed_steps[step_index]);
-    }
-    tt::tt_metal::SetRuntimeArgs(program_bundle.program, program_bundle.reader, core, reader_rt);
-
-    // Compute runtime args: [num_steps, (output_groups, DeviceStepDesc[19]) * N]
-    constexpr uint32_t kComputeArgsPerStep = 1 + device_protocol::step_desc_word_count;
-    std::vector<uint32_t> compute_rt(1 + num_pu_steps * kComputeArgsPerStep, 0);
-    compute_rt[0] = static_cast<uint32_t>(num_pu_steps);
-
-    for (size_t i = 0; i < num_pu_steps; ++i) {
-        const size_t step_index = pu_step_indices[i];
-        const auto& route = bundle.plan.routes[step_index];
-        const auto& packed = bundle.plan.packed_steps[step_index];
-        const uint32_t output_group_count = lwt_output_group_count(route.output_length);
-
-        const uint32_t off = static_cast<uint32_t>(1 + i * kComputeArgsPerStep);
-        compute_rt[off] = output_group_count;
-        auto desc_words = to_runtime_args(packed);
-        for (size_t w = 0; w < desc_words.size(); ++w) {
-            compute_rt[off + 1 + w] = desc_words[w];
+    for (const auto& step : scheme.steps()) {
+        const auto width = step.coeffs().size();
+        switch (step.type()) {
+            case LiftingStepType::kPredict:
+            case LiftingStepType::kUpdate:
+                if (width == 0 || width > 17 || step.shift() < -16 || step.shift() > 16) {
+                    return false;
+                }
+                break;
+            case LiftingStepType::kScaleEven:
+            case LiftingStepType::kScaleOdd:
+                if (width != 1) {
+                    return false;
+                }
+                break;
+            case LiftingStepType::kSwap:
+                if (width != 0) {
+                    return false;
+                }
+                break;
         }
     }
-    tt::tt_metal::SetRuntimeArgs(program_bundle.program, program_bundle.compute, core, compute_rt);
-
-    // Writer runtime args: [num_steps, (output_addr, output_len, output_groups, tile_addr, write_tile) * N]
-    constexpr uint32_t kWriterArgsPerStep = 5;
-    std::vector<uint32_t> writer_rt(1 + num_pu_steps * kWriterArgsPerStep, 0);
-    writer_rt[0] = static_cast<uint32_t>(num_pu_steps);
-
-    for (size_t i = 0; i < num_pu_steps; ++i) {
-        const size_t step_index = pu_step_indices[i];
-        const auto& route = bundle.plan.routes[step_index];
-        const auto& out_buf = resolve_output_mesh_buffer(bundle.buffers, route);
-        const auto& out_tile_buf = resolve_output_tile_mesh_buffer(bundle.buffers, route);
-        const uint32_t output_group_count = lwt_output_group_count(route.output_length);
-
-        const uint32_t off = static_cast<uint32_t>(1 + i * kWriterArgsPerStep);
-        writer_rt[off + 0] = static_cast<uint32_t>(out_buf->address());
-        writer_rt[off + 1] = checked_length(route.output_length, "output length");
-        writer_rt[off + 2] = output_group_count;
-        writer_rt[off + 3] = static_cast<uint32_t>(out_tile_buf->address());
-        writer_rt[off + 4] = write_tile_sidecar[step_index] != 0 ? 1U : 0U;
-    }
-    tt::tt_metal::SetRuntimeArgs(program_bundle.program, program_bundle.writer, core, writer_rt);
+    return true;
 }
 
-LiftingActiveStreams lwt(
-    const std::filesystem::path& kernel_root,
-    tt::tt_metal::distributed::MeshDevice& mesh_device,
-    tt::tt_metal::distributed::MeshCommandQueue& command_queue,
-    const tt::tt_metal::CoreCoord& core,
-    const LiftingPreprocessDeviceProgram& bundle) {
-    TT_FATAL(
-        bundle.plan.routes.size() == bundle.plan.packed_steps.size(),
-        "Route count {} must match packed step count {}",
-        bundle.plan.routes.size(),
-        bundle.plan.packed_steps.size());
+size_t canonical_output_length(const size_t input_length, const LiftingScheme& scheme) noexcept {
+    return (input_length + static_cast<size_t>(scheme.tap_size()) - 1) / 2;
+}
 
-    const std::vector<uint8_t> write_tile_sidecar = compute_tile_sidecar_routes(bundle.plan);
-
-    for (size_t step_index = 0; step_index < bundle.plan.routes.size();) {
-        const auto& route = bundle.plan.routes[step_index];
-        const auto& packed_step = bundle.plan.packed_steps[step_index];
-
-        if (route.type == StepType::kSwap) {
-            ++step_index;
-            continue;
+std::vector<uint32_t> pack_compile_time_steps(const LiftingScheme& scheme) {
+    TT_FATAL(validate_lifting_scheme(scheme), "invalid generated lifting scheme");
+    std::vector<uint32_t> packed;
+    for (const auto& step : scheme.steps()) {
+        const uint32_t type = static_cast<uint32_t>(step.type());
+        const uint32_t width = static_cast<uint32_t>(step.coeffs().size());
+        packed.push_back((width << 3) | type);
+        if (step.type() == LiftingStepType::kPredict || step.type() == LiftingStepType::kUpdate) {
+            packed.push_back(static_cast<uint32_t>(step.shift()));
         }
-
-        if (route.type == StepType::kPredict || route.type == StepType::kUpdate) {
-            const std::vector<size_t> pu_step_indices{step_index};
-            const auto& source_buffer = resolve_mesh_buffer(bundle.buffers, route.source);
-            const auto& base_buffer = resolve_mesh_buffer(bundle.buffers, route.base);
-            const auto& output_desc = resolve_output_buffer_desc(bundle.plan, route);
-            const auto& output_buffer = resolve_output_mesh_buffer(bundle.buffers, route);
-            const auto& output_tile_buffer = resolve_output_tile_mesh_buffer(bundle.buffers, route);
-            auto program_bundle = create_predict_update_program(
-                kernel_root,
-                core,
-                *(source_buffer->get_backing_buffer()),
-                *(base_buffer->get_backing_buffer()),
-                *(output_buffer->get_backing_buffer()),
-                *(output_tile_buffer->get_backing_buffer()),
-                output_desc,
-                packed_step);
-            set_predict_update_runtime_args(program_bundle, core, bundle, pu_step_indices, write_tile_sidecar);
-            run_program(mesh_device, command_queue, std::move(program_bundle.program));
-
-            ++step_index;
-            continue;
+        for (const float coefficient : step.coeffs()) {
+            packed.push_back(std::bit_cast<uint32_t>(coefficient));
         }
+    }
+    return packed;
+}
 
-        const auto& output_desc = resolve_output_buffer_desc(bundle.plan, route);
-        const auto& source_tile_buffer = resolve_tile_mesh_buffer(bundle.buffers, route.source);
-        const auto& output_buffer = resolve_output_mesh_buffer(bundle.buffers, route);
+std::string packed_program_cases(const std::vector<uint32_t>& packed) {
+    std::string cases;
+    for (size_t index = 0; index < packed.size(); ++index) {
+        cases += "case " + std::to_string(index) + "u:return " + std::to_string(packed[index]) + "u;";
+    }
+    return cases;
+}
 
-        TT_FATAL(
-            route.type == StepType::kScaleEven || route.type == StepType::kScaleOdd,
-            "unexpected step type {} in scale path",
-            static_cast<int>(route.type));
-        TT_FATAL(
-            stream_has_tile_sidecar(bundle.plan, write_tile_sidecar, route.source),
-            "Tile scale sidecar missing for terminal scale source");
+uint32_t predict_update_width_mask(const LiftingScheme& scheme) {
+    uint32_t mask = 0;
+    for (const auto& step : scheme.steps()) {
+        if (step.type() == LiftingStepType::kPredict || step.type() == LiftingStepType::kUpdate) {
+            mask |= 1U << (static_cast<uint32_t>(step.coeffs().size()) - 1U);
+        }
+    }
+    return mask;
+}
 
-        auto program_bundle = create_tile_scale_step_program(
+class WaveletProgram::Impl {
+public:
+    Impl(
+        const std::filesystem::path& kernel_root,
+        tt::tt_metal::distributed::MeshDevice& mesh_device,
+        tt::tt_metal::distributed::MeshCommandQueue& command_queue,
+        const tt::tt_metal::CoreCoord& core,
+        const LiftingScheme& scheme,
+        const size_t input_length) :
+        mesh_device_(mesh_device), command_queue_(command_queue), input_length_(input_length) {
+        TT_FATAL(input_length > 0, "WaveletProgram requires a non-empty signal");
+        TT_FATAL(validate_lifting_scheme(scheme), "invalid generated lifting scheme");
+
+        SignalBuffer input_desc{
+            .length = input_length, .stick_width = kStickWidth, .element_size_bytes = sizeof(float)};
+        geometry_ = make_geometry(input_desc, scheme);
+        input_ = make_signal_buffer(mesh_device_, input_desc);
+        even_ = make_signal_buffer(mesh_device_, geometry_.pad_split.output.even);
+        odd_ = make_signal_buffer(mesh_device_, geometry_.pad_split.output.odd);
+        const SignalBuffer output_desc{
+            .length = geometry_.output_length, .stick_width = kStickWidth, .element_size_bytes = sizeof(float)};
+        approximation_ = make_signal_buffer(mesh_device_, output_desc);
+        detail_ = make_signal_buffer(mesh_device_, output_desc);
+
+        input_desc.dram_address = input_->get_backing_buffer()->address();
+        geometry_.pad_split = make_pad_split_1d_layout(
+            input_desc,
+            even_->get_backing_buffer()->address(),
+            odd_->get_backing_buffer()->address(),
+            geometry_.pad_split.pad_config);
+
+        auto pad_program = create_pad_split_1d_program(
             kernel_root,
             core,
-            *(source_tile_buffer->get_backing_buffer()),
-            *(output_buffer->get_backing_buffer()),
-            output_desc);
-        set_tile_scale_step_runtime_args(
-            program_bundle,
-            core,
-            *(source_tile_buffer->get_backing_buffer()),
-            *(output_buffer->get_backing_buffer()),
-            route,
-            packed_step);
-        run_program(mesh_device, command_queue, std::move(program_bundle.program));
+            *input_->get_backing_buffer(),
+            *even_->get_backing_buffer(),
+            *odd_->get_backing_buffer(),
+            geometry_.pad_split);
+        const auto device_range = tt::tt_metal::distributed::MeshCoordinateRange(mesh_device_.shape());
+        pad_workload_.add_program(device_range, std::move(pad_program.program));
 
-        if (debug_step_readback_enabled()) {
-            std::vector<float> device_output;
-            auto debug_buffer = output_buffer;
-            tt::tt_metal::distributed::EnqueueReadMeshBuffer(command_queue, device_output, debug_buffer, true);
-            const auto logical_length = route.output_length;
-            std::cout << "Step " << step_index
-                      << " output family=" << (route.output.family == LogicalStream::kEven ? "even" : "odd")
-                      << " slot=" << (route.output.slot == StreamSlot::kPing ? "ping" : "pong") << '\n';
-            debug_print_signal("step output", device_output, logical_length);
+        tt::tt_metal::Program transform = tt::tt_metal::CreateProgram();
+        const uint32_t tile_bytes = tt::tile_size(kDataFormat);
+        const uint32_t stick_bytes = input_desc.aligned_stick_bytes(kNocAlignmentBytes);
+        const auto& sub_device_ids = mesh_device_.get_sub_device_ids();
+        TT_FATAL(!sub_device_ids.empty(), "mesh device provides no worker sub-devices");
+        const auto available_set =
+            mesh_device_.worker_cores(tt::tt_metal::HalProgrammableCoreType::TENSIX, sub_device_ids.front());
+        auto available_cores = tt::tt_metal::corerange_to_cores(available_set);
+        TT_FATAL(!available_cores.empty(), "mesh device provides no Tensix cores");
+        const auto preferred = std::find(available_cores.begin(), available_cores.end(), core);
+        TT_FATAL(preferred != available_cores.end(), "requested pad/split core is not a Tensix worker");
+        std::iter_swap(available_cores.begin(), preferred);
+
+        const uint32_t output_sticks =
+            checked_u32(ceil_div(geometry_.output_length, static_cast<size_t>(kStickWidth)), "output sticks");
+        const size_t physical_stream_length =
+            std::max(geometry_.pad_split.output.even.length, geometry_.pad_split.output.odd.length);
+        const size_t dependency_guard = predict_update_count(scheme) * static_cast<size_t>(kSpliceAdvanceElements);
+        uint32_t selected_core_count =
+            physical_stream_length <= dependency_guard
+                ? 1U
+                : std::min<uint32_t>(checked_u32(available_cores.size(), "available cores"), output_sticks);
+        uint32_t maximum_splices = 0;
+        std::vector<CorePiece> pieces;
+        uint64_t working_bytes = 0;
+        while (selected_core_count > 0) {
+            auto candidate = make_core_pieces(geometry_, scheme, selected_core_count);
+            uint32_t candidate_maximum_splices = 0;
+            for (const auto& piece : candidate) {
+                candidate_maximum_splices = std::max(candidate_maximum_splices, piece.splice_count);
+            }
+            const uint64_t candidate_bytes = piece_working_bytes(candidate_maximum_splices, tile_bytes, stick_bytes);
+            working_bytes = candidate_bytes;
+            if (candidate_bytes + kL1ReserveBytes <= mesh_device_.l1_size_per_core()) {
+                pieces = std::move(candidate);
+                maximum_splices = candidate_maximum_splices;
+                working_bytes = candidate_bytes;
+                break;
+            }
+            --selected_core_count;
         }
+        TT_FATAL(
+            selected_core_count > 0,
+            "signal needs {} L1 bytes for one guarded LWT piece, but one Tensix core provides {} bytes",
+            working_bytes,
+            mesh_device_.l1_size_per_core());
+        std::vector<tt::tt_metal::CoreRange> active_ranges;
+        active_ranges.reserve(selected_core_count);
+        for (uint32_t index = 0; index < selected_core_count; ++index) {
+            active_ranges.emplace_back(available_cores[index]);
+        }
+        const tt::tt_metal::CoreRangeSet active_cores(std::move(active_ranges));
+        const uint32_t chain_pages = maximum_splices * kTilePagesPerSplice;
 
-        ++step_index;
+        create_cb(transform, active_cores, kCbEven, chain_pages, tile_bytes);
+        create_cb(transform, active_cores, kCbOdd, chain_pages, tile_bytes);
+        create_cb(transform, active_cores, kCbEvenCache, 1, stick_bytes);
+        create_cb(transform, active_cores, kCbOddCache, 1, stick_bytes);
+        create_cb(transform, active_cores, kCbDone, 1, tile_bytes);
+        create_cb(transform, active_cores, kCbWriterScratch, 1, stick_bytes);
+        create_cb(transform, active_cores, kCbEvenWork, chain_pages * 2, tile_bytes);
+        create_cb(transform, active_cores, kCbOddWork, chain_pages * 2, tile_bytes);
+        create_cb(transform, active_cores, kCbFinalEven, chain_pages, tile_bytes);
+        create_cb(transform, active_cores, kCbFinalOdd, chain_pages, tile_bytes);
+        create_cb(transform, active_cores, kCbPrediction, chain_pages * 2, tile_bytes);
+        create_cb(transform, active_cores, kCbBaseRecoverState, 1, tile_bytes);
+        create_cb(transform, active_cores, kCbPredictionRecoverState, 1, tile_bytes);
+
+        std::vector<uint32_t> reader_args;
+        tt::tt_metal::TensorAccessorArgs(*even_->get_backing_buffer()).append_to(reader_args);
+        tt::tt_metal::TensorAccessorArgs(*odd_->get_backing_buffer()).append_to(reader_args);
+        const std::unordered_map<std::string, uint32_t> reader_named{
+            {"cb_even", kCbEven},
+            {"cb_odd", kCbOdd},
+            {"cb_even_cache", kCbEvenCache},
+            {"cb_odd_cache", kCbOddCache},
+            {"cache_bytes", stick_bytes},
+        };
+        const auto reader = tt::tt_metal::CreateKernel(
+            transform,
+            kernel_path(kernel_root, kLwtReaderKernel),
+            active_cores,
+            tt::tt_metal::ReaderDataMovementConfig(reader_args, {}, reader_named));
+
+        const std::vector<uint32_t> compute_args = pack_compile_time_steps(scheme);
+        const std::string compute_program_cases = packed_program_cases(compute_args);
+        const uint32_t width_mask = predict_update_width_mask(scheme);
+        std::vector<UnpackToDestMode> unpack_mode(NUM_CIRCULAR_BUFFERS, UnpackToDestMode::Default);
+        unpack_mode[kCbEven] = UnpackToDestMode::UnpackToDestFp32;
+        unpack_mode[kCbOdd] = UnpackToDestMode::UnpackToDestFp32;
+        unpack_mode[kCbEvenWork] = UnpackToDestMode::UnpackToDestFp32;
+        unpack_mode[kCbOddWork] = UnpackToDestMode::UnpackToDestFp32;
+        unpack_mode[kCbFinalEven] = UnpackToDestMode::UnpackToDestFp32;
+        unpack_mode[kCbFinalOdd] = UnpackToDestMode::UnpackToDestFp32;
+        unpack_mode[kCbPrediction] = UnpackToDestMode::UnpackToDestFp32;
+        unpack_mode[kCbBaseRecoverState] = UnpackToDestMode::UnpackToDestFp32;
+        unpack_mode[kCbPredictionRecoverState] = UnpackToDestMode::UnpackToDestFp32;
+        const std::unordered_map<std::string, uint32_t> compute_named{
+            {"cb_even", kCbEven},
+            {"cb_odd", kCbOdd},
+            {"cb_even_work", kCbEvenWork},
+            {"cb_odd_work", kCbOddWork},
+            {"cb_final_even", kCbFinalEven},
+            {"cb_final_odd", kCbFinalOdd},
+            {"cb_prediction", kCbPrediction},
+            {"cb_base_recover_state", kCbBaseRecoverState},
+            {"cb_prediction_recover_state", kCbPredictionRecoverState},
+            {"cb_out", kCbDone},
+            {"even_delay", static_cast<uint32_t>(scheme.delay_even())},
+            {"odd_delay", static_cast<uint32_t>(scheme.delay_odd())},
+            {"num_steps", static_cast<uint32_t>(scheme.steps().size())},
+            {"width_mask", width_mask},
+        };
+        const auto compute = tt::tt_metal::CreateKernel(
+            transform,
+            kernel_path(kernel_root, kLwtComputeKernel),
+            active_cores,
+            tt::tt_metal::ComputeConfig{
+                .math_fidelity = MathFidelity::HiFi4,
+                .fp32_dest_acc_en = true,
+                .dst_full_sync_en = true,
+                .unpack_to_dest_mode = unpack_mode,
+                .defines = {{"LWT_PROGRAM_CASES", compute_program_cases}},
+                .named_compile_args = compute_named,
+            });
+
+        std::vector<uint32_t> writer_args;
+        tt::tt_metal::TensorAccessorArgs(*approximation_->get_backing_buffer()).append_to(writer_args);
+        tt::tt_metal::TensorAccessorArgs(*detail_->get_backing_buffer()).append_to(writer_args);
+        const std::unordered_map<std::string, uint32_t> writer_named{
+            {"cb_even", kCbFinalEven},
+            {"cb_odd", kCbFinalOdd},
+            {"cb_done", kCbDone},
+            {"cb_scratch", kCbWriterScratch},
+            {"final_swapped", 0U},
+            {"stick_width", kStickWidth},
+        };
+        const auto writer = tt::tt_metal::CreateKernel(
+            transform,
+            kernel_path(kernel_root, kLwtWriterKernel),
+            active_cores,
+            tt::tt_metal::WriterDataMovementConfig(writer_args, {}, writer_named));
+
+        for (uint32_t index = 0; index < selected_core_count; ++index) {
+            const auto& piece = pieces[index];
+            const auto& transform_core = available_cores[index];
+            tt::tt_metal::SetRuntimeArgs(
+                transform,
+                reader,
+                transform_core,
+                std::array<uint32_t, 8>{
+                    piece.splice_count,
+                    static_cast<uint32_t>(even_->get_backing_buffer()->address()),
+                    static_cast<uint32_t>(odd_->get_backing_buffer()->address()),
+                    checked_u32(geometry_.pad_split.output.even.length, "even length"),
+                    checked_u32(geometry_.pad_split.output.odd.length, "odd length"),
+                    piece.source_start,
+                    piece.source_length,
+                    piece.source_prefix,
+                });
+            tt::tt_metal::SetRuntimeArgs(
+                transform, compute, transform_core, std::array<uint32_t, 1>{piece.splice_count});
+            tt::tt_metal::SetRuntimeArgs(
+                transform,
+                writer,
+                transform_core,
+                std::array<uint32_t, 7>{
+                    piece.splice_count,
+                    static_cast<uint32_t>(approximation_->get_backing_buffer()->address()),
+                    static_cast<uint32_t>(detail_->get_backing_buffer()->address()),
+                    piece.approximation_offset,
+                    piece.detail_offset,
+                    piece.output_stick_start,
+                    piece.output_length,
+                });
+        }
+        transform_workload_.add_program(device_range, std::move(transform));
     }
 
-    return bundle.plan.final_active;
-}
+    [[nodiscard]] WaveletCoefficients execute(const std::span<const float> signal) {
+        TT_FATAL(!executed_, "WaveletProgram instances execute exactly once");
+        TT_FATAL(signal.size() == input_length_, "signal length differs from the compiled WaveletProgram length");
+        executed_ = true;
+
+        std::vector<float> input(signal.begin(), signal.end());
+        tt::tt_metal::distributed::EnqueueWriteMeshBuffer(command_queue_, input_, input, false);
+        run_workload(command_queue_, pad_workload_);
+        run_workload(command_queue_, transform_workload_);
+
+        WaveletCoefficients result;
+        tt::tt_metal::distributed::EnqueueReadMeshBuffer(command_queue_, result.approximation, approximation_, true);
+        tt::tt_metal::distributed::EnqueueReadMeshBuffer(command_queue_, result.detail, detail_, true);
+        result.approximation.resize(geometry_.output_length);
+        result.detail.resize(geometry_.output_length);
+        return result;
+    }
+
+private:
+    tt::tt_metal::distributed::MeshDevice& mesh_device_;
+    tt::tt_metal::distributed::MeshCommandQueue& command_queue_;
+    size_t input_length_;
+    bool executed_{false};
+    TransformGeometry geometry_{};
+    std::shared_ptr<tt::tt_metal::distributed::MeshBuffer> input_;
+    std::shared_ptr<tt::tt_metal::distributed::MeshBuffer> even_;
+    std::shared_ptr<tt::tt_metal::distributed::MeshBuffer> odd_;
+    std::shared_ptr<tt::tt_metal::distributed::MeshBuffer> approximation_;
+    std::shared_ptr<tt::tt_metal::distributed::MeshBuffer> detail_;
+    tt::tt_metal::distributed::MeshWorkload pad_workload_;
+    tt::tt_metal::distributed::MeshWorkload transform_workload_;
+};
+
+WaveletProgram::WaveletProgram(
+    const std::filesystem::path& kernel_root,
+    tt::tt_metal::distributed::MeshDevice& mesh_device,
+    tt::tt_metal::distributed::MeshCommandQueue& command_queue,
+    const tt::tt_metal::CoreCoord& core,
+    const LiftingScheme& scheme,
+    const size_t input_length) :
+    impl_(std::make_unique<Impl>(kernel_root, mesh_device, command_queue, core, scheme, input_length)) {}
+
+WaveletProgram::~WaveletProgram() = default;
+WaveletProgram::WaveletProgram(WaveletProgram&&) noexcept = default;
+WaveletProgram& WaveletProgram::operator=(WaveletProgram&&) noexcept = default;
+
+WaveletCoefficients WaveletProgram::execute(const std::span<const float> signal) { return impl_->execute(signal); }
 
 }  // namespace ttwv

@@ -14,12 +14,11 @@
 #include <cstdint>
 #include <utility>
 
+#include "../sfpi/common.h"
 #include "ckernel.h"
 #include "ckernel_defs.h"
 #include "cmath_common.h"
 #include "sfpi.h"
-
-#include "../sfpi/common.h"
 
 using namespace sfpi;
 
@@ -60,10 +59,10 @@ inline void _horizontal_stencil_block(
     TTI_SFPMOV(0, p_sfpu::LCONST_0, g_o, 0);  // g_o = 0
 
 #pragma unroll 17
-    for (uint8_t j = 0; j < 17-K; j++) {
+    for (uint8_t j = 0; j < 17 - K; j++) {
         _horizontal_rotate(f_o_0, f_o_1);
-        std::swap(f_e_0, f_e_1);
-        std::swap(f_o_0, f_o_1);
+        std::swap(f_e_0, f_o_0);
+        std::swap(f_e_1, f_o_1);
     }
 
 #pragma unroll 17

@@ -1,8 +1,14 @@
 #pragma once
 
+#include <cstdint>
+#include <initializer_list>
+#include <string_view>
+#include <utility>
+#include <vector>
+
 namespace ttwv {
 
-enum LiftingStepType : uint8_t {
+enum class LiftingStepType : uint8_t {
     kPredict,
     kUpdate,
     kScaleEven,
@@ -13,43 +19,41 @@ enum LiftingStepType : uint8_t {
 class LiftingStep {
 public:
     LiftingStep(LiftingStepType type, std::vector<float>&& coeffs, int32_t shift) :
-        _type(type), _coeffs(std::move(coeffs)), _shift(shift) {}
+        type_(type), coeffs_(std::move(coeffs)), shift_(shift) {}
     LiftingStep(LiftingStepType type, const std::vector<float>& coeffs, int32_t shift) :
-        _type(type), _coeffs(coeffs), _shift(shift) {}
+        type_(type), coeffs_(coeffs), shift_(shift) {}
     LiftingStep(LiftingStepType type, std::initializer_list<float> coeffs, int32_t shift) :
-        _type(type), _coeffs(coeffs), _shift(shift) {}
-    ~LiftingStep() = default;
+        type_(type), coeffs_(coeffs), shift_(shift) {}
 
-    [[nodiscard]] LiftingStepType type() const noexcept { return _type; }
-    [[nodiscard]] const std::vector<float>& coeffs() const& noexcept { return _coeffs; }
-    [[nodiscard]] int32_t shift() const noexcept { return _shift; }
+    [[nodiscard]] LiftingStepType type() const noexcept { return type_; }
+    [[nodiscard]] const std::vector<float>& coeffs() const noexcept { return coeffs_; }
+    [[nodiscard]] int32_t shift() const noexcept { return shift_; }
 
 private:
-    LiftingStepType _type;
-    std::vector<float> _coeffs;
-    int32_t _shift;
+    LiftingStepType type_;
+    std::vector<float> coeffs_;
+    int32_t shift_;
 };
 
 class LiftingScheme {
 public:
     LiftingScheme(int32_t delay_even, int32_t delay_odd, uint32_t tap_size, std::vector<LiftingStep>&& steps) :
-        _steps(std::move(steps)), delay_even(delay_even), delay_odd(delay_odd), tap_size(tap_size) {}
+        steps_(std::move(steps)), delay_even_(delay_even), delay_odd_(delay_odd), tap_size_(tap_size) {}
     LiftingScheme(int32_t delay_even, int32_t delay_odd, uint32_t tap_size, const std::vector<LiftingStep>& steps) :
-        _steps(steps), delay_even(delay_even), delay_odd(delay_odd), tap_size(tap_size) {}
+        steps_(steps), delay_even_(delay_even), delay_odd_(delay_odd), tap_size_(tap_size) {}
     LiftingScheme(int32_t delay_even, int32_t delay_odd, uint32_t tap_size, std::initializer_list<LiftingStep> steps) :
-        _steps(steps), delay_even(delay_even), delay_odd(delay_odd), tap_size(tap_size) {}
-    LiftingScheme(int32_t delay_even, int32_t delay_odd, uint32_t tap_size, LiftingStep&&... steps) :
-        _steps(std::forward<LiftingStep>(steps)...), delay_even(delay_even), delay_odd(delay_odd), tap_size(tap_size) {}
+        steps_(steps), delay_even_(delay_even), delay_odd_(delay_odd), tap_size_(tap_size) {}
 
-    ~LiftingScheme() = default;
-
-    [[nodiscard]] const std::vector<LiftingStep>& steps() const& noexcept { return _steps; }
+    [[nodiscard]] const std::vector<LiftingStep>& steps() const noexcept { return steps_; }
+    [[nodiscard]] int32_t delay_even() const noexcept { return delay_even_; }
+    [[nodiscard]] int32_t delay_odd() const noexcept { return delay_odd_; }
+    [[nodiscard]] uint32_t tap_size() const noexcept { return tap_size_; }
 
 private:
-    std::vector<LiftingStep> _steps;
-    int32_t delay_even;
-    int32_t delay_odd;
-    uint32_t tap_size;
+    std::vector<LiftingStep> steps_;
+    int32_t delay_even_;
+    int32_t delay_odd_;
+    uint32_t tap_size_;
 };
 
 }  // namespace ttwv

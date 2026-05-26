@@ -2,66 +2,47 @@
 
 #include <filesystem>
 #include <memory>
+#include <span>
+#include <vector>
 
 #include "tt-metalium/distributed.hpp"
-#include "tt-metalium/mesh_buffer.hpp"
 #include "tt-metalium/mesh_device.hpp"
-#include "tt_wavelet/include/lifting/plan.hpp"
-#include "tt_wavelet/include/pad_split/device.hpp"
+#include "tt_wavelet/include/schemes/scheme.hpp"
 
 namespace ttwv {
 
-struct MeshBufferPair {
-    std::shared_ptr<tt::tt_metal::distributed::MeshBuffer> ping;
-    std::shared_ptr<tt::tt_metal::distributed::MeshBuffer> pong;
-
-    [[nodiscard]] const std::shared_ptr<tt::tt_metal::distributed::MeshBuffer>& at(
-        const StreamSlot slot) const noexcept {
-        return slot == StreamSlot::kPing ? ping : pong;
-    }
+struct WaveletCoefficients {
+    std::vector<float> approximation;
+    std::vector<float> detail;
 };
 
-struct TileMeshBufferPair {
-    std::shared_ptr<tt::tt_metal::distributed::MeshBuffer> ping;
-    std::shared_ptr<tt::tt_metal::distributed::MeshBuffer> pong;
+class WaveletProgram {
+public:
+    WaveletProgram(
+        const std::filesystem::path& kernel_root,
+        tt::tt_metal::distributed::MeshDevice& mesh_device,
+        tt::tt_metal::distributed::MeshCommandQueue& command_queue,
+        const tt::tt_metal::CoreCoord& core,
+        const LiftingScheme& scheme,
+        size_t input_length);
+    ~WaveletProgram();
 
-    [[nodiscard]] const std::shared_ptr<tt::tt_metal::distributed::MeshBuffer>& at(
-        const StreamSlot slot) const noexcept {
-        return slot == StreamSlot::kPing ? ping : pong;
-    }
+    WaveletProgram(WaveletProgram&&) noexcept;
+    WaveletProgram& operator=(WaveletProgram&&) noexcept;
+    WaveletProgram(const WaveletProgram&) = delete;
+    WaveletProgram& operator=(const WaveletProgram&) = delete;
+
+    [[nodiscard]] WaveletCoefficients execute(std::span<const float> signal);
+
+private:
+    class Impl;
+    std::unique_ptr<Impl> impl_;
 };
 
-struct LiftingWorkingBuffers {
-    MeshBufferPair even{};
-    MeshBufferPair odd{};
-    TileMeshBufferPair even_tile{};
-    TileMeshBufferPair odd_tile{};
-};
+[[nodiscard]] std::vector<uint32_t> pack_compile_time_steps(const LiftingScheme& scheme);
 
-struct LiftingPreprocessDeviceProgram {
-    LiftingForwardPlan plan{};
-    LiftingWorkingBuffers buffers{};
-    PadSplit1DDeviceProgram preprocess{};
-};
+[[nodiscard]] size_t canonical_output_length(size_t input_length, const LiftingScheme& scheme) noexcept;
 
-[[nodiscard]] LiftingPreprocessDeviceProgram create_lifting_preprocess_program(
-    const std::filesystem::path& kernel_root,
-    tt::tt_metal::distributed::MeshDevice& mesh_device,
-    const tt::tt_metal::CoreCoord& core,
-    const tt::tt_metal::Buffer& input_buffer,
-    const SignalBuffer& input_desc,
-    const RuntimeLiftingScheme& scheme);
-
-void run_preprocess(
-    tt::tt_metal::distributed::MeshCommandQueue& command_queue,
-    tt::tt_metal::distributed::MeshDevice& mesh_device,
-    LiftingPreprocessDeviceProgram& bundle);
-
-[[nodiscard]] LiftingActiveStreams lwt(
-    const std::filesystem::path& kernel_root,
-    tt::tt_metal::distributed::MeshDevice& mesh_device,
-    tt::tt_metal::distributed::MeshCommandQueue& command_queue,
-    const tt::tt_metal::CoreCoord& core,
-    const LiftingPreprocessDeviceProgram& bundle);
+[[nodiscard]] bool validate_lifting_scheme(const LiftingScheme& scheme);
 
 }  // namespace ttwv
