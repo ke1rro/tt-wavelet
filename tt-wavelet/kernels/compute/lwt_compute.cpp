@@ -205,7 +205,8 @@ inline void step_predict(
         cb_push_back(prediction, splice_count * 2);
 
         cb_wait_front(prediction, splice_count * 2);
-        cb_reserve_back(prediction, splice_count * 2);
+        cb_wait_front(destination_odd, splice_count * 2);
+        cb_reserve_back(destination_odd, splice_count * 2);
         for (uint32_t splice = splice_count; splice > 0; --splice) {
             if (splice < splice_count) {
                 cb_wait_front(prediction_recover_state, 1);
@@ -215,6 +216,9 @@ inline void step_predict(
             copy_tile_to_dst_init_short(prediction);
             copy_tile(prediction, (splice - 1) * 2, kDstTmp0);
             copy_tile(prediction, (splice - 1) * 2 + 1, kDstTmp1);
+            copy_tile_to_dst_init_short(destination_odd);
+            copy_tile(destination_odd, (splice - 1) * 2, kDstOdd0);
+            copy_tile(destination_odd, (splice - 1) * 2 + 1, kDstOdd1);
             if (splice == splice_count) {
                 copy_dest_values_init();
                 copy_dest_values(kDstPredictionRecover, kDstTmp1);
@@ -225,10 +229,13 @@ inline void step_predict(
             }
             splice_ops_init();
             recover2_splice(kDstTmp0, kDstTmp1, kDstPredictionRecover);
+            add_binary_tile_init();
+            add_binary_tile(kDstTmp0, kDstOdd0, kDstOdd0);
+            add_binary_tile(kDstTmp1, kDstOdd1, kDstOdd1);
             tile_regs_commit();
             tile_regs_wait();
-            pack_tile(kDstTmp0, prediction, (splice - 1) * 2);
-            pack_tile(kDstTmp1, prediction, (splice - 1) * 2 + 1);
+            pack_tile(kDstOdd0, destination_odd, (splice - 1) * 2);
+            pack_tile(kDstOdd1, destination_odd, (splice - 1) * 2 + 1);
             cb_reserve_back(prediction_recover_state, 1);
             pack_tile(kDstPredictionRecover, prediction_recover_state);
             cb_push_back(prediction_recover_state, 1);
@@ -237,30 +244,7 @@ inline void step_predict(
         cb_wait_front(prediction_recover_state, 1);
         cb_pop_front(prediction_recover_state, 1);
         cb_pop_front(prediction, splice_count * 2);
-        cb_push_back(prediction, splice_count * 2);
-
-        cb_wait_front(destination_odd, splice_count * 2);
-        cb_wait_front(prediction, splice_count * 2);
-        cb_reserve_back(destination_odd, splice_count * 2);
-        for (uint32_t splice = 0; splice < splice_count; ++splice) {
-            tile_regs_acquire();
-            copy_tile_to_dst_init_short(destination_odd);
-            copy_tile(destination_odd, splice * 2, kDstOdd0);
-            copy_tile(destination_odd, splice * 2 + 1, kDstOdd1);
-            copy_tile_to_dst_init_short(prediction);
-            copy_tile(prediction, splice * 2, kDstTmp0);
-            copy_tile(prediction, splice * 2 + 1, kDstTmp1);
-            add_binary_tile_init();
-            add_binary_tile(kDstTmp0, kDstOdd0, kDstOdd0);
-            add_binary_tile(kDstTmp1, kDstOdd1, kDstOdd1);
-            tile_regs_commit();
-            tile_regs_wait();
-            pack_tile(kDstOdd0, destination_odd, splice * 2);
-            pack_tile(kDstOdd1, destination_odd, splice * 2 + 1);
-            tile_regs_release();
-        }
         cb_pop_front(destination_odd, splice_count * 2);
-        cb_pop_front(prediction, splice_count * 2);
         cb_push_back(destination_odd, splice_count * 2);
     }
 
