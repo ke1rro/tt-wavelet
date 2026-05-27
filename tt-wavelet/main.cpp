@@ -10,6 +10,9 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#ifdef TRACY_ENABLE
+#include <unistd.h>  // getpid()
+#endif
 
 #include "tt-metalium/distributed.hpp"
 #include "tt-metalium/host_api.hpp"
@@ -60,6 +63,10 @@ int main(int argc, char** argv) {
         if (argc != 3) {
             throw std::runtime_error("Usage: lwt <scheme_name> <signal_file>");
         }
+#ifdef TRACY_ENABLE
+        std::cerr << "[Tracy] PID " << getpid() << " — connect now, then press Enter to continue...\n";
+        std::cin.get();
+#endif
         setenv("TT_LOGGER_LEVEL", "error", 0);
 
         const std::vector<float> original_signal = read_signal_file(argv[2]);

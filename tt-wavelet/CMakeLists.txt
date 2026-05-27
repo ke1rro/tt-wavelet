@@ -70,6 +70,14 @@ if(BUILD_TT_WAVELET)
   target_include_directories(${PROJECT_NAME}
                              PRIVATE ${TT_WAVELET_INCLUDE_DIRS})
   target_link_libraries(${PROJECT_NAME} PRIVATE Metalium::Metal)
+  if(ENABLE_TRACY AND TARGET TracyClient)
+    target_link_libraries(${PROJECT_NAME} PRIVATE TracyClient)
+    target_include_directories(
+      ${PROJECT_NAME} PRIVATE
+      ${CMAKE_SOURCE_DIR}/tt-metal/tt_metal/third_party/tracy/public)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE TRACY_ENABLE)
+    message(STATUS "${PROJECT_NAME}: Tracy memory profiling enabled")
+  endif()
   target_include_directories(lwt_shift_recover_test
                              PRIVATE ${TT_WAVELET_LLK_INCLUDE_DIRS})
   target_include_directories(lwt_shift_recover_test

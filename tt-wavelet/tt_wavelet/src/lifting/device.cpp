@@ -25,6 +25,10 @@
 #include "tt_wavelet/include/common/signal.hpp"
 #include "tt_wavelet/include/pad_split/device.hpp"
 
+#ifdef TRACY_ENABLE
+#include <tracy/Tracy.hpp>
+#endif
+
 namespace ttwv {
 
 namespace {
@@ -106,10 +110,17 @@ struct CorePiece {
         .page_size = page_size,
         .buffer_type = tt::tt_metal::BufferType::DRAM,
     };
-    const tt::tt_metal::distributed::ReplicatedBufferConfig replicated{
-        .size = static_cast<uint64_t>(std::max(signal.physical_nbytes(), static_cast<size_t>(page_size))),
-    };
-    return tt::tt_metal::distributed::MeshBuffer::create(replicated, local, &mesh_device);
+    const uint64_t alloc_size =
+        static_cast<uint64_t>(std::max(signal.physical_nbytes(), static_cast<size_t>(page_size)));
+    const tt::tt_metal::distributed::ReplicatedBufferConfig replicated{.size = alloc_size};
+    auto buf = tt::tt_metal::distributed::MeshBuffer::create(replicated, local, &mesh_device);
+#ifdef TRACY_ENABLE
+    // Use the backing buffer's device address as a unique token for Tracy.
+    // Tracy treats it as an opaque key — it never dereferences it.
+    void* tracy_ptr = reinterpret_cast<void*>(buf->get_backing_buffer()->address());
+    TracyAllocN(tracy_ptr, static_cast<size_t>(alloc_size), "DRAM");
+#endif
+    return buf;
 }
 
 void include_interval(LogicalInterval& target, const LogicalInterval source) {
@@ -261,6 +272,13 @@ void create_cb(
     auto config =
         tt::tt_metal::CircularBufferConfig(pages * page_bytes, {{index, kDataFormat}}).set_page_size(index, page_bytes);
     static_cast<void>(tt::tt_metal::CreateCircularBuffer(program, cores, config));
+#ifdef TRACY_ENABLE
+    // CBs have no persistent device address on the host. Use (cores ptr XOR index) as a
+    // unique token — stable for the lifetime of this program object, which is all Tracy needs.
+    void* tracy_ptr = reinterpret_cast<void*>(
+        reinterpret_cast<uintptr_t>(&cores) ^ (static_cast<uintptr_t>(index) << 16));
+    TracyAllocN(tracy_ptr, static_cast<size_t>(pages) * page_bytes, "L1/SRAM");
+#endif
 }
 
 [[nodiscard]] StreamState apply_predict_update(
@@ -651,6 +669,24 @@ public:
         result.approximation.resize(geometry_.output_length);
         result.detail.resize(geometry_.output_length);
         return result;
+    }
+
+    ~Impl() {
+#ifdef TRACY_ENABLE
+        // Emit TracyFreeN for each DRAM buffer to close the alloc/free pairs.
+        // Must be called before the shared_ptrs are reset so addresses are still valid.
+        auto tracy_free_dram = [](const std::shared_ptr<tt::tt_metal::distributed::MeshBuffer>& buf) {
+            if (buf) {
+                void* tracy_ptr = reinterpret_cast<void*>(buf->get_backing_buffer()->address());
+                TracyFreeN(tracy_ptr, "DRAM");
+            }
+        };
+        tracy_free_dram(input_);
+        tracy_free_dram(even_);
+        tracy_free_dram(odd_);
+        tracy_free_dram(approximation_);
+        tracy_free_dram(detail_);
+#endif
     }
 
 private:

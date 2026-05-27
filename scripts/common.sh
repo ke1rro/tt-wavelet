@@ -116,6 +116,28 @@ configure_project() {
     -DCMAKE_CXX_FLAGS="-std=c++20"
 }
 
+configure_project_tracy() {
+  local build_type="$1"
+  local generator
+  generator=$(select_generator)
+
+  log INFO "Configuring CMake ($generator, ${build_type}) with ENABLE_TRACY=ON"
+  cmake -S "$ROOT_DIR" -B "$BUILD_DIR" \
+    -G "$generator" \
+    -DCMAKE_BUILD_TYPE="$build_type" \
+    -DCMAKE_C_COMPILER=clang-20 \
+    -DCMAKE_CXX_COMPILER=clang++-20 \
+    -DBUILD_TT_WAVELET=ON \
+    -DENABLE_TRACY:BOOL=ON \
+    -DMETALIUM_INCLUDE_DIRS=ON \
+    -DTT_USE_SYSTEM_SFPI:BOOL=ON \
+    -DCMAKE_DISABLE_PRECOMPILE_HEADERS=TRUE \
+    -DENABLE_CCACHE=TRUE \
+    -DTT_UNITY_BUILDS=ON \
+    -DWITH_PYTHON_BINDINGS=ON \
+    -DCMAKE_CXX_FLAGS="-std=c++20"
+}
+
 build_tt_wavelet_target() {
   local target="$1"
   log INFO "Building target: $target"
