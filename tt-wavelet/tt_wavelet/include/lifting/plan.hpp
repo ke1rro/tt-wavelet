@@ -32,15 +32,6 @@ struct StreamRef {
     StreamSlot slot{StreamSlot::kPing};
 };
 
-struct SignalBufferPair {
-    SignalBuffer ping{};
-    SignalBuffer pong{};
-
-    [[nodiscard]] constexpr const SignalBuffer& at(const StreamSlot slot) const noexcept {
-        return slot == StreamSlot::kPing ? ping : pong;
-    }
-};
-
 struct LiftingStepRoute {
     StepType type{StepType::kPredict};
     StreamRef source{};
@@ -61,8 +52,6 @@ struct LiftingActiveStreams {
 
 struct LiftingForwardPlan {
     PadSplit1DLayout preprocess_layout{};
-    SignalBufferPair even_buffers{};
-    SignalBufferPair odd_buffers{};
     std::vector<LiftingStepRoute> routes;
     LiftingActiveStreams final_active{};
     size_t final_even_length{0};
@@ -70,10 +59,6 @@ struct LiftingForwardPlan {
     int final_even_shift{0};
     int final_odd_shift{0};
     size_t output_length{0};
-
-    [[nodiscard]] constexpr const SignalBuffer& resolve_stream_buffer(const StreamRef stream) const noexcept {
-        return stream.family == LogicalStream::kEven ? even_buffers.at(stream.slot) : odd_buffers.at(stream.slot);
-    }
 };
 
 namespace detail {
@@ -84,13 +69,6 @@ namespace detail {
 
 [[nodiscard]] constexpr StreamRef with_toggled_slot(const StreamRef stream) noexcept {
     return StreamRef{.family = stream.family, .slot = toggle_slot(stream.slot)};
-}
-
-[[nodiscard]] constexpr SignalBuffer clone_signal_buffer_with_address(
-    const SignalBuffer& buffer, const uint64_t dram_address) noexcept {
-    SignalBuffer out = buffer;
-    out.dram_address = dram_address;
-    return out;
 }
 
 struct StreamState {
@@ -125,7 +103,7 @@ void append_forward_route(
     if constexpr (Step::type == StepType::kPredict) {
         static_assert(Step::k > 0, "Predict steps must have at least one coefficient");
         static_assert(
-            Step::k <= device_protocol::step_coeff_capacity, "Predict step exceeds device coefficient capacity");
+            Step::k <= device_protocol::kStepCoeffCapacity, "Predict step exceeds device coefficient capacity");
         const auto [out_shift, out_length, src_off, base_off] =
             compute_step_geometry(even_state, Step::shift, Step::k, odd_state);
         const StreamRef output = with_toggled_slot(active.odd);
@@ -139,7 +117,7 @@ void append_forward_route(
                 .base_length = odd_state.length,
                 .source_offset = src_off,
                 .base_offset = base_off,
-                .source_left_pad = device_protocol::step_coeff_capacity - Step::k,
+                .source_left_pad = device_protocol::kStepCoeffCapacity - Step::k,
                 .output_length = out_length,
             });
         odd_state = StreamState{.shift = out_shift, .length = out_length};
@@ -147,7 +125,7 @@ void append_forward_route(
     } else if constexpr (Step::type == StepType::kUpdate) {
         static_assert(Step::k > 0, "Update steps must have at least one coefficient");
         static_assert(
-            Step::k <= device_protocol::step_coeff_capacity, "Update step exceeds device coefficient capacity");
+            Step::k <= device_protocol::kStepCoeffCapacity, "Update step exceeds device coefficient capacity");
         const auto [out_shift, out_length, src_off, base_off] =
             compute_step_geometry(odd_state, Step::shift, Step::k, even_state);
         const StreamRef output = with_toggled_slot(active.even);
@@ -161,7 +139,7 @@ void append_forward_route(
                 .base_length = even_state.length,
                 .source_offset = src_off,
                 .base_offset = base_off,
-                .source_left_pad = device_protocol::step_coeff_capacity - Step::k,
+                .source_left_pad = device_protocol::kStepCoeffCapacity - Step::k,
                 .output_length = out_length,
             });
         even_state = StreamState{.shift = out_shift, .length = out_length};
@@ -237,11 +215,7 @@ void append_forward_routes(
 
 template <typename Scheme>
 [[nodiscard]] LiftingForwardPlan make_forward_lifting_plan(
-    const SignalBuffer& input,
-    uint64_t even_ping_addr,
-    uint64_t even_pong_addr,
-    uint64_t odd_ping_addr,
-    uint64_t odd_pong_addr) {
+    const SignalBuffer& input, uint64_t even_ping_addr, uint64_t odd_ping_addr) {
     static_assert(Scheme::tap_size > 0, "Static lifting schemes must have a positive tap size");
     static_assert(Scheme::num_steps > 0, "Static lifting schemes must have at least one step");
     TT_FATAL(input.element_size_bytes == sizeof(float), "Forward lifting plan currently supports fp32 only");
@@ -259,9 +233,6 @@ template <typename Scheme>
 
     const SignalBuffer even_ping = preprocess_layout.output.even;
     const SignalBuffer odd_ping = preprocess_layout.output.odd;
-    const SignalBuffer even_pong = detail::clone_signal_buffer_with_address(even_ping, even_pong_addr);
-    const SignalBuffer odd_pong = detail::clone_signal_buffer_with_address(odd_ping, odd_pong_addr);
-
     detail::StreamState even_state{.shift = Scheme::delay_even, .length = even_ping.length};
     detail::StreamState odd_state{.shift = Scheme::delay_odd, .length = odd_ping.length};
 
@@ -273,8 +244,6 @@ template <typename Scheme>
 
     return LiftingForwardPlan{
         .preprocess_layout = preprocess_layout,
-        .even_buffers = SignalBufferPair{.ping = even_ping, .pong = even_pong},
-        .odd_buffers = SignalBufferPair{.ping = odd_ping, .pong = odd_pong},
         .routes = std::move(routes),
         .final_active = active,
         .final_even_length = even_state.length,

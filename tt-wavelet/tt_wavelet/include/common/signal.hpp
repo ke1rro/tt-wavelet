@@ -3,6 +3,8 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "tt_wavelet/include/common/constants.hpp"
+
 namespace ttwv {
 
 /**
@@ -32,17 +34,6 @@ namespace ttwv {
     return alignment == 0 ? value : ceil_div(value, alignment) * alignment;
 }
 
-constexpr size_t kLwtTileRowsPerGroup = 32;
-constexpr size_t kLwtTileOutputBlocksPerRow = 3;
-constexpr size_t kLwtTileBlockElements = 16;
-constexpr size_t kLwtGroupOutputElements = kLwtTileRowsPerGroup * kLwtTileOutputBlocksPerRow * kLwtTileBlockElements;
-constexpr size_t kLwtTilePagesPerGroup = 2;
-constexpr size_t kLwtTilePageElements = 32 * 32;
-
-[[nodiscard]] constexpr size_t lwt_tile_group_count(const size_t logical_length) noexcept {
-    return ceil_div(logical_length, kLwtGroupOutputElements);
-}
-
 /**
  * @brief Contiguous 1D signal buffer stored in DRAM as row-major sticks.
  *
@@ -68,7 +59,7 @@ constexpr size_t kLwtTilePageElements = 32 * 32;
 struct SignalBuffer {
     uint64_t dram_address{0};                    ///< Base DRAM address of the first stick.
     size_t length{0};                            ///< Logical number of scalar samples in the signal.
-    uint32_t stick_width{32};                    ///< Number of scalar samples per physical stick.
+    uint32_t stick_width{kStickWidth};           ///< Number of scalar samples per physical stick.
     uint32_t element_size_bytes{sizeof(float)};  ///< Size of one scalar element in bytes.
 
     /**
@@ -100,7 +91,7 @@ struct SignalBuffer {
      * @param alignment Byte alignment granularity (default: 32, the NOC minimum).
      * @return Aligned stick size in bytes.
      */
-    [[nodiscard]] constexpr uint32_t aligned_stick_bytes(const uint32_t alignment = 32) const noexcept {
+    [[nodiscard]] constexpr uint32_t aligned_stick_bytes(const uint32_t alignment = kNocAlignmentBytes) const noexcept {
         return static_cast<uint32_t>(round_up(static_cast<size_t>(stick_bytes()), alignment));
     }
 
@@ -113,42 +104,10 @@ struct SignalBuffer {
      * @param alignment Byte alignment per stick (default: 32).
      * @return stick_count() * aligned_stick_bytes(alignment).
      */
-    [[nodiscard]] constexpr size_t physical_nbytes(const uint32_t alignment = 32) const noexcept {
+    [[nodiscard]] constexpr size_t physical_nbytes(const uint32_t alignment = kNocAlignmentBytes) const noexcept {
         return stick_count() * static_cast<size_t>(aligned_stick_bytes(alignment));
     }
 };
-
-/**
- * @brief LWT grouped tile-page sidecar for terminal scale.
- *
- * Predict/update emits two 32x32 fp32 tile pages per 1536 logical output samples:
- * one full tile containing output blocks 0 and 1 for each row, and one tail tile
- * containing output block 2 in the first half-stick of each row.
- */
-struct TileSignalBuffer {
-    uint64_t dram_address{0};
-    size_t logical_length{0};
-    size_t tile_page_count{0};
-    uint32_t page_elements{static_cast<uint32_t>(kLwtTilePageElements)};
-    uint32_t element_size_bytes{sizeof(float)};
-
-    [[nodiscard]] constexpr uint32_t page_bytes() const noexcept { return page_elements * element_size_bytes; }
-
-    [[nodiscard]] constexpr size_t physical_nbytes() const noexcept {
-        return tile_page_count * static_cast<size_t>(page_bytes());
-    }
-};
-
-[[nodiscard]] constexpr TileSignalBuffer make_lwt_tile_signal_buffer(
-    const SignalBuffer& row_major, const uint64_t tile_addr = 0) noexcept {
-    return TileSignalBuffer{
-        .dram_address = tile_addr,
-        .logical_length = row_major.length,
-        .tile_page_count = lwt_tile_group_count(row_major.length) * kLwtTilePagesPerGroup,
-        .page_elements = static_cast<uint32_t>(kLwtTilePageElements),
-        .element_size_bytes = row_major.element_size_bytes,
-    };
-}
 
 /**
  * @brief Even/odd split of a 1D signal stored as two separate DRAM buffers.

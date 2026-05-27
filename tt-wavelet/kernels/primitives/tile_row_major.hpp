@@ -2,6 +2,7 @@
 
 #include <cstdint>
 
+#include "../../tt_wavelet/include/device_protocol/lwt_config.hpp"
 #include "api/dataflow/dataflow_api.h"
 #include "mem_fill.hpp"
 
@@ -15,11 +16,6 @@ constexpr uint32_t kFaceWidth = 16;
 constexpr uint32_t kFaceHeight = 16;
 constexpr uint32_t kFaceElements = kFaceWidth * kFaceHeight;
 constexpr uint32_t kTileScalars = kTileWidth * kTileHeight;
-constexpr uint32_t kLwtRowsPerGroup = 32;
-constexpr uint32_t kLwtOutputBlocksPerRow = 3;
-constexpr uint32_t kLwtHalfStickElements = 16;
-constexpr uint32_t kLwtHalfStickBytes = kLwtHalfStickElements * sizeof(float);
-constexpr uint32_t kLwtGroupOutputElements = kLwtRowsPerGroup * kLwtOutputBlocksPerRow * kLwtHalfStickElements;
 
 [[nodiscard]] ALWI constexpr uint32_t tile_offset(const uint32_t row, const uint32_t col) {
     const uint32_t face_row = row / kFaceHeight;
@@ -51,32 +47,7 @@ ALWI void write_lwt_half_block(
     const uint32_t dst_lane = output_index % stick_width;
     const uint32_t src_offset = tile_offset(row, col) * static_cast<uint32_t>(sizeof(float));
     const uint64_t noc_addr = dst.get_noc_addr(dst_stick) + dst_lane * sizeof(float);
-    noc_async_write(tile_addr + src_offset, noc_addr, kLwtHalfStickBytes);
-}
-
-ALWI void write_lwt_half_block_local_l1(
-    const uint32_t dst_addr,
-    const uint32_t stick_nbytes,
-    const uint32_t tile_addr,
-    const uint32_t row,
-    const uint32_t col,
-    const uint32_t output_index,
-    const uint32_t output_length,
-    const uint32_t stick_width) {
-    if (output_index >= output_length) {
-        return;
-    }
-
-    const uint32_t dst_stick = output_index / stick_width;
-    const uint32_t dst_lane = output_index % stick_width;
-    const uint32_t src_offset = tile_offset(row, col) * static_cast<uint32_t>(sizeof(float));
-    auto* dst_values = reinterpret_cast<volatile tt_l1_ptr float*>(
-        dst_addr + dst_stick * stick_nbytes + dst_lane * static_cast<uint32_t>(sizeof(float)));
-    const auto* src_values = reinterpret_cast<volatile tt_l1_ptr float*>(tile_addr + src_offset);
-
-    for (uint32_t i = 0; i < kLwtHalfStickElements; ++i) {
-        dst_values[i] = src_values[i];
-    }
+    noc_async_write(tile_addr + src_offset, noc_addr, ttwv::device_protocol::kLwtHalfStickBytes);
 }
 
 }  // namespace ttwv::kernels::primitives

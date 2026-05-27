@@ -2,8 +2,6 @@
 
 #include <cstdint>
 
-#include "api/dataflow/dataflow_api.h"
-
 #define ALWI inline __attribute__((always_inline))
 
 namespace ttwv::kernels::primitives {

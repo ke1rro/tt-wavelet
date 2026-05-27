@@ -40,9 +40,8 @@ if LIFTING_USAGE_DIR.exists():
     if str(LIFTING_USAGE_DIR) not in sys.path:
         sys.path.insert(0, str(LIFTING_USAGE_DIR))
     try:
-        from lifting import LiftingScheme  # noqa: E402  # type: ignore[import-not-found]
-
         import dtypes  # noqa: E402  # type: ignore[import-not-found]
+        from lifting import LiftingScheme  # noqa: E402  # type: ignore[import-not-found]
 
         LIFTING_AVAILABLE = True
     except ModuleNotFoundError:
@@ -56,7 +55,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--wavelet",
         default="bior1.3",
-        help="Wavelet name / JSON basename under ttnn-wavelet/lifting_schemes (default: %(default)s).",
+        help="Wavelet name / JSON basename under wavelets (default: %(default)s).",
     )
     parser.add_argument(
         "--signal-file",
@@ -89,7 +88,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--schemes-dir",
         type=Path,
-        default=PROJECT_ROOT / "ttnn-wavelet" / "lifting_schemes",
+        default=PROJECT_ROOT / "wavelets",
         help="Directory with lifting-scheme JSON files (default: %(default)s).",
     )
     return parser.parse_args()

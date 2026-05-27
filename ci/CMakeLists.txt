@@ -226,12 +226,23 @@ else()
 endif()
 
 if(CI_BUILD_WAVELET_EXECUTABLE)
+  find_package(Python3 REQUIRED COMPONENTS Interpreter)
+  add_custom_target(
+    tt_wavelet_generate_static_schemes
+    COMMAND
+      ${Python3_EXECUTABLE} ${TT_WAVELET_SOURCE_ROOT}/scripts/generate_static_schemes.py
+      --json-dir ${TT_WAVELET_SOURCE_ROOT}/wavelets
+      --scheme-dir ${TT_WAVELET_SOURCE_ROOT}/tt-wavelet/tt_wavelet/include/schemes/generated
+      --registry ${TT_WAVELET_SOURCE_ROOT}/tt-wavelet/tt_wavelet/include/schemes/generated/registry.hpp
+    WORKING_DIRECTORY ${TT_WAVELET_SOURCE_ROOT}
+    COMMENT "Generating static TT-wavelet scheme headers")
+
   add_executable(
     lwt
     ${TT_WAVELET_SOURCE_ROOT}/tt-wavelet/main.cpp
-    ${TT_WAVELET_SOURCE_ROOT}/tt-wavelet/tt_wavelet/src/lifting/plan.cpp
     ${TT_WAVELET_SOURCE_ROOT}/tt-wavelet/tt_wavelet/src/pad_split/device.cpp
     ${TT_WAVELET_SOURCE_ROOT}/tt-wavelet/tt_wavelet/src/lifting/device.cpp)
+  add_dependencies(lwt tt_wavelet_generate_static_schemes)
 
   target_compile_definitions(
     lwt PRIVATE TT_WAVELET_SOURCE_DIR="${TT_WAVELET_SOURCE_ROOT}/tt-wavelet")

@@ -6,8 +6,6 @@
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
-#include <iomanip>
-#include <iostream>
 #include <limits>
 #include <memory>
 #include <tt_stl/assert.hpp>
@@ -25,12 +23,11 @@ namespace ttwv {
 
 namespace {
 
-constexpr uint32_t kNocAlignmentBytes = 32;
-constexpr uint32_t kCircularBufferAlignmentBytes = 32;
 constexpr tt::DataFormat kDataFormat = tt::DataFormat::Float32;
 
-constexpr const char* kFusedLwtReaderKernelPath = "kernels/dataflow/lwt_fused_reader.cpp";
-constexpr const char* kFusedLwtWriterKernelPath = "kernels/dataflow/lwt_fused_writer.cpp";
+constexpr const char* kLwtReaderKernelPath = "kernels/dataflow/lwt_reader.cpp";
+constexpr const char* kLwtWriterKernelPath = "kernels/dataflow/lwt_writer.cpp";
+constexpr const char* kLwtComputeKernelPath = "kernels/compute/lwt_compute.cpp";
 
 constexpr uint32_t kLwtSrcTile0Cb = tt::CBIndex::c_0;
 constexpr uint32_t kLwtSrcTile1Cb = tt::CBIndex::c_1;
@@ -41,9 +38,7 @@ constexpr uint32_t kLwtBaseCacheCb = tt::CBIndex::c_4;
 constexpr uint32_t kLwtSyncCb = tt::CBIndex::c_5;
 constexpr uint32_t kLwtReaderConfigCb = tt::CBIndex::c_6;
 constexpr uint32_t kLwtWriterConfigCb = tt::CBIndex::c_7;
-constexpr uint32_t kLwtSyncPageSize = 32;
-
-struct FusedLwtProgram {
+struct LwtProgram {
     tt::tt_metal::Program program;
     tt::tt_metal::KernelHandle reader{};
     tt::tt_metal::KernelHandle compute{};
@@ -55,7 +50,7 @@ struct RouteGroupRange {
     uint32_t count{0};
 };
 
-struct FusedLwtCoreWork {
+struct LwtCoreWork {
     tt::tt_metal::CoreCoord core;
     std::vector<RouteGroupRange> routes;
 };
@@ -83,11 +78,11 @@ struct FusedLwtCoreWork {
     tt::tt_metal::distributed::MeshDevice& mesh_device, const size_t route_count) {
     const size_t page_count = std::max(route_count, size_t{1});
     const tt::tt_metal::distributed::DeviceLocalBufferConfig local_config{
-        .page_size = device_protocol::fused_route_config_page_bytes,
+        .page_size = device_protocol::kRouteConfigPageBytes,
         .buffer_type = tt::tt_metal::BufferType::DRAM,
     };
     const tt::tt_metal::distributed::ReplicatedBufferConfig replicated_config{
-        .size = static_cast<uint64_t>(page_count * device_protocol::fused_route_config_page_bytes),
+        .size = static_cast<uint64_t>(page_count * device_protocol::kRouteConfigPageBytes),
     };
     return tt::tt_metal::distributed::MeshBuffer::create(replicated_config, local_config, &mesh_device);
 }
@@ -97,9 +92,8 @@ void create_circular_buffer(
     const tt::tt_metal::CoreRangeSet& cores,
     const uint32_t cb_index,
     const uint32_t entry_count,
-    const uint32_t page_size,
-    const tt::DataFormat data_format = kDataFormat) {
-    const auto config = tt::tt_metal::CircularBufferConfig(entry_count * page_size, {{cb_index, data_format}})
+    const uint32_t page_size) {
+    const auto config = tt::tt_metal::CircularBufferConfig(entry_count * page_size, {{cb_index, kDataFormat}})
                             .set_page_size(cb_index, page_size);
     static_cast<void>(tt::tt_metal::CreateCircularBuffer(program, cores, config));
 }
@@ -111,7 +105,8 @@ void create_circular_buffer(
 }
 
 [[nodiscard]] uint32_t lwt_output_group_count(const size_t output_length) {
-    return checked_length(ceil_div(output_length, static_cast<size_t>(kLwtGroupOutputElements)), "output groups");
+    return checked_length(
+        ceil_div(output_length, static_cast<size_t>(device_protocol::kLwtGroupOutputElements)), "output groups");
 }
 
 [[nodiscard]] bool is_executable_route(const LiftingStepRoute& route) noexcept {
@@ -206,14 +201,14 @@ void create_circular_buffer(
     return RouteGroupRange{.begin = begin, .count = count};
 }
 
-[[nodiscard]] std::vector<FusedLwtCoreWork> build_core_work(
+[[nodiscard]] std::vector<LwtCoreWork> build_core_work(
     const std::vector<tt::tt_metal::CoreCoord>& cores, const std::vector<uint32_t>& route_group_counts) {
     const uint32_t active_core_count = checked_length(cores.size(), "active core count");
-    std::vector<FusedLwtCoreWork> work;
+    std::vector<LwtCoreWork> work;
     work.reserve(cores.size());
 
     for (uint32_t core_index = 0; core_index < active_core_count; ++core_index) {
-        FusedLwtCoreWork core_work{.core = cores.at(core_index)};
+        LwtCoreWork core_work{.core = cores.at(core_index)};
         core_work.routes.reserve(route_group_counts.size());
         for (const uint32_t route_group_count : route_group_counts) {
             core_work.routes.push_back(split_route_groups(route_group_count, active_core_count, core_index));
@@ -227,11 +222,6 @@ void create_circular_buffer(
 [[nodiscard]] const std::shared_ptr<tt::tt_metal::distributed::MeshBuffer>& resolve_mesh_buffer(
     const LiftingWorkingBuffers& buffers, const StreamRef stream) {
     return stream.family == LogicalStream::kEven ? buffers.even.at(stream.slot) : buffers.odd.at(stream.slot);
-}
-
-[[nodiscard]] const std::shared_ptr<tt::tt_metal::distributed::MeshBuffer>& resolve_output_mesh_buffer(
-    const LiftingWorkingBuffers& buffers, const LiftingStepRoute& route) {
-    return resolve_mesh_buffer(buffers, route.output);
 }
 
 void run_program(
@@ -251,7 +241,7 @@ void run_program(
             return is_executable_route(route);
         });
     std::vector<uint32_t> words(
-        std::max(executable_route_count, size_t{1}) * device_protocol::fused_route_config_word_count, 0);
+        std::max(executable_route_count, size_t{1}) * device_protocol::kRouteConfigWordCount, 0);
 
     size_t executable_index = 0;
     for (const auto& route : bundle.plan.routes) {
@@ -261,9 +251,9 @@ void run_program(
 
         const auto& src_buffer = resolve_mesh_buffer(bundle.buffers, route.source);
         const auto& base_buffer = resolve_mesh_buffer(bundle.buffers, route.base);
-        const auto& output_buffer = resolve_output_mesh_buffer(bundle.buffers, route);
+        const auto& output_buffer = resolve_mesh_buffer(bundle.buffers, route.output);
 
-        const size_t off = executable_index * device_protocol::fused_route_config_word_count;
+        const size_t off = executable_index * device_protocol::kRouteConfigWordCount;
         words[off + device_protocol::kRouteType] = static_cast<uint32_t>(route.type);
         words[off + device_protocol::kRouteSourceAddr] = static_cast<uint32_t>(src_buffer->address());
         words[off + device_protocol::kRouteSourceLength] = checked_length(route.source_length, "source length");
@@ -271,7 +261,6 @@ void run_program(
         words[off + device_protocol::kRouteBaseLength] = checked_length(route.base_length, "base length");
         words[off + device_protocol::kRouteOutputAddr] = static_cast<uint32_t>(output_buffer->address());
         words[off + device_protocol::kRouteOutputLength] = checked_length(route.output_length, "output length");
-        words[off + device_protocol::kRouteOutputGroupCount] = lwt_output_group_count(route.output_length);
         words[off + device_protocol::kRouteSourceOffset] = checked_length(route.source_offset, "source offset");
         words[off + device_protocol::kRouteBaseOffset] = checked_length(route.base_offset, "base offset");
         words[off + device_protocol::kRouteSourceLeftPad] = route.source_left_pad;
@@ -281,7 +270,7 @@ void run_program(
     return words;
 }
 
-[[nodiscard]] std::vector<uint32_t> build_compute_runtime_args(const FusedLwtCoreWork& work) {
+[[nodiscard]] std::vector<uint32_t> build_compute_runtime_args(const LwtCoreWork& work) {
     std::vector<uint32_t> args;
     args.reserve(work.routes.size() + 1);
     args.push_back(checked_length(work.routes.size(), "executable route count"));
@@ -294,7 +283,7 @@ void run_program(
 }
 
 [[nodiscard]] std::vector<uint32_t> build_reader_runtime_args(
-    const uint32_t route_config_addr, const FusedLwtCoreWork& work) {
+    const uint32_t route_config_addr, const LwtCoreWork& work) {
     std::vector<uint32_t> args;
     args.reserve(2 + 2 * work.routes.size());
     args.push_back(route_config_addr);
@@ -311,7 +300,7 @@ void run_program(
     const uint32_t route_config_addr,
     const std::vector<tt::tt_metal::CoreCoord>& cores,
     const uint32_t core_index,
-    const FusedLwtCoreWork& work) {
+    const LwtCoreWork& work) {
     std::vector<uint32_t> args = build_reader_runtime_args(route_config_addr, work);
     args.push_back(core_index);
     args.push_back(checked_length(cores.size(), "active core count"));
@@ -323,33 +312,29 @@ void run_program(
     return args;
 }
 
-[[nodiscard]] FusedLwtProgram create_fused_lwt_program(
+[[nodiscard]] LwtProgram create_lwt_program(
     const std::filesystem::path& kernel_root,
     const tt::tt_metal::CoreRangeSet& cores,
     const LiftingPreprocessDeviceProgram& bundle,
-    const char* compute_kernel_path) {
-    TT_FATAL(bundle.plan.preprocess_layout.output.even.stick_width == 32, "LWT path expects 32-element sticks");
+    const char* compute_scheme_header,
+    const char* compute_scheme_type) {
+    TT_FATAL(
+        bundle.plan.preprocess_layout.output.even.stick_width == kStickWidth, "LWT path expects 32-element sticks");
     TT_FATAL(bundle.plan.preprocess_layout.output.even.element_size_bytes == sizeof(float), "LWT path is fp32-only");
-    TT_FATAL(bundle.buffers.route_config != nullptr, "Fused LWT route config buffer was not allocated");
+    TT_FATAL(bundle.buffers.route_config != nullptr, "LWT route config buffer was not allocated");
 
     tt::tt_metal::Program program = tt::tt_metal::CreateProgram();
 
     const uint32_t tile_size = tt::tile_size(kDataFormat);
-    const uint32_t stick_nbytes =
-        bundle.plan.preprocess_layout.output.even.aligned_stick_bytes(kCircularBufferAlignmentBytes);
-    const uint32_t stick_width = bundle.plan.preprocess_layout.output.even.stick_width;
-
     create_circular_buffer(program, cores, kLwtSrcTile0Cb, 1, tile_size);
     create_circular_buffer(program, cores, kLwtSrcTile1Cb, 1, tile_size);
     create_circular_buffer(program, cores, kLwtBaseTileCb, 2, tile_size);
     create_circular_buffer(program, cores, kLwtOutputCb, 2, tile_size);
-    create_circular_buffer(program, cores, kLwtSrcCacheCb, 1, stick_nbytes);
-    create_circular_buffer(program, cores, kLwtBaseCacheCb, 1, stick_nbytes);
-    create_circular_buffer(program, cores, kLwtSyncCb, 1, kLwtSyncPageSize);
-    create_circular_buffer(
-        program, cores, kLwtReaderConfigCb, 1, device_protocol::fused_route_config_page_bytes, kDataFormat);
-    create_circular_buffer(
-        program, cores, kLwtWriterConfigCb, 1, device_protocol::fused_route_config_page_bytes, kDataFormat);
+    create_circular_buffer(program, cores, kLwtSrcCacheCb, 1, device_protocol::kStickBytes);
+    create_circular_buffer(program, cores, kLwtBaseCacheCb, 1, device_protocol::kStickBytes);
+    create_circular_buffer(program, cores, kLwtSyncCb, 1, kNocAlignmentBytes);
+    create_circular_buffer(program, cores, kLwtReaderConfigCb, 1, device_protocol::kRouteConfigPageBytes);
+    create_circular_buffer(program, cores, kLwtWriterConfigCb, 1, device_protocol::kRouteConfigPageBytes);
 
     const uint32_t route_barrier_semaphore = tt::tt_metal::CreateSemaphore(program, cores, 0);
 
@@ -358,14 +343,11 @@ void run_program(
 
     std::vector<uint32_t> reader_ct_args = {
         kLwtReaderConfigCb,
-        device_protocol::fused_route_config_page_bytes,
         kLwtSrcTile0Cb,
         kLwtSrcTile1Cb,
         kLwtBaseTileCb,
-        stick_nbytes,
         kLwtSrcCacheCb,
         kLwtBaseCacheCb,
-        stick_width,
         kLwtSyncCb,
     };
     tt::tt_metal::TensorAccessorArgs(route_config_buffer).append_to(reader_ct_args);
@@ -373,9 +355,7 @@ void run_program(
 
     std::vector<uint32_t> writer_ct_args = {
         kLwtWriterConfigCb,
-        device_protocol::fused_route_config_page_bytes,
         kLwtOutputCb,
-        stick_nbytes,
         kLwtSyncCb,
         route_barrier_semaphore,
     };
@@ -396,26 +376,31 @@ void run_program(
 
     const auto reader = tt::tt_metal::CreateKernel(
         program,
-        kernel_path(kernel_root, kFusedLwtReaderKernelPath),
+        kernel_path(kernel_root, kLwtReaderKernelPath),
         cores,
         tt::tt_metal::ReaderDataMovementConfig(reader_ct_args));
     const auto writer = tt::tt_metal::CreateKernel(
         program,
-        kernel_path(kernel_root, kFusedLwtWriterKernelPath),
+        kernel_path(kernel_root, kLwtWriterKernelPath),
         cores,
         tt::tt_metal::WriterDataMovementConfig(writer_ct_args));
     const auto compute = tt::tt_metal::CreateKernel(
         program,
-        kernel_path(kernel_root, compute_kernel_path),
+        kernel_path(kernel_root, kLwtComputeKernelPath),
         cores,
         tt::tt_metal::ComputeConfig{
             .math_fidelity = MathFidelity::HiFi4,
             .fp32_dest_acc_en = true,
             .unpack_to_dest_mode = unpack_to_dest_mode,
             .compile_args = compute_ct_args,
+            .defines =
+                {
+                    {"TTWV_LWT_SCHEME_HEADER", compute_scheme_header},
+                    {"TTWV_LWT_SCHEME_TYPE", compute_scheme_type},
+                },
         });
 
-    return FusedLwtProgram{
+    return LwtProgram{
         .program = std::move(program),
         .reader = reader,
         .compute = compute,
@@ -423,11 +408,11 @@ void run_program(
     };
 }
 
-void set_fused_lwt_runtime_args(
-    const FusedLwtProgram& program_bundle,
+void set_lwt_runtime_args(
+    const LwtProgram& program_bundle,
     tt::tt_metal::distributed::MeshDevice& mesh_device,
     const std::vector<tt::tt_metal::CoreCoord>& cores,
-    const std::vector<FusedLwtCoreWork>& work,
+    const std::vector<LwtCoreWork>& work,
     const LiftingPreprocessDeviceProgram& bundle) {
     const uint32_t route_config_addr = static_cast<uint32_t>(bundle.buffers.route_config->address());
 
@@ -444,29 +429,7 @@ void set_fused_lwt_runtime_args(
     }
 }
 
-[[nodiscard]] bool debug_step_readback_enabled() {
-    const char* raw = std::getenv("TT_WAVELET_DEBUG_STEP_READBACK");
-    return raw != nullptr && raw[0] != '\0' && raw[0] != '0';
-}
-
-void debug_print_signal(const char* label, const std::vector<float>& values, const size_t logical_length) {
-    std::cout << label << " (" << logical_length << "): [";
-    for (size_t i = 0; i < logical_length; ++i) {
-        if (i > 0) {
-            std::cout << ", ";
-        }
-        std::cout << std::scientific << std::setprecision(8) << static_cast<double>(values[i]);
-    }
-    std::cout << std::defaultfloat << "]\n";
-}
-
 }  // namespace
-
-SignalBuffer with_address(const SignalBuffer& buffer, const uint64_t dram_address) {
-    SignalBuffer out = buffer;
-    out.dram_address = dram_address;
-    return out;
-}
 
 LiftingWorkingBuffers create_lifting_working_buffers(
     tt::tt_metal::distributed::MeshDevice& mesh_device,
@@ -490,41 +453,6 @@ void run_preprocess(
     tt::tt_metal::distributed::MeshDevice& mesh_device,
     LiftingPreprocessDeviceProgram& bundle) {
     run_program(mesh_device, command_queue, std::move(bundle.preprocess.program));
-
-    if (debug_step_readback_enabled()) {
-        std::vector<float> even_output;
-        auto even_buffer = bundle.buffers.even.ping;
-        tt::tt_metal::distributed::EnqueueReadMeshBuffer(command_queue, even_output, even_buffer, true);
-        debug_print_signal("preprocess even", even_output, bundle.plan.preprocess_layout.output.even.length);
-
-        std::vector<float> odd_output;
-        auto odd_buffer = bundle.buffers.odd.ping;
-        tt::tt_metal::distributed::EnqueueReadMeshBuffer(command_queue, odd_output, odd_buffer, true);
-        debug_print_signal("preprocess odd", odd_output, bundle.plan.preprocess_layout.output.odd.length);
-    }
-}
-
-LiftingActiveStreams lwt_static(
-    const std::filesystem::path& kernel_root,
-    tt::tt_metal::distributed::MeshDevice& mesh_device,
-    tt::tt_metal::distributed::MeshCommandQueue& command_queue,
-    const tt::tt_metal::CoreCoord& core,
-    const LiftingPreprocessDeviceProgram& bundle,
-    const char* compute_kernel_path) {
-    const std::vector<uint32_t> route_config_words = build_route_config_words(bundle);
-    auto route_config_buffer = bundle.buffers.route_config;
-    tt::tt_metal::distributed::EnqueueWriteMeshBuffer(command_queue, route_config_buffer, route_config_words, false);
-
-    const std::vector<uint32_t> route_group_counts = build_route_group_counts(bundle.plan);
-    const std::vector<tt::tt_metal::CoreCoord> cores = {core};
-    const auto active_cores = core_range_set_from_cores(cores);
-    const std::vector<FusedLwtCoreWork> work = build_core_work(cores, route_group_counts);
-
-    auto program_bundle = create_fused_lwt_program(kernel_root, active_cores, bundle, compute_kernel_path);
-    set_fused_lwt_runtime_args(program_bundle, mesh_device, cores, work, bundle);
-    run_program(mesh_device, command_queue, std::move(program_bundle.program));
-
-    return bundle.plan.final_active;
 }
 
 LiftingActiveStreams lwt_static(
@@ -532,7 +460,8 @@ LiftingActiveStreams lwt_static(
     tt::tt_metal::distributed::MeshDevice& mesh_device,
     tt::tt_metal::distributed::MeshCommandQueue& command_queue,
     const LiftingPreprocessDeviceProgram& bundle,
-    const char* compute_kernel_path) {
+    const char* compute_scheme_header,
+    const char* compute_scheme_type) {
     const std::vector<uint32_t> route_config_words = build_route_config_words(bundle);
     auto route_config_buffer = bundle.buffers.route_config;
     tt::tt_metal::distributed::EnqueueWriteMeshBuffer(command_queue, route_config_buffer, route_config_words, false);
@@ -541,10 +470,11 @@ LiftingActiveStreams lwt_static(
     const uint32_t active_core_count = choose_auto_core_count(mesh_device, route_group_counts);
     const std::vector<tt::tt_metal::CoreCoord> cores = select_auto_cores(mesh_device, active_core_count);
     const auto active_cores = build_active_core_range_set(mesh_device, cores);
-    const std::vector<FusedLwtCoreWork> work = build_core_work(cores, route_group_counts);
+    const std::vector<LwtCoreWork> work = build_core_work(cores, route_group_counts);
 
-    auto program_bundle = create_fused_lwt_program(kernel_root, active_cores, bundle, compute_kernel_path);
-    set_fused_lwt_runtime_args(program_bundle, mesh_device, cores, work, bundle);
+    auto program_bundle =
+        create_lwt_program(kernel_root, active_cores, bundle, compute_scheme_header, compute_scheme_type);
+    set_lwt_runtime_args(program_bundle, mesh_device, cores, work, bundle);
     run_program(mesh_device, command_queue, std::move(program_bundle.program));
 
     return bundle.plan.final_active;

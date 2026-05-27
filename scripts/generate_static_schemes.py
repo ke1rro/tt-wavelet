@@ -12,10 +12,9 @@ from typing import Any
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
-DEFAULT_JSON_DIR = REPO_ROOT / "ttnn-wavelet" / "lifting_schemes"
+DEFAULT_JSON_DIR = REPO_ROOT / "wavelets"
 DEFAULT_SCHEME_DIR = REPO_ROOT / "tt-wavelet" / "tt_wavelet" / "include" / "schemes" / "generated"
 DEFAULT_REGISTRY = DEFAULT_SCHEME_DIR / "registry.hpp"
-DEFAULT_COMPUTE_DIR = REPO_ROOT / "tt-wavelet" / "kernels" / "compute" / "generated"
 
 STEP_TYPES = {
     "predict": "StepType::kPredict",
@@ -110,9 +109,10 @@ def render_scheme_header(scheme: Scheme) -> str:
         f"    static constexpr int32_t delay_odd = {scheme.delay_odd};",
         f"    static constexpr uint32_t num_steps = {len(scheme.steps)}U;",
         (
-            f"    static constexpr const char* compute_kernel_path = "
-            f'"kernels/compute/generated/lwt_fused_{scheme.ident}_compute.cpp";'
+            f"    static constexpr const char* compute_scheme_header = "
+            f'"\\"../../tt_wavelet/include/schemes/generated/{scheme.ident}.hpp\\"";'
         ),
+        f'    static constexpr const char* compute_scheme_type = "ttwv::schemes::{scheme.ident}";',
         "",
         "    template <std::size_t I>",
         "    struct step;",
@@ -220,20 +220,6 @@ def render_registry(schemes: list[Scheme]) -> str:
     )
 
 
-def render_compute_wrapper(scheme: Scheme) -> str:
-    return "\n".join(
-        [
-            '#include "../lwt_fused_compute_template.hpp"',
-            f'#include "../../../tt_wavelet/include/schemes/generated/{scheme.ident}.hpp"',
-            "",
-            "void kernel_main() {",
-            f"    ttwv::kernels::lwt_fused_compute<ttwv::schemes::{scheme.ident}>();",
-            "}",
-            "",
-        ]
-    )
-
-
 def write_if_changed(path: Path, content: str) -> bool:
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.exists() and path.read_text(encoding="utf-8") == content:
@@ -252,12 +238,11 @@ def remove_stale(directory: Path, keep: set[Path], pattern: str) -> None:
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Generate static TT-wavelet lifting schemes from JSON."
+        description="Generate static TT-wavelet scheme metadata headers from JSON."
     )
     parser.add_argument("--json-dir", type=Path, default=DEFAULT_JSON_DIR)
     parser.add_argument("--scheme-dir", type=Path, default=DEFAULT_SCHEME_DIR)
     parser.add_argument("--registry", type=Path, default=DEFAULT_REGISTRY)
-    parser.add_argument("--compute-dir", type=Path, default=DEFAULT_COMPUTE_DIR)
     return parser.parse_args(argv)
 
 
@@ -273,22 +258,17 @@ def main(argv: list[str] | None = None) -> int:
         raise RuntimeError("Generated scheme identifiers are not unique")
 
     kept_scheme_headers: set[Path] = set()
-    kept_compute_wrappers: set[Path] = set()
     writes = 0
 
     for scheme in schemes:
         scheme_path = args.scheme_dir / f"{scheme.ident}.hpp"
-        compute_path = args.compute_dir / f"lwt_fused_{scheme.ident}_compute.cpp"
         kept_scheme_headers.add(scheme_path)
-        kept_compute_wrappers.add(compute_path)
         writes += write_if_changed(scheme_path, render_scheme_header(scheme))
-        writes += write_if_changed(compute_path, render_compute_wrapper(scheme))
 
     writes += write_if_changed(args.registry, render_registry(schemes))
     remove_stale(args.scheme_dir, kept_scheme_headers | {args.registry}, "*.hpp")
-    remove_stale(args.compute_dir, kept_compute_wrappers, "lwt_fused_*_compute.cpp")
 
-    print(f"Generated {len(schemes)} static schemes ({writes} files changed)")
+    print(f"Generated {len(schemes)} static scheme headers ({writes} files changed)")
     return 0
 
 

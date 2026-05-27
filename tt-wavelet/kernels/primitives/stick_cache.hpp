@@ -22,8 +22,6 @@ struct StickReadCache {
 
 ALWI uint32_t min_u32(const uint32_t lhs, const uint32_t rhs) { return lhs < rhs ? lhs : rhs; }
 
-ALWI uint32_t max_u32(const uint32_t lhs, const uint32_t rhs) { return lhs > rhs ? lhs : rhs; }
-
 ALWI bool cache_contains_stick(const StickReadCache& cache, const uint32_t source_stick) {
     return cache.valid && source_stick >= cache.cached_stick_id &&
            source_stick < cache.cached_stick_id + cache.cached_stick_count;
@@ -36,8 +34,8 @@ ALWI void cache_source_sticks(
         cb_pop_front(cache.cb_id, cache.cached_stick_count);
     }
 
-    const uint32_t available_sticks = source_stick < source_stick_count ? source_stick_count - source_stick : 1;
-    const uint32_t reserve_sticks = min_u32(max_u32(cache.stick_capacity, 1), available_sticks);
+    const uint32_t available_sticks = source_stick_count - source_stick;
+    const uint32_t reserve_sticks = min_u32(cache.stick_capacity, available_sticks);
 
     cb_reserve_back(cache.cb_id, reserve_sticks);
     const uint32_t cache_l1_addr = get_write_ptr(cache.cb_id);
@@ -67,10 +65,6 @@ ALWI float read_padded_symmetric_value(
     const uint32_t input_length,
     const uint32_t left_pad,
     const uint32_t out_idx) {
-    if (input_length == 0) {
-        return 0.0F;
-    }
-
     const int32_t logical = static_cast<int32_t>(out_idx) - static_cast<int32_t>(left_pad);
     const uint32_t source_index = symmetric_index(logical, input_length);
     const uint32_t source_stick = source_index / cache.stick_width;

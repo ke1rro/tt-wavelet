@@ -2,14 +2,24 @@
 
 #include <cstdint>
 
+#include "../common/constants.hpp"
+
 namespace ttwv::device_protocol {
 
-constexpr uint32_t step_coeff_capacity = 17;
+constexpr uint32_t kStepCoeffCapacity = 17;
+constexpr uint32_t kStickBytes = kStickWidth * sizeof(float);
+constexpr uint32_t kPadSplitCacheStickCount = 8;
 
-constexpr uint32_t fused_route_config_word_count = 16;
-constexpr uint32_t fused_route_config_page_bytes = fused_route_config_word_count * sizeof(uint32_t);
+constexpr uint32_t kLwtRowsPerGroup = 32;
+constexpr uint32_t kLwtOutputBlocksPerRow = 3;
+constexpr uint32_t kLwtHalfStickElements = 16;
+constexpr uint32_t kLwtHalfStickBytes = kLwtHalfStickElements * sizeof(float);
+constexpr uint32_t kLwtGroupOutputElements = kLwtRowsPerGroup * kLwtOutputBlocksPerRow * kLwtHalfStickElements;
 
-enum FusedRouteConfigWord : uint32_t {
+constexpr uint32_t kRouteConfigWordCount = 16;
+constexpr uint32_t kRouteConfigPageBytes = kRouteConfigWordCount * sizeof(uint32_t);
+
+enum RouteConfigWord : uint32_t {
     kRouteType = 0,
     kRouteSourceAddr = 1,
     kRouteSourceLength = 2,
@@ -17,10 +27,9 @@ enum FusedRouteConfigWord : uint32_t {
     kRouteBaseLength = 4,
     kRouteOutputAddr = 5,
     kRouteOutputLength = 6,
-    kRouteOutputGroupCount = 7,
-    kRouteSourceOffset = 8,
-    kRouteBaseOffset = 9,
-    kRouteSourceLeftPad = 10,
+    kRouteSourceOffset = 7,
+    kRouteBaseOffset = 8,
+    kRouteSourceLeftPad = 9,
 };
 
 }  // namespace ttwv::device_protocol

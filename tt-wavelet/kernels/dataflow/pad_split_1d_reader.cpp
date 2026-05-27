@@ -11,28 +11,27 @@ void kernel_main() {
 
     constexpr uint32_t cb_id_even = get_compile_time_arg_val(0);
     constexpr uint32_t cb_id_odd = get_compile_time_arg_val(1);
-    constexpr uint32_t stick_nbytes = get_compile_time_arg_val(2);
-    constexpr uint32_t cb_id_cache = get_compile_time_arg_val(3);
-    constexpr uint32_t stick_width = get_compile_time_arg_val(4);
-    constexpr uint32_t cache_stick_capacity = get_compile_time_arg_val(5);
-    constexpr auto src_args = TensorAccessorArgs<6>();
-    const auto src = TensorAccessor(src_args, src_addr, stick_nbytes);
+    constexpr uint32_t cb_id_cache = get_compile_time_arg_val(2);
+    constexpr auto src_args = TensorAccessorArgs<3>();
+    const auto src = TensorAccessor(src_args, src_addr, ttwv::device_protocol::kStickBytes);
 
     ttwv::kernels::primitives::StickReadCache read_cache{
         cb_id_cache,
-        stick_nbytes,
-        stick_width,
-        cache_stick_capacity,
+        ttwv::device_protocol::kStickBytes,
+        ttwv::kStickWidth,
+        ttwv::device_protocol::kPadSplitCacheStickCount,
         ttwv::kernels::primitives::kInvalidStick,
         0,
         false};
 
-    const uint32_t even_stick_count = ttwv::kernels::primitives::even_stick_count(padded_length, stick_width);
-    const uint32_t odd_stick_count = ttwv::kernels::primitives::odd_stick_count(padded_length, stick_width);
+    const uint32_t even_stick_count = ttwv::kernels::primitives::even_stick_count(padded_length, ttwv::kStickWidth);
+    const uint32_t odd_stick_count = ttwv::kernels::primitives::odd_stick_count(padded_length, ttwv::kStickWidth);
     const uint32_t pair_count = padded_length / 2;
 
-    auto even_writer = ttwv::kernels::primitives::make_output_stick_writer(cb_id_even, stick_width, even_stick_count);
-    auto odd_writer = ttwv::kernels::primitives::make_output_stick_writer(cb_id_odd, stick_width, odd_stick_count);
+    auto even_writer =
+        ttwv::kernels::primitives::make_output_stick_writer(cb_id_even, ttwv::kStickWidth, even_stick_count);
+    auto odd_writer =
+        ttwv::kernels::primitives::make_output_stick_writer(cb_id_odd, ttwv::kStickWidth, odd_stick_count);
 
     for (uint32_t pair = 0; pair < pair_count; ++pair) {
         ttwv::kernels::primitives::push_output_value(

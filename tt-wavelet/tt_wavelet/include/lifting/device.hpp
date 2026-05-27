@@ -39,22 +39,13 @@ struct LiftingPreprocessDeviceProgram {
 [[nodiscard]] LiftingWorkingBuffers create_lifting_working_buffers(
     tt::tt_metal::distributed::MeshDevice& mesh_device, const PadSplit1DLayout& provisional_layout, size_t route_count);
 
-[[nodiscard]] SignalBuffer with_address(const SignalBuffer& buffer, uint64_t dram_address);
-
-[[nodiscard]] LiftingActiveStreams lwt_static(
-    const std::filesystem::path& kernel_root,
-    tt::tt_metal::distributed::MeshDevice& mesh_device,
-    tt::tt_metal::distributed::MeshCommandQueue& command_queue,
-    const tt::tt_metal::CoreCoord& core,
-    const LiftingPreprocessDeviceProgram& bundle,
-    const char* compute_kernel_path);
-
 [[nodiscard]] LiftingActiveStreams lwt_static(
     const std::filesystem::path& kernel_root,
     tt::tt_metal::distributed::MeshDevice& mesh_device,
     tt::tt_metal::distributed::MeshCommandQueue& command_queue,
     const LiftingPreprocessDeviceProgram& bundle,
-    const char* compute_kernel_path);
+    const char* compute_scheme_header,
+    const char* compute_scheme_type);
 
 template <typename Scheme>
 [[nodiscard]] LiftingPreprocessDeviceProgram create_lifting_preprocess_program(
@@ -66,7 +57,8 @@ template <typename Scheme>
     TT_FATAL(input_desc.length > 0, "Input signal must be non-empty");
     TT_FATAL(input_desc.element_size_bytes == sizeof(float), "Lifting preprocess currently supports fp32 only");
 
-    const SignalBuffer planned_input = with_address(input_desc, input_buffer.address());
+    SignalBuffer planned_input = input_desc;
+    planned_input.dram_address = input_buffer.address();
     const uint32_t wavelet_pad = static_cast<uint32_t>(Scheme::tap_size - 1);
     const PadSplit1DLayout provisional_layout = make_pad_split_1d_layout(
         planned_input, 0, 0, Pad1DConfig{.mode = BoundaryMode::kSymmetric, .left = wavelet_pad, .right = wavelet_pad});
@@ -76,9 +68,7 @@ template <typename Scheme>
     const LiftingForwardPlan plan = make_forward_lifting_plan<Scheme>(
         planned_input,
         buffers.even.ping->get_backing_buffer()->address(),
-        buffers.even.pong->get_backing_buffer()->address(),
-        buffers.odd.ping->get_backing_buffer()->address(),
-        buffers.odd.pong->get_backing_buffer()->address());
+        buffers.odd.ping->get_backing_buffer()->address());
 
     PadSplit1DDeviceProgram preprocess = create_pad_split_1d_program(
         kernel_root,
@@ -105,18 +95,9 @@ template <typename Scheme>
     const std::filesystem::path& kernel_root,
     tt::tt_metal::distributed::MeshDevice& mesh_device,
     tt::tt_metal::distributed::MeshCommandQueue& command_queue,
-    const tt::tt_metal::CoreCoord& core,
     const LiftingPreprocessDeviceProgram& bundle) {
-    return lwt_static(kernel_root, mesh_device, command_queue, core, bundle, Scheme::compute_kernel_path);
-}
-
-template <typename Scheme>
-[[nodiscard]] LiftingActiveStreams lwt(
-    const std::filesystem::path& kernel_root,
-    tt::tt_metal::distributed::MeshDevice& mesh_device,
-    tt::tt_metal::distributed::MeshCommandQueue& command_queue,
-    const LiftingPreprocessDeviceProgram& bundle) {
-    return lwt_static(kernel_root, mesh_device, command_queue, bundle, Scheme::compute_kernel_path);
+    return lwt_static(
+        kernel_root, mesh_device, command_queue, bundle, Scheme::compute_scheme_header, Scheme::compute_scheme_type);
 }
 
 }  // namespace ttwv
