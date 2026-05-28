@@ -94,11 +94,11 @@ void print_coeffs(const char* label, const std::vector<float>& values, const siz
 
 template <typename Scheme>
 [[nodiscard]] ForwardOutput run_forward(const std::vector<float>& signal) {
-    constexpr int device_id = 0;
+    constexpr int device_id{0};
     constexpr tt::tt_metal::CoreCoord preprocess_core{0, 0};
 
-    auto mesh_device = tt::tt_metal::distributed::MeshDevice::create_unit_mesh(device_id);
-    tt::tt_metal::distributed::MeshCommandQueue& command_queue = mesh_device->mesh_command_queue();
+    auto mesh_device{tt::tt_metal::distributed::MeshDevice::create_unit_mesh(device_id)};
+    tt::tt_metal::distributed::MeshCommandQueue& command_queue{mesh_device->mesh_command_queue()};
 
     ttwv::SignalBuffer input_desc{
         .dram_address = 0,

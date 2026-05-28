@@ -43,8 +43,8 @@ PadSplit1DDeviceProgram create_pad_split_1d_program(
         "input.length ({}) overflows uint32_t",
         layout.input.length);
 
-    tt::tt_metal::Program program = tt::tt_metal::CreateProgram();
-    constexpr uint32_t page_size = device_protocol::kStickBytes;
+    tt::tt_metal::Program program{tt::tt_metal::CreateProgram()};
+    constexpr uint32_t page_size{device_protocol::kStickBytes};
 
     const auto even_cb_config =
         tt::tt_metal::CircularBufferConfig(2 * page_size, {{kCbIdEven, tt::DataFormat::Float32}})
@@ -61,23 +61,29 @@ PadSplit1DDeviceProgram create_pad_split_1d_program(
             .set_page_size(kCbIdCache, page_size);
     tt::tt_metal::CreateCircularBuffer(program, core, cache_cb_config);
 
-    std::vector<uint32_t> reader_compile_args = {kCbIdEven, kCbIdOdd, kCbIdCache};
+    std::vector<uint32_t> reader_compile_args;
     tt::tt_metal::TensorAccessorArgs(input_buffer).append_to(reader_compile_args);
 
     const auto reader_kernel = tt::tt_metal::CreateKernel(
         program,
         kernel_path(kernel_root, kReaderKernelPath),
         core,
-        tt::tt_metal::ReaderDataMovementConfig(reader_compile_args));
+        tt::tt_metal::ReaderDataMovementConfig(
+            reader_compile_args,
+            {},  // defines is empty
+            {{"cb_even", kCbIdEven}, {"cb_odd", kCbIdOdd}, {"cb_cache", kCbIdCache}}));
 
-    std::vector<uint32_t> writer_compile_args = {kCbIdEven, kCbIdOdd};
+    std::vector<uint32_t> writer_compile_args;
     tt::tt_metal::TensorAccessorArgs(even_buffer).append_to(writer_compile_args);
     tt::tt_metal::TensorAccessorArgs(odd_buffer).append_to(writer_compile_args);
     const auto writer_kernel = tt::tt_metal::CreateKernel(
         program,
         kernel_path(kernel_root, kWriterKernelPath),
         core,
-        tt::tt_metal::WriterDataMovementConfig(writer_compile_args));
+        tt::tt_metal::WriterDataMovementConfig(
+            writer_compile_args,
+            {},  // defines is empty
+            {{"cb_even", kCbIdEven}, {"cb_odd", kCbIdOdd}}));
 
     PadSplit1DDeviceProgram bundle{
         .program = std::move(program),
