@@ -26,27 +26,89 @@ void kernel_main() {
 
     const uint32_t even_stick_count = ttwv::kernels::primitives::even_stick_count(padded_length, ttwv::kStickWidth);
     const uint32_t odd_stick_count = ttwv::kernels::primitives::odd_stick_count(padded_length, ttwv::kStickWidth);
-    const uint32_t pair_count = padded_length / 2;
 
     auto even_writer =
         ttwv::kernels::primitives::make_output_stick_writer(cb_even, ttwv::kStickWidth, even_stick_count);
     auto odd_writer = ttwv::kernels::primitives::make_output_stick_writer(cb_odd, ttwv::kStickWidth, odd_stick_count);
 
-    for (uint32_t pair = 0; pair < pair_count; ++pair) {
-        ttwv::kernels::primitives::push_output_value(
-            even_writer,
-            ttwv::kernels::primitives::read_padded_symmetric_value(src, read_cache, input_length, left_pad, pair * 2));
-        ttwv::kernels::primitives::push_output_value(
-            odd_writer,
-            ttwv::kernels::primitives::read_padded_symmetric_value(
-                src, read_cache, input_length, left_pad, pair * 2 + 1));
+    const uint32_t left_end = ttwv::kernels::primitives::min_u32(left_pad, padded_length);
+    const uint32_t interior_end = ttwv::kernels::primitives::min_u32(left_pad + input_length, padded_length);
+
+    // Process left edge, interior, and right edge to skip symmetric indexing in the interior.
+    {
+        uint32_t out_idx = 0;
+        if ((out_idx & 1U) && out_idx < left_end) {
+            ttwv::kernels::primitives::push_output_value(
+                odd_writer,
+                ttwv::kernels::primitives::read_padded_symmetric_value(
+                    src, read_cache, input_length, left_pad, out_idx));
+            out_idx++;
+        }
+        for (; out_idx + 1 < left_end; out_idx += 2) {
+            ttwv::kernels::primitives::push_output_value(
+                even_writer,
+                ttwv::kernels::primitives::read_padded_symmetric_value(
+                    src, read_cache, input_length, left_pad, out_idx));
+            ttwv::kernels::primitives::push_output_value(
+                odd_writer,
+                ttwv::kernels::primitives::read_padded_symmetric_value(
+                    src, read_cache, input_length, left_pad, out_idx + 1));
+        }
+        if (out_idx < left_end) {
+            ttwv::kernels::primitives::push_output_value(
+                even_writer,
+                ttwv::kernels::primitives::read_padded_symmetric_value(
+                    src, read_cache, input_length, left_pad, out_idx));
+        }
     }
 
-    if (padded_length & 1U) {
-        ttwv::kernels::primitives::push_output_value(
-            even_writer,
-            ttwv::kernels::primitives::read_padded_symmetric_value(
-                src, read_cache, input_length, left_pad, padded_length - 1));
+    {
+        uint32_t out_idx = left_end;
+        if ((out_idx & 1U) && out_idx < interior_end) {
+            const uint32_t source_index = out_idx - left_pad;
+            ttwv::kernels::primitives::push_output_value(
+                odd_writer, ttwv::kernels::primitives::read_source_value(src, read_cache, source_index));
+            out_idx++;
+        }
+        for (; out_idx + 1 < interior_end; out_idx += 2) {
+            const uint32_t source_index = out_idx - left_pad;
+            ttwv::kernels::primitives::push_output_value(
+                even_writer, ttwv::kernels::primitives::read_source_value(src, read_cache, source_index));
+            ttwv::kernels::primitives::push_output_value(
+                odd_writer, ttwv::kernels::primitives::read_source_value(src, read_cache, source_index + 1));
+        }
+        if (out_idx < interior_end) {
+            const uint32_t source_index = out_idx - left_pad;
+            ttwv::kernels::primitives::push_output_value(
+                even_writer, ttwv::kernels::primitives::read_source_value(src, read_cache, source_index));
+        }
+    }
+
+    {
+        uint32_t out_idx = interior_end;
+        if ((out_idx & 1U) && out_idx < padded_length) {
+            ttwv::kernels::primitives::push_output_value(
+                odd_writer,
+                ttwv::kernels::primitives::read_padded_symmetric_value(
+                    src, read_cache, input_length, left_pad, out_idx));
+            out_idx++;
+        }
+        for (; out_idx + 1 < padded_length; out_idx += 2) {
+            ttwv::kernels::primitives::push_output_value(
+                even_writer,
+                ttwv::kernels::primitives::read_padded_symmetric_value(
+                    src, read_cache, input_length, left_pad, out_idx));
+            ttwv::kernels::primitives::push_output_value(
+                odd_writer,
+                ttwv::kernels::primitives::read_padded_symmetric_value(
+                    src, read_cache, input_length, left_pad, out_idx + 1));
+        }
+        if (out_idx < padded_length) {
+            ttwv::kernels::primitives::push_output_value(
+                even_writer,
+                ttwv::kernels::primitives::read_padded_symmetric_value(
+                    src, read_cache, input_length, left_pad, out_idx));
+        }
     }
 
     ttwv::kernels::primitives::flush_partial_output_stick(even_writer);
