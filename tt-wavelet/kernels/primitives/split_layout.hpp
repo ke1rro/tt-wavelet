@@ -6,12 +6,10 @@
 
 namespace ttwv::kernels::primitives {
 
-ALWI uint32_t even_stick_count(const uint32_t padded_length, const uint32_t stick_width) {
-    return ((padded_length + 1) / 2 + stick_width - 1) / stick_width;
-}
+ALWI uint32_t ceil_div(const uint32_t value, const uint32_t divisor) { return (value + divisor - 1) / divisor; }
 
-ALWI uint32_t odd_stick_count(const uint32_t padded_length, const uint32_t stick_width) {
-    return (padded_length / 2 + stick_width - 1) / stick_width;
+ALWI uint32_t stick_count_for_elements(const uint32_t element_count, const uint32_t stick_width) {
+    return ceil_div(element_count, stick_width);
 }
 
 }  // namespace ttwv::kernels::primitives

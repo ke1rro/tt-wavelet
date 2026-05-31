@@ -51,7 +51,6 @@ template <typename Scheme>
 [[nodiscard]] LiftingPreprocessDeviceProgram create_lifting_preprocess_program(
     const std::filesystem::path& kernel_root,
     tt::tt_metal::distributed::MeshDevice& mesh_device,
-    const tt::tt_metal::CoreCoord& core,
     const tt::tt_metal::Buffer& input_buffer,
     const SignalBuffer& input_desc) {
     TT_FATAL(input_desc.length > 0, "Input signal must be non-empty");
@@ -72,7 +71,7 @@ template <typename Scheme>
 
     PadSplit1DDeviceProgram preprocess = create_pad_split_1d_program(
         kernel_root,
-        core,
+        mesh_device,
         input_buffer,
         *(buffers.even.ping->get_backing_buffer()),
         *(buffers.odd.ping->get_backing_buffer()),

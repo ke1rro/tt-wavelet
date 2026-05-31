@@ -11,20 +11,11 @@ namespace ttwv {
 struct PadSplit1DLayout {
     SignalBuffer input{};
     Pad1DConfig pad_config{};
-    Signal output{};  ///< Even/odd output buffers.
+    Signal output{};
 
-    /**
-     * @return Physical length of padded signal
-     */
     [[nodiscard]] constexpr size_t padded_length() const noexcept {
         return input.length + static_cast<size_t>(pad_config.left) + static_cast<size_t>(pad_config.right);
     }
-
-    /**
-     * @return Number of sticks in the signal divided into.
-     */
-    [[nodiscard]] constexpr size_t even_stick_count() const noexcept { return output.even.stick_count(); }
-    [[nodiscard]] constexpr size_t odd_stick_count() const noexcept { return output.odd.stick_count(); }
 };
 
 [[nodiscard]] constexpr PadSplit1DLayout make_pad_split_1d_layout(
