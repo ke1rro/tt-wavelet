@@ -1,0 +1,1514 @@
+#ifndef TTWV_LWT_SCHEME_HEADER
+#error "TTWV_LWT_SCHEME_HEADER must identify the generated lifting scheme header"
+#endif
+
+#ifndef TTWV_LWT_SCHEME_TYPE
+#error "TTWV_LWT_SCHEME_TYPE must identify the generated lifting scheme type"
+#endif
+
+#include <cstdint>
+
+#include "api/dataflow/dataflow_api.h"
+#include "../../tt_wavelet/include/device_protocol/lwt_config.hpp"
+#include "../../tt_wavelet/include/lifting/static_scheme.hpp"
+#include "../primitives/indexing.hpp"
+#include "../primitives/mem_fill.hpp"
+#include "../primitives/stick_cache.hpp"
+#include TTWV_LWT_SCHEME_HEADER
+
+namespace ttwv::kernels {
+
+struct Interval {
+    int32_t lo;
+    int32_t hi;
+};
+
+struct LocalStream {
+    float* data;
+    int32_t lo;
+    uint32_t length;
+};
+
+struct LocalState {
+    LocalStream even;
+    LocalStream odd;
+    float even_scale;
+    float odd_scale;
+};
+
+ALWI Interval empty_interval() { return Interval{1, 0}; }
+
+ALWI bool is_empty(const Interval interval) { return interval.hi < interval.lo; }
+
+ALWI uint32_t interval_length(const Interval interval) {
+    return is_empty(interval) ? 0U : static_cast<uint32_t>(interval.hi - interval.lo + 1);
+}
+
+ALWI Interval make_interval(const int32_t lo, const uint32_t length) {
+    return length == 0 ? empty_interval() : Interval{lo, lo + static_cast<int32_t>(length) - 1};
+}
+
+ALWI int32_t min_i32(const int32_t lhs, const int32_t rhs) { return lhs < rhs ? lhs : rhs; }
+
+ALWI int32_t max_i32(const int32_t lhs, const int32_t rhs) { return lhs > rhs ? lhs : rhs; }
+
+ALWI uint32_t min_u32(const uint32_t lhs, const uint32_t rhs) { return lhs < rhs ? lhs : rhs; }
+
+ALWI Interval intersect_interval(const Interval lhs, const Interval rhs) {
+    if (is_empty(lhs) || is_empty(rhs)) {
+        return empty_interval();
+    }
+
+    const Interval out{max_i32(lhs.lo, rhs.lo), min_i32(lhs.hi, rhs.hi)};
+    return is_empty(out) ? empty_interval() : out;
+}
+
+ALWI Interval union_interval(const Interval lhs, const Interval rhs) {
+    if (is_empty(lhs)) {
+        return rhs;
+    }
+    if (is_empty(rhs)) {
+        return lhs;
+    }
+    return Interval{min_i32(lhs.lo, rhs.lo), max_i32(lhs.hi, rhs.hi)};
+}
+
+ALWI Interval shift_interval(const Interval interval, const int32_t lo, const int32_t hi) {
+    return is_empty(interval) ? interval : Interval{interval.lo + lo, interval.hi + hi};
+}
+
+ALWI bool contains(const LocalStream& stream, const int32_t logical_index) {
+    return stream.length > 0 && logical_index >= stream.lo &&
+           logical_index < stream.lo + static_cast<int32_t>(stream.length);
+}
+
+ALWI float stream_value(const LocalStream& stream, const int32_t logical_index) {
+    return stream.data[static_cast<uint32_t>(logical_index - stream.lo)];
+}
+
+ALWI void swap_streams(LocalStream& lhs, LocalStream& rhs) {
+    const LocalStream tmp = lhs;
+    lhs = rhs;
+    rhs = tmp;
+}
+
+ALWI float float_from_bits(const uint32_t bits) {
+    union {
+        uint32_t u;
+        float f;
+    } value{bits};
+    return value.f;
+}
+
+template <typename Step>
+ALWI constexpr int32_t source_span_lo() {
+    return -Step::shift - static_cast<int32_t>(Step::k) + 1;
+}
+
+template <typename Step>
+ALWI constexpr int32_t source_span_hi() {
+    return -Step::shift;
+}
+
+template <typename Step>
+ALWI Interval source_dependency(const Interval interval) {
+    return shift_interval(interval, source_span_lo<Step>(), source_span_hi<Step>());
+}
+
+template <typename Scheme, uint32_t Index>
+ALWI void compute_backward_cone(Interval& even, Interval& odd) {
+    if constexpr (Index > 0) {
+        using Step = SchemeStep<Scheme, Index - 1>;
+        if constexpr (Step::type == StepType::kSwap) {
+            const Interval tmp = even;
+            even = odd;
+            odd = tmp;
+        } else if constexpr (Step::type == StepType::kPredict) {
+            even = union_interval(even, source_dependency<Step>(odd));
+        } else if constexpr (Step::type == StepType::kUpdate) {
+            odd = union_interval(odd, source_dependency<Step>(even));
+        } else {
+            static_assert(
+                Step::type == StepType::kScaleEven || Step::type == StepType::kScaleOdd,
+                "Unsupported lifting step type");
+        }
+        compute_backward_cone<Scheme, Index - 1>(even, odd);
+    }
+}
+
+ALWI Interval stream_interval(const LocalStream& stream) { return make_interval(stream.lo, stream.length); }
+
+template <typename Step>
+ALWI Interval compute_step_geometry(const LocalStream& source, const LocalStream& base) {
+    if (source.length < Step::k || source.length == 0 || base.length == 0) {
+        return empty_interval();
+    }
+
+    const int32_t conv_shift =
+        source.lo + Step::shift + static_cast<int32_t>(min_u32(source.length, Step::k)) - 1;
+    const uint32_t conv_length = source.length - Step::k + 1;
+    const int32_t out_shift = max_i32(base.lo, conv_shift);
+    const int32_t out_end = min_i32(
+        base.lo + static_cast<int32_t>(base.length), conv_shift + static_cast<int32_t>(conv_length));
+    return out_end > out_shift ? Interval{out_shift, out_end - 1} : empty_interval();
+}
+
+template <typename Step, uint32_t CoeffIndex = 0>
+ALWI float stencil_sum(const LocalStream& source, const int32_t source_start) {
+    if constexpr (CoeffIndex >= Step::k) {
+        return 0.0F;
+    } else {
+        const uint32_t reversed_index = Step::k - 1 - CoeffIndex;
+        const float coeff = float_from_bits(Step::coeff_bits[reversed_index]);
+        return coeff * stream_value(source, source_start + static_cast<int32_t>(CoeffIndex)) +
+               stencil_sum<Step, CoeffIndex + 1>(source, source_start);
+    }
+}
+
+template <typename Step>
+ALWI void apply_step(const LocalStream& source, LocalStream& base) {
+    const Interval output = compute_step_geometry<Step>(source, base);
+    const uint32_t output_length = interval_length(output);
+    const uint32_t base_offset = output_length == 0 ? 0U : static_cast<uint32_t>(output.lo - base.lo);
+
+    for (uint32_t index = 0; index < output_length; ++index) {
+        const int32_t logical_index = output.lo + static_cast<int32_t>(index);
+        const int32_t source_start = logical_index + source_span_lo<Step>();
+        base.data[index] = base.data[base_offset + index] + stencil_sum<Step>(source, source_start);
+    }
+
+    base.lo = output.lo;
+    base.length = output_length;
+}
+
+template <typename Scheme, uint32_t Index = 0>
+ALWI void run_steps(LocalState& state) {
+    if constexpr (Index < Scheme::num_steps) {
+        using Step = SchemeStep<Scheme, Index>;
+        if constexpr (Step::type == StepType::kPredict) {
+            apply_step<Step>(state.even, state.odd);
+        } else if constexpr (Step::type == StepType::kUpdate) {
+            apply_step<Step>(state.odd, state.even);
+        } else if constexpr (Step::type == StepType::kSwap) {
+            swap_streams(state.even, state.odd);
+        } else if constexpr (Step::type == StepType::kScaleEven) {
+            static_assert(!has_later_predict_update_step<Scheme, Index>(), "Non-terminal scale is not supported");
+            static_assert(Step::k == 1, "Scale steps must have one coefficient");
+            state.even_scale *= float_from_bits(Step::coeff_bits[0]);
+        } else if constexpr (Step::type == StepType::kScaleOdd) {
+            static_assert(!has_later_predict_update_step<Scheme, Index>(), "Non-terminal scale is not supported");
+            static_assert(Step::k == 1, "Scale steps must have one coefficient");
+            state.odd_scale *= float_from_bits(Step::coeff_bits[0]);
+        } else {
+            static_assert(Step::type == StepType::kSwap, "Unsupported lifting step type");
+        }
+        run_steps<Scheme, Index + 1>(state);
+    }
+}
+
+template <typename SrcAccessor>
+ALWI float read_input_value(
+    const SrcAccessor& src,
+    ttwv::kernels::primitives::StickReadCache& cache,
+    const uint32_t input_length,
+    const int32_t logical_index) {
+    const uint32_t source_index = ttwv::kernels::primitives::symmetric_index(logical_index, input_length);
+    return ttwv::kernels::primitives::read_source_value(src, cache, source_index, input_length);
+}
+
+template <typename SrcAccessor>
+ALWI void fill_initial_stream(
+    const SrcAccessor& src,
+    ttwv::kernels::primitives::StickReadCache& cache,
+    LocalStream& stream,
+    const uint32_t input_length,
+    const int32_t delay,
+    const int32_t parity,
+    const int32_t pad) {
+    for (uint32_t index = 0; index < stream.length; ++index) {
+        const int32_t logical_index = stream.lo + static_cast<int32_t>(index);
+        const int32_t dense_index = logical_index - delay;
+        const int32_t padded_index = 2 * dense_index + parity;
+        stream.data[index] = read_input_value(src, cache, input_length, padded_index - pad);
+    }
+}
+
+template <typename DstAccessor>
+ALWI void write_output_stick(
+    const DstAccessor& dst,
+    const uint32_t stick_addr,
+    const uint32_t stick_index,
+    const uint32_t output_length,
+    const LocalStream& stream,
+    const float scale,
+    const int32_t canonical_start) {
+    auto* out = reinterpret_cast<float*>(stick_addr);
+    const uint32_t first_output_index = stick_index * ttwv::kStickWidth;
+    for (uint32_t lane = 0; lane < ttwv::kStickWidth; ++lane) {
+        const uint32_t output_index = first_output_index + lane;
+        float value = 0.0F;
+        if (output_index < output_length) {
+            const int32_t logical_index = canonical_start + static_cast<int32_t>(output_index);
+            if (contains(stream, logical_index)) {
+                value = stream_value(stream, logical_index) * scale;
+            }
+        }
+        out[lane] = value;
+    }
+
+    noc_async_write(stick_addr, dst.get_noc_addr(stick_index), ttwv::device_protocol::kStickBytes);
+}
+
+template <typename ApproxAccessor, typename DetailAccessor>
+ALWI void write_outputs(
+    const ApproxAccessor& approx_dst,
+    const DetailAccessor& detail_dst,
+    const uint32_t cb_approx_stick,
+    const uint32_t cb_detail_stick,
+    const uint32_t output_length,
+    const uint32_t chunk_start,
+    const uint32_t chunk_end,
+    const LocalState& state,
+    const int32_t canonical_start) {
+    const uint32_t first_stick = chunk_start / ttwv::kStickWidth;
+    const uint32_t last_stick = (chunk_end + ttwv::kStickWidth - 1) / ttwv::kStickWidth;
+
+    for (uint32_t stick = first_stick; stick < last_stick; ++stick) {
+        write_output_stick(
+            approx_dst,
+            get_write_ptr(cb_approx_stick),
+            stick,
+            output_length,
+            state.even,
+            state.even_scale,
+            canonical_start);
+        write_output_stick(
+            detail_dst,
+            get_write_ptr(cb_detail_stick),
+            stick,
+            output_length,
+            state.odd,
+            state.odd_scale,
+            canonical_start);
+        noc_async_write_barrier();
+    }
+}
+
+template <typename Scheme, typename SrcAccessor, typename ApproxAccessor, typename DetailAccessor>
+ALWI void run_chunk(
+    const SrcAccessor& src,
+    const ApproxAccessor& approx_dst,
+    const DetailAccessor& detail_dst,
+    ttwv::kernels::primitives::StickReadCache& cache,
+    const uint32_t cb_approx_stick,
+    const uint32_t cb_detail_stick,
+    const uint32_t input_length,
+    const uint32_t output_length,
+    const uint32_t chunk_size,
+    const uint32_t chunk_index,
+    const Interval final_even_support,
+    const Interval final_odd_support,
+    const uint32_t local_capacity,
+    float* even_data,
+    float* odd_data) {
+    const uint32_t chunk_start = chunk_index * chunk_size;
+    const uint32_t chunk_end = min_u32(output_length, chunk_start + chunk_size);
+    if (chunk_start >= chunk_end) {
+        return;
+    }
+
+    constexpr int32_t pad = static_cast<int32_t>(Scheme::tap_size - 1);
+    constexpr int32_t canonical_start = static_cast<int32_t>(Scheme::tap_size / 2);
+    const Interval final_chunk{
+        canonical_start + static_cast<int32_t>(chunk_start),
+        canonical_start + static_cast<int32_t>(chunk_end) - 1};
+    Interval need_even = intersect_interval(final_chunk, final_even_support);
+    Interval need_odd = intersect_interval(final_chunk, final_odd_support);
+
+    compute_backward_cone<Scheme, Scheme::num_steps>(need_even, need_odd);
+
+    LocalState state{
+        .even =
+            LocalStream{
+                .data = even_data,
+                .lo = need_even.lo,
+                .length = interval_length(need_even),
+            },
+        .odd =
+            LocalStream{
+                .data = odd_data,
+                .lo = need_odd.lo,
+                .length = interval_length(need_odd),
+            },
+        .even_scale = 1.0F,
+        .odd_scale = 1.0F,
+    };
+
+    if (state.even.length > local_capacity || state.odd.length > local_capacity) {
+        LocalState empty_state{
+            .even = LocalStream{.data = even_data, .lo = 0, .length = 0},
+            .odd = LocalStream{.data = odd_data, .lo = 0, .length = 0},
+            .even_scale = 1.0F,
+            .odd_scale = 1.0F,
+        };
+        write_outputs(
+            approx_dst,
+            detail_dst,
+            cb_approx_stick,
+            cb_detail_stick,
+            output_length,
+            chunk_start,
+            chunk_end,
+            empty_state,
+            canonical_start);
+        return;
+    }
+
+    fill_initial_stream(src, cache, state.even, input_length, Scheme::delay_even, 0, pad);
+    fill_initial_stream(src, cache, state.odd, input_length, Scheme::delay_odd, 1, pad);
+    run_steps<Scheme>(state);
+    write_outputs(
+        approx_dst,
+        detail_dst,
+        cb_approx_stick,
+        cb_detail_stick,
+        output_length,
+        chunk_start,
+        chunk_end,
+        state,
+        canonical_start);
+}
+
+template <typename Scheme>
+void chunk_lwt() {
+    const uint32_t input_addr = get_arg_val<uint32_t>(0);
+    const uint32_t input_length = get_arg_val<uint32_t>(1);
+    const uint32_t approx_addr = get_arg_val<uint32_t>(2);
+    const uint32_t detail_addr = get_arg_val<uint32_t>(3);
+    const uint32_t output_length = get_arg_val<uint32_t>(4);
+    const uint32_t chunk_size = get_arg_val<uint32_t>(5);
+    const uint32_t first_chunk = get_arg_val<uint32_t>(6);
+    const uint32_t chunk_count = get_arg_val<uint32_t>(7);
+    const int32_t final_even_lo = static_cast<int32_t>(get_arg_val<uint32_t>(8));
+    const uint32_t final_even_length = get_arg_val<uint32_t>(9);
+    const int32_t final_odd_lo = static_cast<int32_t>(get_arg_val<uint32_t>(10));
+    const uint32_t final_odd_length = get_arg_val<uint32_t>(11);
+    const uint32_t local_capacity = get_arg_val<uint32_t>(12);
+
+    constexpr uint32_t cb_even = get_compile_time_arg_val(0);
+    constexpr uint32_t cb_odd = get_compile_time_arg_val(1);
+    constexpr uint32_t cb_cache = get_compile_time_arg_val(2);
+    constexpr uint32_t cb_approx_stick = get_compile_time_arg_val(3);
+    constexpr uint32_t cb_detail_stick = get_compile_time_arg_val(4);
+    constexpr auto src_args = TensorAccessorArgs<5>();
+    constexpr auto approx_args = TensorAccessorArgs<src_args.next_compile_time_args_offset()>();
+    constexpr auto detail_args = TensorAccessorArgs<approx_args.next_compile_time_args_offset()>();
+
+    const auto src = TensorAccessor(src_args, input_addr, ttwv::device_protocol::kStickBytes);
+    const auto approx_dst = TensorAccessor(approx_args, approx_addr, ttwv::device_protocol::kStickBytes);
+    const auto detail_dst = TensorAccessor(detail_args, detail_addr, ttwv::device_protocol::kStickBytes);
+
+    cb_reserve_back(cb_even, 1);
+    cb_reserve_back(cb_odd, 1);
+    cb_reserve_back(cb_approx_stick, 1);
+    cb_reserve_back(cb_detail_stick, 1);
+
+    auto* even_data = reinterpret_cast<float*>(get_write_ptr(cb_even));
+    auto* odd_data = reinterpret_cast<float*>(get_write_ptr(cb_odd));
+
+    ttwv::kernels::primitives::StickReadCache cache{
+        cb_cache,
+        ttwv::device_protocol::kStickBytes,
+        ttwv::kStickWidth,
+        ttwv::device_protocol::kPadSplitCacheStickCount,
+        ttwv::kernels::primitives::kInvalidStick,
+        0,
+        false};
+
+    const Interval final_even_support = make_interval(final_even_lo, final_even_length);
+    const Interval final_odd_support = make_interval(final_odd_lo, final_odd_length);
+
+    for (uint32_t offset = 0; offset < chunk_count; ++offset) {
+        run_chunk<Scheme>(
+            src,
+            approx_dst,
+            detail_dst,
+            cache,
+            cb_approx_stick,
+            cb_detail_stick,
+            input_length,
+            output_length,
+            chunk_size,
+            first_chunk + offset,
+            final_even_support,
+            final_odd_support,
+            local_capacity,
+            even_data,
+            odd_data);
+    }
+
+    ttwv::kernels::primitives::release_cache(cache);
+}
+
+}  // namespace ttwv::kernels
+
+void kernel_main() { ttwv::kernels::chunk_lwt<TTWV_LWT_SCHEME_TYPE>(); }
+
+
+#include <algorithm>
+#include <chrono>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <iomanip>
+#include <iostream>
+#include <limits>
+#include <numeric>
+#include <optional>
+#include <stdexcept>
+#include <string>
+#include <string_view>
+#include <vector>
+
+#include "tt-metalium/distributed.hpp"
+#include "tt-metalium/host_api.hpp"
+#include "tt-metalium/mesh_buffer.hpp"
+#include "tt-metalium/mesh_device.hpp"
+#include "tt_wavelet/include/lifting/device.hpp"
+#include "tt_wavelet/include/schemes/generated/registry.hpp"
+
+namespace {
+
+struct CliOptions {
+    bool benchmark{false};
+    uint32_t repeats{1};
+    uint32_t warmup_runs{1};
+    std::optional<size_t> generated_length;
+    double signal_start{1.0};
+    double signal_step{1.0};
+    std::string wavelet_name;
+    std::optional<std::filesystem::path> signal_file;
+};
+
+struct ForwardOutput {
+    std::vector<float> approximation;
+    std::vector<float> detail;
+    size_t logical_length{0};
+    double execution_time_ms{0.0};
+};
+
+[[nodiscard]] std::string usage() {
+    return "Usage:\n"
+           "  lwt <scheme|scheme_path> <signal_file>\n"
+           "  lwt --benchmark [--repeats N] [--warmup-runs N] "
+           "[--length N --signal-start X --signal-step X | <signal_file>] <scheme|scheme_path>";
+}
+
+[[nodiscard]] std::string require_option_value(const int argc, char** argv, int& index, const std::string& option) {
+    if (index + 1 >= argc) {
+        throw std::runtime_error(option + " requires a value.\n" + usage());
+    }
+    ++index;
+    return argv[index];
+}
+
+[[nodiscard]] uint32_t parse_u32(const std::string& raw, const char* label, const bool allow_zero) {
+    size_t parsed_chars = 0;
+    const unsigned long long value = std::stoull(raw, &parsed_chars, 10);
+    if (parsed_chars != raw.size() || value > std::numeric_limits<uint32_t>::max() || (!allow_zero && value == 0)) {
+        throw std::runtime_error(std::string(label) + " must be a valid uint32 value.");
+    }
+    return static_cast<uint32_t>(value);
+}
+
+[[nodiscard]] size_t parse_size(const std::string& raw, const char* label) {
+    size_t parsed_chars = 0;
+    const unsigned long long value = std::stoull(raw, &parsed_chars, 10);
+    if (parsed_chars != raw.size() || value == 0 ||
+        value > static_cast<unsigned long long>(std::numeric_limits<size_t>::max())) {
+        throw std::runtime_error(std::string(label) + " must be a positive size value.");
+    }
+    return static_cast<size_t>(value);
+}
+
+[[nodiscard]] double parse_double(const std::string& raw, const char* label) {
+    size_t parsed_chars = 0;
+    const double value = std::stod(raw, &parsed_chars);
+    if (parsed_chars != raw.size() || !std::isfinite(value)) {
+        throw std::runtime_error(std::string(label) + " must be a finite floating-point value.");
+    }
+    return value;
+}
+
+[[nodiscard]] CliOptions parse_cli(const int argc, char** argv) {
+    CliOptions options;
+    std::vector<std::string> positionals;
+
+    for (int i = 1; i < argc; ++i) {
+        const std::string arg = argv[i];
+        if (arg == "-h" || arg == "--help") {
+            std::cout << usage() << '\n';
+            std::exit(EXIT_SUCCESS);
+        }
+        if (arg == "--benchmark") {
+            options.benchmark = true;
+        } else if (arg == "--repeats") {
+            options.repeats = parse_u32(require_option_value(argc, argv, i, arg), "--repeats", false);
+        } else if (arg == "--warmup-runs") {
+            options.warmup_runs = parse_u32(require_option_value(argc, argv, i, arg), "--warmup-runs", true);
+        } else if (arg == "--length") {
+            options.generated_length = parse_size(require_option_value(argc, argv, i, arg), "--length");
+        } else if (arg == "--signal-start") {
+            options.signal_start = parse_double(require_option_value(argc, argv, i, arg), "--signal-start");
+        } else if (arg == "--signal-step") {
+            options.signal_step = parse_double(require_option_value(argc, argv, i, arg), "--signal-step");
+        } else if (arg.rfind("--", 0) == 0) {
+            throw std::runtime_error("Unknown option: " + arg + "\n" + usage());
+        } else {
+            positionals.push_back(arg);
+        }
+    }
+
+    if (!options.benchmark && options.generated_length.has_value()) {
+        throw std::runtime_error("--length requires --benchmark.\n" + usage());
+    }
+
+    if (options.benchmark && options.generated_length.has_value()) {
+        if (positionals.size() != 1) {
+            throw std::runtime_error(usage());
+        }
+        options.wavelet_name = positionals.at(0);
+    } else {
+        if (positionals.size() != 2) {
+            throw std::runtime_error(usage());
+        }
+        options.wavelet_name = positionals.at(0);
+        options.signal_file = std::filesystem::path{positionals.at(1)};
+    }
+
+    return options;
+}
+
+[[nodiscard]] std::vector<float> read_signal_file(const std::filesystem::path& path) {
+    std::ifstream handle(path);
+    if (!handle.good()) {
+        throw std::runtime_error("Failed to open signal file: " + path.string());
+    }
+
+    std::vector<float> signal;
+    for (float value = 0.0F; handle >> value;) {
+        signal.push_back(value);
+    }
+
+    if (signal.empty()) {
+        throw std::runtime_error("Signal file is empty: " + path.string());
+    }
+    if (!handle.eof()) {
+        throw std::runtime_error("Signal file contains a non-numeric token: " + path.string());
+    }
+
+    return signal;
+}
+
+[[nodiscard]] std::vector<float> generate_signal(const size_t length, const double start, const double step) {
+    std::vector<float> signal;
+    signal.reserve(length);
+    for (size_t i = 0; i < length; ++i) {
+        signal.push_back(static_cast<float>(start + step * static_cast<double>(i)));
+    }
+    return signal;
+}
+
+void print_coeffs(const char* label, const std::vector<float>& values, const size_t logical_length) {
+    std::cout << label << " (" << logical_length << "): [";
+    for (size_t i = 0; i < logical_length; ++i) {
+        if (i > 0) {
+            std::cout << ", ";
+        }
+
+        std::cout << std::scientific << std::setprecision(8) << static_cast<double>(values[i]);
+    }
+    std::cout << std::defaultfloat << "]\n";
+}
+
+[[nodiscard]] std::string canonical_wavelet_name(const std::string_view raw_name) {
+    const std::filesystem::path raw_path{std::string{raw_name}};
+    if (raw_path.extension() == ".json") {
+        return raw_path.stem().string();
+    }
+    return std::string{raw_name};
+}
+
+void configure_tt_runtime(const bool benchmark) {
+    if (!benchmark) {
+        setenv("TT_LOGGER_LEVEL", "error", 0);
+        unsetenv("TT_METAL_SLOW_DISPATCH_MODE");
+        return;
+    }
+
+    setenv("TT_LOGGER_LEVEL", "FATAL", 1);
+    setenv("TT_METAL_INSPECTOR_RPC", "0", 1);
+    unsetenv("TT_METAL_DPRINT_CORES");
+    unsetenv("TT_METAL_WATCHER");
+    unsetenv("TT_METAL_SLOW_DISPATCH_MODE");
+    unsetenv("TT_METAL_DEVICE_PROFILER");
+    unsetenv("TT_METAL_DEVICE_PROFILER_DISPATCH");
+    unsetenv("TT_METAL_DISPATCH_DATA_COLLECTION");
+    unsetenv("TTNN_CONFIG_OVERRIDES");
+}
+
+template <typename Scheme>
+[[nodiscard]] ForwardOutput run_forward(const std::vector<float>& signal) {
+    constexpr int device_id{0};
+    const bool profile_enabled = std::getenv("TT_WAVELET_PROFILE") != nullptr;
+    auto last_profile_mark = std::chrono::steady_clock::now();
+    const auto log_profile_phase = [&](const char* label) {
+        if (!profile_enabled) {
+            return;
+        }
+        const auto now = std::chrono::steady_clock::now();
+        const std::chrono::duration<double, std::milli> elapsed_ms = now - last_profile_mark;
+        std::cerr << "profile_" << label << "_ms: " << std::fixed << std::setprecision(6) << elapsed_ms.count() << '\n';
+        last_profile_mark = now;
+    };
+
+    auto mesh_device{tt::tt_metal::distributed::MeshDevice::create_unit_mesh(device_id)};
+    tt::tt_metal::distributed::MeshCommandQueue& command_queue{mesh_device->mesh_command_queue()};
+    log_profile_phase("mesh_device_create");
+    const auto execution_start = std::chrono::steady_clock::now();
+
+    ttwv::SignalBuffer input_desc{
+        .dram_address = 0,
+        .length = signal.size(),
+        .stick_width = ttwv::kStickWidth,
+        .element_size_bytes = sizeof(float),
+    };
+    const tt::tt_metal::distributed::DeviceLocalBufferConfig input_local_config{
+        .page_size = input_desc.aligned_stick_bytes(),
+        .buffer_type = tt::tt_metal::BufferType::DRAM,
+    };
+    const tt::tt_metal::distributed::ReplicatedBufferConfig input_replicated_config{
+        .size = static_cast<uint64_t>(input_desc.physical_nbytes()),
+    };
+    auto input_buffer =
+        tt::tt_metal::distributed::MeshBuffer::create(input_replicated_config, input_local_config, mesh_device.get());
+    input_desc.dram_address = input_buffer->get_backing_buffer()->address();
+    log_profile_phase("input_buffer_create");
+
+    tt::tt_metal::distributed::EnqueueWriteMeshBuffer(command_queue, input_buffer, signal, false);
+    log_profile_phase("input_enqueue_write");
+    auto bundle = ttwv::create_lifting_preprocess_program<Scheme>(
+        TT_WAVELET_SOURCE_DIR, *mesh_device, *(input_buffer->get_backing_buffer()), input_desc);
+    log_profile_phase("preprocess_create");
+
+    const auto active_streams = ttwv::lwt<Scheme>(TT_WAVELET_SOURCE_DIR, *mesh_device, command_queue, bundle);
+    log_profile_phase("lwt_run");
+
+    std::vector<float> device_even_result;
+    std::vector<float> device_odd_result;
+    auto even_buffer = active_streams.even.family == ttwv::LogicalStream::kEven
+                           ? bundle.buffers.even.at(active_streams.even.slot)
+                           : bundle.buffers.odd.at(active_streams.even.slot);
+    auto odd_buffer = active_streams.odd.family == ttwv::LogicalStream::kEven
+                          ? bundle.buffers.even.at(active_streams.odd.slot)
+                          : bundle.buffers.odd.at(active_streams.odd.slot);
+    tt::tt_metal::distributed::EnqueueReadMeshBuffer(command_queue, device_even_result, even_buffer, true);
+    tt::tt_metal::distributed::EnqueueReadMeshBuffer(command_queue, device_odd_result, odd_buffer, true);
+    const auto execution_stop = std::chrono::steady_clock::now();
+    log_profile_phase("read_outputs");
+
+    const size_t canonical_length = bundle.plan.output_length;
+    const std::chrono::duration<double, std::milli> execution_time_ms = execution_stop - execution_start;
+    device_even_result.resize(canonical_length, 0.0F);
+    device_odd_result.resize(canonical_length, 0.0F);
+
+    return ForwardOutput{
+        .approximation = std::move(device_even_result),
+        .detail = std::move(device_odd_result),
+        .logical_length = canonical_length,
+        .execution_time_ms = execution_time_ms.count(),
+    };
+}
+
+template <typename Scheme>
+[[nodiscard]] double time_transform_once_ms(
+    tt::tt_metal::distributed::MeshDevice& mesh_device,
+    tt::tt_metal::distributed::MeshCommandQueue& command_queue,
+    const tt::tt_metal::Buffer& input_buffer,
+    const ttwv::SignalBuffer& input_desc) {
+    auto bundle =
+        ttwv::create_lifting_preprocess_program<Scheme>(TT_WAVELET_SOURCE_DIR, mesh_device, input_buffer, input_desc);
+
+    const auto start = std::chrono::steady_clock::now();
+    static_cast<void>(ttwv::lwt<Scheme>(TT_WAVELET_SOURCE_DIR, mesh_device, command_queue, bundle));
+    const auto stop = std::chrono::steady_clock::now();
+    const std::chrono::duration<double, std::milli> elapsed_ms = stop - start;
+    return elapsed_ms.count();
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+    try {
+        const CliOptions options = parse_cli(argc, argv);
+        configure_tt_runtime(options.benchmark);
+
+        const std::string wavelet_name = canonical_wavelet_name(options.wavelet_name);
+        const std::vector<float> signal =
+            options.generated_length.has_value()
+                ? generate_signal(*options.generated_length, options.signal_start, options.signal_step)
+                : read_signal_file(*options.signal_file);
+
+        return ttwv::dispatch_scheme(wavelet_name, [&]<typename Scheme>() -> int {
+            if (options.benchmark) {
+                constexpr int device_id{0};
+                auto mesh_device{tt::tt_metal::distributed::MeshDevice::create_unit_mesh(device_id)};
+                mesh_device->enable_program_cache();
+                tt::tt_metal::distributed::MeshCommandQueue& command_queue{mesh_device->mesh_command_queue()};
+
+                ttwv::SignalBuffer input_desc{
+                    .dram_address = 0,
+                    .length = signal.size(),
+                    .stick_width = ttwv::kStickWidth,
+                    .element_size_bytes = sizeof(float),
+                };
+                const tt::tt_metal::distributed::DeviceLocalBufferConfig input_local_config{
+                    .page_size = input_desc.aligned_stick_bytes(),
+                    .buffer_type = tt::tt_metal::BufferType::DRAM,
+                };
+                const tt::tt_metal::distributed::ReplicatedBufferConfig input_replicated_config{
+                    .size = static_cast<uint64_t>(input_desc.physical_nbytes()),
+                };
+                auto input_buffer = tt::tt_metal::distributed::MeshBuffer::create(
+                    input_replicated_config, input_local_config, mesh_device.get());
+                input_desc.dram_address = input_buffer->get_backing_buffer()->address();
+
+                tt::tt_metal::distributed::EnqueueWriteMeshBuffer(command_queue, input_buffer, signal, false);
+                tt::tt_metal::distributed::Finish(command_queue);
+
+                for (uint32_t i = 0; i < options.warmup_runs; ++i) {
+                    static_cast<void>(time_transform_once_ms<Scheme>(
+                        *mesh_device, command_queue, *(input_buffer->get_backing_buffer()), input_desc));
+                }
+
+                std::vector<double> times_ms;
+                times_ms.reserve(options.repeats);
+                for (uint32_t i = 0; i < options.repeats; ++i) {
+                    times_ms.push_back(time_transform_once_ms<Scheme>(
+                        *mesh_device, command_queue, *(input_buffer->get_backing_buffer()), input_desc));
+                }
+
+                const double mean_ms = std::accumulate(times_ms.begin(), times_ms.end(), 0.0) / times_ms.size();
+                const double min_ms = *std::min_element(times_ms.begin(), times_ms.end());
+                std::cerr << std::fixed << std::setprecision(6) << "lwt_execution_time_ms: " << mean_ms << '\n'
+                          << "lwt_min_time_ms: " << min_ms << '\n'
+                          << "lwt_repeats: " << options.repeats << '\n'
+                          << "lwt_warmup_runs: " << options.warmup_runs << '\n';
+                return EXIT_SUCCESS;
+            }
+
+            ForwardOutput output = run_forward<Scheme>(signal);
+
+            print_coeffs("tt-wavelet approximation coefficients", output.approximation, output.logical_length);
+            print_coeffs("tt-wavelet detail coefficients", output.detail, output.logical_length);
+
+            std::cerr << "lwt_execution_time_ms: " << std::fixed << std::setprecision(6) << output.execution_time_ms
+                      << '\n';
+            return EXIT_SUCCESS;
+        });
+    } catch (const std::exception& exc) {
+        std::cerr << exc.what() << '\n';
+        return EXIT_FAILURE;
+    }
+}
+
+#include "tt_wavelet/include/lifting/device.hpp"
+
+#include <algorithm>
+#include <array>
+#include <cerrno>
+#include <cstddef>
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
+#include <filesystem>
+#include <limits>
+#include <memory>
+#include <tt_stl/assert.hpp>
+#include <utility>
+#include <vector>
+
+#include "tt-metalium/buffer.hpp"
+#include "tt-metalium/circular_buffer_constants.h"
+#include "tt-metalium/core_coord.hpp"
+#include "tt-metalium/host_api.hpp"
+#include "tt-metalium/tensor_accessor_args.hpp"
+#include "tt_wavelet/include/device_protocol/lwt_config.hpp"
+
+namespace ttwv {
+
+namespace {
+
+constexpr tt::DataFormat kDataFormat = tt::DataFormat::Float32;
+
+constexpr const char* kLwtReaderKernelPath = "kernels/dataflow/lwt_reader.cpp";
+constexpr const char* kLwtWriterKernelPath = "kernels/dataflow/lwt_writer.cpp";
+constexpr const char* kLwtComputeKernelPath = "kernels/compute/lwt_compute.cpp";
+constexpr const char* kChunkLwtKernelPath = "kernels/dataflow/chunk_lwt.cpp";
+
+constexpr uint32_t kLwtSrcTile0Cb = tt::CBIndex::c_0;
+constexpr uint32_t kLwtSrcTile1Cb = tt::CBIndex::c_1;
+constexpr uint32_t kLwtBaseTileCb = tt::CBIndex::c_2;
+constexpr uint32_t kLwtOutputCb = tt::CBIndex::c_16;
+constexpr uint32_t kLwtSrcCacheCb = tt::CBIndex::c_3;
+constexpr uint32_t kLwtBaseCacheCb = tt::CBIndex::c_4;
+constexpr uint32_t kLwtSyncCb = tt::CBIndex::c_5;
+constexpr uint32_t kLwtReaderConfigCb = tt::CBIndex::c_6;
+constexpr uint32_t kLwtWriterConfigCb = tt::CBIndex::c_7;
+constexpr uint32_t kChunkEvenCb = tt::CBIndex::c_0;
+constexpr uint32_t kChunkOddCb = tt::CBIndex::c_1;
+constexpr uint32_t kChunkCacheCb = tt::CBIndex::c_2;
+constexpr uint32_t kChunkApproxStickCb = tt::CBIndex::c_3;
+constexpr uint32_t kChunkDetailStickCb = tt::CBIndex::c_4;
+
+constexpr uint32_t kTileGroupBuffering = 2;
+constexpr uint32_t kDefaultChunkSize = 128;
+
+struct LwtProgram {
+    tt::tt_metal::Program program;
+    tt::tt_metal::KernelHandle reader{};
+    tt::tt_metal::KernelHandle compute{};
+    tt::tt_metal::KernelHandle writer{};
+};
+
+struct RouteGroupRange {
+    uint32_t begin{0};
+    uint32_t count{0};
+};
+
+struct LwtCoreWork {
+    tt::tt_metal::CoreCoord core;
+    std::vector<RouteGroupRange> routes;
+};
+
+struct ChunkLwtProgram {
+    tt::tt_metal::Program program;
+    tt::tt_metal::KernelHandle kernel{};
+};
+
+struct ChunkCoreWork {
+    tt::tt_metal::CoreCoord core;
+    uint32_t first_chunk{0};
+    uint32_t chunk_count{0};
+};
+
+[[nodiscard]] std::filesystem::path kernel_path(const std::filesystem::path& kernel_root, const char* relative_path) {
+    return kernel_root / relative_path;
+}
+
+[[nodiscard]] tt::tt_metal::BufferType env_lwt_working_buffer_type() {
+    const char* raw = std::getenv("TT_WAVELET_LWT_WORKING_BUFFER");
+    if (raw == nullptr || raw[0] == '\0' || std::strcmp(raw, "L1") == 0 || std::strcmp(raw, "l1") == 0) {
+        return tt::tt_metal::BufferType::L1;
+    }
+    if (std::strcmp(raw, "DRAM") == 0 || std::strcmp(raw, "dram") == 0) {
+        return tt::tt_metal::BufferType::DRAM;
+    }
+
+    TT_FATAL(false, "TT_WAVELET_LWT_WORKING_BUFFER must be L1 or DRAM, got '{}'", raw);
+    return tt::tt_metal::BufferType::DRAM;
+}
+
+[[nodiscard]] std::shared_ptr<tt::tt_metal::distributed::MeshBuffer> create_signal_mesh_buffer(
+    tt::tt_metal::distributed::MeshDevice& mesh_device, const SignalBuffer& buffer) {
+    const uint32_t page_size = buffer.aligned_stick_bytes(kNocAlignmentBytes);
+    const size_t physical_nbytes = std::max(buffer.physical_nbytes(kNocAlignmentBytes), static_cast<size_t>(page_size));
+
+    const tt::tt_metal::distributed::DeviceLocalBufferConfig local_config{
+        .page_size = page_size,
+        .buffer_type = env_lwt_working_buffer_type(),
+        .bottom_up = false,
+    };
+    const tt::tt_metal::distributed::ReplicatedBufferConfig replicated_config{
+        .size = static_cast<uint64_t>(physical_nbytes),
+    };
+    return tt::tt_metal::distributed::MeshBuffer::create(replicated_config, local_config, &mesh_device);
+}
+
+[[nodiscard]] std::shared_ptr<tt::tt_metal::distributed::MeshBuffer> create_route_config_mesh_buffer(
+    tt::tt_metal::distributed::MeshDevice& mesh_device, const size_t route_count) {
+    const size_t page_count = std::max(route_count, size_t{1});
+    const tt::tt_metal::distributed::DeviceLocalBufferConfig local_config{
+        .page_size = device_protocol::kRouteConfigPageBytes,
+        .buffer_type = tt::tt_metal::BufferType::DRAM,
+    };
+    const tt::tt_metal::distributed::ReplicatedBufferConfig replicated_config{
+        .size = static_cast<uint64_t>(page_count * device_protocol::kRouteConfigPageBytes),
+    };
+    return tt::tt_metal::distributed::MeshBuffer::create(replicated_config, local_config, &mesh_device);
+}
+
+void create_circular_buffer(
+    tt::tt_metal::Program& program,
+    const tt::tt_metal::CoreRangeSet& cores,
+    const uint32_t cb_index,
+    const uint32_t entry_count,
+    const uint32_t page_size) {
+    const auto config = tt::tt_metal::CircularBufferConfig(entry_count * page_size, {{cb_index, kDataFormat}})
+                            .set_page_size(cb_index, page_size);
+    static_cast<void>(tt::tt_metal::CreateCircularBuffer(program, cores, config));
+}
+
+[[nodiscard]] uint32_t checked_length(const size_t value, const char* label) {
+    TT_FATAL(
+        value <= static_cast<size_t>(std::numeric_limits<uint32_t>::max()), "{} {} overflows uint32_t", label, value);
+    return static_cast<uint32_t>(value);
+}
+
+[[nodiscard]] size_t round_up_to(const size_t value, const size_t alignment) {
+    return alignment == 0 ? value : ceil_div(value, alignment) * alignment;
+}
+
+[[nodiscard]] uint32_t parse_env_u32_or(const char* env_name, const uint32_t default_value) {
+    const char* raw = std::getenv(env_name);
+    if (raw == nullptr || raw[0] == '\0') {
+        return default_value;
+    }
+
+    char* end = nullptr;
+    errno = 0;
+    const unsigned long value = std::strtoul(raw, &end, 10);
+    TT_FATAL(
+        errno == 0 && end != raw && *end == '\0' && value > 0 &&
+            value <= static_cast<unsigned long>(std::numeric_limits<uint32_t>::max()),
+        "{} must be a positive uint32 value, got '{}'",
+        env_name,
+        raw);
+    return static_cast<uint32_t>(value);
+}
+
+[[nodiscard]] uint32_t env_lwt_chunk_size() {
+    const uint32_t chunk_size = parse_env_u32_or("TT_WAVELET_LWT_CHUNK_SIZE", kDefaultChunkSize);
+    TT_FATAL(
+        chunk_size % kStickWidth == 0,
+        "TT_WAVELET_LWT_CHUNK_SIZE must be a multiple of {} to avoid partial-stick chunk overlap, got {}",
+        kStickWidth,
+        chunk_size);
+    return chunk_size;
+}
+
+[[nodiscard]] uint32_t lwt_output_group_count(const size_t output_length) {
+    return checked_length(
+        ceil_div(output_length, static_cast<size_t>(device_protocol::kLwtGroupOutputElements)), "output groups");
+}
+
+[[nodiscard]] bool is_executable_route(const LiftingStepRoute& route) noexcept {
+    return is_predict_update_step(route.type);
+}
+
+[[nodiscard]] std::vector<uint32_t> build_route_group_counts(const LiftingForwardPlan& plan) {
+    std::vector<uint32_t> group_counts;
+    group_counts.reserve(plan.routes.size());
+
+    for (const auto& route : plan.routes) {
+        if (!is_executable_route(route)) {
+            continue;
+        }
+        group_counts.push_back(lwt_output_group_count(route.output_length));
+    }
+
+    return group_counts;
+}
+
+[[nodiscard]] uint32_t max_route_group_count(const std::vector<uint32_t>& route_group_counts) {
+    return route_group_counts.empty() ? 0U : *std::max_element(route_group_counts.begin(), route_group_counts.end());
+}
+
+[[nodiscard]] uint32_t env_lwt_max_cores() {
+    const char* raw = std::getenv("TT_WAVELET_LWT_MAX_CORES");
+    if (raw == nullptr || raw[0] == '\0') {
+        return std::numeric_limits<uint32_t>::max();
+    }
+
+    char* end = nullptr;
+    errno = 0;
+    const unsigned long value = std::strtoul(raw, &end, 10);
+    TT_FATAL(
+        errno == 0 && end != raw && *end == '\0' && value > 0 &&
+            value <= static_cast<unsigned long>(std::numeric_limits<uint32_t>::max()),
+        "TT_WAVELET_LWT_MAX_CORES must be a positive uint32 value, got '{}'",
+        raw);
+    return static_cast<uint32_t>(value);
+}
+
+[[nodiscard]] uint32_t choose_auto_core_count(
+    tt::tt_metal::distributed::MeshDevice& mesh_device, const std::vector<uint32_t>& route_group_counts) {
+    const auto grid = mesh_device.compute_with_storage_grid_size();
+    const uint32_t hardware_core_count = static_cast<uint32_t>(grid.x * grid.y);
+    TT_FATAL(hardware_core_count > 0, "LWT path requires at least one worker core");
+
+    const uint32_t useful_core_count = std::max(max_route_group_count(route_group_counts), 1U);
+    return std::max(1U, std::min({useful_core_count, hardware_core_count, env_lwt_max_cores()}));
+}
+
+[[nodiscard]] tt::tt_metal::CoreRangeSet core_range_set_from_cores(const std::vector<tt::tt_metal::CoreCoord>& cores) {
+    std::vector<tt::tt_metal::CoreRange> ranges;
+    ranges.reserve(cores.size());
+    for (const auto& core : cores) {
+        ranges.emplace_back(core);
+    }
+    return tt::tt_metal::CoreRangeSet(std::move(ranges)).merge_ranges();
+}
+
+[[nodiscard]] std::vector<tt::tt_metal::CoreCoord> select_auto_cores(
+    tt::tt_metal::distributed::MeshDevice& mesh_device, const uint32_t active_core_count) {
+    const auto grid = mesh_device.compute_with_storage_grid_size();
+    const uint32_t hardware_core_count = static_cast<uint32_t>(grid.x * grid.y);
+    TT_FATAL(active_core_count > 0, "LWT active core count must be non-zero");
+    TT_FATAL(
+        active_core_count <= hardware_core_count,
+        "LWT active core count {} exceeds hardware worker core count {}",
+        active_core_count,
+        hardware_core_count);
+    return tt::tt_metal::grid_to_cores(
+        active_core_count, static_cast<uint32_t>(grid.x), static_cast<uint32_t>(grid.y), true);
+}
+
+[[nodiscard]] tt::tt_metal::CoreRangeSet build_active_core_range_set(
+    tt::tt_metal::distributed::MeshDevice& mesh_device, const std::vector<tt::tt_metal::CoreCoord>& cores) {
+    const auto grid = mesh_device.compute_with_storage_grid_size();
+    const uint32_t hardware_core_count = static_cast<uint32_t>(grid.x * grid.y);
+    if (cores.size() == hardware_core_count) {
+        return tt::tt_metal::CoreRangeSet(
+            tt::tt_metal::CoreRange({0, 0}, {static_cast<size_t>(grid.x - 1), static_cast<size_t>(grid.y - 1)}));
+    }
+    return core_range_set_from_cores(cores);
+}
+
+[[nodiscard]] RouteGroupRange split_route_groups(
+    const uint32_t output_group_count, const uint32_t active_core_count, const uint32_t core_index) {
+    const uint32_t base = output_group_count / active_core_count;
+    const uint32_t remainder = output_group_count % active_core_count;
+    const uint32_t count = base + (core_index < remainder ? 1U : 0U);
+    const uint32_t begin = core_index * base + std::min(core_index, remainder);
+    return RouteGroupRange{.begin = begin, .count = count};
+}
+
+[[nodiscard]] std::vector<LwtCoreWork> build_core_work(
+    const std::vector<tt::tt_metal::CoreCoord>& cores, const std::vector<uint32_t>& route_group_counts) {
+    const uint32_t active_core_count = checked_length(cores.size(), "active core count");
+    std::vector<LwtCoreWork> work;
+    work.reserve(cores.size());
+
+    for (uint32_t core_index = 0; core_index < active_core_count; ++core_index) {
+        LwtCoreWork core_work{.core = cores.at(core_index)};
+        core_work.routes.reserve(route_group_counts.size());
+        for (const uint32_t route_group_count : route_group_counts) {
+            core_work.routes.push_back(split_route_groups(route_group_count, active_core_count, core_index));
+        }
+        work.push_back(std::move(core_work));
+    }
+
+    return work;
+}
+
+[[nodiscard]] std::vector<ChunkCoreWork> build_chunk_core_work(
+    const std::vector<tt::tt_metal::CoreCoord>& cores, const uint32_t chunk_count) {
+    const uint32_t active_core_count = checked_length(cores.size(), "active core count");
+    std::vector<ChunkCoreWork> work;
+    work.reserve(cores.size());
+
+    uint32_t first_chunk = 0;
+    for (uint32_t core_index = 0; core_index < active_core_count; ++core_index) {
+        const uint32_t base = chunk_count / active_core_count;
+        const uint32_t extra = chunk_count % active_core_count;
+        const uint32_t count = base + (core_index < extra ? 1U : 0U);
+        work.push_back(ChunkCoreWork{
+            .core = cores.at(core_index),
+            .first_chunk = first_chunk,
+            .chunk_count = count,
+        });
+        first_chunk += count;
+    }
+
+    return work;
+}
+
+[[nodiscard]] const std::shared_ptr<tt::tt_metal::distributed::MeshBuffer>& resolve_mesh_buffer(
+    const LiftingWorkingBuffers& buffers, const StreamRef stream) {
+    return stream.family == LogicalStream::kEven ? buffers.even.at(stream.slot) : buffers.odd.at(stream.slot);
+}
+
+void run_program(
+    tt::tt_metal::distributed::MeshDevice& mesh_device,
+    tt::tt_metal::distributed::MeshCommandQueue& command_queue,
+    tt::tt_metal::Program&& program) {
+    tt::tt_metal::distributed::MeshWorkload workload;
+    const auto device_range = tt::tt_metal::distributed::MeshCoordinateRange(mesh_device.shape());
+    workload.add_program(device_range, std::move(program));
+    tt::tt_metal::distributed::EnqueueMeshWorkload(command_queue, workload, false);
+    tt::tt_metal::distributed::Finish(command_queue);
+}
+
+[[nodiscard]] std::vector<uint32_t> build_route_config_words(const LiftingPreprocessDeviceProgram& bundle) {
+    const size_t executable_route_count =
+        std::count_if(bundle.plan.routes.begin(), bundle.plan.routes.end(), [](const LiftingStepRoute& route) {
+            return is_executable_route(route);
+        });
+    std::vector<uint32_t> words(
+        std::max(executable_route_count, size_t{1}) * device_protocol::kRouteConfigWordCount, 0);
+
+    size_t executable_index = 0;
+    for (const auto& route : bundle.plan.routes) {
+        if (!is_executable_route(route)) {
+            continue;
+        }
+
+        const auto& src_buffer = resolve_mesh_buffer(bundle.buffers, route.source);
+        const auto& base_buffer = resolve_mesh_buffer(bundle.buffers, route.base);
+        const auto& output_buffer = resolve_mesh_buffer(bundle.buffers, route.output);
+
+        const size_t off = executable_index * device_protocol::kRouteConfigWordCount;
+        words[off + device_protocol::kRouteType] = static_cast<uint32_t>(route.type);
+        words[off + device_protocol::kRouteSourceAddr] = static_cast<uint32_t>(src_buffer->address());
+        words[off + device_protocol::kRouteSourceLength] = checked_length(route.source_length, "source length");
+        words[off + device_protocol::kRouteBaseAddr] = static_cast<uint32_t>(base_buffer->address());
+        words[off + device_protocol::kRouteBaseLength] = checked_length(route.base_length, "base length");
+        words[off + device_protocol::kRouteOutputAddr] = static_cast<uint32_t>(output_buffer->address());
+        words[off + device_protocol::kRouteOutputLength] = checked_length(route.output_length, "output length");
+        words[off + device_protocol::kRouteSourceOffset] = checked_length(route.source_offset, "source offset");
+        words[off + device_protocol::kRouteBaseOffset] = checked_length(route.base_offset, "base offset");
+        words[off + device_protocol::kRouteSourceLeftPad] = route.source_left_pad;
+        ++executable_index;
+    }
+
+    return words;
+}
+
+[[nodiscard]] std::vector<uint32_t> build_compute_runtime_args(const LwtCoreWork& work) {
+    std::vector<uint32_t> args;
+    args.reserve(work.routes.size() + 1);
+    args.push_back(checked_length(work.routes.size(), "executable route count"));
+
+    for (const auto& route : work.routes) {
+        args.push_back(route.count);
+    }
+
+    return args;
+}
+
+[[nodiscard]] std::vector<uint32_t> build_reader_runtime_args(
+    const uint32_t route_config_addr, const LwtCoreWork& work) {
+    std::vector<uint32_t> args;
+    args.reserve(2 + 2 * work.routes.size());
+    args.push_back(route_config_addr);
+    args.push_back(checked_length(work.routes.size(), "executable route count"));
+    for (const auto& route : work.routes) {
+        args.push_back(route.begin);
+        args.push_back(route.count);
+    }
+    return args;
+}
+
+[[nodiscard]] std::vector<uint32_t> build_writer_runtime_args(
+    tt::tt_metal::distributed::MeshDevice& mesh_device,
+    const uint32_t route_config_addr,
+    const std::vector<tt::tt_metal::CoreCoord>& cores,
+    const uint32_t core_index,
+    const LwtCoreWork& work) {
+    std::vector<uint32_t> args = build_reader_runtime_args(route_config_addr, work);
+    args.push_back(core_index);
+    args.push_back(checked_length(cores.size(), "active core count"));
+    for (const auto& core : cores) {
+        const auto noc_core = mesh_device.worker_core_from_logical_core(core);
+        args.push_back(static_cast<uint32_t>(noc_core.x));
+        args.push_back(static_cast<uint32_t>(noc_core.y));
+    }
+    return args;
+}
+
+[[nodiscard]] LwtProgram create_lwt_program(
+    const std::filesystem::path& kernel_root,
+    const tt::tt_metal::CoreRangeSet& cores,
+    const LiftingPreprocessDeviceProgram& bundle,
+    const char* compute_scheme_header,
+    const char* compute_scheme_type) {
+    TT_FATAL(
+        bundle.plan.preprocess_layout.output.even.stick_width == kStickWidth, "LWT path expects 32-element sticks");
+    TT_FATAL(bundle.plan.preprocess_layout.output.even.element_size_bytes == sizeof(float), "LWT path is fp32-only");
+    TT_FATAL(bundle.buffers.route_config != nullptr, "LWT route config buffer was not allocated");
+
+    tt::tt_metal::Program program = tt::tt_metal::CreateProgram();
+
+    const uint32_t tile_size = tt::tile_size(kDataFormat);
+    create_circular_buffer(program, cores, kLwtSrcTile0Cb, kTileGroupBuffering, tile_size);
+    create_circular_buffer(program, cores, kLwtSrcTile1Cb, kTileGroupBuffering, tile_size);
+    create_circular_buffer(program, cores, kLwtBaseTileCb, 2 * kTileGroupBuffering, tile_size);
+    create_circular_buffer(program, cores, kLwtOutputCb, 2 * kTileGroupBuffering, tile_size);
+    create_circular_buffer(
+        program, cores, kLwtSrcCacheCb, device_protocol::kLwtCacheStickCount, device_protocol::kStickBytes);
+    create_circular_buffer(
+        program, cores, kLwtBaseCacheCb, device_protocol::kLwtCacheStickCount, device_protocol::kStickBytes);
+    create_circular_buffer(program, cores, kLwtSyncCb, 1, kNocAlignmentBytes);
+    create_circular_buffer(program, cores, kLwtReaderConfigCb, 1, device_protocol::kRouteConfigPageBytes);
+    create_circular_buffer(program, cores, kLwtWriterConfigCb, 1, device_protocol::kRouteConfigPageBytes);
+
+    const uint32_t route_barrier_semaphore = tt::tt_metal::CreateSemaphore(program, cores, 0);
+
+    const auto& route_config_buffer = *(bundle.buffers.route_config->get_backing_buffer());
+    const auto& row_major_buffer = *(bundle.buffers.even.ping->get_backing_buffer());
+
+    std::vector<uint32_t> reader_ct_args = {
+        kLwtReaderConfigCb,
+        kLwtSrcTile0Cb,
+        kLwtSrcTile1Cb,
+        kLwtBaseTileCb,
+        kLwtSrcCacheCb,
+        kLwtBaseCacheCb,
+        kLwtSyncCb,
+    };
+    tt::tt_metal::TensorAccessorArgs(route_config_buffer).append_to(reader_ct_args);
+    tt::tt_metal::TensorAccessorArgs(row_major_buffer).append_to(reader_ct_args);
+
+    std::vector<uint32_t> writer_ct_args = {
+        kLwtWriterConfigCb,
+        kLwtOutputCb,
+        kLwtSyncCb,
+        route_barrier_semaphore,
+    };
+    tt::tt_metal::TensorAccessorArgs(route_config_buffer).append_to(writer_ct_args);
+    tt::tt_metal::TensorAccessorArgs(row_major_buffer).append_to(writer_ct_args);
+
+    const std::vector<uint32_t> compute_ct_args = {
+        kLwtSrcTile0Cb,
+        kLwtSrcTile1Cb,
+        kLwtBaseTileCb,
+        kLwtOutputCb,
+    };
+
+    std::vector<UnpackToDestMode> unpack_to_dest_mode(NUM_CIRCULAR_BUFFERS, UnpackToDestMode::Default);
+    unpack_to_dest_mode[kLwtSrcTile0Cb] = UnpackToDestMode::UnpackToDestFp32;
+    unpack_to_dest_mode[kLwtSrcTile1Cb] = UnpackToDestMode::UnpackToDestFp32;
+    unpack_to_dest_mode[kLwtBaseTileCb] = UnpackToDestMode::UnpackToDestFp32;
+
+    const auto reader = tt::tt_metal::CreateKernel(
+        program,
+        kernel_path(kernel_root, kLwtReaderKernelPath),
+        cores,
+        tt::tt_metal::ReaderDataMovementConfig(reader_ct_args));
+    const auto writer = tt::tt_metal::CreateKernel(
+        program,
+        kernel_path(kernel_root, kLwtWriterKernelPath),
+        cores,
+        tt::tt_metal::WriterDataMovementConfig(writer_ct_args));
+    const auto compute = tt::tt_metal::CreateKernel(
+        program,
+        kernel_path(kernel_root, kLwtComputeKernelPath),
+        cores,
+        tt::tt_metal::ComputeConfig{
+            .math_fidelity = MathFidelity::HiFi4,
+            .fp32_dest_acc_en = true,
+            .unpack_to_dest_mode = unpack_to_dest_mode,
+            .compile_args = compute_ct_args,
+            .defines =
+                {
+                    {"TTWV_LWT_SCHEME_HEADER", compute_scheme_header},
+                    {"TTWV_LWT_SCHEME_TYPE", compute_scheme_type},
+                },
+        });
+
+    return LwtProgram{
+        .program = std::move(program),
+        .reader = reader,
+        .compute = compute,
+        .writer = writer,
+    };
+}
+
+void set_lwt_runtime_args(
+    const LwtProgram& program_bundle,
+    tt::tt_metal::distributed::MeshDevice& mesh_device,
+    const std::vector<tt::tt_metal::CoreCoord>& cores,
+    const std::vector<LwtCoreWork>& work,
+    const LiftingPreprocessDeviceProgram& bundle) {
+    const uint32_t route_config_addr = static_cast<uint32_t>(bundle.buffers.route_config->address());
+
+    for (uint32_t core_index = 0; core_index < work.size(); ++core_index) {
+        const auto& core_work = work.at(core_index);
+        const std::vector<uint32_t> reader_rt = build_reader_runtime_args(route_config_addr, core_work);
+        const std::vector<uint32_t> compute_rt = build_compute_runtime_args(core_work);
+        const std::vector<uint32_t> writer_rt =
+            build_writer_runtime_args(mesh_device, route_config_addr, cores, core_index, core_work);
+
+        tt::tt_metal::SetRuntimeArgs(program_bundle.program, program_bundle.reader, core_work.core, reader_rt);
+        tt::tt_metal::SetRuntimeArgs(program_bundle.program, program_bundle.compute, core_work.core, compute_rt);
+        tt::tt_metal::SetRuntimeArgs(program_bundle.program, program_bundle.writer, core_work.core, writer_rt);
+    }
+}
+
+[[nodiscard]] uint32_t chunk_local_capacity(const LiftingForwardPlan& plan, const uint32_t chunk_size) {
+    const uint32_t tap_size = plan.preprocess_layout.pad_config.left + 1U;
+    return checked_length(
+        static_cast<size_t>(chunk_size) + 8U * static_cast<size_t>(tap_size) + 512U, "chunk local capacity");
+}
+
+[[nodiscard]] uint32_t chunk_local_page_size(const uint32_t local_capacity) {
+    return checked_length(round_up_to(static_cast<size_t>(local_capacity) * sizeof(float), kNocAlignmentBytes), "chunk local page size");
+}
+
+[[nodiscard]] uint32_t choose_chunk_core_count(
+    tt::tt_metal::distributed::MeshDevice& mesh_device, const uint32_t chunk_count) {
+    const auto grid = mesh_device.compute_with_storage_grid_size();
+    const uint32_t hardware_core_count = static_cast<uint32_t>(grid.x * grid.y);
+    TT_FATAL(hardware_core_count > 0, "LWT chunk path requires at least one worker core");
+    return std::max(1U, std::min({chunk_count, hardware_core_count, env_lwt_max_cores()}));
+}
+
+[[nodiscard]] ChunkLwtProgram create_chunk_lwt_program(
+    const std::filesystem::path& kernel_root,
+    const tt::tt_metal::CoreRangeSet& cores,
+    const LiftingPreprocessDeviceProgram& bundle,
+    const uint32_t local_capacity,
+    const char* compute_scheme_header,
+    const char* compute_scheme_type) {
+    TT_FATAL(bundle.input_buffer != nullptr, "LWT chunk path requires the original input buffer");
+    TT_FATAL(bundle.plan.preprocess_layout.input.stick_width == kStickWidth, "LWT chunk path expects 32-element sticks");
+    TT_FATAL(bundle.plan.preprocess_layout.input.element_size_bytes == sizeof(float), "LWT chunk path is fp32-only");
+
+    tt::tt_metal::Program program = tt::tt_metal::CreateProgram();
+
+    const uint32_t local_page_size = chunk_local_page_size(local_capacity);
+    create_circular_buffer(program, cores, kChunkEvenCb, 1, local_page_size);
+    create_circular_buffer(program, cores, kChunkOddCb, 1, local_page_size);
+    create_circular_buffer(
+        program, cores, kChunkCacheCb, device_protocol::kPadSplitCacheStickCount, device_protocol::kStickBytes);
+    create_circular_buffer(program, cores, kChunkApproxStickCb, 1, device_protocol::kStickBytes);
+    create_circular_buffer(program, cores, kChunkDetailStickCb, 1, device_protocol::kStickBytes);
+
+    const auto& input_buffer = *bundle.input_buffer;
+    const auto& approx_buffer = *(bundle.buffers.even.ping->get_backing_buffer());
+    const auto& detail_buffer = *(bundle.buffers.odd.ping->get_backing_buffer());
+
+    std::vector<uint32_t> compile_args = {
+        kChunkEvenCb,
+        kChunkOddCb,
+        kChunkCacheCb,
+        kChunkApproxStickCb,
+        kChunkDetailStickCb,
+    };
+    tt::tt_metal::TensorAccessorArgs(input_buffer).append_to(compile_args);
+    tt::tt_metal::TensorAccessorArgs(approx_buffer).append_to(compile_args);
+    tt::tt_metal::TensorAccessorArgs(detail_buffer).append_to(compile_args);
+
+    const auto kernel = tt::tt_metal::CreateKernel(
+        program,
+        kernel_path(kernel_root, kChunkLwtKernelPath),
+        cores,
+        tt::tt_metal::DataMovementConfig{
+            .processor = tt::tt_metal::DataMovementProcessor::RISCV_0,
+            .noc = tt::tt_metal::NOC::RISCV_0_default,
+            .compile_args = compile_args,
+            .defines =
+                {
+                    {"TTWV_LWT_SCHEME_HEADER", compute_scheme_header},
+                    {"TTWV_LWT_SCHEME_TYPE", compute_scheme_type},
+                },
+        });
+
+    return ChunkLwtProgram{
+        .program = std::move(program),
+        .kernel = kernel,
+    };
+}
+
+void set_chunk_lwt_runtime_args(
+    const ChunkLwtProgram& program_bundle,
+    const std::vector<ChunkCoreWork>& work,
+    const LiftingPreprocessDeviceProgram& bundle,
+    const uint32_t chunk_size,
+    const uint32_t local_capacity) {
+    const auto& plan = bundle.plan;
+    const auto& input = plan.preprocess_layout.input;
+    const uint32_t input_addr = static_cast<uint32_t>(input.dram_address);
+    const uint32_t approx_addr = static_cast<uint32_t>(bundle.buffers.even.ping->address());
+    const uint32_t detail_addr = static_cast<uint32_t>(bundle.buffers.odd.ping->address());
+
+    for (const auto& core_work : work) {
+        tt::tt_metal::SetRuntimeArgs(
+            program_bundle.program,
+            program_bundle.kernel,
+            core_work.core,
+            std::array<uint32_t, 13>{
+                input_addr,
+                checked_length(input.length, "input length"),
+                approx_addr,
+                detail_addr,
+                checked_length(plan.output_length, "output length"),
+                chunk_size,
+                core_work.first_chunk,
+                core_work.chunk_count,
+                static_cast<uint32_t>(plan.final_even_shift),
+                checked_length(plan.final_even_length, "final even length"),
+                static_cast<uint32_t>(plan.final_odd_shift),
+                checked_length(plan.final_odd_length, "final odd length"),
+                local_capacity,
+            });
+    }
+}
+
+}  // namespace
+
+LiftingWorkingBuffers create_lifting_working_buffers(
+    tt::tt_metal::distributed::MeshDevice& mesh_device,
+    const PadSplit1DLayout& provisional_layout,
+    const size_t route_count) {
+    auto even_ping = create_signal_mesh_buffer(mesh_device, provisional_layout.output.even);
+    auto even_pong = create_signal_mesh_buffer(mesh_device, provisional_layout.output.even);
+    auto odd_ping = create_signal_mesh_buffer(mesh_device, provisional_layout.output.odd);
+    auto odd_pong = create_signal_mesh_buffer(mesh_device, provisional_layout.output.odd);
+    auto route_config = create_route_config_mesh_buffer(mesh_device, route_count);
+
+    return LiftingWorkingBuffers{
+        .even = MeshBufferPair{.ping = std::move(even_ping), .pong = std::move(even_pong)},
+        .odd = MeshBufferPair{.ping = std::move(odd_ping), .pong = std::move(odd_pong)},
+        .route_config = std::move(route_config),
+    };
+}
+
+void run_preprocess(
+    tt::tt_metal::distributed::MeshCommandQueue& command_queue,
+    tt::tt_metal::distributed::MeshDevice& mesh_device,
+    LiftingPreprocessDeviceProgram& bundle) {
+    run_program(mesh_device, command_queue, std::move(bundle.preprocess.program));
+}
+
+LiftingActiveStreams lwt_static(
+    const std::filesystem::path& kernel_root,
+    tt::tt_metal::distributed::MeshDevice& mesh_device,
+    tt::tt_metal::distributed::MeshCommandQueue& command_queue,
+    const LiftingPreprocessDeviceProgram& bundle,
+    const char* compute_scheme_header,
+    const char* compute_scheme_type) {
+    const uint32_t chunk_size = env_lwt_chunk_size();
+    const uint32_t chunk_count =
+        checked_length(ceil_div(bundle.plan.output_length, static_cast<size_t>(chunk_size)), "chunk count");
+    const uint32_t active_core_count = choose_chunk_core_count(mesh_device, chunk_count);
+    const std::vector<tt::tt_metal::CoreCoord> cores = select_auto_cores(mesh_device, active_core_count);
+    const auto active_cores = build_active_core_range_set(mesh_device, cores);
+    const std::vector<ChunkCoreWork> work = build_chunk_core_work(cores, chunk_count);
+    const uint32_t local_capacity = chunk_local_capacity(bundle.plan, chunk_size);
+
+    auto program_bundle =
+        create_chunk_lwt_program(kernel_root, active_cores, bundle, local_capacity, compute_scheme_header, compute_scheme_type);
+    set_chunk_lwt_runtime_args(program_bundle, work, bundle, chunk_size, local_capacity);
+    run_program(mesh_device, command_queue, std::move(program_bundle.program));
+
+    return LiftingActiveStreams{};
+}
+
+}  // namespace ttwv
+
+#pragma once #include <filesystem> #include <memory> #include <tt_stl/assert.hpp> #include <utility> #include "tt-metalium/distributed.hpp" #include "tt-metalium/mesh_buffer.hpp" #include "tt-metalium/mesh_device.hpp" #include "tt_wavelet/include/lifting/plan.hpp" #include "tt_wavelet/include/lifting/static_scheme.hpp" #include "tt_wavelet/include/pad_split/device.hpp" namespace ttwv { struct MeshBufferPair { std::shared_ptr<tt::tt_metal::distributed::MeshBuffer> ping; std::shared_ptr<tt::tt_metal::distributed::MeshBuffer> pong; [[nodiscard]] const std::shared_ptr<tt::tt_metal::distributed::MeshBuffer>& at( const StreamSlot slot) const noexcept { return slot == StreamSlot::kPing ? ping : pong; } }; struct LiftingWorkingBuffers { MeshBufferPair even{}; MeshBufferPair odd{}; std::shared_ptr<tt::tt_metal::distributed::MeshBuffer> route_config{}; }; struct LiftingPreprocessDeviceProgram { LiftingForwardPlan plan{}; LiftingWorkingBuffers buffers{}; PadSplit1DDeviceProgram preprocess{}; const tt::tt_metal::Buffer* input_buffer{}; }; [[nodiscard]] LiftingWorkingBuffers create_lifting_working_buffers( tt::tt_metal::distributed::MeshDevice& mesh_device, const PadSplit1DLayout& provisional_layout, size_t route_count); [[nodiscard]] LiftingActiveStreams lwt_static( const std::filesystem::path& kernel_root, tt::tt_metal::distributed::MeshDevice& mesh_device, tt::tt_metal::distributed::MeshCommandQueue& command_queue, const LiftingPreprocessDeviceProgram& bundle, const char* compute_scheme_header, const char* compute_scheme_type); template <typename Scheme> [[nodiscard]] LiftingPreprocessDeviceProgram create_lifting_preprocess_program( const std::filesystem::path& kernel_root, tt::tt_metal::distributed::MeshDevice& mesh_device, const tt::tt_metal::Buffer& input_buffer, const SignalBuffer& input_desc) { TT_FATAL(input_desc.length > 0, "Input signal must be non-empty"); TT_FATAL(input_desc.element_size_bytes == sizeof(float), "Lifting preprocess currently supports fp32 only"); SignalBuffer planned_input = input_desc; planned_input.dram_address = input_buffer.address(); const uint32_t wavelet_pad = static_cast<uint32_t>(Scheme::tap_size - 1); const PadSplit1DLayout provisional_layout = make_pad_split_1d_layout( planned_input, 0, 0, Pad1DConfig{.mode = BoundaryMode::kSymmetric, .left = wavelet_pad, .right = wavelet_pad}); LiftingWorkingBuffers buffers = create_lifting_working_buffers(mesh_device, provisional_layout, executable_step_count<Scheme>()); const LiftingForwardPlan plan = make_forward_lifting_plan<Scheme>( planned_input, buffers.even.ping->get_backing_buffer()->address(), buffers.odd.ping->get_backing_buffer()->address()); PadSplit1DDeviceProgram preprocess = create_pad_split_1d_program( kernel_root, mesh_device, input_buffer, *(buffers.even.ping->get_backing_buffer()), *(buffers.odd.ping->get_backing_buffer()), plan.preprocess_layout); return LiftingPreprocessDeviceProgram{ .plan = plan, .buffers = std::move(buffers), .preprocess = std::move(preprocess), .input_buffer = &input_buffer, }; } void run_preprocess( tt::tt_metal::distributed::MeshCommandQueue& command_queue, tt::tt_metal::distributed::MeshDevice& mesh_device, LiftingPreprocessDeviceProgram& bundle); template <typename Scheme> [[nodiscard]] LiftingActiveStreams lwt( const std::filesystem::path& kernel_root, tt::tt_metal::distributed::MeshDevice& mesh_device, tt::tt_metal::distributed::MeshCommandQueue& command_queue, const LiftingPreprocessDeviceProgram& bundle) { return lwt_static( kernel_root, mesh_device, command_queue, bundle, Scheme::compute_scheme_header, Scheme::compute_scheme_type); } } // namespace ttwv

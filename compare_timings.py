@@ -14,6 +14,7 @@ TT_WAVELET_BINARY = PROJECT_ROOT / "build" / "lwt"
 TT_WAVELET_ENV = PROJECT_ROOT / "scripts" / "set_env.sh"
 DEFAULT_SCHEMES_DIR = PROJECT_ROOT / "wavelets"
 TT_TIME_PATTERN = re.compile(r"lwt_execution_time_ms:\s*([0-9eE+.\-]+)")
+TT_MIN_TIME_PATTERN = re.compile(r"lwt_min_time_ms:\s*([0-9eE+.\-]+)")
 DEFAULT_LOG_CANDIDATES = [
     PROJECT_ROOT / "wavelets.log",
     PROJECT_ROOT / "wavelets (1).log",
@@ -98,6 +99,16 @@ def parse_args() -> argparse.Namespace:
         help="Benchmark both backends or only one backend (default: %(default)s).",
     )
     parser.add_argument(
+        "--tt-mode",
+        choices=["benchmark", "legacy"],
+        default="benchmark",
+        help=(
+            "TT-wavelet timing mode. 'benchmark' runs warmups/repeats inside one C++ "
+            "process with program cache and no coefficient readback. 'legacy' launches "
+            "one lwt process per repeat (default: %(default)s)."
+        ),
+    )
+    parser.add_argument(
         "--pywt-repeats",
         type=int,
         default=1,
@@ -114,6 +125,16 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=1,
         help="Warmup runs to discard before timing TT-wavelet (default: %(default)s).",
+    )
+    parser.add_argument(
+        "--tt-warmup-scope",
+        choices=["wavelet", "global", "length"],
+        default="length",
+        help=(
+            "Legacy TT mode only: granularity at which external TT-wavelet warmup "
+            "processes are issued. In benchmark mode, --tt-warmup-runs is handled "
+            "inside the C++ process for every (wavelet, length) pair."
+        ),
     )
     parser.add_argument(
         "--csv",
@@ -173,8 +194,28 @@ def sh_quote(value: str) -> str:
     return "'" + value.replace("'", "'\"'\"'") + "'"
 
 
-def build_tt_command(wavelet: str, signal_file: Path) -> str:
-    command_args = [str(TT_WAVELET_BINARY), wavelet, str(signal_file)]
+def build_tt_command(args: argparse.Namespace, wavelet: str, length: int, signal_file: Path) -> str:
+    command_args = [str(TT_WAVELET_BINARY)]
+    if args.tt_mode == "benchmark":
+        command_args.extend(
+            [
+                "--benchmark",
+                "--repeats",
+                str(args.tt_repeats),
+                "--warmup-runs",
+                str(args.tt_warmup_runs),
+                "--length",
+                str(length),
+                "--signal-start",
+                repr(args.signal_start),
+                "--signal-step",
+                repr(args.signal_step),
+                wavelet,
+            ]
+        )
+    else:
+        command_args.extend([wavelet, str(signal_file)])
+
     command = " ".join(sh_quote(arg) for arg in command_args)
     return f"source {sh_quote(str(TT_WAVELET_ENV))} && {command}"
 
@@ -213,8 +254,10 @@ def run_tt_wavelet(command: str) -> tuple[float, float]:
     match = TT_TIME_PATTERN.search(completed.stderr)
     if match is None:
         raise RuntimeError("TT-wavelet output did not include lwt_execution_time_ms.")
+    min_match = TT_MIN_TIME_PATTERN.search(completed.stderr)
     mean_s = float(match.group(1)) / 1000.0
-    return mean_s, mean_s
+    min_s = float(min_match.group(1)) / 1000.0 if min_match is not None else mean_s
+    return mean_s, min_s
 
 
 def time_repeats(run_once: Callable[[], None], repeats: int) -> tuple[float | None, float | None]:
@@ -234,6 +277,31 @@ def value_repeats(run_once: Callable[[], float], repeats: int) -> tuple[float | 
         return None, None
     times = [run_once() for _ in range(repeats)]
     return sum(times) / len(times), min(times)
+
+
+def should_warmup(
+    scope: str,
+    wavelet: str,
+    length: int,
+    warmed: set[str],
+    warmed_global: list[bool],
+    warmed_pairs: set[tuple[str, int]],
+) -> bool:
+    if scope == "global":
+        if warmed_global[0]:
+            return False
+        warmed_global[0] = True
+        return True
+    if scope == "length":
+        key = (wavelet, length)
+        if key in warmed_pairs:
+            return False
+        warmed_pairs.add(key)
+        return True
+    if wavelet in warmed:
+        return False
+    warmed.add(wavelet)
+    return True
 
 
 def row_key(row: dict[str, object]) -> TimingKey:
@@ -378,6 +446,9 @@ def main() -> int:
         "error",
     ]
 
+    warmed_wavelets: set[str] = set()
+    warmed_global = [False]
+    warmed_pairs: set[tuple[str, int]] = set()
     signal_file = csv_path.with_suffix(".signal.txt")
     rows, row_order = ({}, []) if args.overwrite else read_existing_rows(csv_path, fieldnames)
 
@@ -385,9 +456,9 @@ def main() -> int:
     with tqdm(total=total_runs, desc="Benchmarking", unit="run") as progress:
         for length in lengths:
             signal = None
-            if needs_pywt or needs_tt:
+            if needs_pywt or (needs_tt and args.tt_mode == "legacy"):
                 signal_list = generate_signal(length, args.signal_start, args.signal_step)
-                if needs_tt:
+                if needs_tt and args.tt_mode == "legacy":
                     write_signal_file(signal_file, signal_list)
                 if needs_pywt:
                     try:
@@ -417,7 +488,7 @@ def main() -> int:
                     progress.update(1)
                     continue
 
-                command = build_tt_command(wavelet, signal_file) if needs_tt else ""
+                command = build_tt_command(args, wavelet, length, signal_file) if needs_tt else ""
 
                 status = "ok"
                 error_message = ""
@@ -433,12 +504,24 @@ def main() -> int:
                         row["pywt_runs"] = args.pywt_repeats
 
                     if needs_tt:
-                        for _ in range(args.tt_warmup_runs):
-                            run_tt_wavelet(command)
-                        tt_mean, tt_min = value_repeats(
-                            lambda: run_tt_wavelet(command)[0],
-                            args.tt_repeats,
-                        )
+                        if args.tt_mode == "benchmark":
+                            tt_mean, tt_min = run_tt_wavelet(command)
+                        else:
+                            if args.tt_warmup_runs > 0 and should_warmup(
+                                args.tt_warmup_scope,
+                                wavelet,
+                                length,
+                                warmed_wavelets,
+                                warmed_global,
+                                warmed_pairs,
+                            ):
+                                for _ in range(args.tt_warmup_runs):
+                                    run_tt_wavelet(command)
+
+                            tt_mean, tt_min = value_repeats(
+                                lambda: run_tt_wavelet(command)[0],
+                                args.tt_repeats,
+                            )
                         row["tt_wavelet_mean_s"] = tt_mean if tt_mean is not None else ""
                         row["tt_wavelet_min_s"] = tt_min if tt_min is not None else ""
                         row["tt_wavelet_runs"] = args.tt_repeats
