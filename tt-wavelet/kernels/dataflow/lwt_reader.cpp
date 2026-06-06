@@ -22,8 +22,9 @@ ALWI float read_dense_or_zero(
     ttwv::kernels::primitives::StickReadCache& cache,
     const uint32_t logical_length,
     const uint32_t logical_index) {
-    return logical_index < logical_length ? ttwv::kernels::primitives::read_source_value(src, cache, logical_index)
-                                          : 0.0F;
+    return logical_index < logical_length
+               ? ttwv::kernels::primitives::read_source_value(src, cache, logical_index, logical_length)
+               : 0.0F;
 }
 
 template <typename ConfigAccessor>
@@ -59,7 +60,7 @@ ALWI void emit_predict_update_tiles(
         cb_src_cache,
         ttwv::device_protocol::kStickBytes,
         ttwv::kStickWidth,
-        1,
+        ttwv::device_protocol::kLwtCacheStickCount,
         ttwv::kernels::primitives::kInvalidStick,
         0,
         false};
@@ -67,7 +68,7 @@ ALWI void emit_predict_update_tiles(
         cb_base_cache,
         ttwv::device_protocol::kStickBytes,
         ttwv::kStickWidth,
-        1,
+        ttwv::device_protocol::kLwtCacheStickCount,
         ttwv::kernels::primitives::kInvalidStick,
         0,
         false};
@@ -78,17 +79,17 @@ ALWI void emit_predict_update_tiles(
 
         cb_reserve_back(cb_src_tile0, 1);
         auto* src_tile0 = reinterpret_cast<float*>(get_write_ptr(cb_src_tile0));
-        ttwv::kernels::primitives::clear_tile(src_tile0);
 
         cb_reserve_back(cb_src_tile1, 1);
         auto* src_tile1 = reinterpret_cast<float*>(get_write_ptr(cb_src_tile1));
-        ttwv::kernels::primitives::clear_tile(src_tile1);
 
         for (uint32_t tile = 0; tile < kInputTilesPerGroup; ++tile) {
             auto* src_tile = tile == 0 ? src_tile0 : src_tile1;
             for (uint32_t row = 0; row < kRowsPerGroup; ++row) {
                 for (uint32_t local_block = 0; local_block < 2; ++local_block) {
                     const uint32_t block_id = tile * 2 + local_block;
+                    auto* tile_block =
+                        src_tile + ttwv::kernels::primitives::tile_offset(row, local_block * kBlockElements);
                     for (uint32_t lane = 0; lane < kBlockElements; ++lane) {
                         const int32_t packed_index = static_cast<int32_t>(
                             group_base + (row * kOutputBlocksPerRow + block_id) * kBlockElements + lane);
@@ -100,8 +101,7 @@ ALWI void emit_predict_update_tiles(
                             source_value = read_dense_or_zero(src, src_cache, source_length, source_index);
                         }
 
-                        ttwv::kernels::primitives::store_tile_value(
-                            src_tile, row, local_block * kBlockElements + lane, source_value);
+                        tile_block[lane] = source_value;
                     }
                 }
             }
@@ -112,11 +112,12 @@ ALWI void emit_predict_update_tiles(
         auto* base_full_tile = reinterpret_cast<float*>(base_tiles_addr);
         auto* base_tail_tile =
             reinterpret_cast<float*>(base_tiles_addr + ttwv::kernels::primitives::kTileScalars * sizeof(float));
-        ttwv::kernels::primitives::clear_tile(base_full_tile);
-        ttwv::kernels::primitives::clear_tile(base_tail_tile);
 
         for (uint32_t row = 0; row < kRowsPerGroup; ++row) {
             for (uint32_t block = 0; block < kOutputBlocksPerRow; ++block) {
+                auto* tile_block =
+                    block < 2 ? base_full_tile + ttwv::kernels::primitives::tile_offset(row, block * kBlockElements)
+                              : base_tail_tile + ttwv::kernels::primitives::tile_offset(row, 0);
                 for (uint32_t lane = 0; lane < kBlockElements; ++lane) {
                     const uint32_t output_index =
                         group_base + (row * kOutputBlocksPerRow + block) * kBlockElements + lane;
@@ -125,12 +126,7 @@ ALWI void emit_predict_update_tiles(
                                                  ? read_dense_or_zero(base, base_cache, base_length, base_index)
                                                  : 0.0F;
 
-                    if (block < 2) {
-                        ttwv::kernels::primitives::store_tile_value(
-                            base_full_tile, row, block * kBlockElements + lane, base_value);
-                    } else {
-                        ttwv::kernels::primitives::store_tile_value(base_tail_tile, row, lane, base_value);
-                    }
+                    tile_block[lane] = base_value;
                 }
             }
         }
@@ -156,7 +152,7 @@ ALWI void emit_scale_tiles(
         cb_src_cache,
         ttwv::device_protocol::kStickBytes,
         ttwv::kStickWidth,
-        1,
+        ttwv::device_protocol::kLwtCacheStickCount,
         ttwv::kernels::primitives::kInvalidStick,
         0,
         false};
@@ -170,22 +166,18 @@ ALWI void emit_scale_tiles(
         auto* scale_full_tile = reinterpret_cast<float*>(scale_tiles_addr);
         auto* scale_tail_tile =
             reinterpret_cast<float*>(scale_tiles_addr + ttwv::kernels::primitives::kTileScalars * sizeof(float));
-        ttwv::kernels::primitives::clear_tile(scale_full_tile);
-        ttwv::kernels::primitives::clear_tile(scale_tail_tile);
 
         for (uint32_t row = 0; row < kRowsPerGroup; ++row) {
             for (uint32_t block = 0; block < kOutputBlocksPerRow; ++block) {
+                auto* tile_block =
+                    block < 2 ? scale_full_tile + ttwv::kernels::primitives::tile_offset(row, block * kBlockElements)
+                              : scale_tail_tile + ttwv::kernels::primitives::tile_offset(row, 0);
                 for (uint32_t lane = 0; lane < kBlockElements; ++lane) {
                     const uint32_t output_index =
                         group_base + (row * kOutputBlocksPerRow + block) * kBlockElements + lane;
                     const float value = read_dense_or_zero(src, src_cache, source_length, output_index);
 
-                    if (block < 2) {
-                        ttwv::kernels::primitives::store_tile_value(
-                            scale_full_tile, row, block * kBlockElements + lane, value);
-                    } else {
-                        ttwv::kernels::primitives::store_tile_value(scale_tail_tile, row, lane, value);
-                    }
+                    tile_block[lane] = value;
                 }
             }
         }

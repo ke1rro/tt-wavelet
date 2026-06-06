@@ -22,19 +22,29 @@ void kernel_main() {
     uint32_t odd_written = 0;
 
     while (even_written < even_stick_count || odd_written < odd_stick_count) {
+        bool wrote_even = false;
+        bool wrote_odd = false;
+
         if (even_written < even_stick_count) {
             cb_wait_front(cb_even, 1);
             const uint64_t noc_addr = even_dst.get_noc_addr(even_stick_begin + even_written);
             noc_async_write(get_read_ptr(cb_even), noc_addr, ttwv::device_protocol::kStickBytes);
-            noc_async_write_barrier();
-            cb_pop_front(cb_even, 1);
-            even_written++;
+            wrote_even = true;
         }
         if (odd_written < odd_stick_count) {
             cb_wait_front(cb_odd, 1);
             const uint64_t noc_addr = odd_dst.get_noc_addr(odd_stick_begin + odd_written);
             noc_async_write(get_read_ptr(cb_odd), noc_addr, ttwv::device_protocol::kStickBytes);
-            noc_async_write_barrier();
+            wrote_odd = true;
+        }
+
+        noc_async_write_barrier();
+
+        if (wrote_even) {
+            cb_pop_front(cb_even, 1);
+            even_written++;
+        }
+        if (wrote_odd) {
             cb_pop_front(cb_odd, 1);
             odd_written++;
         }

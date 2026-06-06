@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <limits>
 #include <memory>
@@ -38,6 +39,9 @@ constexpr uint32_t kLwtBaseCacheCb = tt::CBIndex::c_4;
 constexpr uint32_t kLwtSyncCb = tt::CBIndex::c_5;
 constexpr uint32_t kLwtReaderConfigCb = tt::CBIndex::c_6;
 constexpr uint32_t kLwtWriterConfigCb = tt::CBIndex::c_7;
+
+constexpr uint32_t kTileGroupBuffering = 2;
+
 struct LwtProgram {
     tt::tt_metal::Program program;
     tt::tt_metal::KernelHandle reader{};
@@ -59,6 +63,19 @@ struct LwtCoreWork {
     return kernel_root / relative_path;
 }
 
+[[nodiscard]] tt::tt_metal::BufferType env_lwt_working_buffer_type() {
+    const char* raw = std::getenv("TT_WAVELET_LWT_WORKING_BUFFER");
+    if (raw == nullptr || raw[0] == '\0' || std::strcmp(raw, "L1") == 0 || std::strcmp(raw, "l1") == 0) {
+        return tt::tt_metal::BufferType::L1;
+    }
+    if (std::strcmp(raw, "DRAM") == 0 || std::strcmp(raw, "dram") == 0) {
+        return tt::tt_metal::BufferType::DRAM;
+    }
+
+    TT_FATAL(false, "TT_WAVELET_LWT_WORKING_BUFFER must be L1 or DRAM, got '{}'", raw);
+    return tt::tt_metal::BufferType::DRAM;
+}
+
 [[nodiscard]] std::shared_ptr<tt::tt_metal::distributed::MeshBuffer> create_signal_mesh_buffer(
     tt::tt_metal::distributed::MeshDevice& mesh_device, const SignalBuffer& buffer) {
     const uint32_t page_size = buffer.aligned_stick_bytes(kNocAlignmentBytes);
@@ -66,7 +83,8 @@ struct LwtCoreWork {
 
     const tt::tt_metal::distributed::DeviceLocalBufferConfig local_config{
         .page_size = page_size,
-        .buffer_type = tt::tt_metal::BufferType::DRAM,
+        .buffer_type = env_lwt_working_buffer_type(),
+        .bottom_up = false,
     };
     const tt::tt_metal::distributed::ReplicatedBufferConfig replicated_config{
         .size = static_cast<uint64_t>(physical_nbytes),
@@ -326,12 +344,14 @@ void run_program(
     tt::tt_metal::Program program = tt::tt_metal::CreateProgram();
 
     const uint32_t tile_size = tt::tile_size(kDataFormat);
-    create_circular_buffer(program, cores, kLwtSrcTile0Cb, 1, tile_size);
-    create_circular_buffer(program, cores, kLwtSrcTile1Cb, 1, tile_size);
-    create_circular_buffer(program, cores, kLwtBaseTileCb, 2, tile_size);
-    create_circular_buffer(program, cores, kLwtOutputCb, 2, tile_size);
-    create_circular_buffer(program, cores, kLwtSrcCacheCb, 1, device_protocol::kStickBytes);
-    create_circular_buffer(program, cores, kLwtBaseCacheCb, 1, device_protocol::kStickBytes);
+    create_circular_buffer(program, cores, kLwtSrcTile0Cb, kTileGroupBuffering, tile_size);
+    create_circular_buffer(program, cores, kLwtSrcTile1Cb, kTileGroupBuffering, tile_size);
+    create_circular_buffer(program, cores, kLwtBaseTileCb, 2 * kTileGroupBuffering, tile_size);
+    create_circular_buffer(program, cores, kLwtOutputCb, 2 * kTileGroupBuffering, tile_size);
+    create_circular_buffer(
+        program, cores, kLwtSrcCacheCb, device_protocol::kLwtCacheStickCount, device_protocol::kStickBytes);
+    create_circular_buffer(
+        program, cores, kLwtBaseCacheCb, device_protocol::kLwtCacheStickCount, device_protocol::kStickBytes);
     create_circular_buffer(program, cores, kLwtSyncCb, 1, kNocAlignmentBytes);
     create_circular_buffer(program, cores, kLwtReaderConfigCb, 1, device_protocol::kRouteConfigPageBytes);
     create_circular_buffer(program, cores, kLwtWriterConfigCb, 1, device_protocol::kRouteConfigPageBytes);

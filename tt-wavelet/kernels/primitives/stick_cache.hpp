@@ -94,6 +94,22 @@ ALWI float read_source_value(const SrcAccessor& src, StickReadCache& cache, cons
     return cached_values[cached_offset * cache.stick_width + source_lane];
 }
 
+template <typename SrcAccessor>
+ALWI float read_source_value(
+    const SrcAccessor& src, StickReadCache& cache, const uint32_t source_index, const uint32_t source_length) {
+    const uint32_t source_stick = source_index / cache.stick_width;
+    const uint32_t source_lane = source_index % cache.stick_width;
+    const uint32_t source_stick_count = (source_length + cache.stick_width - 1) / cache.stick_width;
+
+    if (!cache_contains_stick(cache, source_stick)) {
+        cache_source_sticks(src, cache, source_stick, source_stick_count);
+    }
+
+    const auto* cached_values = reinterpret_cast<const float*>(get_read_ptr(cache.cb_id));
+    const uint32_t cached_offset = source_stick - cache.cached_stick_id;
+    return cached_values[cached_offset * cache.stick_width + source_lane];
+}
+
 ALWI void release_cache(StickReadCache& cache) {
     if (!cache.valid) {
         return;
