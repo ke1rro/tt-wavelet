@@ -29,6 +29,9 @@ constexpr tt::DataFormat kDataFormat = tt::DataFormat::Float32;
 constexpr const char* kLwtReaderKernelPath = "kernels/dataflow/lwt_reader.cpp";
 constexpr const char* kLwtWriterKernelPath = "kernels/dataflow/lwt_writer.cpp";
 constexpr const char* kLwtComputeKernelPath = "kernels/compute/lwt_compute.cpp";
+constexpr const char* kChunkLwtReaderKernelPath = "kernels/dataflow/chunk_lwt_reader.cpp";
+constexpr const char* kChunkLwtWriterKernelPath = "kernels/dataflow/chunk_lwt_writer.cpp";
+constexpr const char* kChunkLwtComputeKernelPath = "kernels/compute/chunk_lwt_compute.cpp";
 
 constexpr uint32_t kLwtSrcTile0Cb = tt::CBIndex::c_0;
 constexpr uint32_t kLwtSrcTile1Cb = tt::CBIndex::c_1;
@@ -39,10 +42,30 @@ constexpr uint32_t kLwtBaseCacheCb = tt::CBIndex::c_4;
 constexpr uint32_t kLwtSyncCb = tt::CBIndex::c_5;
 constexpr uint32_t kLwtReaderConfigCb = tt::CBIndex::c_6;
 constexpr uint32_t kLwtWriterConfigCb = tt::CBIndex::c_7;
+constexpr uint32_t kChunkSrcTile0Cb = tt::CBIndex::c_0;
+constexpr uint32_t kChunkSrcTile1Cb = tt::CBIndex::c_1;
+constexpr uint32_t kChunkBaseTileCb = tt::CBIndex::c_2;
+constexpr uint32_t kChunkInputCacheCb = tt::CBIndex::c_3;
+constexpr uint32_t kChunkSyncCb = tt::CBIndex::c_4;
+constexpr uint32_t kChunkEvenACb = tt::CBIndex::c_5;
+constexpr uint32_t kChunkEvenBCb = tt::CBIndex::c_6;
+constexpr uint32_t kChunkOddACb = tt::CBIndex::c_7;
+constexpr uint32_t kChunkOddBCb = tt::CBIndex::c_8;
+constexpr uint32_t kChunkApproxStickCb = tt::CBIndex::c_9;
+constexpr uint32_t kChunkDetailStickCb = tt::CBIndex::c_10;
+constexpr uint32_t kChunkOutputCb = tt::CBIndex::c_16;
 
 constexpr uint32_t kTileGroupBuffering = 2;
+constexpr uint32_t kChunkStepConfigWords = 4;
 
 struct LwtProgram {
+    tt::tt_metal::Program program;
+    tt::tt_metal::KernelHandle reader{};
+    tt::tt_metal::KernelHandle compute{};
+    tt::tt_metal::KernelHandle writer{};
+};
+
+struct ChunkLwtProgram {
     tt::tt_metal::Program program;
     tt::tt_metal::KernelHandle reader{};
     tt::tt_metal::KernelHandle compute{};
@@ -120,6 +143,12 @@ void create_circular_buffer(
     TT_FATAL(
         value <= static_cast<size_t>(std::numeric_limits<uint32_t>::max()), "{} {} overflows uint32_t", label, value);
     return static_cast<uint32_t>(value);
+}
+
+[[nodiscard]] uint32_t checked_i32_arg(const int32_t value) { return static_cast<uint32_t>(value); }
+
+[[nodiscard]] size_t round_up_to(const size_t value, const size_t alignment) {
+    return alignment == 0 ? value : ceil_div(value, alignment) * alignment;
 }
 
 [[nodiscard]] uint32_t lwt_output_group_count(const size_t output_length) {
@@ -449,6 +478,215 @@ void set_lwt_runtime_args(
     }
 }
 
+[[nodiscard]] uint32_t cone_interval_length(const ConeInterval interval) {
+    return interval.hi < interval.lo ? 0U : static_cast<uint32_t>(interval.hi - interval.lo + 1);
+}
+
+[[nodiscard]] uint32_t max_chunk_stream_page_size(const ConePlan& cone_plan) {
+    uint32_t max_sticks = 1;
+    for (const auto& chunk : cone_plan.chunks) {
+        max_sticks = std::max({max_sticks, chunk.max_even_sticks, chunk.max_odd_sticks});
+    }
+    return checked_length(
+        round_up_to(static_cast<size_t>(max_sticks) * device_protocol::kStickBytes, kNocAlignmentBytes),
+        "chunk scratch page size");
+}
+
+void append_chunk_step_configs(std::vector<uint32_t>& args, const ConeChunkPlan& chunk) {
+    for (const auto& step : chunk.steps) {
+        args.push_back(checked_i32_arg(step.materialized_target.lo));
+        args.push_back(cone_interval_length(step.materialized_target));
+        args.push_back(checked_i32_arg(step.target_group_begin));
+        args.push_back(step.target_group_count);
+    }
+}
+
+[[nodiscard]] std::vector<uint32_t> build_chunk_reader_runtime_args(
+    const LiftingPreprocessDeviceProgram& bundle, const ConeChunkPlan& chunk) {
+    const auto& input = bundle.plan.preprocess_layout.input;
+    std::vector<uint32_t> args;
+    args.reserve(11 + chunk.steps.size() * kChunkStepConfigWords);
+    args.push_back(static_cast<uint32_t>(input.dram_address));
+    args.push_back(checked_length(input.length, "input length"));
+    args.push_back(checked_length(bundle.plan.output_length, "output length"));
+    args.push_back(checked_i32_arg(chunk.final_even_owned.lo));
+    args.push_back(cone_interval_length(chunk.final_even_owned));
+    args.push_back(checked_i32_arg(chunk.final_odd_owned.lo));
+    args.push_back(cone_interval_length(chunk.final_odd_owned));
+    args.push_back(checked_i32_arg(chunk.layers.front().even.lo));
+    args.push_back(cone_interval_length(chunk.layers.front().even));
+    args.push_back(checked_i32_arg(chunk.layers.front().odd.lo));
+    args.push_back(cone_interval_length(chunk.layers.front().odd));
+    append_chunk_step_configs(args, chunk);
+    return args;
+}
+
+[[nodiscard]] std::vector<uint32_t> build_chunk_writer_runtime_args(
+    const LiftingPreprocessDeviceProgram& bundle, const ConeChunkPlan& chunk) {
+    std::vector<uint32_t> args;
+    args.reserve(15 + chunk.steps.size() * kChunkStepConfigWords);
+    args.push_back(static_cast<uint32_t>(bundle.buffers.even.ping->address()));
+    args.push_back(static_cast<uint32_t>(bundle.buffers.odd.ping->address()));
+    args.push_back(checked_length(bundle.plan.output_length, "output length"));
+    args.push_back(checked_i32_arg(bundle.plan.final_even_shift));
+    args.push_back(checked_length(bundle.plan.final_even_length, "final even length"));
+    args.push_back(checked_i32_arg(bundle.plan.final_odd_shift));
+    args.push_back(checked_length(bundle.plan.final_odd_length, "final odd length"));
+    args.push_back(checked_i32_arg(chunk.final_even_owned.lo));
+    args.push_back(cone_interval_length(chunk.final_even_owned));
+    args.push_back(checked_i32_arg(chunk.final_odd_owned.lo));
+    args.push_back(cone_interval_length(chunk.final_odd_owned));
+    args.push_back(checked_i32_arg(chunk.layers.front().even.lo));
+    args.push_back(cone_interval_length(chunk.layers.front().even));
+    args.push_back(checked_i32_arg(chunk.layers.front().odd.lo));
+    args.push_back(cone_interval_length(chunk.layers.front().odd));
+    append_chunk_step_configs(args, chunk);
+    return args;
+}
+
+[[nodiscard]] std::vector<uint32_t> build_chunk_compute_runtime_args(const ConeChunkPlan& chunk) {
+    std::vector<uint32_t> args;
+    args.reserve(chunk.steps.size());
+    for (const auto& step : chunk.steps) {
+        args.push_back(step.target_group_count);
+    }
+    return args;
+}
+
+[[nodiscard]] ChunkLwtProgram create_chunk_lwt_program(
+    const std::filesystem::path& kernel_root,
+    const tt::tt_metal::CoreRangeSet& cores,
+    const LiftingPreprocessDeviceProgram& bundle,
+    const ConePlan& cone_plan,
+    const char* compute_scheme_header,
+    const char* compute_scheme_type) {
+    TT_FATAL(bundle.input_buffer != nullptr, "Chunked SFPU LWT path requires the original input buffer");
+    TT_FATAL(
+        bundle.plan.preprocess_layout.input.stick_width == kStickWidth, "Chunked SFPU LWT expects 32-element sticks");
+    TT_FATAL(bundle.plan.preprocess_layout.input.element_size_bytes == sizeof(float), "Chunked SFPU LWT is fp32-only");
+
+    tt::tt_metal::Program program = tt::tt_metal::CreateProgram();
+
+    const uint32_t tile_size = tt::tile_size(kDataFormat);
+    const uint32_t scratch_page_size = max_chunk_stream_page_size(cone_plan);
+    create_circular_buffer(program, cores, kChunkSrcTile0Cb, kTileGroupBuffering, tile_size);
+    create_circular_buffer(program, cores, kChunkSrcTile1Cb, kTileGroupBuffering, tile_size);
+    create_circular_buffer(program, cores, kChunkBaseTileCb, 2 * kTileGroupBuffering, tile_size);
+    create_circular_buffer(program, cores, kChunkOutputCb, 2 * kTileGroupBuffering, tile_size);
+    create_circular_buffer(
+        program, cores, kChunkInputCacheCb, device_protocol::kPadSplitCacheStickCount, device_protocol::kStickBytes);
+    create_circular_buffer(program, cores, kChunkSyncCb, 1, kNocAlignmentBytes);
+    create_circular_buffer(program, cores, kChunkEvenACb, 1, scratch_page_size);
+    create_circular_buffer(program, cores, kChunkEvenBCb, 1, scratch_page_size);
+    create_circular_buffer(program, cores, kChunkOddACb, 1, scratch_page_size);
+    create_circular_buffer(program, cores, kChunkOddBCb, 1, scratch_page_size);
+    create_circular_buffer(program, cores, kChunkApproxStickCb, 1, device_protocol::kStickBytes);
+    create_circular_buffer(program, cores, kChunkDetailStickCb, 1, device_protocol::kStickBytes);
+
+    std::vector<uint32_t> reader_ct_args = {
+        kChunkSrcTile0Cb,
+        kChunkSrcTile1Cb,
+        kChunkBaseTileCb,
+        kChunkSyncCb,
+        kChunkInputCacheCb,
+        kChunkEvenACb,
+        kChunkEvenBCb,
+        kChunkOddACb,
+        kChunkOddBCb,
+    };
+    tt::tt_metal::TensorAccessorArgs(*bundle.input_buffer).append_to(reader_ct_args);
+
+    const std::vector<uint32_t> compute_ct_args = {
+        kChunkSrcTile0Cb,
+        kChunkSrcTile1Cb,
+        kChunkBaseTileCb,
+        kChunkOutputCb,
+    };
+
+    std::vector<uint32_t> writer_ct_args = {
+        kChunkOutputCb,
+        kChunkSyncCb,
+        kChunkEvenACb,
+        kChunkEvenBCb,
+        kChunkOddACb,
+        kChunkOddBCb,
+        kChunkApproxStickCb,
+        kChunkDetailStickCb,
+    };
+    tt::tt_metal::TensorAccessorArgs(*bundle.buffers.even.ping->get_backing_buffer()).append_to(writer_ct_args);
+    tt::tt_metal::TensorAccessorArgs(*bundle.buffers.odd.ping->get_backing_buffer()).append_to(writer_ct_args);
+
+    std::vector<UnpackToDestMode> unpack_to_dest_mode(NUM_CIRCULAR_BUFFERS, UnpackToDestMode::Default);
+    unpack_to_dest_mode[kChunkSrcTile0Cb] = UnpackToDestMode::UnpackToDestFp32;
+    unpack_to_dest_mode[kChunkSrcTile1Cb] = UnpackToDestMode::UnpackToDestFp32;
+    unpack_to_dest_mode[kChunkBaseTileCb] = UnpackToDestMode::UnpackToDestFp32;
+
+    const auto reader = tt::tt_metal::CreateKernel(
+        program,
+        kernel_path(kernel_root, kChunkLwtReaderKernelPath),
+        cores,
+        tt::tt_metal::ReaderDataMovementConfig(
+            reader_ct_args,
+            {
+                {"TTWV_LWT_SCHEME_HEADER", compute_scheme_header},
+                {"TTWV_LWT_SCHEME_TYPE", compute_scheme_type},
+            }));
+    const auto writer = tt::tt_metal::CreateKernel(
+        program,
+        kernel_path(kernel_root, kChunkLwtWriterKernelPath),
+        cores,
+        tt::tt_metal::WriterDataMovementConfig(
+            writer_ct_args,
+            {
+                {"TTWV_LWT_SCHEME_HEADER", compute_scheme_header},
+                {"TTWV_LWT_SCHEME_TYPE", compute_scheme_type},
+            }));
+    const auto compute = tt::tt_metal::CreateKernel(
+        program,
+        kernel_path(kernel_root, kChunkLwtComputeKernelPath),
+        cores,
+        tt::tt_metal::ComputeConfig{
+            .math_fidelity = MathFidelity::HiFi4,
+            .fp32_dest_acc_en = true,
+            .unpack_to_dest_mode = unpack_to_dest_mode,
+            .compile_args = compute_ct_args,
+            .defines =
+                {
+                    {"TTWV_LWT_SCHEME_HEADER", compute_scheme_header},
+                    {"TTWV_LWT_SCHEME_TYPE", compute_scheme_type},
+                },
+        });
+
+    return ChunkLwtProgram{
+        .program = std::move(program),
+        .reader = reader,
+        .compute = compute,
+        .writer = writer,
+    };
+}
+
+void set_chunk_lwt_runtime_args(
+    const ChunkLwtProgram& program_bundle,
+    const std::vector<tt::tt_metal::CoreCoord>& cores,
+    const ConePlan& cone_plan,
+    const LiftingPreprocessDeviceProgram& bundle) {
+    for (uint32_t index = 0; index < cores.size(); ++index) {
+        const auto& chunk = cone_plan.chunks.at(index);
+        tt::tt_metal::SetRuntimeArgs(
+            program_bundle.program,
+            program_bundle.reader,
+            cores.at(index),
+            build_chunk_reader_runtime_args(bundle, chunk));
+        tt::tt_metal::SetRuntimeArgs(
+            program_bundle.program, program_bundle.compute, cores.at(index), build_chunk_compute_runtime_args(chunk));
+        tt::tt_metal::SetRuntimeArgs(
+            program_bundle.program,
+            program_bundle.writer,
+            cores.at(index),
+            build_chunk_writer_runtime_args(bundle, chunk));
+    }
+}
+
 }  // namespace
 
 LiftingWorkingBuffers create_lifting_working_buffers(
@@ -498,6 +736,39 @@ LiftingActiveStreams lwt_static(
     run_program(mesh_device, command_queue, std::move(program_bundle.program));
 
     return bundle.plan.final_active;
+}
+
+LiftingActiveStreams lwt_chunked_sfpu_static(
+    const std::filesystem::path& kernel_root,
+    tt::tt_metal::distributed::MeshDevice& mesh_device,
+    tt::tt_metal::distributed::MeshCommandQueue& command_queue,
+    const LiftingPreprocessDeviceProgram& bundle,
+    const ConePlan& cone_plan,
+    const char* compute_scheme_header,
+    const char* compute_scheme_type) {
+    const auto grid = mesh_device.compute_with_storage_grid_size();
+    const uint32_t hardware_core_count = static_cast<uint32_t>(grid.x * grid.y);
+    TT_FATAL(hardware_core_count > 0, "Chunked SFPU LWT path requires at least one worker core");
+    TT_FATAL(!cone_plan.chunks.empty(), "Chunked SFPU LWT path requires at least one dependency-cone chunk");
+
+    const uint32_t available_core_count = std::min(hardware_core_count, env_lwt_max_cores());
+    const uint32_t chunk_count = checked_length(cone_plan.chunks.size(), "dependency-cone chunk count");
+    if (chunk_count > available_core_count) {
+        return lwt_static(kernel_root, mesh_device, command_queue, bundle, compute_scheme_header, compute_scheme_type);
+    }
+
+    const std::vector<tt::tt_metal::CoreCoord> cores = select_auto_cores(mesh_device, chunk_count);
+    const auto active_cores = build_active_core_range_set(mesh_device, cores);
+
+    auto program_bundle = create_chunk_lwt_program(
+        kernel_root, active_cores, bundle, cone_plan, compute_scheme_header, compute_scheme_type);
+    set_chunk_lwt_runtime_args(program_bundle, cores, cone_plan, bundle);
+    run_program(mesh_device, command_queue, std::move(program_bundle.program));
+
+    return LiftingActiveStreams{
+        .even = StreamRef{.family = LogicalStream::kEven, .slot = StreamSlot::kPing},
+        .odd = StreamRef{.family = LogicalStream::kOdd, .slot = StreamSlot::kPing},
+    };
 }
 
 }  // namespace ttwv
