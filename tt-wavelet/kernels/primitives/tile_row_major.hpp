@@ -10,6 +10,11 @@
 
 namespace ttwv::kernels::primitives {
 
+constexpr uint32_t kBlobInvalid = 0xFFFFFFFFU;
+constexpr uint32_t kBlobElements = 4096;
+constexpr uint32_t kBlobBytes = kBlobElements * sizeof(float);
+static_assert(kBlobElements % 16 == 0, "Blob elements must be a multiple of 16 for noc operations.");
+
 constexpr uint32_t kTileWidth = 32;
 constexpr uint32_t kTileHeight = 32;
 constexpr uint32_t kFaceWidth = 16;
@@ -17,37 +22,31 @@ constexpr uint32_t kFaceHeight = 16;
 constexpr uint32_t kFaceElements = kFaceWidth * kFaceHeight;
 constexpr uint32_t kTileScalars = kTileWidth * kTileHeight;
 
-[[nodiscard]] ALWI constexpr uint32_t tile_offset(const uint32_t row, const uint32_t col) {
-    const uint32_t face_row = row / kFaceHeight;
-    const uint32_t face_col = col / kFaceWidth;
-    const uint32_t face = face_row * 2U + face_col;
-    return face * kFaceElements + (row % kFaceHeight) * kFaceWidth + (col % kFaceWidth);
-}
-
-ALWI void clear_tile(float* tile_ptr) { fill_zeros(tile_ptr, kTileScalars); }
-
-ALWI void store_tile_value(float* tile_ptr, const uint32_t row, const uint32_t col, const float value) {
-    tile_ptr[tile_offset(row, col)] = value;
-}
-
-template <typename DstAccessor>
-ALWI void write_lwt_half_block(
-    const DstAccessor& dst,
-    const uint32_t tile_addr,
-    const uint32_t row,
-    const uint32_t col,
-    const uint32_t output_index,
-    const uint32_t output_length,
-    const uint32_t stick_width) {
-    if (output_index >= output_length) {
-        return;
+// FROM tt-metal SOURCE CODE
+ALWI uint32_t get_tilized_idx(uint32_t h, uint32_t w) {
+    using namespace tt::constants;
+    // Get local coordinates within the tile
+    uint32_t local_row = h % TILE_HEIGHT;
+    uint32_t local_col = w % TILE_WIDTH;
+    // Determine the index offset based on which quadrant we're in
+    uint32_t offset = 0;
+    // If we're in the right half (columns beyond FACE_WIDTH)
+    if (local_col >= FACE_WIDTH) {
+        local_col -= FACE_WIDTH;
+        offset += FACE_HEIGHT * FACE_WIDTH;  // Right face offset
     }
+    // If we're in the bottom half (rows beyond FACE_WIDTH)
+    if (local_row >= FACE_WIDTH) {
+        local_row -= FACE_WIDTH;
+        offset += FACE_HEIGHT * TILE_WIDTH;  // Bottom face offset
+    }
+    // Final index within the tile
+    uint32_t index = offset + local_row * FACE_WIDTH + local_col;
+    return index;
+}
 
-    const uint32_t dst_stick = output_index / stick_width;
-    const uint32_t dst_lane = output_index % stick_width;
-    const uint32_t src_offset = tile_offset(row, col) * static_cast<uint32_t>(sizeof(float));
-    const uint64_t noc_addr = dst.get_noc_addr(dst_stick) + dst_lane * sizeof(float);
-    noc_async_write(tile_addr + src_offset, noc_addr, ttwv::device_protocol::kLwtHalfStickBytes);
+ALWI uint32_t get_splicized_idx(const uint32_t row, const uint32_t col) {
+    return (col / 32) * 1024 + get_tilized_idx(row, col);
 }
 
 }  // namespace ttwv::kernels::primitives

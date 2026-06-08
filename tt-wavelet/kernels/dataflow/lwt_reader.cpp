@@ -5,38 +5,12 @@
 
 namespace {
 
+using get_splicized_idx = ttwv::kernels::primitives::get_splicized_idx;
+
 constexpr uint32_t kStepPredict = static_cast<uint32_t>(ttwv::StepType::kPredict);
 constexpr uint32_t kStepUpdate = static_cast<uint32_t>(ttwv::StepType::kUpdate);
 constexpr uint32_t kStepScaleEven = static_cast<uint32_t>(ttwv::StepType::kScaleEven);
 constexpr uint32_t kStepScaleOdd = static_cast<uint32_t>(ttwv::StepType::kScaleOdd);
-
-
-// FROM tt-metal SOURCE CODE
-ALWI uint32_t get_tilized_idx(uint32_t h, uint32_t w) {
-    using namespace tt::constants;
-    // Get local coordinates within the tile
-    uint32_t local_row = h % TILE_HEIGHT;
-    uint32_t local_col = w % TILE_WIDTH;
-    // Determine the index offset based on which quadrant we're in
-    uint32_t offset = 0;
-    // If we're in the right half (columns beyond FACE_WIDTH)
-    if (local_col >= FACE_WIDTH) {
-        local_col -= FACE_WIDTH;
-        offset += FACE_HEIGHT * FACE_WIDTH;  // Right face offset
-    }
-    // If we're in the bottom half (rows beyond FACE_WIDTH)
-    if (local_row >= FACE_WIDTH) {
-        local_row -= FACE_WIDTH;
-        offset += FACE_HEIGHT * TILE_WIDTH;  // Bottom face offset
-    }
-    // Final index within the tile
-    uint32_t index = offset + local_row * FACE_WIDTH + local_col;
-    return index;
-}
-
-ALWI uint32_t get_splicized_idx(const uint32_t row, const uint32_t col) {
-    return (col / 32) * 1024 + get_tilized_idx(row, col);
-}
 
 ALWI void splicize_full(InputStream& stream, float* splice, float* buffer) {
     for (uint32_t row = 0; row < 32; row++) {

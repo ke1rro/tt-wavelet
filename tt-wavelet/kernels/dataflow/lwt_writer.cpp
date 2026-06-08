@@ -3,9 +3,9 @@
 #include "api/dataflow/dataflow_api.h"
 #include "lwt_tile_row_major_utils.hpp"
 
-namespace row_major = ttwv::kernels::primitives;
-
 namespace {
+
+using get_splicized_idx = ttwv::kernels::primitives::get_splicized_idx;
 
 ALWI void unsplicize(float* splice, OutputStream& stream) {
     for (uint32_t row = 0; row < 32; row++) {
