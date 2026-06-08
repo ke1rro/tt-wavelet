@@ -38,226 +38,144 @@ ALWI const uint32_t* load_route_config(
     return reinterpret_cast<const uint32_t*>(get_read_ptr(cb_config));
 }
 
-template <typename DataAccessor>
-ALWI void emit_predict_update_tiles(
-    const DataAccessor& src,
-    const DataAccessor& base,
-    const uint32_t cb_src_tile0,
-    const uint32_t cb_src_tile1,
-    const uint32_t cb_base_tile,
-    const uint32_t cb_src_cache,
-    const uint32_t cb_base_cache,
-    const uint32_t source_length,
-    const uint32_t base_length,
-    const uint32_t output_length,
-    const uint32_t global_group_begin,
-    const uint32_t local_group_count,
-    const uint32_t source_offset,
-    const uint32_t base_offset,
-    const uint32_t source_left_pad) {
-    ttwv::kernels::primitives::StickReadCache src_cache{
-        cb_src_cache,
-        ttwv::device_protocol::kStickBytes,
-        ttwv::kStickWidth,
-        1,
-        ttwv::kernels::primitives::kInvalidStick,
-        0,
-        false};
-    ttwv::kernels::primitives::StickReadCache base_cache{
-        cb_base_cache,
-        ttwv::device_protocol::kStickBytes,
-        ttwv::kStickWidth,
-        1,
-        ttwv::kernels::primitives::kInvalidStick,
-        0,
-        false};
-
-    for (uint32_t local_group = 0; local_group < local_group_count; ++local_group) {
-        const uint32_t global_group = global_group_begin + local_group;
-        const uint32_t group_base = global_group * kGroupOutputElements;
-
-        cb_reserve_back(cb_src_tile0, 1);
-        auto* src_tile0 = reinterpret_cast<float*>(get_write_ptr(cb_src_tile0));
-        ttwv::kernels::primitives::clear_tile(src_tile0);
-
-        cb_reserve_back(cb_src_tile1, 1);
-        auto* src_tile1 = reinterpret_cast<float*>(get_write_ptr(cb_src_tile1));
-        ttwv::kernels::primitives::clear_tile(src_tile1);
-
-        for (uint32_t tile = 0; tile < kInputTilesPerGroup; ++tile) {
-            auto* src_tile = tile == 0 ? src_tile0 : src_tile1;
-            for (uint32_t row = 0; row < kRowsPerGroup; ++row) {
-                for (uint32_t local_block = 0; local_block < 2; ++local_block) {
-                    const uint32_t block_id = tile * 2 + local_block;
-                    for (uint32_t lane = 0; lane < kBlockElements; ++lane) {
-                        const int32_t packed_index = static_cast<int32_t>(
-                            group_base + (row * kOutputBlocksPerRow + block_id) * kBlockElements + lane);
-                        const int32_t source_logical_index = packed_index - static_cast<int32_t>(source_left_pad);
-
-                        float source_value = 0.0F;
-                        if (source_logical_index >= 0) {
-                            const uint32_t source_index = source_offset + static_cast<uint32_t>(source_logical_index);
-                            source_value = read_dense_or_zero(src, src_cache, source_length, source_index);
-                        }
-
-                        ttwv::kernels::primitives::store_tile_value(
-                            src_tile, row, local_block * kBlockElements + lane, source_value);
-                    }
-                }
-            }
-        }
-
-        cb_reserve_back(cb_base_tile, 2);
-        const uint32_t base_tiles_addr = get_write_ptr(cb_base_tile);
-        auto* base_full_tile = reinterpret_cast<float*>(base_tiles_addr);
-        auto* base_tail_tile =
-            reinterpret_cast<float*>(base_tiles_addr + ttwv::kernels::primitives::kTileScalars * sizeof(float));
-        ttwv::kernels::primitives::clear_tile(base_full_tile);
-        ttwv::kernels::primitives::clear_tile(base_tail_tile);
-
-        for (uint32_t row = 0; row < kRowsPerGroup; ++row) {
-            for (uint32_t block = 0; block < kOutputBlocksPerRow; ++block) {
-                for (uint32_t lane = 0; lane < kBlockElements; ++lane) {
-                    const uint32_t output_index =
-                        group_base + (row * kOutputBlocksPerRow + block) * kBlockElements + lane;
-                    const uint32_t base_index = base_offset + output_index;
-                    const float base_value = output_index < output_length
-                                                 ? read_dense_or_zero(base, base_cache, base_length, base_index)
-                                                 : 0.0F;
-
-                    if (block < 2) {
-                        ttwv::kernels::primitives::store_tile_value(
-                            base_full_tile, row, block * kBlockElements + lane, base_value);
-                    } else {
-                        ttwv::kernels::primitives::store_tile_value(base_tail_tile, row, lane, base_value);
-                    }
-                }
-            }
-        }
-
-        cb_push_back(cb_src_tile0, 1);
-        cb_push_back(cb_src_tile1, 1);
-        cb_push_back(cb_base_tile, 2);
-    }
-
-    ttwv::kernels::primitives::release_cache(src_cache);
-    ttwv::kernels::primitives::release_cache(base_cache);
+ALWI uint32_t get_splicized_idx(const uint32_t row, const uint32_t col) {
+    return (col / 32) * 1024 + get_tilized_idx(row, col);
 }
 
-template <typename DataAccessor>
-ALWI void emit_scale_tiles(
-    const DataAccessor& src,
-    const uint32_t cb_scale_tile,
-    const uint32_t cb_src_cache,
-    const uint32_t source_length,
-    const uint32_t global_group_begin,
-    const uint32_t local_group_count) {
-    ttwv::kernels::primitives::StickReadCache src_cache{
-        cb_src_cache,
-        ttwv::device_protocol::kStickBytes,
-        ttwv::kStickWidth,
-        1,
-        ttwv::kernels::primitives::kInvalidStick,
-        0,
-        false};
+void splicize_full(const ttwv::kernels::primitives::InputStream& stream, float* splice, float* buffer) {
+    for (uint32_t row = 0; row < 32; row++) {
+        for (uint32_t col = 16; col < 64; col++) {
+            if (stream.empty()) {
+                return;
+            }
 
-    for (uint32_t local_group = 0; local_group < local_group_count; ++local_group) {
-        const uint32_t global_group = global_group_begin + local_group;
-        const uint32_t group_base = global_group * kGroupOutputElements;
+            const float value = stream.pop();
 
-        cb_reserve_back(cb_scale_tile, 2);
-        const uint32_t scale_tiles_addr = get_write_ptr(cb_scale_tile);
-        auto* scale_full_tile = reinterpret_cast<float*>(scale_tiles_addr);
-        auto* scale_tail_tile =
-            reinterpret_cast<float*>(scale_tiles_addr + ttwv::kernels::primitives::kTileScalars * sizeof(float));
-        ttwv::kernels::primitives::clear_tile(scale_full_tile);
-        ttwv::kernels::primitives::clear_tile(scale_tail_tile);
-
-        for (uint32_t row = 0; row < kRowsPerGroup; ++row) {
-            for (uint32_t block = 0; block < kOutputBlocksPerRow; ++block) {
-                for (uint32_t lane = 0; lane < kBlockElements; ++lane) {
-                    const uint32_t output_index =
-                        group_base + (row * kOutputBlocksPerRow + block) * kBlockElements + lane;
-                    const float value = read_dense_or_zero(src, src_cache, source_length, output_index);
-
-                    if (block < 2) {
-                        ttwv::kernels::primitives::store_tile_value(
-                            scale_full_tile, row, block * kBlockElements + lane, value);
-                    } else {
-                        ttwv::kernels::primitives::store_tile_value(scale_tail_tile, row, lane, value);
-                    }
-                }
+            splice[get_splicized_idx(row, col)] = value
+            if (col >= 48 && row < 31) {
+                splice[get_splicized_idx(row + 1, col - 48)] = value;
+            } else if (col >= 48 && row == 31) {
+                buffer[col - 48] = value;
             }
         }
-
-        cb_push_back(cb_scale_tile, 2);
     }
+}
 
-    ttwv::kernels::primitives::release_cache(src_cache);
+void splicize_partial(const ttwv::kernels::primitives::InputStream& stream, float* splice) {
+    for (uint32_t row = 0; row < 32; row++) {
+        for (uint32_t col = 0; col < 48; col++) {
+            if (stream.empty()) {
+                return;
+            }
+
+            splice[get_splicized_idx(row, col)] = stream.pop();
+        }
+    }
+}
+
+void step_predict_update(
+    const InputStream& src,
+    const InputStream& base,
+    const uint32_t src_pad,
+    const uint32_t num_splices,
+    const uint32_t cb_src,
+    const uint32_t cb_base) {
+    float src_buffer[16];
+    for (uint32_t splice = 0; splice < num_splices; ++splice) {
+        cb_reserve_back(cb_src, 2);
+        float* src_ptr = reinterpret_cast<float*>(get_write_ptr(cb_src));
+
+        if (splice == 0) {
+            for (uint32_t i = src_pad; i < 16; i++) {
+                src_ptr[i] = src.pop();
+            }
+        } else {
+            // Copy buffer: TODO may be replaced with memcpy
+            for (uint32_t i = 0; i < 16; i++) {
+                src_ptr[i] = src_buffer[i];
+            }
+        }
+        splicize_full(src_ptr, src, src_buffer);
+
+        cb_push_back(cb_src, 2);
+
+        cb_reserve_back(cb_base, 2);
+        float* base_ptr = reinterpret_cast<float*>(get_write_ptr(cb_base));
+        splicize_partial(base_ptr, base);
+        cb_push_back(cb_base, 2);
+    }
+}
+
+void step_scale(
+    const InputStream& src,
+    const uint32_t num_splices,
+    const uint32_t cb_src) {
+    for (uint32_t splice = 0; splice < num_splices; ++splice) {
+        cb_reserve_back(cb_src, 2);
+        float* src_ptr = reinterpret_cast<float*>(get_write_ptr(cb_src));
+        splicize_partial(src_ptr, src);
+        cb_push_back(cb_src, 2);
+    }
+}
+
+template <uint32_t arg_base, uint32_t num_steps>
+inline void unroll_step(
+    const InputStream& even_stream,
+    const InputStream& odd_stream,
+    const uint32_t cb_input,
+    const uint32_t cb_base
+) {
+
+    if constexpr (num_steps > 0) {
+        constexpr uint32_t kMeta = get_compile_time_arg_val(arg_base);
+        constexpr uint8_t kType = kMeta & 0x7;
+
+        constexpr uint32_t splice_number = get_compile_time_arg_val(arg_base + 1);
+
+        even_stream.step(kType);
+        odd_stream.step(kType);
+
+        if constexpr(kType == kStepTypeScaleEven) {
+            step_scale(even_stream, splice_number, cb_input);
+            unroll_step<arg_base + 2, num_steps - 1>(even_stream, odd_stream, cb_input, cb_base, cb_sync);
+        } else if constexpr(kType == kStepTypeScaleOdd) {
+            step_scale(odd_stream, splice_number, cb_input);
+            unroll_step<arg_base + 2, num_steps - 1>(even_stream, odd_stream, cb_input, cb_base, cb_sync);
+        } else if constexpr(kType == kStepTypeSwap) {
+            unroll_step<arg_base + 2, num_steps - 1>(odd_stream, even_stream, cb_input, cb_base, cb_sync);
+        } else if constexpr(kType == kStepTypePredict) {
+            constexpr uint32_t kPad = (kMeta >> 3);
+
+            step_predict_update<K>(cb_input, cb_base, cb_output, h_coeffs, splice_number);
+            unroll_step<arg_base + 2 + K, num_steps - 1>(cb_input, cb_base, cb_output);
+        } else {
+            static_assert(false, "Unsupported step type");
+        }
+    }
 }
 
 }  // namespace
 
 void kernel_main() {
-    const uint32_t route_config_addr = get_arg_val<uint32_t>(0);
-    const uint32_t route_count = get_arg_val<uint32_t>(1);
+    constexpr uint32_t cb_even = get_named_compile_time_arg_val("cb_even");
+    constexpr uint32_t cb_odd = get_named_compile_time_arg_val("cb_odd");
+    constexpr uint32_t cb_input = get_named_compile_time_arg_val("cb_input");
+    constexpr uint32_t cb_base = get_named_compile_time_arg_val("cb_base");
+    constexpr uint32_t num_steps = get_named_compile_time_arg_val("num_steps");
+    constexpr auto tensor_accessor_args = TensorAccessorArgs<0>();
 
-    constexpr uint32_t cb_config = get_compile_time_arg_val(0);
-    constexpr uint32_t cb_src_tile0 = get_compile_time_arg_val(1);
-    constexpr uint32_t cb_src_tile1 = get_compile_time_arg_val(2);
-    constexpr uint32_t cb_base_tile = get_compile_time_arg_val(3);
-    constexpr uint32_t cb_src_cache = get_compile_time_arg_val(4);
-    constexpr uint32_t cb_base_cache = get_compile_time_arg_val(5);
-    constexpr uint32_t cb_sync = get_compile_time_arg_val(6);
-    constexpr auto config_args = TensorAccessorArgs<7>();
-    constexpr auto data_args = TensorAccessorArgs<config_args.next_compile_time_args_offset()>();
+    const uint32_t even_addr = get_arg_val<uint32_t>(0);
+    const uint32_t even_length = get_arg_val<uint32_t>(1);
+    const uint32_t odd_addr = get_arg_val<uint32_t>(2);
+    const uint32_t odd_length = get_arg_val<uint32_t>(3);
 
     const auto config = TensorAccessor(config_args, route_config_addr, ttwv::device_protocol::kRouteConfigPageBytes);
 
-    for (uint32_t route_index = 0; route_index < route_count; ++route_index) {
-        if (route_index > 0) {
-            cb_wait_front(cb_sync, 1);
-            cb_pop_front(cb_sync, 1);
-        }
+    const auto even_accessor = TensorAccessor(tensor_accessor_args, even_addr, ttwv::device_protocol::kBlobBytes);
+    const auto odd_accessor = TensorAccessor(tensor_accessor_args, odd_addr, ttwv::device_protocol::kBlobBytes);
 
-        const uint32_t* route = load_route_config(config, cb_config, route_index);
-        const uint32_t route_type = route[ttwv::device_protocol::kRouteType];
-        const uint32_t source_addr = route[ttwv::device_protocol::kRouteSourceAddr];
-        const uint32_t source_length = route[ttwv::device_protocol::kRouteSourceLength];
-        const uint32_t base_addr = route[ttwv::device_protocol::kRouteBaseAddr];
-        const uint32_t base_length = route[ttwv::device_protocol::kRouteBaseLength];
-        const uint32_t output_length = route[ttwv::device_protocol::kRouteOutputLength];
-        const uint32_t source_offset = route[ttwv::device_protocol::kRouteSourceOffset];
-        const uint32_t base_offset = route[ttwv::device_protocol::kRouteBaseOffset];
-        const uint32_t source_left_pad = route[ttwv::device_protocol::kRouteSourceLeftPad];
-        const uint32_t route_range_arg_base = 2 + route_index * 2;
-        const uint32_t global_group_begin = get_arg_val<uint32_t>(route_range_arg_base);
-        const uint32_t local_group_count = get_arg_val<uint32_t>(route_range_arg_base + 1);
+    const InputStream even_stream(cb_input, even_accessor, even_length);
+    const InputStream odd_stream(cb_input, odd_accessor, odd_length);
 
-        const auto src = TensorAccessor(data_args, source_addr, ttwv::device_protocol::kStickBytes);
-
-        if (route_type == kStepPredict || route_type == kStepUpdate) {
-            const auto base = TensorAccessor(data_args, base_addr, ttwv::device_protocol::kStickBytes);
-            emit_predict_update_tiles(
-                src,
-                base,
-                cb_src_tile0,
-                cb_src_tile1,
-                cb_base_tile,
-                cb_src_cache,
-                cb_base_cache,
-                source_length,
-                base_length,
-                output_length,
-                global_group_begin,
-                local_group_count,
-                source_offset,
-                base_offset,
-                source_left_pad);
-        } else if (route_type == kStepScaleEven || route_type == kStepScaleOdd) {
-            emit_scale_tiles(src, cb_base_tile, cb_src_cache, source_length, global_group_begin, local_group_count);
-        }
-
-        cb_pop_front(cb_config, 1);
-    }
+    unroll_step<0, num_steps>(even_stream, odd_stream, cb_input, cb_base);
 }
