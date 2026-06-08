@@ -1,11 +1,3 @@
-#ifndef TTWV_LWT_SCHEME_HEADER
-#error "TTWV_LWT_SCHEME_HEADER must identify the generated lifting scheme header"
-#endif
-
-#ifndef TTWV_LWT_SCHEME_TYPE
-#error "TTWV_LWT_SCHEME_TYPE must identify the generated lifting scheme type"
-#endif
-
 #include <array>
 #include <cstdint>
 
@@ -13,7 +5,6 @@
 #include "compute_kernel_api/eltwise_unary/eltwise_unary.h"
 #include "compute_kernel_api/tile_move_copy.h"
 #include "lwt_compute_utils.hpp"
-#include TTWV_LWT_SCHEME_HEADER
 
 namespace ttwv::kernels {
 
@@ -21,41 +12,31 @@ constexpr uint32_t kDstInput0 = 0;
 constexpr uint32_t kDstInput1 = 1;
 constexpr uint32_t kDstOutput = 2;
 constexpr uint32_t kDstTailOutput = 3;
-constexpr uint32_t kDstScale = 0;
 
 template <uint32_t K>
-inline void run_predict_update_step(
-    const uint32_t cb_input0,
-    const uint32_t cb_input1,
+void step_predict_update(
+    const uint32_t cb_input,
     const uint32_t cb_base,
     const uint32_t cb_output,
     const std::array<uint32_t, K> h_coeffs,
-    const uint32_t output_group_count) {
-    static_assert(K > 0, "Predict/update steps must have at least one coefficient");
+    const uint32_t splice_number) {
+    static_assert(K > 1, "Predict/update steps must have at least 2 coefficients");
     static_assert(K <= ttwv::device_protocol::kStepCoeffCapacity, "Step coefficient count exceeds device capacity");
 
-    for (uint32_t group = 0; group < output_group_count; ++group) {
+    for (uint32_t splice = 0; splice < splice_number; ++splice) {
         tile_regs_acquire();
 
-        cb_wait_front(cb_input0, 1);
-        copy_tile_to_dst_init_short(cb_input0);
-        copy_tile(cb_input0, 0, kDstInput0);
-        cb_pop_front(cb_input0, 1);
+        cb_wait_front(cb_input, 2);
+        copy_tile_to_dst_init_short(cb_input);
+        copy_tile(cb_input, 0, kDstInput0);
+        copy_tile(cb_input, 1, kDstInput1);
+        cb_pop_front(cb_input, 2);
 
-        cb_wait_front(cb_input1, 1);
-        copy_tile_to_dst_init_short(cb_input1);
-        copy_tile(cb_input1, 0, kDstInput1);
-        cb_pop_front(cb_input1, 1);
-
-        cb_wait_front(cb_base, 1);
+        cb_wait_front(cb_base, 2);
         copy_tile_to_dst_init_short(cb_base);
         copy_tile(cb_base, 0, kDstOutput);
-        cb_pop_front(cb_base, 1);
-
-        cb_wait_front(cb_base, 1);
-        copy_tile_to_dst_init_short(cb_base);
-        copy_tile(cb_base, 0, kDstTailOutput);
-        cb_pop_front(cb_base, 1);
+        copy_tile(cb_base, 1, kDstTailOutput);
+        cb_pop_front(cb_base, 2);
 
         hstencil_init();
         hstencil_plus_base_tile<K>(
@@ -73,69 +54,82 @@ inline void run_predict_update_step(
     }
 }
 
-inline void run_scale_step(
+void step_scale(
     const uint32_t cb_input,
     const uint32_t cb_output,
     const uint32_t scalar_packed,
-    const uint32_t output_group_count) {
-    for (uint32_t group = 0; group < output_group_count; ++group) {
+    const uint32_t splice_number) {
+    for (uint32_t splice = 0; splice < splice_number; ++splice) {
+        tile_regs_acquire();
+
         cb_wait_front(cb_input, 2);
-        cb_reserve_back(cb_output, 2);
-
-        for (uint32_t tile = 0; tile < 2; ++tile) {
-            tile_regs_acquire();
-
-            copy_tile_to_dst_init_short(cb_input);
-            copy_tile(cb_input, tile, kDstScale);
-
-            scale_tile(kDstScale, scalar_packed);
-
-            tile_regs_commit();
-            tile_regs_wait();
-
-            pack_tile(kDstScale, cb_output, tile);
-            tile_regs_release();
-        }
-
+        copy_tile_to_dst_init_short(cb_input);
+        copy_tile(cb_input, 0, kDstOutput);
+        copy_tile(cb_input, 1, kDstTailOutput);
         cb_pop_front(cb_input, 2);
+
+        scale_tile(kDstOutput, scalar_packed);
+        scale_tile(kDstTailOutput, scalar_packed);
+
+        tile_regs_commit();
+        tile_regs_wait();
+
+        cb_reserve_back(cb_output, 2);
+        pack_tile(kDstOutput, cb_output, 0);
+        pack_tile(kDstTailOutput, cb_output, 1);
         cb_push_back(cb_output, 2);
+
+        tile_regs_release();
     }
 }
 
-template <typename Scheme, uint32_t StepIndex, uint32_t ExecutableIndex>
-inline void run_static_steps(
-    const uint32_t cb_input0, const uint32_t cb_input1, const uint32_t cb_base, const uint32_t cb_output) {
-    if constexpr (StepIndex < Scheme::num_steps) {
-        using Step = SchemeStep<Scheme, StepIndex>;
-        if constexpr (Step::type == StepType::kSwap) {
-            run_static_steps<Scheme, StepIndex + 1, ExecutableIndex>(cb_input0, cb_input1, cb_base, cb_output);
-        } else if constexpr (Step::type == StepType::kPredict || Step::type == StepType::kUpdate) {
-            const uint32_t output_group_count = get_arg_val<uint32_t>(1 + ExecutableIndex);
-            run_predict_update_step<Step::k>(
-                cb_input0, cb_input1, cb_base, cb_output, Step::coeff_bits, output_group_count);
-            run_static_steps<Scheme, StepIndex + 1, ExecutableIndex + 1>(cb_input0, cb_input1, cb_base, cb_output);
-        } else if constexpr (Step::type == StepType::kScaleEven || Step::type == StepType::kScaleOdd) {
-            static_assert(Step::k == 1, "Scale steps must have exactly one coefficient");
-            const uint32_t output_group_count = get_arg_val<uint32_t>(1 + ExecutableIndex);
-            run_scale_step(cb_base, cb_output, Step::coeff_bits[0], output_group_count);
-            run_static_steps<Scheme, StepIndex + 1, ExecutableIndex + 1>(cb_input0, cb_input1, cb_base, cb_output);
+
+template <uint32_t arg_base, uint32_t num_steps>
+inline void unroll_step(
+    const uint32_t cb_input,
+    const uint32_t cb_base,
+    const uint32_t cb_output,
+) {
+
+    if constexpr (num_steps > 0) {
+        constexpr uint32_t kMeta = get_compile_time_arg_val(arg_base);
+        constexpr uint8_t kType = kMeta & 0x7;
+
+        constexpr uint32_t splice_number = get_compile_time_arg_val(arg_base + 1);
+
+        if constexpr(kType == kStepTypeScaleEven || kType == kStepTypeScaleOdd) {
+            constexpr uint32_t scalar_packed = get_compile_time_arg_val(arg_base + 2);
+
+            step_scale(cb_input, cb_output, scalar_packed, splice_number);
+            unroll_step<arg_base + 3, num_steps - 1>(cb_input, cb_base, cb_output);
+        } else if constexpr(kType == kStepTypeSwap) {
+            unroll_step<arg_base + 2, num_steps - 1>(cb_input, cb_base, cb_output);
+        } else if constexpr(kType == kStepTypePredict || kType == kStepTypeUpdate) {
+            constexpr uint32_t K = (kMeta >> 3);
+
+            std::array<uint32_t, K> h_coeffs{};
+#pragma unroll 17
+            for (uint32_t j = 0; j < K; ++j) {
+                h_coeffs[j] = get_compile_time_arg_val(arg_base + 2 + j);
+            }
+
+            step_predict_update<K>(cb_input, cb_base, cb_output, h_coeffs, splice_number);
+            unroll_step<arg_base + 2 + K, num_steps - 1>(cb_input, cb_base, cb_output);
         } else {
-            static_assert(Step::type == StepType::kSwap, "Unsupported static lifting step type");
+            static_assert(false, "Unsupported step type");
         }
     }
 }
 
-template <typename Scheme>
-void lwt_compute() {
-    constexpr uint32_t cb_input0 = get_compile_time_arg_val(0);
-    constexpr uint32_t cb_input1 = get_compile_time_arg_val(1);
-    constexpr uint32_t cb_base = get_compile_time_arg_val(2);
-    constexpr uint32_t cb_output = get_compile_time_arg_val(3);
+} // namespace ttwv::kernels
+
+void kernel_main() {
+    constexpr uint32_t cb_input = get_named_compile_time_arg_val("cb_input");
+    constexpr uint32_t cb_base = get_named_compile_time_arg_val("cb_base");
+    constexpr uint32_t cb_output = get_named_compile_time_arg_val("cb_output");
+    constexpr uint32_t num_steps = get_named_compile_time_arg_val("num_steps");
 
     ckernel::init_sfpu(cb_base, cb_output);
-    run_static_steps<Scheme, 0, 0>(cb_input0, cb_input1, cb_base, cb_output);
+
+    ttwv::kernels::unroll_step<0, num_steps>(cb_input, cb_base, cb_output);
 }
-
-}  // namespace ttwv::kernels
-
-void kernel_main() { ttwv::kernels::lwt_compute<TTWV_LWT_SCHEME_TYPE>(); }
