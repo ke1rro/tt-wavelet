@@ -17,7 +17,8 @@ public:
     InputStream(const uint32_t cb_id, const SrcAccessor& src, const uint32_t size) :
         _cb_id(cb_id), _src(src), _size(size) {}
 
-    ALWI void reset(uint32_t new_source, uint32_t new_size) {
+    // TODO
+    void step(uint32_t step_meta) {
         if (_blob_idx != kBlobInvalid) {
             cb_pop_front(_cb_id, 1);
             _blob_idx = kBlobInvalid;
@@ -28,7 +29,7 @@ public:
         _size = new_size;
     }
 
-    ALWI void skip(const uint32_t count) {
+    void skip(const uint32_t count) {
         if (_size < count) {
             _size = 0;
             return;
@@ -61,13 +62,7 @@ public:
         return blob_data[_blob_offset++];
     }
 
-    ALWI void pop16(float* dst) {
-        for (uint32_t i = 0; i < 16; ++i) {
-            dst[i] = pop();
-        }
-    }
-
-    ALWI bool is_empty() const { return _size == 0; }
+    ALWI bool empty() const { return _size == 0; }
 
 private:
     uint32_t _cb_id;

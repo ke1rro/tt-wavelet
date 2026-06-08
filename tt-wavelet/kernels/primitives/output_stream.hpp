@@ -18,6 +18,12 @@ class OutputStream {
 public:
     OutputStream(const uint32_t cb_id, const DstAccessor& dst) : _cb_id(cb_id), _dst(dst) {}
 
+    // TODO
+    void step(uint32_t step_meta) {
+        flush();
+        _write_destination = destination;
+    }
+
     ALWI void flush() {
         if (_blob_idx != kBlobInvalid) {
             _flush_blob();
@@ -39,15 +45,9 @@ public:
         blob_data[_blob_offset++] = value;
     }
 
-    ALWI void push16(const float* values) {
-        for (uint32_t i = 0; i < 16; ++i) {
-            push(values[i]);
-        }
-    }
-
-    ALWI void set_write_destination(uint32_t destination) {
-        flush();
-        _write_destination = destination;
+    // TODO
+    ALWI bool full() {
+        return false;
     }
 
 private:
