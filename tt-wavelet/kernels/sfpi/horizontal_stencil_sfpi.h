@@ -6,8 +6,7 @@
 //   LREG4: g_e (accumulator for even output)
 //   LREG5: g_o (accumulator for odd output)
 //   LREG6: tmp (broadcast coefficient)
-//   LREG7: tmp_acc (temporary MAD destination for plus-base)
-//   LREG14: programmable column-zero mask preloaded by _horizontal_stencil_init()
+//   LREG7: lane mask for column 0, preloaded by _horizontal_stencil_init()
 #pragma once
 
 #include <algorithm>
@@ -113,11 +112,15 @@ inline void _horizontal_stencil_plus_base_block(
         } else {
             _horizontal_stencil_mad_accumulate_(f_e_1, tmp, g_o, tmp_acc);
             _horizontal_stencil_rotate_(f_o_0, f_o_1);
+            // g_e += h[j] * f_o_1 (now shifted)
             _horizontal_stencil_mad_accumulate_(f_o_1, tmp, g_e, tmp_acc);
-            _horizontal_stencil_rotate_(f_e_0, f_e_1);
+            // Rotate even columns: ROTATE(f_e_0, f_e_1)
+            if (j != K - 1) {  // No need to rotate on the last iteration
+                _horizontal_stencil_rotate_(f_e_0, f_e_1);
+            }
         }
     }
-
+    // TODO Check if NOPS needed
     TTI_SFPNOP;
     TTI_SFPNOP;
     TT_SFPSTORE(g_e, sfpi::SFPSTORE_MOD0_FMT_FP32, ADDR_MOD_3, dst_g);
