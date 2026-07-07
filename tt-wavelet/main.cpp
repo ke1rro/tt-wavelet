@@ -1,125 +1,392 @@
-#include <cassert>
+#include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <iomanip>
 #include <iostream>
+#include <limits>
+#include <memory>
+#include <numeric>
+#include <optional>
+#include <stdexcept>
+#include <string>
+#include <string_view>
 #include <vector>
 
 #include "tt-metalium/distributed.hpp"
 #include "tt-metalium/host_api.hpp"
 #include "tt-metalium/mesh_buffer.hpp"
 #include "tt-metalium/mesh_device.hpp"
-#include "tt_wavelet/include/pad_split.hpp"
-#include "tt_wavelet/include/pad_split_device.hpp"
+#include "tt_wavelet/include/lifting/device.hpp"
+#include "tt_wavelet/include/schemes/generated/registry.hpp"
 
-using namespace ttwv;
+namespace {
 
-int main() {
-    constexpr int device_id = 0;
-    auto mesh_device = tt::tt_metal::distributed::MeshDevice::create_unit_mesh(device_id);
-    tt::tt_metal::distributed::MeshCommandQueue& command_queue = mesh_device->mesh_command_queue();
-    constexpr tt::tt_metal::CoreCoord core{0, 0};
+struct CliOptions {
+    bool benchmark{false};
+    uint32_t repeats{1};
+    uint32_t warmup_runs{1};
+    std::optional<size_t> generated_length;
+    double signal_start{1.0};
+    double signal_step{1.0};
+    std::string wavelet_name;
+    std::optional<std::filesystem::path> signal_file;
+};
 
-    constexpr size_t signal_length = 3;
-    std::vector<float> original_signal(signal_length);
-    for (size_t i = 0; i < signal_length; ++i) {
-        original_signal[i] = static_cast<float>(i + 1);
+struct ForwardOutput {
+    std::vector<float> approximation;
+    std::vector<float> detail;
+    size_t logical_length{0};
+    double execution_time_ms{0.0};
+};
+
+[[nodiscard]] std::string usage() {
+    return "Usage:\n"
+           "  lwt <scheme|scheme_path> <signal_file>\n"
+           "  lwt --benchmark [--repeats N] [--warmup-runs N] "
+           "[--length N --signal-start X --signal-step X | <signal_file>] <scheme|scheme_path>";
+}
+
+[[nodiscard]] std::string require_option_value(const int argc, char** argv, int& index, const std::string& option) {
+    if (index + 1 >= argc) {
+        throw std::runtime_error(option + " requires a value.\n" + usage());
+    }
+    ++index;
+    return argv[index];
+}
+
+[[nodiscard]] uint32_t parse_u32(const std::string& raw, const char* label, const bool allow_zero) {
+    size_t parsed_chars = 0;
+    const unsigned long long value = std::stoull(raw, &parsed_chars, 10);
+    if (parsed_chars != raw.size() || value > std::numeric_limits<uint32_t>::max() || (!allow_zero && value == 0)) {
+        throw std::runtime_error(std::string(label) + " must be a valid uint32 value.");
+    }
+    return static_cast<uint32_t>(value);
+}
+
+[[nodiscard]] size_t parse_size(const std::string& raw, const char* label) {
+    size_t parsed_chars = 0;
+    const unsigned long long value = std::stoull(raw, &parsed_chars, 10);
+    if (parsed_chars != raw.size() || value == 0 ||
+        value > static_cast<unsigned long long>(std::numeric_limits<size_t>::max())) {
+        throw std::runtime_error(std::string(label) + " must be a positive size value.");
+    }
+    return static_cast<size_t>(value);
+}
+
+[[nodiscard]] double parse_double(const std::string& raw, const char* label) {
+    size_t parsed_chars = 0;
+    const double value = std::stod(raw, &parsed_chars);
+    if (parsed_chars != raw.size() || !std::isfinite(value)) {
+        throw std::runtime_error(std::string(label) + " must be a finite floating-point value.");
+    }
+    return value;
+}
+
+[[nodiscard]] CliOptions parse_cli(const int argc, char** argv) {
+    CliOptions options;
+    std::vector<std::string> positionals;
+
+    for (int i = 1; i < argc; ++i) {
+        const std::string arg = argv[i];
+        if (arg == "-h" || arg == "--help") {
+            std::cout << usage() << '\n';
+            std::exit(EXIT_SUCCESS);
+        }
+        if (arg == "--benchmark") {
+            options.benchmark = true;
+        } else if (arg == "--repeats") {
+            options.repeats = parse_u32(require_option_value(argc, argv, i, arg), "--repeats", false);
+        } else if (arg == "--warmup-runs") {
+            options.warmup_runs = parse_u32(require_option_value(argc, argv, i, arg), "--warmup-runs", true);
+        } else if (arg == "--length") {
+            options.generated_length = parse_size(require_option_value(argc, argv, i, arg), "--length");
+        } else if (arg == "--signal-start") {
+            options.signal_start = parse_double(require_option_value(argc, argv, i, arg), "--signal-start");
+        } else if (arg == "--signal-step") {
+            options.signal_step = parse_double(require_option_value(argc, argv, i, arg), "--signal-step");
+        } else if (arg.rfind("--", 0) == 0) {
+            throw std::runtime_error("Unknown option: " + arg + "\n" + usage());
+        } else {
+            positionals.push_back(arg);
+        }
     }
 
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-member-init)
-    Pad1DConfig pad_config{.mode = BoundaryMode::Symmetric, .left = 2, .right = 2};
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-member-init)
-    SignalBuffer input_desc{
-        .dram_address = 0, .length = signal_length, .stick_width = 32, .element_size_bytes = sizeof(float)};
+    if (!options.benchmark && options.generated_length.has_value()) {
+        throw std::runtime_error("--length requires --benchmark.\n" + usage());
+    }
 
-    PadSplit1DLayout layout = make_pad_split_1d_layout(input_desc, 0, 0, pad_config);
+    if (options.benchmark && options.generated_length.has_value()) {
+        if (positionals.size() != 1) {
+            throw std::runtime_error(usage());
+        }
+        options.wavelet_name = positionals.at(0);
+    } else {
+        if (positionals.size() != 2) {
+            throw std::runtime_error(usage());
+        }
+        options.wavelet_name = positionals.at(0);
+        options.signal_file = std::filesystem::path{positionals.at(1)};
+    }
 
-    tt::tt_metal::distributed::DeviceLocalBufferConfig input_local_conf{
-        .page_size = layout.input.aligned_stick_bytes(32), .buffer_type = tt::tt_metal::BufferType::DRAM};
-    tt::tt_metal::distributed::ReplicatedBufferConfig input_rep_conf{
-        .size = static_cast<uint64_t>(layout.input.physical_nbytes())};
+    return options;
+}
 
+[[nodiscard]] std::vector<float> read_signal_file(const std::filesystem::path& path) {
+    std::ifstream handle(path);
+    if (!handle.good()) {
+        throw std::runtime_error("Failed to open signal file: " + path.string());
+    }
+
+    std::vector<float> signal;
+    for (float value = 0.0F; handle >> value;) {
+        signal.push_back(value);
+    }
+
+    if (signal.empty()) {
+        throw std::runtime_error("Signal file is empty: " + path.string());
+    }
+    if (!handle.eof()) {
+        throw std::runtime_error("Signal file contains a non-numeric token: " + path.string());
+    }
+
+    return signal;
+}
+
+[[nodiscard]] std::vector<float> generate_signal(const size_t length, const double start, const double step) {
+    std::vector<float> signal;
+    signal.reserve(length);
+    for (size_t i = 0; i < length; ++i) {
+        signal.push_back(static_cast<float>(start + step * static_cast<double>(i)));
+    }
+    return signal;
+}
+
+void print_coeffs(const char* label, const std::vector<float>& values, const size_t logical_length) {
+    std::cout << label << " (" << logical_length << "): [";
+    for (size_t i = 0; i < logical_length; ++i) {
+        if (i > 0) {
+            std::cout << ", ";
+        }
+
+        std::cout << std::scientific << std::setprecision(8) << static_cast<double>(values[i]);
+    }
+    std::cout << std::defaultfloat << "]\n";
+}
+
+[[nodiscard]] std::vector<float> canonicalize_forward_output(
+    const std::vector<float>& values,
+    const size_t logical_length,
+    const size_t output_length,
+    const int stream_shift,
+    const int canonical_start) {
+    const size_t available_logical = std::min(values.size(), logical_length);
+    std::vector<float> logical_values(values.begin(), values.begin() + static_cast<std::ptrdiff_t>(available_logical));
+
+    std::vector<float> canonical(output_length, 0.0F);
+    const int64_t src_offset = static_cast<int64_t>(canonical_start) - static_cast<int64_t>(stream_shift);
+    const size_t src_begin = src_offset > 0 ? static_cast<size_t>(src_offset) : size_t{0};
+    const size_t dst_begin = src_offset < 0 ? static_cast<size_t>(-src_offset) : size_t{0};
+
+    if (src_begin >= logical_values.size() || dst_begin >= canonical.size()) {
+        return canonical;
+    }
+
+    const size_t copy_count = std::min(logical_values.size() - src_begin, canonical.size() - dst_begin);
+    std::copy_n(
+        logical_values.begin() + static_cast<std::ptrdiff_t>(src_begin), copy_count, canonical.begin() + dst_begin);
+    return canonical;
+}
+
+[[nodiscard]] std::string canonical_wavelet_name(const std::string_view raw_name) {
+    const std::filesystem::path raw_path{std::string{raw_name}};
+    if (raw_path.extension() == ".json") {
+        return raw_path.stem().string();
+    }
+    return std::string{raw_name};
+}
+
+void configure_tt_runtime(const bool benchmark) {
+    if (!benchmark) {
+        setenv("TT_LOGGER_LEVEL", "error", 0);
+        unsetenv("TT_METAL_SLOW_DISPATCH_MODE");
+        return;
+    }
+
+    setenv("TT_LOGGER_LEVEL", "FATAL", 1);
+    setenv("TT_METAL_INSPECTOR_RPC", "0", 1);
+    unsetenv("TT_METAL_DPRINT_CORES");
+    unsetenv("TT_METAL_WATCHER");
+    unsetenv("TT_METAL_SLOW_DISPATCH_MODE");
+    unsetenv("TT_METAL_DEVICE_PROFILER");
+    unsetenv("TT_METAL_DEVICE_PROFILER_DISPATCH");
+    unsetenv("TT_METAL_DISPATCH_DATA_COLLECTION");
+    unsetenv("TTNN_CONFIG_OVERRIDES");
+}
+
+struct DeviceInput {
+    std::shared_ptr<tt::tt_metal::distributed::MeshBuffer> buffer;
+    ttwv::SignalBuffer desc{};
+};
+
+[[nodiscard]] DeviceInput create_device_input(
+    tt::tt_metal::distributed::MeshDevice& mesh_device, const std::vector<float>& signal) {
+    ttwv::SignalBuffer input_desc{
+        .dram_address = 0,
+        .length = signal.size(),
+        .stick_width = ttwv::kStickWidth,
+        .element_size_bytes = sizeof(float),
+    };
+    const tt::tt_metal::distributed::DeviceLocalBufferConfig input_local_config{
+        .page_size = input_desc.aligned_stick_bytes(),
+        .buffer_type = tt::tt_metal::BufferType::DRAM,
+    };
+    const tt::tt_metal::distributed::ReplicatedBufferConfig input_replicated_config{
+        .size = static_cast<uint64_t>(input_desc.physical_nbytes()),
+    };
     auto input_buffer =
-        tt::tt_metal::distributed::MeshBuffer::create(input_rep_conf, input_local_conf, mesh_device.get());
+        tt::tt_metal::distributed::MeshBuffer::create(input_replicated_config, input_local_config, &mesh_device);
+    input_desc.dram_address = input_buffer->get_backing_buffer()->address();
+    return DeviceInput{.buffer = std::move(input_buffer), .desc = input_desc};
+}
 
-    tt::tt_metal::distributed::DeviceLocalBufferConfig even_local_conf{
-        .page_size = layout.output.even.aligned_stick_bytes(32), .buffer_type = tt::tt_metal::BufferType::DRAM};
-    tt::tt_metal::distributed::ReplicatedBufferConfig even_rep_conf{
-        .size = static_cast<uint64_t>(layout.output.even.physical_nbytes())};
+template <typename Scheme>
+[[nodiscard]] ForwardOutput run_forward_once(
+    tt::tt_metal::distributed::MeshDevice& mesh_device,
+    tt::tt_metal::distributed::MeshCommandQueue& command_queue,
+    const tt::tt_metal::Buffer& input_buffer,
+    const ttwv::SignalBuffer& input_desc,
+    const bool read_outputs) {
+    const auto execution_start = std::chrono::steady_clock::now();
+    auto bundle =
+        ttwv::create_lifting_preprocess_program<Scheme>(TT_WAVELET_SOURCE_DIR, mesh_device, input_buffer, input_desc);
 
-    auto even_buffer = tt::tt_metal::distributed::MeshBuffer::create(even_rep_conf, even_local_conf, mesh_device.get());
+    ttwv::run_preprocess(command_queue, mesh_device, bundle);
+    const auto active_streams = ttwv::lwt<Scheme>(TT_WAVELET_SOURCE_DIR, mesh_device, command_queue, bundle);
 
-    tt::tt_metal::distributed::DeviceLocalBufferConfig odd_local_conf{
-        .page_size = layout.output.odd.aligned_stick_bytes(32), .buffer_type = tt::tt_metal::BufferType::DRAM};
-    tt::tt_metal::distributed::ReplicatedBufferConfig odd_rep_conf{
-        .size = static_cast<uint64_t>(layout.output.odd.physical_nbytes())};
+    if (!read_outputs) {
+        const auto execution_stop = std::chrono::steady_clock::now();
+        const std::chrono::duration<double, std::milli> execution_time_ms = execution_stop - execution_start;
+        return ForwardOutput{.execution_time_ms = execution_time_ms.count()};
+    }
 
-    auto odd_buffer = tt::tt_metal::distributed::MeshBuffer::create(odd_rep_conf, odd_local_conf, mesh_device.get());
-
-    layout.input.dram_address = input_buffer->get_backing_buffer()->address();
-    layout.output.even.dram_address = even_buffer->get_backing_buffer()->address();
-    layout.output.odd.dram_address = odd_buffer->get_backing_buffer()->address();
-    tt::tt_metal::distributed::EnqueueWriteMeshBuffer(command_queue, input_buffer, original_signal, false);
-
-    PadSplit1DDeviceProgram pad_split_program = create_pad_split_1d_program(
-        TT_WAVELET_SOURCE_DIR,
-        core,
-        *(input_buffer->get_backing_buffer()),
-        *(even_buffer->get_backing_buffer()),
-        *(odd_buffer->get_backing_buffer()),
-        layout);
-
-    tt::tt_metal::distributed::MeshWorkload workload;
-    auto dev_range = tt::tt_metal::distributed::MeshCoordinateRange(mesh_device->shape());
-    workload.add_program(dev_range, std::move(pad_split_program.program));
-    tt::tt_metal::distributed::EnqueueMeshWorkload(command_queue, workload, false);
-    tt::tt_metal::distributed::Finish(command_queue);
     std::vector<float> device_even_result;
     std::vector<float> device_odd_result;
-
+    auto even_buffer = active_streams.even.family == ttwv::LogicalStream::kEven
+                           ? bundle.buffers.even.at(active_streams.even.slot)
+                           : bundle.buffers.odd.at(active_streams.even.slot);
+    auto odd_buffer = active_streams.odd.family == ttwv::LogicalStream::kEven
+                          ? bundle.buffers.even.at(active_streams.odd.slot)
+                          : bundle.buffers.odd.at(active_streams.odd.slot);
     tt::tt_metal::distributed::EnqueueReadMeshBuffer(command_queue, device_even_result, even_buffer, true);
     tt::tt_metal::distributed::EnqueueReadMeshBuffer(command_queue, device_odd_result, odd_buffer, true);
+    const auto execution_stop = std::chrono::steady_clock::now();
 
-    SplitResult host_reference = materialize_reference_pad_split(original_signal, layout);
+    const size_t canonical_length = bundle.plan.output_length;
+    constexpr int canonical_start = static_cast<int>(Scheme::tap_size / 2);
+    const std::chrono::duration<double, std::milli> execution_time_ms = execution_stop - execution_start;
 
-    std::cout << "Original Signal: [ ";
-    for (float v : original_signal) {
-        std::cout << v << " ";
-    }
-    std::cout << "]\n\n";
+    return ForwardOutput{
+        .approximation = canonicalize_forward_output(
+            device_even_result,
+            bundle.plan.final_even_length,
+            canonical_length,
+            bundle.plan.final_even_shift,
+            canonical_start),
+        .detail = canonicalize_forward_output(
+            device_odd_result,
+            bundle.plan.final_odd_length,
+            canonical_length,
+            bundle.plan.final_odd_shift,
+            canonical_start),
+        .logical_length = canonical_length,
+        .execution_time_ms = execution_time_ms.count(),
+    };
+}
 
-    std::cout << "Padded length: " << layout.padded_length() << "\n\n";
+template <typename Scheme>
+[[nodiscard]] double time_transform_once_ms(
+    tt::tt_metal::distributed::MeshDevice& mesh_device,
+    tt::tt_metal::distributed::MeshCommandQueue& command_queue,
+    const tt::tt_metal::Buffer& input_buffer,
+    const ttwv::SignalBuffer& input_desc) {
+    auto bundle =
+        ttwv::create_lifting_preprocess_program<Scheme>(TT_WAVELET_SOURCE_DIR, mesh_device, input_buffer, input_desc);
 
-    std::cout << "Device Even Signal (length " << layout.output.even.length << "): [ ";
-    for (size_t i = 0; i < layout.output.even.length; ++i) {
-        std::cout << device_even_result[i] << " ";
-    }
-    std::cout << "]\n\n";
+    const auto start = std::chrono::steady_clock::now();
+    ttwv::run_preprocess(command_queue, mesh_device, bundle);
+    static_cast<void>(ttwv::lwt<Scheme>(TT_WAVELET_SOURCE_DIR, mesh_device, command_queue, bundle));
+    const auto stop = std::chrono::steady_clock::now();
+    const std::chrono::duration<double, std::milli> elapsed_ms = stop - start;
+    return elapsed_ms.count();
+}
 
-    std::cout << "Device Odd Signal (length " << layout.output.odd.length << "): [ ";
-    for (size_t i = 0; i < layout.output.odd.length; ++i) {
-        std::cout << device_odd_result[i] << " ";
-    }
-    std::cout << "]\n\n";
+}  // namespace
 
-    bool success = true;
-    for (size_t i = 0; i < layout.output.even.length; ++i) {
-        if (std::abs(device_even_result[i] - host_reference.even[i]) > 1e-5) {
-            std::cerr << "Even mismatch at index " << i << ": device=" << device_even_result[i]
-                      << ", host=" << host_reference.even[i] << std::endl;
-            success = false;
+int main(int argc, char** argv) {
+    try {
+        const CliOptions options = parse_cli(argc, argv);
+        configure_tt_runtime(options.benchmark);
+
+        const std::string wavelet_name = canonical_wavelet_name(options.wavelet_name);
+        const std::vector<float> signal =
+            options.generated_length.has_value()
+                ? generate_signal(*options.generated_length, options.signal_start, options.signal_step)
+                : read_signal_file(*options.signal_file);
+
+        constexpr int device_id{0};
+        auto mesh_device{tt::tt_metal::distributed::MeshDevice::create_unit_mesh(device_id)};
+        if (options.benchmark) {
+            mesh_device->enable_program_cache();
         }
-    }
+        tt::tt_metal::distributed::MeshCommandQueue& command_queue{mesh_device->mesh_command_queue()};
 
-    for (size_t i = 0; i < layout.output.odd.length; ++i) {
-        if (std::abs(device_odd_result[i] - host_reference.odd[i]) > 1e-5) {
-            std::cerr << "Odd mismatch at index " << i << ": device=" << device_odd_result[i]
-                      << ", host=" << host_reference.odd[i] << std::endl;
-            success = false;
+        DeviceInput input = create_device_input(*mesh_device, signal);
+        tt::tt_metal::distributed::EnqueueWriteMeshBuffer(command_queue, input.buffer, signal, false);
+        if (options.benchmark) {
+            tt::tt_metal::distributed::Finish(command_queue);
         }
-    }
 
-    if (success) {
-        std::cout << "SUCCESS!\n";
-    }
+        return ttwv::dispatch_scheme(wavelet_name, [&]<typename Scheme>() -> int {
+            if (options.benchmark) {
+                for (uint32_t i = 0; i < options.warmup_runs; ++i) {
+                    static_cast<void>(time_transform_once_ms<Scheme>(
+                        *mesh_device, command_queue, *(input.buffer->get_backing_buffer()), input.desc));
+                }
 
-    return success ? 0 : 1;
+                std::vector<double> times_ms;
+                times_ms.reserve(options.repeats);
+                for (uint32_t i = 0; i < options.repeats; ++i) {
+                    times_ms.push_back(
+                        time_transform_once_ms<Scheme>(
+                            *mesh_device, command_queue, *(input.buffer->get_backing_buffer()), input.desc));
+                }
+
+                const double mean_ms = std::accumulate(times_ms.begin(), times_ms.end(), 0.0) / times_ms.size();
+                const double min_ms = *std::min_element(times_ms.begin(), times_ms.end());
+                std::cerr << std::fixed << std::setprecision(6) << "lwt_execution_time_ms: " << mean_ms << '\n'
+                          << "lwt_min_time_ms: " << min_ms << '\n'
+                          << "lwt_repeats: " << options.repeats << '\n'
+                          << "lwt_warmup_runs: " << options.warmup_runs << '\n';
+                return EXIT_SUCCESS;
+            }
+
+            const ForwardOutput output = run_forward_once<Scheme>(
+                *mesh_device, command_queue, *(input.buffer->get_backing_buffer()), input.desc, true);
+
+            print_coeffs("tt-wavelet approximation coefficients", output.approximation, output.logical_length);
+            print_coeffs("tt-wavelet detail coefficients", output.detail, output.logical_length);
+
+            std::cerr << "lwt_execution_time_ms: " << std::fixed << std::setprecision(6) << output.execution_time_ms
+                      << '\n';
+            return EXIT_SUCCESS;
+        });
+    } catch (const std::exception& exc) {
+        std::cerr << exc.what() << '\n';
+        return EXIT_FAILURE;
+    }
 }

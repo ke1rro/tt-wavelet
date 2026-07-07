@@ -23,6 +23,7 @@ export TT_METAL_HOME="$ROOT_DIR/tt-metal"
 export TT_METAL_RUNTIME_ROOT="$ROOT_DIR/tt-metal"
 export CC=clang-20
 export CXX=clang++-20
+unset TT_METAL_SLOW_DISPATCH_MODE
 
 if [[ ${1-} == "--print" ]]; then
   cat <<ENV
@@ -31,6 +32,7 @@ export TT_METAL_HOME="$TT_METAL_HOME"
 export TT_METAL_RUNTIME_ROOT="$TT_METAL_RUNTIME_ROOT"
 export CC=clang-20
 export CXX=clang++-20
+unset TT_METAL_SLOW_DISPATCH_MODE
 ENV
   exit 0
 fi

@@ -13,8 +13,6 @@ set(TT_METAL_SOURCE_ROOT
 set(TT_METAL_PREBUILT_ROOT
     ""
     CACHE PATH "Path to prebuilt tt-metal package (include/ + lib/)")
-option(CI_BUILD_WAVELET_EXECUTABLE
-       "Build tt_wavelet_test executable in CI config" ON)
 
 if(TT_METAL_PREBUILT_ROOT)
   set(TT_METAL_INCLUDE_ROOT "${TT_METAL_PREBUILT_ROOT}/include")
@@ -37,6 +35,9 @@ set(METALIUM_INCLUDE_DIRS
     ${TT_METAL_INCLUDE_ROOT}/tt_stl/tt_stl)
 
 set(TT_WAVELET_INCLUDE_DIRS ${TT_WAVELET_SOURCE_ROOT}/tt-wavelet)
+
+option(CI_BUILD_WAVELET_EXECUTABLE "Build the tt-wavelet lwt executable in CI"
+       OFF)
 
 set(TT_WAVELET_LLK_INCLUDE_CANDIDATES
     ${TT_METAL_SOURCE_ROOT}/tt_metal/third_party/tt_llk/tt_llk_wormhole_b0/llk_lib
@@ -224,41 +225,31 @@ else()
                                                    "${METALIUM_INCLUDE_DIRS}")
 endif()
 
-add_library(
-  tt_wavelet_analysis OBJECT
-  "${TT_WAVELET_SOURCE_ROOT}/tt-wavelet/main.cpp"
-  "${TT_WAVELET_SOURCE_ROOT}/tt-wavelet/tt_wavelet/src/pad_split_device.cpp")
-target_include_directories(tt_wavelet_analysis PRIVATE ${METALIUM_INCLUDE_DIRS})
-target_include_directories(tt_wavelet_analysis
-                           PRIVATE ${TT_WAVELET_LLK_INCLUDE_DIRS})
-target_include_directories(tt_wavelet_analysis
-                           PRIVATE ${TT_WAVELET_INCLUDE_DIRS})
-target_compile_definitions(
-  tt_wavelet_analysis
-  PRIVATE TT_WAVELET_SOURCE_DIR="${TT_WAVELET_SOURCE_ROOT}/tt-wavelet")
-target_link_libraries(tt_wavelet_analysis PRIVATE Metalium::Metal)
-if(TT_METAL_PREBUILT_ROOT)
-  target_link_libraries(tt_wavelet_analysis PRIVATE ${METALIUM_RUNTIME_LIBS})
-endif()
-
 if(CI_BUILD_WAVELET_EXECUTABLE)
-  if(NOT TT_METAL_PREBUILT_ROOT)
-    message(
-      FATAL_ERROR
-        "CI_BUILD_WAVELET_EXECUTABLE=ON requires TT_METAL_PREBUILT_ROOT")
-  endif()
+  find_package(Python3 REQUIRED COMPONENTS Interpreter)
+  add_custom_target(
+    tt_wavelet_generate_static_schemes
+    COMMAND
+      ${Python3_EXECUTABLE} ${TT_WAVELET_SOURCE_ROOT}/scripts/generate_static_schemes.py
+      --json-dir ${TT_WAVELET_SOURCE_ROOT}/wavelets
+      --scheme-dir ${TT_WAVELET_SOURCE_ROOT}/tt-wavelet/tt_wavelet/include/schemes/generated
+      --registry ${TT_WAVELET_SOURCE_ROOT}/tt-wavelet/tt_wavelet/include/schemes/generated/registry.hpp
+    WORKING_DIRECTORY ${TT_WAVELET_SOURCE_ROOT}
+    COMMENT "Generating static TT-wavelet scheme headers")
 
   add_executable(
-    tt_wavelet_test
-    "${TT_WAVELET_SOURCE_ROOT}/tt-wavelet/main.cpp"
-    "${TT_WAVELET_SOURCE_ROOT}/tt-wavelet/tt_wavelet/src/pad_split_device.cpp")
-  target_include_directories(tt_wavelet_test PRIVATE ${METALIUM_INCLUDE_DIRS})
-  target_include_directories(tt_wavelet_test
-                             PRIVATE ${TT_WAVELET_LLK_INCLUDE_DIRS})
-  target_include_directories(tt_wavelet_test PRIVATE ${TT_WAVELET_INCLUDE_DIRS})
+    lwt
+    ${TT_WAVELET_SOURCE_ROOT}/tt-wavelet/main.cpp
+    ${TT_WAVELET_SOURCE_ROOT}/tt-wavelet/tt_wavelet/src/pad_split/device.cpp
+    ${TT_WAVELET_SOURCE_ROOT}/tt-wavelet/tt_wavelet/src/lifting/device.cpp)
+  add_dependencies(lwt tt_wavelet_generate_static_schemes)
+
   target_compile_definitions(
-    tt_wavelet_test
-    PRIVATE TT_WAVELET_SOURCE_DIR="${TT_WAVELET_SOURCE_ROOT}/tt-wavelet")
-  target_link_libraries(tt_wavelet_test PRIVATE Metalium::Metal)
-  target_link_libraries(tt_wavelet_test PRIVATE ${METALIUM_RUNTIME_LIBS})
+    lwt PRIVATE TT_WAVELET_SOURCE_DIR="${TT_WAVELET_SOURCE_ROOT}/tt-wavelet")
+
+  target_include_directories(
+    lwt PRIVATE ${TT_WAVELET_INCLUDE_DIRS} ${TT_WAVELET_SOURCE_ROOT}
+                ${TT_WAVELET_LLK_INCLUDE_DIRS} ${METALIUM_INCLUDE_DIRS})
+
+  target_link_libraries(lwt PRIVATE Metalium::Metal ${METALIUM_RUNTIME_LIBS})
 endif()
