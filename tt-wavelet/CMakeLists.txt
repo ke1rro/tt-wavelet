@@ -1,22 +1,9 @@
 if(BUILD_TT_WAVELET)
-  find_package(Python3 REQUIRED COMPONENTS Interpreter)
   add_compile_definitions(TT_WAVELET_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
-  set(PROJECT_NAME lwt)
-  add_custom_target(
-    tt_wavelet_generate_static_schemes
-    COMMAND
-      ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/scripts/generate_static_schemes.py
-      --json-dir ${CMAKE_SOURCE_DIR}/wavelets
-      --scheme-dir ${CMAKE_CURRENT_SOURCE_DIR}/tt_wavelet/include/schemes/generated
-      --registry ${CMAKE_CURRENT_SOURCE_DIR}/tt_wavelet/include/schemes/generated/registry.hpp
-    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-    COMMENT "Generating static TT-wavelet scheme headers")
   add_executable(
-    ${PROJECT_NAME} main.cpp tt_wavelet/src/pad_split/device.cpp
-        tt_wavelet/src/lifting/device.cpp)
-  add_dependencies(${PROJECT_NAME} tt_wavelet_generate_static_schemes)
-  set_target_properties(${PROJECT_NAME} PROPERTIES RUNTIME_OUTPUT_DIRECTORY
-                                                   "${CMAKE_BINARY_DIR}")
+    tt_wavelet_test
+          stencil.cpp
+  )
 
   set(TT_WAVELET_LLK_INCLUDE_CANDIDATES
       ${CMAKE_SOURCE_DIR}/tt-metal/tt_metal/third_party/tt_llk/tt_llk_wormhole_b0/llk_lib
@@ -34,9 +21,9 @@ if(BUILD_TT_WAVELET)
   set(TT_WAVELET_LLK_INCLUDE_DIRS)
 
   set(TT_WAVELET_INCLUDE_DIRS
-      ${CMAKE_SOURCE_DIR}/tt-metal ${CMAKE_SOURCE_DIR}/tt-metal/tt_metal/common
+      ${CMAKE_SOURCE_DIR}/tt-metal
+      ${CMAKE_SOURCE_DIR}/tt-metal/tt_metal/common
       ${CMAKE_SOURCE_DIR}/tt-metal/tt_metal/api/tt-metalium
-      ${CMAKE_SOURCE_DIR}
       ${CMAKE_CURRENT_SOURCE_DIR})
   foreach(LLK_INCLUDE_DIR IN LISTS TT_WAVELET_LLK_INCLUDE_CANDIDATES)
     if(EXISTS "${LLK_INCLUDE_DIR}")
@@ -45,12 +32,10 @@ if(BUILD_TT_WAVELET)
   endforeach()
 
   if(DEFINED METALIUM_INCLUDE_DIRS)
-    target_include_directories(${PROJECT_NAME}
-                               PRIVATE ${METALIUM_INCLUDE_DIRS})
+    target_include_directories(tt_wavelet_test PRIVATE ${METALIUM_INCLUDE_DIRS})
   endif()
-  target_include_directories(${PROJECT_NAME}
+  target_include_directories(tt_wavelet_test
                              PRIVATE ${TT_WAVELET_LLK_INCLUDE_DIRS})
-  target_include_directories(${PROJECT_NAME}
-                             PRIVATE ${TT_WAVELET_INCLUDE_DIRS})
-  target_link_libraries(${PROJECT_NAME} PRIVATE Metalium::Metal)
+  target_include_directories(tt_wavelet_test PRIVATE ${TT_WAVELET_INCLUDE_DIRS})
+  target_link_libraries(tt_wavelet_test PRIVATE Metalium::Metal)
 endif()
