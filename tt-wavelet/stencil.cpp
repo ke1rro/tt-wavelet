@@ -11,8 +11,6 @@
 #include "tt-metalium/mesh_device.hpp"
 #include "tt-metalium/tensor_accessor_args.hpp"
 #include "tt-metalium/tilize_utils.hpp"
-#include "tt_wavelet/include/pad_split.hpp"
-#include "tt_wavelet/include/pad_split_device.hpp"
 
 inline tt::tt_metal::CBHandle create_circular_buffer(
     tt::tt_metal::Program& program,
@@ -37,6 +35,23 @@ void print_array(const std::vector<T>& arr) {
     std::cout << "]" << std::endl;
 }
 
+template <typename T>
+void print_tile(const std::vector<T>& arr, const size_t rows = 32, const size_t cols = 32) {
+    std::cout << "[";
+    for (size_t i = 0; i < rows; ++i) {
+        if(i > 0) {
+            std::cout << std::endl << " ";
+        }
+
+        for (size_t j = 0; j < cols; ++j) {
+            if(j > 0) {
+                std::cout << ", ";
+            }
+            std::cout << arr[i * cols + j];
+        }
+    }
+    std::cout << "]" << std::endl;
+}
 
 void push_step_coeffs_to_compile_args(std::vector<uint32_t>& args, std::vector<float>& coeffs) {
     for (size_t i{0}; i < coeffs.size(); ++i) {
@@ -74,55 +89,32 @@ int main() {
     auto output_dram_buffer =
         tt::tt_metal::distributed::MeshBuffer::create(output_dram_config, buffer_config, mesh_device.get());
 
-    std::vector<float> halo(32, 0.0f);
-    std::vector<float> input(32, 0.0f);
+    std::vector<float> halo(32 * 32, 1.0f);
+    std::vector<float> input(32 * 32, 2.0f);
     std::vector<float> coeffs = {1.0f, 1.0f, 1.0f};
     const uint8_t k = coeffs.size();
-    const uint8_t halo_idx = halo_pad(k);
-
-    size_t sig = 1;
-    const size_t halo_signal_count = halo.size() - halo_idx;
-    for (size_t j = 0; j < halo_signal_count; ++j) {
-        halo[halo_idx + j] = static_cast<float>(sig++);
-    }
-
-    const size_t input_signal_count = std::min(input.size(), static_cast<size_t>(halo_idx));
-    for (size_t j = 0; j < input_signal_count; ++j) {
-        input[j] = static_cast<float>(sig++);
-    }
 
     std::cout << "Halo:";
-    print_array(halo);
+    print_tile(halo, 32, 32);
     std::cout << "\n";
     std::cout << "Input:";
-    print_array(input);
+    print_tile(input, 32, 32);
     std::cout << "\n";
-
-    std::vector<float> halo_tile(elems_per_tile, 0.0f);
-    std::vector<float> input_tile(elems_per_tile, 0.0f);
-    std::copy(halo.begin(), halo.end(), halo_tile.begin());
-    std::copy(input.begin(), input.end(), input_tile.begin());
 
     const std::vector<uint32_t> tile_shape = {1, 1, tt::constants::TILE_HEIGHT, tt::constants::TILE_WIDTH};
 
     // User-requested debug layout: keep first-row-contiguous row-major tile payload.
     // This bypasses host tilize so flattened tile content matches the custom 32x32 printout.
-    auto tiled_halo = halo_tile;
-    auto tiled_input = input_tile;
+    auto tiled_halo = tilize_nfaces(halo, 32, 32);
+    auto tiled_input = tilize_nfaces(input, 32, 32);
 
     std::vector<float> combined((tt::constants::TILE_HEIGHT * tt::constants::TILE_WIDTH) * 2);
-    std::cout << "Tiled Halo:" << std::endl;
-    print_array(tiled_halo);
-    std::cout << "Tiled Input:" << std::endl;
-    print_array(tiled_input);
 
     std::copy(tiled_halo.begin(), tiled_halo.end(), combined.begin());
     std::copy(
         tiled_input.begin(),
         tiled_input.end(),
         combined.begin() + tt::constants::TILE_HEIGHT * tt::constants::TILE_WIDTH);
-    std::cout << "Combined Tiles (halo followed by input):" << std::endl;
-    print_array(combined);
     tt::tt_metal::distributed::EnqueueWriteMeshBuffer(command_queue, input_dram_buffer, combined, false);
 
     constexpr tt::CBIndex halo_cb = tt::CBIndex::c_0;
@@ -188,7 +180,8 @@ int main() {
     std::vector<float> result_of_stencil;
     tt::tt_metal::distributed::EnqueueReadMeshBuffer(command_queue, result_of_stencil, output_dram_buffer);
     std::cout << "Result of stencil computation:" << std::endl;
-    print_array(result_of_stencil);
+    std::vector<float> result_row_major = untilize_nfaces(result_of_stencil, 32, 32);
+    print_tile(result_row_major, 32, 32);
 
     //     std::vector<float> debug_tiles;
     // tt::tt_metal::distributed::EnqueueReadMeshBuffer(command_queue, debug_tiles, output_dram_buffer);
