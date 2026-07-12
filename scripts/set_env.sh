@@ -21,6 +21,12 @@ ROOT_DIR=$(resolve_root)
 export TT_METAL_ROOT="$ROOT_DIR/tt-metal"
 export TT_METAL_HOME="$ROOT_DIR/tt-metal"
 export TT_METAL_RUNTIME_ROOT="$ROOT_DIR/tt-metal"
+TT_LIBRARY_PATH="$ROOT_DIR/build/tt-metal/tt_metal:$ROOT_DIR/build/tt-metal/lib:$ROOT_DIR/build/tt-metal/tt_metal/third_party/umd/device:$ROOT_DIR/build/tt-metal/tt_stl"
+if [[ -n "${LD_LIBRARY_PATH:-}" ]]; then
+  export LD_LIBRARY_PATH="$TT_LIBRARY_PATH:$LD_LIBRARY_PATH"
+else
+  export LD_LIBRARY_PATH="$TT_LIBRARY_PATH"
+fi
 export CC=clang-20
 export CXX=clang++-20
 unset TT_METAL_SLOW_DISPATCH_MODE
@@ -30,6 +36,7 @@ if [[ ${1-} == "--print" ]]; then
 export TT_METAL_ROOT="$TT_METAL_ROOT"
 export TT_METAL_HOME="$TT_METAL_HOME"
 export TT_METAL_RUNTIME_ROOT="$TT_METAL_RUNTIME_ROOT"
+export LD_LIBRARY_PATH="$LD_LIBRARY_PATH"
 export CC=clang-20
 export CXX=clang++-20
 unset TT_METAL_SLOW_DISPATCH_MODE

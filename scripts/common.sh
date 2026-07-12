@@ -81,6 +81,12 @@ export_tt_env() {
   export TT_METAL_ROOT="$TT_METAL_DIR"
   export TT_METAL_HOME="$TT_METAL_DIR"
   export TT_METAL_RUNTIME_ROOT="$TT_METAL_DIR"
+  local tt_library_path="$BUILD_DIR/tt-metal/tt_metal:$BUILD_DIR/tt-metal/lib:$BUILD_DIR/tt-metal/tt_metal/third_party/umd/device:$BUILD_DIR/tt-metal/tt_stl"
+  if [[ -n "${LD_LIBRARY_PATH:-}" ]]; then
+    export LD_LIBRARY_PATH="$tt_library_path:$LD_LIBRARY_PATH"
+  else
+    export LD_LIBRARY_PATH="$tt_library_path"
+  fi
   export CC=clang-20
   export CXX=clang++-20
   log INFO "TT env set: TT_METAL_HOME=$TT_METAL_HOME"
