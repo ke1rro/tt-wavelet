@@ -170,7 +170,7 @@ inline void _vertical_stencil_block(
 //   output: tile index in dst register for output (can be same as either input)
 template <uint8_t K>
 inline void _vertical_stencil(
-    const uint32_t h_packed[K], const uint32_t input1, const uint32_t input2, const uint32_t output, const uint32_t base = 8)
+    const uint32_t h_packed[K], const uint32_t input1, const uint32_t input2, const uint32_t output, const uint32_t base = 8) {
     math::set_dst_write_addr<DstTileShape::Tile32x32, UnpackDestination::SrcRegs>(0);
     // We use addr mod 3, so base=0
     ckernel::math::clear_addr_mod_base();
