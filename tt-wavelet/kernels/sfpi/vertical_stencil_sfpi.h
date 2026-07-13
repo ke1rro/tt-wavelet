@@ -194,9 +194,9 @@ inline void _vertical_stencil(
                 _get_block(output, 8, row, col),
                 _get_block(output, 8, row + 4, col),
                 _get_block(output, 8, row + 8, col),
-                _get_dst_base(base, 8, row, col),
-                _get_dst_base(base, 8, row + 4, col),
-                _get_dst_base(base, 8, row + 8, col)
+                _get_block(base, base, row, col),
+                _get_block(base, base, row + 4, col),
+                _get_block(base, base, row + 8, col)
             );
         }
     }
