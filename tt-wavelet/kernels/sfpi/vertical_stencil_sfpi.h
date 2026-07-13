@@ -163,8 +163,8 @@ inline void _vertical_stencil(
     TTI_STALLWAIT(p_stall::STALL_SFPU, p_stall::MATH);
 
     constexpr uint32_t ROW_STRIDE =
-        (K >= 14) ? 4 :
-        (K >= 10) ? 8 :
+        (K >= 10) ? 4 :
+        (K >= 6) ? 8 :
                     12;
 
 #pragma unroll 8
