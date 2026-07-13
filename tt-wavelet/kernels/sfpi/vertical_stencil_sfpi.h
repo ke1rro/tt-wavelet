@@ -72,9 +72,12 @@ inline void _vertical_stencil_rotate_() {
 //   f1: second 4x8 block (next 4 rows)
 //   f2: third 4x8 block (next 4 rows)
 //   f3: fourth 4x8 block (next 4 rows)
-//   g1: first 4x8 block output
-//   g2: second 4x8 block output
-//   g3: third 4x8 block output
+//   g0: first 4x8 block output
+//   g1: second 4x8 block output
+//   g2: third 4x8 block output
+//   base0: first 4x8 block base
+//   base1: second 4x8 block base
+//   base2: third 4x8 block base
 template <uint8_t K>
 inline void _vertical_stencil_block(
     const uint32_t h_packed[K],
@@ -84,7 +87,10 @@ inline void _vertical_stencil_block(
     const uint32_t dst_f3,
     const uint32_t dst_g0,
     const uint32_t dst_g1,
-    const uint32_t dst_g2
+    const uint32_t dst_g2,
+    const uint32_t dst_base0 = 512,
+    const uint32_t dst_base1 = 512,
+    const uint32_t dst_base2 = 512
 ) {
     // Register allocations
     const auto& f_0 = p_sfpu::LREG0;
@@ -102,17 +108,25 @@ inline void _vertical_stencil_block(
     TT_SFPLOAD(f_2, sfpi::SFPLOAD_MOD0_FMT_FP32, ADDR_MOD_3, dst_f2);      // f_2
     TT_SFPLOAD(f_3, sfpi::SFPLOAD_MOD0_FMT_FP32, ADDR_MOD_3, dst_f3);      // f_3
 
-    // Zero the output accumulators
-    if constexpr (K < 6) {
-        TTI_SFPMOV(0, p_sfpu::LCONST_0, g_0, 0); // g_0 = 0
-        TTI_SFPMOV(0, p_sfpu::LCONST_0, g_1, 0); // g_1 = 0
-        TTI_SFPMOV(0, p_sfpu::LCONST_0, g_2, 0); // g_2 = 0
-    } else if constexpr (K < 10) {
-        TTI_SFPMOV(0, p_sfpu::LCONST_0, g_0, 0); // g_0 = 0
-        TTI_SFPMOV(0, p_sfpu::LCONST_0, g_1, 0); // g_1 = 0
+    // Load base from Dst
+    if (dst_base0 < 512) {
+        TT_SFPLOAD(g_0, sfpi::SFPLOAD_MOD0_FMT_FP32, ADDR_MOD_3, dst_base0); // g_0
     } else {
         TTI_SFPMOV(0, p_sfpu::LCONST_0, g_0, 0); // g_0 = 0
     }
+
+    if(K < 10 && (dst_base1 < 512)) {
+        TT_SFPLOAD(g_1, sfpi::SFPLOAD_MOD0_FMT_FP32, ADDR_MOD_3, dst_base1); // g_1
+    } else if (K < 10) {
+        TTI_SFPMOV(0, p_sfpu::LCONST_0, g_1, 0); // g_1 = 0
+    }
+
+    if(K < 6 && (dst_base2 < 512)) {
+        TT_SFPLOAD(g_2, sfpi::SFPLOAD_MOD0_FMT_FP32, ADDR_MOD_3, dst_base2); // g_2
+    } else if (K < 6) {
+        TTI_SFPMOV(0, p_sfpu::LCONST_0, g_2, 0); // g_2 = 0
+    }
+
 
 #pragma unroll 17
     for (uint8_t j = 0; j < K; j++) {
@@ -156,7 +170,7 @@ inline void _vertical_stencil_block(
 //   output: tile index in dst register for output (can be same as either input)
 template <uint8_t K>
 inline void _vertical_stencil(
-    const uint32_t h_packed[K], const uint32_t input1, const uint32_t input2, const uint32_t output) {
+    const uint32_t h_packed[K], const uint32_t input1, const uint32_t input2, const uint32_t output, const uint32_t base = 8)
     math::set_dst_write_addr<DstTileShape::Tile32x32, UnpackDestination::SrcRegs>(0);
     // We use addr mod 3, so base=0
     ckernel::math::clear_addr_mod_base();
@@ -179,7 +193,10 @@ inline void _vertical_stencil(
                 _get_block(input1, input2, row + 12, col),
                 _get_block(output, 8, row, col),
                 _get_block(output, 8, row + 4, col),
-                _get_block(output, 8, row + 8, col)
+                _get_block(output, 8, row + 8, col),
+                _get_dst_base(base, 8, row, col),
+                _get_dst_base(base, 8, row + 4, col),
+                _get_dst_base(base, 8, row + 8, col)
             );
         }
     }
@@ -194,6 +211,6 @@ inline void vstencil_init() { MATH((ckernel::sfpu::_vertical_stencil_init())); }
 
 template <uint8_t K>
 inline void vstencil_tile(
-    std::array<uint32_t, K> h_packed, const uint32_t input1, const uint32_t input2, const uint32_t output) {
-    MATH((ckernel::sfpu::_vertical_stencil<K>(h_packed.data(), input1, input2, output)));
+    std::array<uint32_t, K> h_packed, const uint32_t input1, const uint32_t input2, const uint32_t output, const uint32_t base = 8) {
+    MATH((ckernel::sfpu::_vertical_stencil<K>(h_packed.data(), input1, input2, output, base)));
 }
