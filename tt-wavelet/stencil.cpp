@@ -208,7 +208,7 @@ int main(int argc, char** argv) {
             k = static_cast<uint8_t>(coeffs.size());
         } else {
             throw std::runtime_error(
-                "Usage: tt_wavelet_test <input_tensor_file> <kernel_file>\n"
+                "Usage: vertical_stencil_test <input_tensor_file> <kernel_file>\n"
                 "Both files should contain whitespace-separated floats; the kernel file must begin with K.");
         }
 

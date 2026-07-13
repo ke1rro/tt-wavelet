@@ -12,9 +12,8 @@ import numpy as np
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 DEFAULT_EXE_CANDIDATES = (
-    PROJECT_ROOT / "build" / "tt-wavelet" / "tt_wavelet_test",
-    PROJECT_ROOT / "build" / "tt_wavelet_test",
-    PROJECT_ROOT / "build" / "tt-wavelet_test",
+    PROJECT_ROOT / "build" / "vertical_stencil_test",
+    PROJECT_ROOT / "build" / "tt-wavelet" / "vertical_stencil_test",
 )
 
 
