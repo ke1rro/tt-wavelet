@@ -52,6 +52,7 @@ inline void _vertical_stencil_init() {
 
     addr_mod_t addr_mod{.dest = {.incr = 0}};
     addr_mod.set(ADDR_MOD_3);
+    math::reset_counters(p_setrwc::SET_ABD_F);
 
     // Enable all lanes
     TTI_SFPENCC(sfpi::SFPENCC_IMM12_BOTH, 0, 0, sfpi::SFPENCC_MOD1_EI_RI);
@@ -59,10 +60,10 @@ inline void _vertical_stencil_init() {
 
 // _vertical_stencil_rotate_(): 1-element up shift within subvectors of LReg0-LReg3.
 inline void _vertical_stencil_rotate_() {
-    TT_SFPTRANSP();
+    TT_SFPTRANSP(0, 0, 0, 0);
     TT_SFPSHFT2(0, 0, 0, sfpi::SFPSHFT2_MOD1_SUBVEC_CHAINED_COPY4);
     TTI_SFPNOP;
-    TT_SSFPTRANSP();
+    TT_SFPTRANSP(0, 0, 0, 0);
 }
 
 // Arguments:
@@ -132,6 +133,7 @@ inline void _vertical_stencil_block(
             TTI_SFPMAD(f_0, tmp, g_0, g_0, 0);
         }
 
+        TTI_SFPNOP; // Wait for SFPU to finish the multiply-accumulate before rotating
         if (j != K - 1) { // No need to rotate on the last iteration
             _vertical_stencil_rotate_();
         }
