@@ -22,13 +22,29 @@ using namespace sfpi;
 namespace ckernel {
 namespace sfpu {
 
-inline uint32_t _get_dst_base(const uint32_t tile_index, const uint32_t face_index) {
+inline uint32_t _get_dst_base(const uint32_t tile_index, const uint32_t face_index, const uint32_t row_index, const uint32_t col_index) {
     // addr uint10: XTTTFFRRCX
     // T: tile index (0-7) << 6
     // F: face index (0-3) << 4
     // R: row index (0,4,8,12)
     // C: column index (0 for even cols, 1 for odd cols)*2
-    return (tile_index << 6) + (face_index << 4);
+    return (tile_index << 6) + (face_index << 4) + row_index + (col_index << 1);
+}
+
+inline uint32_t _get_block(const uint32_t tile1, const uint32_t tile2, const uint32_t row_index, const uint32_t col_index) {
+    const uint32_t tile = (row_index < 32) ? tile1 : tile2;
+    const uint32_t col_face = (col_index < 2) ? 0 : 1;
+    const uint32_t row_face = ((row_index % 32) < 16) ? 0 : 1;
+    const uint32_t face = row_face * 2 + col_face;
+    const uint32_t row_offset = row_index % 16;
+    const uint32_t col_offset = col_index % 2;
+
+    return _get_dst_base(
+        tile,
+        face,
+        row_offset,
+        col_offset
+    );
 }
 
 inline void _vertical_stencil_init() {
@@ -36,6 +52,7 @@ inline void _vertical_stencil_init() {
 
     addr_mod_t addr_mod{.dest = {.incr = 0}};
     addr_mod.set(ADDR_MOD_3);
+    math::reset_counters(p_setrwc::SET_ABD_F);
 
     // Enable all lanes
     TTI_SFPENCC(sfpi::SFPENCC_IMM12_BOTH, 0, 0, sfpi::SFPENCC_MOD1_EI_RI);
@@ -43,10 +60,10 @@ inline void _vertical_stencil_init() {
 
 // _vertical_stencil_rotate_(): 1-element up shift within subvectors of LReg0-LReg3.
 inline void _vertical_stencil_rotate_() {
-    TT_SFPTRANSP();
+    TT_SFPTRANSP(0, 0, 0, 0);
     TT_SFPSHFT2(0, 0, 0, sfpi::SFPSHFT2_MOD1_SUBVEC_CHAINED_COPY4);
     TTI_SFPNOP;
-    TT_SSFPTRANSP();
+    TT_SFPTRANSP(0, 0, 0, 0);
 }
 
 // Arguments:
@@ -55,9 +72,12 @@ inline void _vertical_stencil_rotate_() {
 //   f1: second 4x8 block (next 4 rows)
 //   f2: third 4x8 block (next 4 rows)
 //   f3: fourth 4x8 block (next 4 rows)
-//   g1: first 4x8 block output
-//   g2: second 4x8 block output
-//   g3: third 4x8 block output
+//   g0: first 4x8 block output
+//   g1: second 4x8 block output
+//   g2: third 4x8 block output
+//   base0: first 4x8 block base
+//   base1: second 4x8 block base
+//   base2: third 4x8 block base
 template <uint8_t K>
 inline void _vertical_stencil_block(
     const uint32_t h_packed[K],
@@ -65,18 +85,21 @@ inline void _vertical_stencil_block(
     const uint32_t dst_f1,
     const uint32_t dst_f2,
     const uint32_t dst_f3,
+    const uint32_t dst_g0,
     const uint32_t dst_g1,
     const uint32_t dst_g2,
-    const uint32_t dst_g3
+    const uint32_t dst_base0 = 512,
+    const uint32_t dst_base1 = 512,
+    const uint32_t dst_base2 = 512
 ) {
     // Register allocations
     const auto& f_0 = p_sfpu::LREG0;
     const auto& f_1 = p_sfpu::LREG1;
     const auto& f_2 = p_sfpu::LREG2;
     const auto& f_3 = p_sfpu::LREG3;
-    const auto& g_1 = p_sfpu::LREG4;
-    const auto& g_2 = p_sfpu::LREG5;
-    const auto& g_3 = p_sfpu::LREG6;
+    const auto& g_0 = p_sfpu::LREG4;
+    const auto& g_1 = p_sfpu::LREG5;
+    const auto& g_2 = p_sfpu::LREG6;
     const auto& tmp = p_sfpu::LREG7;
 
     // Load inputs into LRegs, for odd columns offset of 2 is used
@@ -85,63 +108,58 @@ inline void _vertical_stencil_block(
     TT_SFPLOAD(f_2, sfpi::SFPLOAD_MOD0_FMT_FP32, ADDR_MOD_3, dst_f2);      // f_2
     TT_SFPLOAD(f_3, sfpi::SFPLOAD_MOD0_FMT_FP32, ADDR_MOD_3, dst_f3);      // f_3
 
-    // Zero the output accumulators
-    TTI_SFPMOV(0, p_sfpu::LCONST_0, g_1, 0); // g_1 = 0
-    if constexpr (K < 10) {
+    // Load base from Dst
+    if (dst_base0 < 512) {
+        TT_SFPLOAD(g_0, sfpi::SFPLOAD_MOD0_FMT_FP32, ADDR_MOD_3, dst_base0); // g_0
+    } else {
+        TTI_SFPMOV(0, p_sfpu::LCONST_0, g_0, 0); // g_0 = 0
+    }
+
+    if(K < 10 && (dst_base1 < 512)) {
+        TT_SFPLOAD(g_1, sfpi::SFPLOAD_MOD0_FMT_FP32, ADDR_MOD_3, dst_base1); // g_1
+    } else if (K < 10) {
+        TTI_SFPMOV(0, p_sfpu::LCONST_0, g_1, 0); // g_1 = 0
+    }
+
+    if(K < 6 && (dst_base2 < 512)) {
+        TT_SFPLOAD(g_2, sfpi::SFPLOAD_MOD0_FMT_FP32, ADDR_MOD_3, dst_base2); // g_2
+    } else if (K < 6) {
         TTI_SFPMOV(0, p_sfpu::LCONST_0, g_2, 0); // g_2 = 0
     }
 
-    if constexpr (K < 14) {
-        TTI_SFPMOV(0, p_sfpu::LCONST_0, g_3, 0); // g_3 = 0
-    }
 
 #pragma unroll 17
     for (uint8_t j = 0; j < K; j++) {
-        TT_SFPLOADI(tmp, sfpi::SFPLOADI_MOD0_UPPER, (h_packed[(k-1) - j]) >> 16);
-        TT_SFPLOADI(tmp, sfpi::SFPLOADI_MOD0_LOWER, (h_packed[(k-1) - j]) & 0xFFFF);
+        TT_SFPLOADI(tmp, sfpi::SFPLOADI_MOD0_UPPER, (h_packed[(K-1) - j]) >> 16);
+        TT_SFPLOADI(tmp, sfpi::SFPLOADI_MOD0_LOWER, (h_packed[(K-1) - j]) & 0xFFFF);
 
         if constexpr (K < 6) {
-            // g_0 += h[(k-1)-j] * f_3
-            TTI_SFPMAD(f_3, tmp, g_3, g_3, 0);
-        } else if constexpr (K < 10) {
-            // g_0 += h[(k-1)-j] * f_2
-            TTI_SFPMAD(f_2, tmp, g_2, g_2, 0);
-            // g_1 += h[(k-1)-j] * f_3
-            TTI_SFPMAD(f_3, tmp, g_3, g_3, 0);
-        } else {
+            TTI_SFPMAD(f_0, tmp, g_0, g_0, 0);
             TTI_SFPMAD(f_1, tmp, g_1, g_1, 0);
             TTI_SFPMAD(f_2, tmp, g_2, g_2, 0);
-            TTI_SFPMAD(f_3, tmp, g_3, g_3, 0);
+        } else if constexpr (K < 10) {
+            // g_0 += h[(k-1)-j] * f_0
+            TTI_SFPMAD(f_0, tmp, g_0, g_0, 0);
+            // g_1 += h[(k-1)-j] * f_1
+            TTI_SFPMAD(f_1, tmp, g_1, g_1, 0);
+        } else {
+            // g_0 += h[(k-1)-j] * f_0
+            TTI_SFPMAD(f_0, tmp, g_0, g_0, 0);
         }
 
+        TTI_SFPNOP; // Wait for SFPU to finish the multiply-accumulate before rotating
         if (j != K - 1) { // No need to rotate on the last iteration
             _vertical_stencil_rotate_();
         }
     }
 
     // Store results back to Dst
-    TT_SFPSTORE(g_1, sfpi::SFPSTORE_MOD0_FMT_FP32, ADDR_MOD_3, dst_g1); // g_1
-    if constexpr (K < 10) {
+    TT_SFPSTORE(g_0, sfpi::SFPSTORE_MOD0_FMT_FP32, ADDR_MOD_3, dst_g0); // g_0
+    if(K < 10 && (dst_g1 < 512)) {
+        TT_SFPSTORE(g_1, sfpi::SFPSTORE_MOD0_FMT_FP32, ADDR_MOD_3, dst_g1); // g_1
+    }
+    if(K < 6 && (dst_g2 < 512)) {
         TT_SFPSTORE(g_2, sfpi::SFPSTORE_MOD0_FMT_FP32, ADDR_MOD_3, dst_g2); // g_2
-    }
-    if constexpr (K < 14) {
-        TT_SFPSTORE(g_3, sfpi::SFPSTORE_MOD0_FMT_FP32, ADDR_MOD_3, dst_g3); // g_3
-    }
-}
-
-template <uint8_t K, uint32_t Rows>
-inline void _vertical_stencil(
-    const uint32_t h_packed[K],
-    const uint32_t input1,
-    const uint32_t input2,
-    const uint32_t output
-) {
-    constexpr uint32_t ROWS = std::min(Rows, static_cast<uint32_t>(16));
-    constexpr uint32_t ROW_STRIDE = 4;
-
-#pragma unroll 4
-    for (uint32_t row = 0; row < ROWS; row += ROW_STRIDE) {
-        _horizontal_stencil_block<K>(h_packed, input1 + row, input2 + row, output + row);
     }
 }
 
@@ -150,27 +168,37 @@ inline void _vertical_stencil(
 //   input1: first tile index in dst register
 //   input2: second tile index in dst register
 //   output: tile index in dst register for output (can be same as either input)
-//
-// Template arguments:
-//   Rows: minimum number of Rows of the tile to be processed
-template <uint8_t K, uint32_t Rows>
-inline void _horizontal_stencil(
-    const uint32_t h_packed[K], const uint32_t input1, const uint32_t input2, const uint32_t output) {
+template <uint8_t K>
+inline void _vertical_stencil(
+    const uint32_t h_packed[K], const uint32_t input1, const uint32_t input2, const uint32_t output, const uint32_t base = 8) {
     math::set_dst_write_addr<DstTileShape::Tile32x32, UnpackDestination::SrcRegs>(0);
     // We use addr mod 3, so base=0
     ckernel::math::clear_addr_mod_base();
     TTI_STALLWAIT(p_stall::STALL_SFPU, p_stall::MATH);
 
-    _horizontal_stencil_face<K, Rows>(
-        h_packed, _get_dst_base(input1, 0), _get_dst_base(input1, 1), _get_dst_base(output, 0));
-    _horizontal_stencil_face<K, Rows>(
-        h_packed, _get_dst_base(input1, 1), _get_dst_base(input2, 0), _get_dst_base(output, 1));
+    constexpr uint32_t ROW_STRIDE =
+        (K >= 10) ? 4 :
+        (K >= 6) ? 8 :
+                    12;
 
-    if constexpr (Rows > 16) {
-        _horizontal_stencil_face<K, Rows - 16>(
-            h_packed, _get_dst_base(input1, 2), _get_dst_base(input1, 3), _get_dst_base(output, 2));
-        _horizontal_stencil_face<K, Rows - 16>(
-            h_packed, _get_dst_base(input1, 3), _get_dst_base(input2, 2), _get_dst_base(output, 3));
+#pragma unroll 8
+    for (uint32_t row = 0; row < 32; row += ROW_STRIDE) {
+#pragma unroll 4
+        for (uint32_t col = 0; col < 4; col += 1) {
+            _vertical_stencil_block<K>(
+                h_packed,
+                _get_block(input1, input2, row, col),
+                _get_block(input1, input2, row + 4, col),
+                _get_block(input1, input2, row + 8, col),
+                _get_block(input1, input2, row + 12, col),
+                _get_block(output, 8, row, col),
+                _get_block(output, 8, row + 4, col),
+                _get_block(output, 8, row + 8, col),
+                _get_block(base, base, row, col),
+                _get_block(base, base, row + 4, col),
+                _get_block(base, base, row + 8, col)
+            );
+        }
     }
 
     TTI_STALLWAIT(p_stall::STALL_CFG, p_stall::WAIT_SFPU);
@@ -179,16 +207,10 @@ inline void _horizontal_stencil(
 }  // namespace sfpu
 }  // namespace ckernel
 
-inline void hstencil_init() { MATH((ckernel::sfpu::_horizontal_stencil_init())); }
-
-template <uint8_t K, uint32_t Rows = 32>
-inline void hstencil_tile(
-    std::array<uint32_t, K> h_packed, const uint32_t input1, const uint32_t input2, const uint32_t output) {
-    MATH((ckernel::sfpu::_horizontal_stencil<K, Rows>(h_packed.data(), input1, input2, output)));
-}
+inline void vstencil_init() { MATH((ckernel::sfpu::_vertical_stencil_init())); }
 
 template <uint8_t K>
-inline void hstencil_row(
-    std::array<uint32_t, K> h_packed, const uint32_t input1, const uint32_t input2, const uint32_t output) {
-    hstencil_tile<K, 1>(h_packed, input1, input2, output);
+inline void vstencil_tile(
+    std::array<uint32_t, K> h_packed, const uint32_t input1, const uint32_t input2, const uint32_t output, const uint32_t base = 8) {
+    MATH((ckernel::sfpu::_vertical_stencil<K>(h_packed.data(), input1, input2, output, base)));
 }
