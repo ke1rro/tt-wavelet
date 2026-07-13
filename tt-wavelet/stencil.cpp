@@ -248,9 +248,9 @@ int main(int argc, char** argv) {
         push_step_coeffs_to_compile_args(compute_compile_args, coeffs);
 
         std::vector<UnpackToDestMode> unpack_to_dest_mode(NUM_CIRCULAR_BUFFERS, UnpackToDestMode::Default);
-        unpack_to_dest_mode[kLwtSrcTile0Cb] = UnpackToDestMode::UnpackToDestFp32;
-        unpack_to_dest_mode[kLwtSrcTile1Cb] = UnpackToDestMode::UnpackToDestFp32;
-        unpack_to_dest_mode[kLwtBaseTileCb] = UnpackToDestMode::UnpackToDestFp32;
+        unpack_to_dest_mode[halo_cb] = UnpackToDestMode::UnpackToDestFp32;
+        unpack_to_dest_mode[input_cb] = UnpackToDestMode::UnpackToDestFp32;
+        unpack_to_dest_mode[output_cb] = UnpackToDestMode::UnpackToDestFp32;
         tt::tt_metal::TensorAccessorArgs(input_dram_buffer->get_backing_buffer()).append_to(reader_compile_args);
         tt::tt_metal::TensorAccessorArgs(output_dram_buffer->get_backing_buffer()).append_to(writer_compile_args);
         auto reader_ker = tt::tt_metal::CreateKernel(
