@@ -5,7 +5,7 @@
 
 void kernel_main() {
     const uint32_t output_addr = get_arg_val<uint32_t>(0);
-    const uint32_t cb_output = get_compile_time_arg_val(0);
+    constexpr uint32_t cb_output = get_compile_time_arg_val(0);
     constexpr uint32_t t_size_b = get_tile_size(cb_output);
     const auto output_args = TensorAccessorArgs<1>();
     const auto output = TensorAccessor(output_args, output_addr, t_size_b);
