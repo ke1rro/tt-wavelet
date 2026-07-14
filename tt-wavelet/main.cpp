@@ -33,6 +33,7 @@ struct CliOptions {
     std::optional<size_t> generated_length;
     double signal_start{1.0};
     double signal_step{1.0};
+    ttwv::LwtMemoryMode memory_mode{ttwv::LwtMemoryMode::kConeStreamed};
     std::string wavelet_name;
     std::optional<std::filesystem::path> signal_file;
 };
@@ -61,6 +62,7 @@ struct TimedTransform {
     return "Usage:\n"
            "  lwt <scheme|scheme_path> <signal_file>\n"
            "  lwt --benchmark [--repeats N] [--warmup-runs N] "
+           "[--memory-mode cone|resident] "
            "[--length N --signal-start X --signal-step X | <signal_file>] <scheme|scheme_path>";
 }
 
@@ -122,6 +124,15 @@ struct TimedTransform {
             options.signal_start = parse_double(require_option_value(argc, argv, i, arg), "--signal-start");
         } else if (arg == "--signal-step") {
             options.signal_step = parse_double(require_option_value(argc, argv, i, arg), "--signal-step");
+        } else if (arg == "--memory-mode") {
+            const std::string mode = require_option_value(argc, argv, i, arg);
+            if (mode == "cone") {
+                options.memory_mode = ttwv::LwtMemoryMode::kConeStreamed;
+            } else if (mode == "resident") {
+                options.memory_mode = ttwv::LwtMemoryMode::kResidentSharded;
+            } else {
+                throw std::runtime_error("--memory-mode must be 'cone' or 'resident'.");
+            }
         } else if (arg.rfind("--", 0) == 0) {
             throw std::runtime_error("Unknown option: " + arg + "\n" + usage());
         } else {
@@ -273,7 +284,40 @@ template <typename Scheme>
     tt::tt_metal::distributed::MeshCommandQueue& command_queue,
     const tt::tt_metal::Buffer& input_buffer,
     const ttwv::SignalBuffer& input_desc,
+    const ttwv::LwtMemoryMode memory_mode,
     const bool read_outputs) {
+    if (memory_mode == ttwv::LwtMemoryMode::kConeStreamed) {
+        auto executable = ttwv::create_cone_streamed_lwt_executable<Scheme>(
+            TT_WAVELET_SOURCE_DIR, mesh_device, input_buffer, input_desc);
+        ttwv::prepare_cone_streamed_lwt(command_queue, executable);
+
+        const auto execution_start = std::chrono::steady_clock::now();
+        ttwv::execute_cone_streamed_lwt(mesh_device, command_queue, executable);
+        const auto execution_stop = std::chrono::steady_clock::now();
+        const std::chrono::duration<double, std::milli> execution_time_ms = execution_stop - execution_start;
+        if (!read_outputs) {
+            return ForwardOutput{.execution_time_ms = execution_time_ms.count()};
+        }
+
+        std::vector<float> device_even_result;
+        std::vector<float> device_odd_result;
+        tt::tt_metal::distributed::EnqueueReadMeshBuffer(
+            command_queue, device_even_result, executable.buffers.final_even, true);
+        tt::tt_metal::distributed::EnqueueReadMeshBuffer(
+            command_queue, device_odd_result, executable.buffers.final_odd, true);
+        const auto& plan = executable.plan.full_plan;
+        const size_t canonical_length = plan.output_length;
+        constexpr int canonical_start = static_cast<int>(Scheme::tap_size / 2);
+        return ForwardOutput{
+            .approximation = canonicalize_forward_output(
+                device_even_result, plan.final_even_length, canonical_length, plan.final_even_shift, canonical_start),
+            .detail = canonicalize_forward_output(
+                device_odd_result, plan.final_odd_length, canonical_length, plan.final_odd_shift, canonical_start),
+            .logical_length = canonical_length,
+            .execution_time_ms = execution_time_ms.count(),
+        };
+    }
+
     auto executable =
         ttwv::create_resident_lwt_executable<Scheme>(TT_WAVELET_SOURCE_DIR, mesh_device, input_buffer, input_desc);
     ttwv::prepare_resident_lwt(command_queue, executable);
@@ -320,7 +364,23 @@ template <typename Scheme>
     tt::tt_metal::distributed::MeshDevice& mesh_device,
     tt::tt_metal::distributed::MeshCommandQueue& command_queue,
     const tt::tt_metal::Buffer& input_buffer,
-    const ttwv::SignalBuffer& input_desc) {
+    const ttwv::SignalBuffer& input_desc,
+    const ttwv::LwtMemoryMode memory_mode) {
+    if (memory_mode == ttwv::LwtMemoryMode::kConeStreamed) {
+        auto executable = ttwv::create_cone_streamed_lwt_executable<Scheme>(
+            TT_WAVELET_SOURCE_DIR, mesh_device, input_buffer, input_desc);
+        ttwv::prepare_cone_streamed_lwt(command_queue, executable);
+
+        const auto start = std::chrono::steady_clock::now();
+        ttwv::execute_cone_streamed_lwt(mesh_device, command_queue, executable);
+        const auto stop = std::chrono::steady_clock::now();
+        const std::chrono::duration<double, std::milli> elapsed_ms = stop - start;
+        return TimedTransform{
+            .execution_time_ms = elapsed_ms.count(),
+            .scheduler = executable.buffers.scheduler,
+        };
+    }
+
     auto executable =
         ttwv::create_resident_lwt_executable<Scheme>(TT_WAVELET_SOURCE_DIR, mesh_device, input_buffer, input_desc);
     ttwv::prepare_resident_lwt(command_queue, executable);
@@ -365,7 +425,11 @@ int main(int argc, char** argv) {
             if (options.benchmark) {
                 for (uint32_t i = 0; i < options.warmup_runs; ++i) {
                     static_cast<void>(time_transform_once<Scheme>(
-                        *mesh_device, command_queue, *(input.buffer->get_backing_buffer()), input.desc));
+                        *mesh_device,
+                        command_queue,
+                        *(input.buffer->get_backing_buffer()),
+                        input.desc,
+                        options.memory_mode));
                 }
 
                 std::vector<double> times_ms;
@@ -373,7 +437,11 @@ int main(int argc, char** argv) {
                 ttwv::LiftingSchedulerTelemetry scheduler;
                 for (uint32_t i = 0; i < options.repeats; ++i) {
                     TimedTransform sample = time_transform_once<Scheme>(
-                        *mesh_device, command_queue, *(input.buffer->get_backing_buffer()), input.desc);
+                        *mesh_device,
+                        command_queue,
+                        *(input.buffer->get_backing_buffer()),
+                        input.desc,
+                        options.memory_mode);
                     times_ms.push_back(sample.execution_time_ms);
                     scheduler = std::move(sample.scheduler);
                 }
@@ -399,10 +467,16 @@ int main(int argc, char** argv) {
                           << "lwt_stddev_time_ms: " << stddev_ms << '\n'
                           << "lwt_repeats: " << options.repeats << '\n'
                           << "lwt_warmup_runs: " << options.warmup_runs << '\n'
+                          << "lwt_memory_mode: "
+                          << (scheduler.memory_mode == ttwv::LwtMemoryMode::kConeStreamed ? "cone" : "resident") << '\n'
                           << "lwt_max_group_count: " << scheduler.max_group_count << '\n'
                           << "lwt_groups_per_shard: " << scheduler.groups_per_shard << '\n'
                           << "lwt_active_core_count: " << scheduler.active_core_count << '\n';
                 std::cerr << "lwt_shard_elements: " << scheduler.shard_elements << '\n'
+                          << "lwt_chunk_count: " << scheduler.chunk_count << '\n'
+                          << "lwt_groups_per_chunk: " << scheduler.groups_per_chunk << '\n'
+                          << "lwt_workspace_elements: " << scheduler.workspace_elements << '\n'
+                          << "lwt_max_dependency_overhead: " << scheduler.max_dependency_overhead << '\n'
                           << "lwt_zero_work_cores_per_route:";
                 for (const uint32_t count : scheduler.zero_work_cores_per_route) {
                     std::cerr << ' ' << count;
@@ -412,7 +486,12 @@ int main(int argc, char** argv) {
             }
 
             const ForwardOutput output = run_forward_once<Scheme>(
-                *mesh_device, command_queue, *(input.buffer->get_backing_buffer()), input.desc, true);
+                *mesh_device,
+                command_queue,
+                *(input.buffer->get_backing_buffer()),
+                input.desc,
+                options.memory_mode,
+                true);
 
             print_coeffs("tt-wavelet approximation coefficients", output.approximation, output.logical_length);
             print_coeffs("tt-wavelet detail coefficients", output.detail, output.logical_length);

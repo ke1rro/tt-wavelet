@@ -31,6 +31,18 @@ enum RouteConfigWord : uint32_t {
     kRouteSourceOffset = 7,
     kRouteBaseOffset = 8,
     kRouteSourceLeftPad = 9,
+    kRouteOutputOffset = 10,
+    kRouteGroupCount = 11,
+};
+
+constexpr uint32_t kConeChunkConfigWordCount = 16;
+constexpr uint32_t kConeChunkConfigPageBytes = kConeChunkConfigWordCount * sizeof(uint32_t);
+
+enum ConeChunkConfigWord : uint32_t {
+    kConeInitialEvenBegin = 0,
+    kConeInitialEvenLength = 1,
+    kConeInitialOddBegin = 2,
+    kConeInitialOddLength = 3,
 };
 
 }  // namespace ttwv::device_protocol

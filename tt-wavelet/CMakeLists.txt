@@ -57,7 +57,7 @@ if(BUILD_TT_WAVELET)
 
   add_executable(
     ${TT_WAVELET_LWT_TARGET} main.cpp tt_wavelet/src/pad_split/device.cpp
-    tt_wavelet/src/lifting/device.cpp)
+    tt_wavelet/src/lifting/device.cpp tt_wavelet/src/lifting/cone_device.cpp)
   add_dependencies(${TT_WAVELET_LWT_TARGET} tt_wavelet_generate_static_schemes)
   tt_wavelet_configure_metal_target(${TT_WAVELET_LWT_TARGET})
 

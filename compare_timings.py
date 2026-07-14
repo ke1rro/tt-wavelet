@@ -20,23 +20,31 @@ TT_MEDIAN_TIME_PATTERN = re.compile(r"lwt_median_time_ms:\s*([0-9eE+.\-]+)")
 TT_P10_TIME_PATTERN = re.compile(r"lwt_p10_time_ms:\s*([0-9eE+.\-]+)")
 TT_P90_TIME_PATTERN = re.compile(r"lwt_p90_time_ms:\s*([0-9eE+.\-]+)")
 TT_STDDEV_TIME_PATTERN = re.compile(r"lwt_stddev_time_ms:\s*([0-9eE+.\-]+)")
+TT_MEMORY_MODE_PATTERN = re.compile(r"lwt_memory_mode:\s*(\S+)")
 TT_MAX_GROUP_COUNT_PATTERN = re.compile(r"lwt_max_group_count:\s*(\d+)")
 TT_GROUPS_PER_SHARD_PATTERN = re.compile(r"lwt_groups_per_shard:\s*(\d+)")
 TT_ACTIVE_CORE_COUNT_PATTERN = re.compile(r"lwt_active_core_count:\s*(\d+)")
 TT_SHARD_ELEMENTS_PATTERN = re.compile(r"lwt_shard_elements:\s*(\d+)")
+TT_CHUNK_COUNT_PATTERN = re.compile(r"lwt_chunk_count:\s*(\d+)")
+TT_GROUPS_PER_CHUNK_PATTERN = re.compile(r"lwt_groups_per_chunk:\s*(\d+)")
+TT_WORKSPACE_ELEMENTS_PATTERN = re.compile(r"lwt_workspace_elements:\s*(\d+)")
+TT_MAX_DEPENDENCY_OVERHEAD_PATTERN = re.compile(
+    r"lwt_max_dependency_overhead:\s*([0-9eE+.\-]+)"
+)
 TT_ZERO_WORK_CORES_PATTERN = re.compile(r"lwt_zero_work_cores_per_route:\s*([0-9 ]*)")
 DEFAULT_LOG_CANDIDATES = [
     PROJECT_ROOT / "wavelets.log",
     PROJECT_ROOT / "wavelets (1).log",
 ]
 VENV_PYTHON = PROJECT_ROOT / ".venv" / "bin" / "python3"
-TimingKey = tuple[str, int, float, float, str]
+TimingKey = tuple[str, int, float, float, str, str]
 
 
 @dataclass(frozen=True)
 class TTTimingResult:
     mean_s: float
     min_s: float
+    memory_mode: str = ""
     median_s: float | None = None
     p10_s: float | None = None
     p90_s: float | None = None
@@ -45,6 +53,10 @@ class TTTimingResult:
     groups_per_shard: int | None = None
     active_core_count: int | None = None
     shard_elements: int | None = None
+    chunk_count: int | None = None
+    groups_per_chunk: int | None = None
+    workspace_elements: int | None = None
+    max_dependency_overhead: float | None = None
     zero_work_cores_per_route: str = ""
 
 
@@ -140,6 +152,12 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--tt-memory-mode",
+        choices=["cone", "resident"],
+        default="cone",
+        help="TT-wavelet memory backend (default: %(default)s).",
+    )
+    parser.add_argument(
         "--pywt-repeats",
         type=int,
         default=1,
@@ -226,7 +244,11 @@ def sh_quote(value: str) -> str:
 
 
 def build_tt_command(args: argparse.Namespace, wavelet: str, length: int, signal_file: Path) -> str:
-    command_args = [str(TT_WAVELET_BINARY)]
+    command_args = [
+        str(TT_WAVELET_BINARY),
+        "--memory-mode",
+        args.tt_memory_mode,
+    ]
     if args.tt_mode == "benchmark":
         command_args.extend(
             [
@@ -278,6 +300,11 @@ def optional_pattern_int(pattern: re.Pattern[str], text: str) -> int | None:
     return int(match.group(1)) if match is not None else None
 
 
+def optional_pattern_string(pattern: re.Pattern[str], text: str) -> str:
+    match = pattern.search(text)
+    return match.group(1) if match is not None else ""
+
+
 def run_tt_wavelet(command: str) -> TTTimingResult:
     completed = subprocess.run(
         ["bash", "-lc", command],
@@ -302,6 +329,7 @@ def run_tt_wavelet(command: str) -> TTTimingResult:
     return TTTimingResult(
         mean_s=mean_s,
         min_s=min_s,
+        memory_mode=optional_pattern_string(TT_MEMORY_MODE_PATTERN, completed.stderr),
         median_s=optional_pattern_float(TT_MEDIAN_TIME_PATTERN, completed.stderr, 0.001),
         p10_s=optional_pattern_float(TT_P10_TIME_PATTERN, completed.stderr, 0.001),
         p90_s=optional_pattern_float(TT_P90_TIME_PATTERN, completed.stderr, 0.001),
@@ -310,6 +338,12 @@ def run_tt_wavelet(command: str) -> TTTimingResult:
         groups_per_shard=optional_pattern_int(TT_GROUPS_PER_SHARD_PATTERN, completed.stderr),
         active_core_count=optional_pattern_int(TT_ACTIVE_CORE_COUNT_PATTERN, completed.stderr),
         shard_elements=optional_pattern_int(TT_SHARD_ELEMENTS_PATTERN, completed.stderr),
+        chunk_count=optional_pattern_int(TT_CHUNK_COUNT_PATTERN, completed.stderr),
+        groups_per_chunk=optional_pattern_int(TT_GROUPS_PER_CHUNK_PATTERN, completed.stderr),
+        workspace_elements=optional_pattern_int(TT_WORKSPACE_ELEMENTS_PATTERN, completed.stderr),
+        max_dependency_overhead=optional_pattern_float(
+            TT_MAX_DEPENDENCY_OVERHEAD_PATTERN, completed.stderr
+        ),
         zero_work_cores_per_route=(" ".join(zero_work_match.group(1).split()) if zero_work_match else ""),
     )
 
@@ -365,6 +399,7 @@ def row_key(row: dict[str, object]) -> TimingKey:
         float(row["signal_start"]),
         float(row["signal_step"]),
         str(row["pywt_mode"]),
+        str(row["lwt_memory_mode"]),
     )
 
 
@@ -401,6 +436,7 @@ def base_row(
             "signal_start": args.signal_start,
             "signal_step": args.signal_step,
             "pywt_mode": args.pywt_mode,
+            "lwt_memory_mode": args.tt_memory_mode,
             "pywt_runs": 0,
             "tt_wavelet_runs": 0,
             "status": "pending",
@@ -505,10 +541,15 @@ def main() -> int:
         "tt_wavelet_p90_s",
         "tt_wavelet_stddev_s",
         "tt_wavelet_runs",
+        "lwt_memory_mode",
         "lwt_max_group_count",
         "lwt_groups_per_shard",
         "lwt_active_core_count",
         "lwt_shard_elements",
+        "lwt_chunk_count",
+        "lwt_groups_per_chunk",
+        "lwt_workspace_elements",
+        "lwt_max_dependency_overhead",
         "lwt_zero_work_cores_per_route",
         "speedup_pywt_over_tt",
         "status",
@@ -581,10 +622,45 @@ def main() -> int:
                             row["tt_wavelet_p10_s"] = tt_result.p10_s or ""
                             row["tt_wavelet_p90_s"] = tt_result.p90_s or ""
                             row["tt_wavelet_stddev_s"] = tt_result.stddev_s or ""
-                            row["lwt_max_group_count"] = tt_result.max_group_count or ""
-                            row["lwt_groups_per_shard"] = tt_result.groups_per_shard or ""
-                            row["lwt_active_core_count"] = tt_result.active_core_count or ""
-                            row["lwt_shard_elements"] = tt_result.shard_elements or ""
+                            row["lwt_memory_mode"] = tt_result.memory_mode or args.tt_memory_mode
+                            row["lwt_max_group_count"] = (
+                                tt_result.max_group_count
+                                if tt_result.max_group_count is not None
+                                else ""
+                            )
+                            row["lwt_groups_per_shard"] = (
+                                tt_result.groups_per_shard
+                                if tt_result.groups_per_shard is not None
+                                else ""
+                            )
+                            row["lwt_active_core_count"] = (
+                                tt_result.active_core_count
+                                if tt_result.active_core_count is not None
+                                else ""
+                            )
+                            row["lwt_shard_elements"] = (
+                                tt_result.shard_elements
+                                if tt_result.shard_elements is not None
+                                else ""
+                            )
+                            row["lwt_chunk_count"] = (
+                                tt_result.chunk_count if tt_result.chunk_count is not None else ""
+                            )
+                            row["lwt_groups_per_chunk"] = (
+                                tt_result.groups_per_chunk
+                                if tt_result.groups_per_chunk is not None
+                                else ""
+                            )
+                            row["lwt_workspace_elements"] = (
+                                tt_result.workspace_elements
+                                if tt_result.workspace_elements is not None
+                                else ""
+                            )
+                            row["lwt_max_dependency_overhead"] = (
+                                tt_result.max_dependency_overhead
+                                if tt_result.max_dependency_overhead is not None
+                                else ""
+                            )
                             row["lwt_zero_work_cores_per_route"] = tt_result.zero_work_cores_per_route
                         else:
                             if args.tt_warmup_runs > 0 and should_warmup(
