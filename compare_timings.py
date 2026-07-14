@@ -6,6 +6,7 @@ import re
 import subprocess
 import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
@@ -15,12 +16,36 @@ TT_WAVELET_ENV = PROJECT_ROOT / "scripts" / "set_env.sh"
 DEFAULT_SCHEMES_DIR = PROJECT_ROOT / "wavelets"
 TT_TIME_PATTERN = re.compile(r"lwt_execution_time_ms:\s*([0-9eE+.\-]+)")
 TT_MIN_TIME_PATTERN = re.compile(r"lwt_min_time_ms:\s*([0-9eE+.\-]+)")
+TT_MEDIAN_TIME_PATTERN = re.compile(r"lwt_median_time_ms:\s*([0-9eE+.\-]+)")
+TT_P10_TIME_PATTERN = re.compile(r"lwt_p10_time_ms:\s*([0-9eE+.\-]+)")
+TT_P90_TIME_PATTERN = re.compile(r"lwt_p90_time_ms:\s*([0-9eE+.\-]+)")
+TT_STDDEV_TIME_PATTERN = re.compile(r"lwt_stddev_time_ms:\s*([0-9eE+.\-]+)")
+TT_MAX_GROUP_COUNT_PATTERN = re.compile(r"lwt_max_group_count:\s*(\d+)")
+TT_GROUPS_PER_SHARD_PATTERN = re.compile(r"lwt_groups_per_shard:\s*(\d+)")
+TT_ACTIVE_CORE_COUNT_PATTERN = re.compile(r"lwt_active_core_count:\s*(\d+)")
+TT_SHARD_ELEMENTS_PATTERN = re.compile(r"lwt_shard_elements:\s*(\d+)")
+TT_ZERO_WORK_CORES_PATTERN = re.compile(r"lwt_zero_work_cores_per_route:\s*([0-9 ]*)")
 DEFAULT_LOG_CANDIDATES = [
     PROJECT_ROOT / "wavelets.log",
     PROJECT_ROOT / "wavelets (1).log",
 ]
 VENV_PYTHON = PROJECT_ROOT / ".venv" / "bin" / "python3"
 TimingKey = tuple[str, int, float, float, str]
+
+
+@dataclass(frozen=True)
+class TTTimingResult:
+    mean_s: float
+    min_s: float
+    median_s: float | None = None
+    p10_s: float | None = None
+    p90_s: float | None = None
+    stddev_s: float | None = None
+    max_group_count: int | None = None
+    groups_per_shard: int | None = None
+    active_core_count: int | None = None
+    shard_elements: int | None = None
+    zero_work_cores_per_route: str = ""
 
 
 def ensure_runtime_packages(require_pywt: bool) -> None:
@@ -74,6 +99,12 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=10000,
         help="Signal length step (default: %(default)s).",
+    )
+    parser.add_argument(
+        "--lengths",
+        nargs="+",
+        type=int,
+        help="Explicit signal lengths; overrides --length-start/--length-stop/--length-step.",
     )
     parser.add_argument(
         "--signal-start",
@@ -237,7 +268,17 @@ def tt_benchmark_env() -> dict[str, str]:
     return env
 
 
-def run_tt_wavelet(command: str) -> tuple[float, float]:
+def optional_pattern_float(pattern: re.Pattern[str], text: str, scale: float = 1.0) -> float | None:
+    match = pattern.search(text)
+    return float(match.group(1)) * scale if match is not None else None
+
+
+def optional_pattern_int(pattern: re.Pattern[str], text: str) -> int | None:
+    match = pattern.search(text)
+    return int(match.group(1)) if match is not None else None
+
+
+def run_tt_wavelet(command: str) -> TTTimingResult:
     completed = subprocess.run(
         ["bash", "-lc", command],
         cwd=PROJECT_ROOT,
@@ -257,7 +298,20 @@ def run_tt_wavelet(command: str) -> tuple[float, float]:
     min_match = TT_MIN_TIME_PATTERN.search(completed.stderr)
     mean_s = float(match.group(1)) / 1000.0
     min_s = float(min_match.group(1)) / 1000.0 if min_match is not None else mean_s
-    return mean_s, min_s
+    zero_work_match = TT_ZERO_WORK_CORES_PATTERN.search(completed.stderr)
+    return TTTimingResult(
+        mean_s=mean_s,
+        min_s=min_s,
+        median_s=optional_pattern_float(TT_MEDIAN_TIME_PATTERN, completed.stderr, 0.001),
+        p10_s=optional_pattern_float(TT_P10_TIME_PATTERN, completed.stderr, 0.001),
+        p90_s=optional_pattern_float(TT_P90_TIME_PATTERN, completed.stderr, 0.001),
+        stddev_s=optional_pattern_float(TT_STDDEV_TIME_PATTERN, completed.stderr, 0.001),
+        max_group_count=optional_pattern_int(TT_MAX_GROUP_COUNT_PATTERN, completed.stderr),
+        groups_per_shard=optional_pattern_int(TT_GROUPS_PER_SHARD_PATTERN, completed.stderr),
+        active_core_count=optional_pattern_int(TT_ACTIVE_CORE_COUNT_PATTERN, completed.stderr),
+        shard_elements=optional_pattern_int(TT_SHARD_ELEMENTS_PATTERN, completed.stderr),
+        zero_work_cores_per_route=(" ".join(zero_work_match.group(1).split()) if zero_work_match else ""),
+    )
 
 
 def time_repeats(run_once: Callable[[], None], repeats: int) -> tuple[float | None, float | None]:
@@ -395,12 +449,16 @@ def main() -> int:
         import pywt  # noqa: E402
     from tqdm import tqdm  # noqa: E402
 
-    if args.length_step <= 0:
-        raise ValueError("--length-step must be positive.")
-    if args.length_start <= 0 or args.length_stop <= 0:
-        raise ValueError("Signal lengths must be positive.")
-    if args.length_start > args.length_stop:
-        raise ValueError("--length-start cannot exceed --length-stop.")
+    if args.lengths is not None:
+        if any(length <= 0 for length in args.lengths):
+            raise ValueError("Signal lengths must be positive.")
+    else:
+        if args.length_step <= 0:
+            raise ValueError("--length-step must be positive.")
+        if args.length_start <= 0 or args.length_stop <= 0:
+            raise ValueError("Signal lengths must be positive.")
+        if args.length_start > args.length_stop:
+            raise ValueError("--length-start cannot exceed --length-stop.")
 
     if needs_tt and not TT_WAVELET_BINARY.exists():
         raise FileNotFoundError(
@@ -424,7 +482,9 @@ def main() -> int:
     if not args.schemes_dir.exists():
         raise FileNotFoundError(f"Schemes directory not found: {args.schemes_dir}")
 
-    lengths = list(range(args.length_start, args.length_stop + 1, args.length_step))
+    lengths = args.lengths if args.lengths is not None else list(
+        range(args.length_start, args.length_stop + 1, args.length_step)
+    )
 
     csv_path = args.csv
     csv_path.parent.mkdir(parents=True, exist_ok=True)
@@ -440,7 +500,16 @@ def main() -> int:
         "pywt_runs",
         "tt_wavelet_mean_s",
         "tt_wavelet_min_s",
+        "tt_wavelet_median_s",
+        "tt_wavelet_p10_s",
+        "tt_wavelet_p90_s",
+        "tt_wavelet_stddev_s",
         "tt_wavelet_runs",
+        "lwt_max_group_count",
+        "lwt_groups_per_shard",
+        "lwt_active_core_count",
+        "lwt_shard_elements",
+        "lwt_zero_work_cores_per_route",
         "speedup_pywt_over_tt",
         "status",
         "error",
@@ -505,7 +574,18 @@ def main() -> int:
 
                     if needs_tt:
                         if args.tt_mode == "benchmark":
-                            tt_mean, tt_min = run_tt_wavelet(command)
+                            tt_result = run_tt_wavelet(command)
+                            tt_mean = tt_result.mean_s
+                            tt_min = tt_result.min_s
+                            row["tt_wavelet_median_s"] = tt_result.median_s or ""
+                            row["tt_wavelet_p10_s"] = tt_result.p10_s or ""
+                            row["tt_wavelet_p90_s"] = tt_result.p90_s or ""
+                            row["tt_wavelet_stddev_s"] = tt_result.stddev_s or ""
+                            row["lwt_max_group_count"] = tt_result.max_group_count or ""
+                            row["lwt_groups_per_shard"] = tt_result.groups_per_shard or ""
+                            row["lwt_active_core_count"] = tt_result.active_core_count or ""
+                            row["lwt_shard_elements"] = tt_result.shard_elements or ""
+                            row["lwt_zero_work_cores_per_route"] = tt_result.zero_work_cores_per_route
                         else:
                             if args.tt_warmup_runs > 0 and should_warmup(
                                 args.tt_warmup_scope,
@@ -519,7 +599,7 @@ def main() -> int:
                                     run_tt_wavelet(command)
 
                             tt_mean, tt_min = value_repeats(
-                                lambda: run_tt_wavelet(command)[0],
+                                lambda: run_tt_wavelet(command).mean_s,
                                 args.tt_repeats,
                             )
                         row["tt_wavelet_mean_s"] = tt_mean if tt_mean is not None else ""

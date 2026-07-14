@@ -1,5 +1,6 @@
 #include <cstdint>
 
+#include "../../tt_wavelet/include/lifting/step.hpp"
 #include "api/dataflow/dataflow_api.h"
 #include "lwt_tile_row_major_utils.hpp"
 
@@ -49,6 +50,47 @@ ALWI void route_barrier(
     }
 }
 
+template <typename DstAccessor>
+ALWI void write_output_groups(
+    const DstAccessor& dst,
+    const uint32_t cb_output,
+    const uint32_t tile_nbytes,
+    const uint32_t output_length,
+    const uint32_t global_group_begin,
+    const uint32_t local_group_count) {
+    for (uint32_t local_group = 0; local_group < local_group_count; ++local_group) {
+        cb_wait_front(cb_output, 2);
+        const uint32_t output_full_tile = get_read_ptr(cb_output);
+        const uint32_t output_tail_tile = output_full_tile + tile_nbytes;
+        const uint32_t global_group = global_group_begin + local_group;
+        const uint32_t group_base = global_group * ttwv::device_protocol::kLwtGroupOutputElements;
+
+        for (uint32_t row = 0; row < ttwv::device_protocol::kLwtRowsPerGroup; ++row) {
+            const uint32_t row_base = group_base + row * ttwv::device_protocol::kLwtOutputBlocksPerRow *
+                                                       ttwv::device_protocol::kLwtHalfStickElements;
+            row_major::write_lwt_half_block(dst, output_full_tile, row, 0, row_base, output_length, ttwv::kStickWidth);
+            row_major::write_lwt_half_block(
+                dst,
+                output_full_tile,
+                row,
+                ttwv::device_protocol::kLwtHalfStickElements,
+                row_base + ttwv::device_protocol::kLwtHalfStickElements,
+                output_length,
+                ttwv::kStickWidth);
+            row_major::write_lwt_half_block(
+                dst,
+                output_tail_tile,
+                row,
+                0,
+                row_base + 2 * ttwv::device_protocol::kLwtHalfStickElements,
+                output_length,
+                ttwv::kStickWidth);
+        }
+
+        cb_pop_front(cb_output, 2);
+    }
+}
+
 }  // namespace
 
 void kernel_main() {
@@ -61,7 +103,8 @@ void kernel_main() {
     constexpr uint32_t route_barrier_semaphore_id = get_compile_time_arg_val(3);
     constexpr uint32_t tile_nbytes = get_tile_size(cb_output);
     constexpr auto config_args = TensorAccessorArgs<4>();
-    constexpr auto dst_args = TensorAccessorArgs<config_args.next_compile_time_args_offset()>();
+    constexpr auto resident_dst_args = TensorAccessorArgs<config_args.next_compile_time_args_offset()>();
+    constexpr auto final_dst_args = TensorAccessorArgs<resident_dst_args.next_compile_time_args_offset()>();
 
     const auto config = TensorAccessor(config_args, route_config_addr, ttwv::device_protocol::kRouteConfigPageBytes);
     const uint32_t barrier_args_base = 2 + route_count * 2;
@@ -71,45 +114,21 @@ void kernel_main() {
 
     for (uint32_t route_index = 0; route_index < route_count; ++route_index) {
         const uint32_t* route = load_route_config(config, cb_config, route_index);
+        const uint32_t route_type = route[ttwv::device_protocol::kRouteType];
         const uint32_t output_addr = route[ttwv::device_protocol::kRouteOutputAddr];
         const uint32_t output_length = route[ttwv::device_protocol::kRouteOutputLength];
         const uint32_t route_range_arg_base = 2 + route_index * 2;
         const uint32_t global_group_begin = get_arg_val<uint32_t>(route_range_arg_base);
         const uint32_t local_group_count = get_arg_val<uint32_t>(route_range_arg_base + 1);
 
-        const auto dst = TensorAccessor(dst_args, output_addr, ttwv::device_protocol::kStickBytes);
-
-        for (uint32_t local_group = 0; local_group < local_group_count; ++local_group) {
-            cb_wait_front(cb_output, 2);
-            const uint32_t output_full_tile = get_read_ptr(cb_output);
-            const uint32_t output_tail_tile = output_full_tile + tile_nbytes;
-            const uint32_t global_group = global_group_begin + local_group;
-            const uint32_t group_base = global_group * ttwv::device_protocol::kLwtGroupOutputElements;
-
-            for (uint32_t row = 0; row < ttwv::device_protocol::kLwtRowsPerGroup; ++row) {
-                const uint32_t row_base = group_base + row * ttwv::device_protocol::kLwtOutputBlocksPerRow *
-                                                           ttwv::device_protocol::kLwtHalfStickElements;
-                row_major::write_lwt_half_block(
-                    dst, output_full_tile, row, 0, row_base, output_length, ttwv::kStickWidth);
-                row_major::write_lwt_half_block(
-                    dst,
-                    output_full_tile,
-                    row,
-                    ttwv::device_protocol::kLwtHalfStickElements,
-                    row_base + ttwv::device_protocol::kLwtHalfStickElements,
-                    output_length,
-                    ttwv::kStickWidth);
-                row_major::write_lwt_half_block(
-                    dst,
-                    output_tail_tile,
-                    row,
-                    0,
-                    row_base + 2 * ttwv::device_protocol::kLwtHalfStickElements,
-                    output_length,
-                    ttwv::kStickWidth);
-            }
-
-            cb_pop_front(cb_output, 2);
+        const bool writes_final_dram = route_type == static_cast<uint32_t>(ttwv::StepType::kScaleEven) ||
+                                       route_type == static_cast<uint32_t>(ttwv::StepType::kScaleOdd);
+        if (writes_final_dram) {
+            const auto dst = TensorAccessor(final_dst_args, output_addr, ttwv::device_protocol::kStickBytes);
+            write_output_groups(dst, cb_output, tile_nbytes, output_length, global_group_begin, local_group_count);
+        } else {
+            const auto dst = TensorAccessor(resident_dst_args, output_addr, ttwv::device_protocol::kStickBytes);
+            write_output_groups(dst, cb_output, tile_nbytes, output_length, global_group_begin, local_group_count);
         }
 
         noc_async_write_barrier();

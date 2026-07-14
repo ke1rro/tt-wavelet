@@ -44,6 +44,19 @@ struct ForwardOutput {
     double execution_time_ms{0.0};
 };
 
+struct TimedTransform {
+    double execution_time_ms{0.0};
+    ttwv::LiftingSchedulerTelemetry scheduler{};
+};
+
+[[nodiscard]] double percentile(const std::vector<double>& sorted_values, const double fraction) {
+    const double position = fraction * static_cast<double>(sorted_values.size() - 1);
+    const size_t lower = static_cast<size_t>(position);
+    const size_t upper = std::min(lower + 1, sorted_values.size() - 1);
+    const double weight = position - static_cast<double>(lower);
+    return sorted_values[lower] * (1.0 - weight) + sorted_values[upper] * weight;
+}
+
 [[nodiscard]] std::string usage() {
     return "Usage:\n"
            "  lwt <scheme|scheme_path> <signal_file>\n"
@@ -261,47 +274,41 @@ template <typename Scheme>
     const tt::tt_metal::Buffer& input_buffer,
     const ttwv::SignalBuffer& input_desc,
     const bool read_outputs) {
-    const auto execution_start = std::chrono::steady_clock::now();
-    auto bundle =
-        ttwv::create_lifting_preprocess_program<Scheme>(TT_WAVELET_SOURCE_DIR, mesh_device, input_buffer, input_desc);
+    auto executable =
+        ttwv::create_resident_lwt_executable<Scheme>(TT_WAVELET_SOURCE_DIR, mesh_device, input_buffer, input_desc);
+    ttwv::prepare_resident_lwt(command_queue, executable);
 
-    ttwv::run_preprocess(command_queue, mesh_device, bundle);
-    const auto active_streams = ttwv::lwt<Scheme>(TT_WAVELET_SOURCE_DIR, mesh_device, command_queue, bundle);
+    const auto execution_start = std::chrono::steady_clock::now();
+    ttwv::execute_resident_lwt(mesh_device, command_queue, executable);
+    const auto execution_stop = std::chrono::steady_clock::now();
+    const std::chrono::duration<double, std::milli> execution_time_ms = execution_stop - execution_start;
 
     if (!read_outputs) {
-        const auto execution_stop = std::chrono::steady_clock::now();
-        const std::chrono::duration<double, std::milli> execution_time_ms = execution_stop - execution_start;
         return ForwardOutput{.execution_time_ms = execution_time_ms.count()};
     }
 
     std::vector<float> device_even_result;
     std::vector<float> device_odd_result;
-    auto even_buffer = active_streams.even.family == ttwv::LogicalStream::kEven
-                           ? bundle.buffers.even.at(active_streams.even.slot)
-                           : bundle.buffers.odd.at(active_streams.even.slot);
-    auto odd_buffer = active_streams.odd.family == ttwv::LogicalStream::kEven
-                          ? bundle.buffers.even.at(active_streams.odd.slot)
-                          : bundle.buffers.odd.at(active_streams.odd.slot);
-    tt::tt_metal::distributed::EnqueueReadMeshBuffer(command_queue, device_even_result, even_buffer, true);
-    tt::tt_metal::distributed::EnqueueReadMeshBuffer(command_queue, device_odd_result, odd_buffer, true);
-    const auto execution_stop = std::chrono::steady_clock::now();
+    tt::tt_metal::distributed::EnqueueReadMeshBuffer(
+        command_queue, device_even_result, executable.buffers.final_even, true);
+    tt::tt_metal::distributed::EnqueueReadMeshBuffer(
+        command_queue, device_odd_result, executable.buffers.final_odd, true);
 
-    const size_t canonical_length = bundle.plan.output_length;
+    const size_t canonical_length = executable.plan.output_length;
     constexpr int canonical_start = static_cast<int>(Scheme::tap_size / 2);
-    const std::chrono::duration<double, std::milli> execution_time_ms = execution_stop - execution_start;
 
     return ForwardOutput{
         .approximation = canonicalize_forward_output(
             device_even_result,
-            bundle.plan.final_even_length,
+            executable.plan.final_even_length,
             canonical_length,
-            bundle.plan.final_even_shift,
+            executable.plan.final_even_shift,
             canonical_start),
         .detail = canonicalize_forward_output(
             device_odd_result,
-            bundle.plan.final_odd_length,
+            executable.plan.final_odd_length,
             canonical_length,
-            bundle.plan.final_odd_shift,
+            executable.plan.final_odd_shift,
             canonical_start),
         .logical_length = canonical_length,
         .execution_time_ms = execution_time_ms.count(),
@@ -309,20 +316,23 @@ template <typename Scheme>
 }
 
 template <typename Scheme>
-[[nodiscard]] double time_transform_once_ms(
+[[nodiscard]] TimedTransform time_transform_once(
     tt::tt_metal::distributed::MeshDevice& mesh_device,
     tt::tt_metal::distributed::MeshCommandQueue& command_queue,
     const tt::tt_metal::Buffer& input_buffer,
     const ttwv::SignalBuffer& input_desc) {
-    auto bundle =
-        ttwv::create_lifting_preprocess_program<Scheme>(TT_WAVELET_SOURCE_DIR, mesh_device, input_buffer, input_desc);
+    auto executable =
+        ttwv::create_resident_lwt_executable<Scheme>(TT_WAVELET_SOURCE_DIR, mesh_device, input_buffer, input_desc);
+    ttwv::prepare_resident_lwt(command_queue, executable);
 
     const auto start = std::chrono::steady_clock::now();
-    ttwv::run_preprocess(command_queue, mesh_device, bundle);
-    static_cast<void>(ttwv::lwt<Scheme>(TT_WAVELET_SOURCE_DIR, mesh_device, command_queue, bundle));
+    ttwv::execute_resident_lwt(mesh_device, command_queue, executable);
     const auto stop = std::chrono::steady_clock::now();
     const std::chrono::duration<double, std::milli> elapsed_ms = stop - start;
-    return elapsed_ms.count();
+    return TimedTransform{
+        .execution_time_ms = elapsed_ms.count(),
+        .scheduler = executable.buffers.scheduler,
+    };
 }
 
 }  // namespace
@@ -354,24 +364,50 @@ int main(int argc, char** argv) {
         return ttwv::dispatch_scheme(wavelet_name, [&]<typename Scheme>() -> int {
             if (options.benchmark) {
                 for (uint32_t i = 0; i < options.warmup_runs; ++i) {
-                    static_cast<void>(time_transform_once_ms<Scheme>(
+                    static_cast<void>(time_transform_once<Scheme>(
                         *mesh_device, command_queue, *(input.buffer->get_backing_buffer()), input.desc));
                 }
 
                 std::vector<double> times_ms;
                 times_ms.reserve(options.repeats);
+                ttwv::LiftingSchedulerTelemetry scheduler;
                 for (uint32_t i = 0; i < options.repeats; ++i) {
-                    times_ms.push_back(
-                        time_transform_once_ms<Scheme>(
-                            *mesh_device, command_queue, *(input.buffer->get_backing_buffer()), input.desc));
+                    TimedTransform sample = time_transform_once<Scheme>(
+                        *mesh_device, command_queue, *(input.buffer->get_backing_buffer()), input.desc);
+                    times_ms.push_back(sample.execution_time_ms);
+                    scheduler = std::move(sample.scheduler);
                 }
 
                 const double mean_ms = std::accumulate(times_ms.begin(), times_ms.end(), 0.0) / times_ms.size();
                 const double min_ms = *std::min_element(times_ms.begin(), times_ms.end());
+                std::vector<double> sorted_times = times_ms;
+                std::sort(sorted_times.begin(), sorted_times.end());
+                const double median_ms = percentile(sorted_times, 0.5);
+                const double p10_ms = percentile(sorted_times, 0.1);
+                const double p90_ms = percentile(sorted_times, 0.9);
+                const double squared_deviation_sum = std::accumulate(
+                    times_ms.begin(), times_ms.end(), 0.0, [mean_ms](const double sum, const double value) {
+                        const double deviation = value - mean_ms;
+                        return sum + deviation * deviation;
+                    });
+                const double stddev_ms = std::sqrt(squared_deviation_sum / times_ms.size());
                 std::cerr << std::fixed << std::setprecision(6) << "lwt_execution_time_ms: " << mean_ms << '\n'
                           << "lwt_min_time_ms: " << min_ms << '\n'
+                          << "lwt_median_time_ms: " << median_ms << '\n'
+                          << "lwt_p10_time_ms: " << p10_ms << '\n'
+                          << "lwt_p90_time_ms: " << p90_ms << '\n'
+                          << "lwt_stddev_time_ms: " << stddev_ms << '\n'
                           << "lwt_repeats: " << options.repeats << '\n'
-                          << "lwt_warmup_runs: " << options.warmup_runs << '\n';
+                          << "lwt_warmup_runs: " << options.warmup_runs << '\n'
+                          << "lwt_max_group_count: " << scheduler.max_group_count << '\n'
+                          << "lwt_groups_per_shard: " << scheduler.groups_per_shard << '\n'
+                          << "lwt_active_core_count: " << scheduler.active_core_count << '\n';
+                std::cerr << "lwt_shard_elements: " << scheduler.shard_elements << '\n'
+                          << "lwt_zero_work_cores_per_route:";
+                for (const uint32_t count : scheduler.zero_work_cores_per_route) {
+                    std::cerr << ' ' << count;
+                }
+                std::cerr << '\n';
                 return EXIT_SUCCESS;
             }
 

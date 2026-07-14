@@ -1,13 +1,17 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <memory>
 #include <tt_stl/assert.hpp>
 #include <utility>
+#include <vector>
 
+#include "tt-metalium/core_coord.hpp"
 #include "tt-metalium/distributed.hpp"
+#include "tt-metalium/host_api.hpp"
 #include "tt-metalium/mesh_buffer.hpp"
 #include "tt-metalium/mesh_device.hpp"
 #include "tt_wavelet/include/lifting/plan.hpp"
@@ -16,42 +20,48 @@
 
 namespace ttwv {
 
-struct MeshBufferPair {
-    std::shared_ptr<tt::tt_metal::distributed::MeshBuffer> ping;
-    std::shared_ptr<tt::tt_metal::distributed::MeshBuffer> pong;
-
-    [[nodiscard]] const std::shared_ptr<tt::tt_metal::distributed::MeshBuffer>& at(
-        const StreamSlot slot) const noexcept {
-        return slot == StreamSlot::kPing ? ping : pong;
-    }
+struct LiftingSchedulerTelemetry {
+    uint32_t max_group_count{0};
+    uint32_t groups_per_shard{0};
+    uint32_t active_core_count{0};
+    uint32_t shard_elements{0};
+    std::vector<uint32_t> zero_work_cores_per_route;
 };
 
 struct LiftingWorkingBuffers {
-    MeshBufferPair even{};
-    MeshBufferPair odd{};
+    std::array<std::shared_ptr<tt::tt_metal::distributed::MeshBuffer>, 3> slots{};
+    std::shared_ptr<tt::tt_metal::distributed::MeshBuffer> final_even{};
+    std::shared_ptr<tt::tt_metal::distributed::MeshBuffer> final_odd{};
     std::shared_ptr<tt::tt_metal::distributed::MeshBuffer> route_config{};
+    std::vector<tt::tt_metal::CoreCoord> cores;
+    LiftingSchedulerTelemetry scheduler{};
+
+    [[nodiscard]] const std::shared_ptr<tt::tt_metal::distributed::MeshBuffer>& at(
+        const StorageSlot slot) const noexcept {
+        return slots[static_cast<size_t>(slot)];
+    }
 };
 
-struct LiftingPreprocessDeviceProgram {
+struct ResidentLwtExecutable {
     LiftingForwardPlan plan{};
     LiftingWorkingBuffers buffers{};
     PadSplit1DDeviceProgram preprocess{};
-    const tt::tt_metal::Buffer* input_buffer{};
+    tt::tt_metal::Program lifting{};
 };
 
 [[nodiscard]] LiftingWorkingBuffers create_lifting_working_buffers(
-    tt::tt_metal::distributed::MeshDevice& mesh_device, const PadSplit1DLayout& provisional_layout, size_t route_count);
+    tt::tt_metal::distributed::MeshDevice& mesh_device, const LiftingForwardPlan& provisional_plan);
 
-[[nodiscard]] LiftingActiveStreams lwt_static(
+[[nodiscard]] tt::tt_metal::Program create_lwt_device_program(
     const std::filesystem::path& kernel_root,
     tt::tt_metal::distributed::MeshDevice& mesh_device,
-    tt::tt_metal::distributed::MeshCommandQueue& command_queue,
-    const LiftingPreprocessDeviceProgram& bundle,
+    const LiftingForwardPlan& plan,
+    const LiftingWorkingBuffers& buffers,
     const char* compute_scheme_header,
     const char* compute_scheme_type);
 
 template <typename Scheme>
-[[nodiscard]] LiftingPreprocessDeviceProgram create_lifting_preprocess_program(
+[[nodiscard]] ResidentLwtExecutable create_resident_lwt_executable(
     const std::filesystem::path& kernel_root,
     tt::tt_metal::distributed::MeshDevice& mesh_device,
     const tt::tt_metal::Buffer& input_buffer,
@@ -61,46 +71,37 @@ template <typename Scheme>
 
     SignalBuffer planned_input = input_desc;
     planned_input.dram_address = input_buffer.address();
-    const uint32_t wavelet_pad = static_cast<uint32_t>(Scheme::tap_size - 1);
-    const PadSplit1DLayout provisional_layout = make_pad_split_1d_layout(
-        planned_input, 0, 0, Pad1DConfig{.mode = BoundaryMode::kSymmetric, .left = wavelet_pad, .right = wavelet_pad});
-
-    LiftingWorkingBuffers buffers =
-        create_lifting_working_buffers(mesh_device, provisional_layout, executable_step_count<Scheme>());
+    const LiftingForwardPlan provisional_plan = make_forward_lifting_plan<Scheme>(planned_input, 0, 0);
+    LiftingWorkingBuffers buffers = create_lifting_working_buffers(mesh_device, provisional_plan);
     const LiftingForwardPlan plan = make_forward_lifting_plan<Scheme>(
         planned_input,
-        buffers.even.ping->get_backing_buffer()->address(),
-        buffers.odd.ping->get_backing_buffer()->address());
+        buffers.at(StorageSlot::kA)->get_backing_buffer()->address(),
+        buffers.at(StorageSlot::kB)->get_backing_buffer()->address());
 
     PadSplit1DDeviceProgram preprocess = create_pad_split_1d_program(
         kernel_root,
         mesh_device,
         input_buffer,
-        *(buffers.even.ping->get_backing_buffer()),
-        *(buffers.odd.ping->get_backing_buffer()),
+        *(buffers.at(StorageSlot::kA)->get_backing_buffer()),
+        *(buffers.at(StorageSlot::kB)->get_backing_buffer()),
         plan.preprocess_layout);
+    tt::tt_metal::Program lifting = create_lwt_device_program(
+        kernel_root, mesh_device, plan, buffers, Scheme::compute_scheme_header, Scheme::compute_scheme_type);
 
-    return LiftingPreprocessDeviceProgram{
+    return ResidentLwtExecutable{
         .plan = plan,
         .buffers = std::move(buffers),
         .preprocess = std::move(preprocess),
-        .input_buffer = &input_buffer,
+        .lifting = std::move(lifting),
     };
 }
 
-void run_preprocess(
-    tt::tt_metal::distributed::MeshCommandQueue& command_queue,
-    tt::tt_metal::distributed::MeshDevice& mesh_device,
-    LiftingPreprocessDeviceProgram& bundle);
+void prepare_resident_lwt(
+    tt::tt_metal::distributed::MeshCommandQueue& mesh_command_queue, ResidentLwtExecutable& executable);
 
-template <typename Scheme>
-[[nodiscard]] LiftingActiveStreams lwt(
-    const std::filesystem::path& kernel_root,
+void execute_resident_lwt(
     tt::tt_metal::distributed::MeshDevice& mesh_device,
     tt::tt_metal::distributed::MeshCommandQueue& command_queue,
-    const LiftingPreprocessDeviceProgram& bundle) {
-    return lwt_static(
-        kernel_root, mesh_device, command_queue, bundle, Scheme::compute_scheme_header, Scheme::compute_scheme_type);
-}
+    ResidentLwtExecutable& executable);
 
 }  // namespace ttwv
