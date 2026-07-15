@@ -2,18 +2,22 @@
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <cstdlib>
 #include <filesystem>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <tt_stl/assert.hpp>
 #include <utility>
 #include <vector>
 
 #include "tt-metalium/buffer.hpp"
+#include "tt-metalium/buffer_distribution_spec.hpp"
 #include "tt-metalium/circular_buffer_constants.h"
 #include "tt-metalium/core_coord.hpp"
 #include "tt-metalium/host_api.hpp"
+#include "tt-metalium/shape.hpp"
 #include "tt-metalium/tensor_accessor_args.hpp"
 #include "tt_wavelet/include/device_protocol/lwt_config.hpp"
 #include "tt_wavelet/include/lifting/device.hpp"
@@ -36,13 +40,10 @@ constexpr uint32_t kSrcCacheCb = tt::CBIndex::c_3;
 constexpr uint32_t kSyncCb = tt::CBIndex::c_5;
 constexpr uint32_t kReaderConfigCb = tt::CBIndex::c_6;
 constexpr uint32_t kWriterConfigCb = tt::CBIndex::c_7;
-constexpr uint32_t kWorkspaceACb = tt::CBIndex::c_8;
-constexpr uint32_t kWorkspaceBCb = tt::CBIndex::c_9;
-constexpr uint32_t kWorkspaceScratchCb = tt::CBIndex::c_10;
-
 constexpr uint32_t kTileGroupBuffering = 2;
 constexpr uint32_t kDefaultL1SignalBudgetBytes = 768 * 1024;
 constexpr const char* kL1SignalBudgetEnv = "TT_WAVELET_L1_SIGNAL_BUDGET_BYTES";
+constexpr const char* kTerminalScaleFusionEnv = "TT_WAVELET_LWT_FUSE_TERMINAL_SCALE";
 
 struct ConeProgram {
     tt::tt_metal::Program program;
@@ -94,6 +95,22 @@ struct CoreChunkWork {
     return parse_positive_env(kL1SignalBudgetEnv, kDefaultL1SignalBudgetBytes);
 }
 
+[[nodiscard]] TerminalScaleFusionMode terminal_scale_fusion_mode() {
+    const char* raw = std::getenv(kTerminalScaleFusionEnv);
+    if (raw == nullptr || raw[0] == '\0' || std::strcmp(raw, "auto") == 0) {
+        return TerminalScaleFusionMode::kAuto;
+    }
+    if (std::strcmp(raw, "0") == 0) {
+        return TerminalScaleFusionMode::kDisabled;
+    }
+    TT_FATAL(
+        std::strcmp(raw, "1") == 0,
+        "{} must be 'auto', '0', or '1', got '{}'",
+        kTerminalScaleFusionEnv,
+        raw);
+    return TerminalScaleFusionMode::kEnabled;
+}
+
 [[nodiscard]] uint32_t core_limit(tt::tt_metal::distributed::MeshDevice& mesh_device) {
     const auto grid = mesh_device.compute_with_storage_grid_size();
     const uint32_t hardware_cores = static_cast<uint32_t>(grid.x * grid.y);
@@ -137,6 +154,51 @@ struct CoreChunkWork {
     return create_dram_buffer(mesh_device, desc.stick_count(), page_bytes);
 }
 
+[[nodiscard]] std::shared_ptr<tt::tt_metal::distributed::MeshBuffer> create_workspace_buffer(
+    tt::tt_metal::distributed::MeshDevice& mesh_device,
+    const std::vector<tt::tt_metal::CoreCoord>& cores,
+    const uint32_t workspace_elements) {
+    TT_FATAL(!cores.empty(), "Cone workspace requires at least one owner core");
+    TT_FATAL(workspace_elements > 0, "Cone workspace must contain at least one element");
+    TT_FATAL(
+        workspace_elements % kStickWidth == 0,
+        "Cone workspace length {} is not a multiple of the {}-element stick width",
+        workspace_elements,
+        kStickWidth);
+
+    const uint32_t shard_sticks = workspace_elements / kStickWidth;
+    const size_t capacity_sticks = static_cast<size_t>(shard_sticks) * cores.size();
+    const size_t physical_nbytes = capacity_sticks * device_protocol::kStickBytes;
+    TT_FATAL(
+        physical_nbytes <= static_cast<size_t>(std::numeric_limits<uint32_t>::max()),
+        "Cone workspace slot size {} exceeds device buffer limits",
+        physical_nbytes);
+
+    const tt::tt_metal::CoreRangeSet core_set(cores);
+    const tt::tt_metal::BufferDistributionSpec distribution(
+        tt::tt_metal::Shape{static_cast<uint32_t>(capacity_sticks)}, tt::tt_metal::Shape{shard_sticks}, cores);
+    const tt::tt_metal::ShardSpecBuffer shard_spec(
+        core_set,
+        {shard_sticks, kStickWidth},
+        tt::tt_metal::ShardOrientation::ROW_MAJOR,
+        {1, kStickWidth},
+        {static_cast<uint32_t>(capacity_sticks), 1});
+    const tt::tt_metal::BufferShardingArgs sharding_args(
+        std::optional<tt::tt_metal::BufferDistributionSpec>{distribution},
+        std::optional<tt::tt_metal::ShardSpecBuffer>{shard_spec},
+        tt::tt_metal::TensorMemoryLayout::HEIGHT_SHARDED);
+    const tt::tt_metal::distributed::DeviceLocalBufferConfig local_config{
+        .page_size = device_protocol::kStickBytes,
+        .buffer_type = tt::tt_metal::BufferType::L1,
+        .sharding_args = sharding_args,
+        .bottom_up = false,
+    };
+    const tt::tt_metal::distributed::ReplicatedBufferConfig replicated_config{
+        .size = static_cast<uint64_t>(physical_nbytes),
+    };
+    return tt::tt_metal::distributed::MeshBuffer::create(replicated_config, local_config, &mesh_device);
+}
+
 void create_circular_buffer(
     tt::tt_metal::Program& program,
     const tt::tt_metal::CoreRangeSet& cores,
@@ -174,11 +236,18 @@ void create_circular_buffer(
 
 [[nodiscard]] uint32_t resolve_output_address(const ConeWorkingBuffers& buffers, const RouteOutputRef output) {
     switch (output.storage) {
-        case RouteOutputStorage::kResidentSlot: return static_cast<uint32_t>(output.slot);
-        case RouteOutputStorage::kFinalEvenDram: return static_cast<uint32_t>(buffers.final_even->address());
-        case RouteOutputStorage::kFinalOddDram: return static_cast<uint32_t>(buffers.final_odd->address());
+        case RouteOutputStorage::kResidentSlot:
+            return static_cast<uint32_t>(buffers.at(output.slot)->get_backing_buffer()->address());
+        case RouteOutputStorage::kFinalEvenDram:
+            return static_cast<uint32_t>(buffers.final_even->get_backing_buffer()->address());
+        case RouteOutputStorage::kFinalOddDram:
+            return static_cast<uint32_t>(buffers.final_odd->get_backing_buffer()->address());
     }
     TT_THROW("Unsupported ConeStreamed output storage");
+}
+
+[[nodiscard]] uint32_t resolve_workspace_address(const ConeWorkingBuffers& buffers, const StreamRef stream) {
+    return static_cast<uint32_t>(buffers.at(stream.slot)->get_backing_buffer()->address());
 }
 
 [[nodiscard]] std::vector<uint32_t> build_chunk_config_words(const ConeExecutionPlan& plan) {
@@ -215,10 +284,10 @@ void create_circular_buffer(
             const size_t word_offset =
                 (chunk_index * route_count + route_index) * device_protocol::kRouteConfigWordCount;
             words[word_offset + device_protocol::kRouteType] = static_cast<uint32_t>(route.type);
-            words[word_offset + device_protocol::kRouteSourceAddr] = static_cast<uint32_t>(route.source.slot);
+            words[word_offset + device_protocol::kRouteSourceAddr] = resolve_workspace_address(buffers, route.source);
             words[word_offset + device_protocol::kRouteSourceLength] =
                 checked_u32(route.source_storage_length, "cone source storage end");
-            words[word_offset + device_protocol::kRouteBaseAddr] = static_cast<uint32_t>(route.base.slot);
+            words[word_offset + device_protocol::kRouteBaseAddr] = resolve_workspace_address(buffers, route.base);
             words[word_offset + device_protocol::kRouteBaseLength] =
                 checked_u32(route.base_storage_length, "cone base storage end");
             words[word_offset + device_protocol::kRouteOutputAddr] = resolve_output_address(buffers, route.output);
@@ -231,6 +300,9 @@ void create_circular_buffer(
             words[word_offset + device_protocol::kRouteSourceLeftPad] = route.source_left_pad_elements;
             words[word_offset + device_protocol::kRouteOutputOffset] = output_offset;
             words[word_offset + device_protocol::kRouteGroupCount] = output_group_count(route.output_length);
+            words[word_offset + device_protocol::kRouteFlags] =
+                route.output.storage == RouteOutputStorage::kResidentSlot ? 0U
+                                                                         : device_protocol::kRouteFlagFinalDram;
         }
     }
     return words;
@@ -245,8 +317,10 @@ void create_circular_buffer(
         static_cast<uint32_t>(input_buffer.address()),
         checked_u32(plan.full_plan.preprocess_layout.input.length, "cone input length"),
         plan.full_plan.preprocess_layout.pad_config.left,
-        static_cast<uint32_t>(buffers.chunk_config->address()),
-        static_cast<uint32_t>(buffers.route_config->address()),
+        static_cast<uint32_t>(buffers.at(StorageSlot::kA)->get_backing_buffer()->address()),
+        static_cast<uint32_t>(buffers.at(StorageSlot::kB)->get_backing_buffer()->address()),
+        static_cast<uint32_t>(buffers.chunk_config->get_backing_buffer()->address()),
+        static_cast<uint32_t>(buffers.route_config->get_backing_buffer()->address()),
         work.chunk_begin,
         work.chunk_count,
         checked_u32(plan.chunks.front().routes.size(), "cone route count"),
@@ -256,7 +330,7 @@ void create_circular_buffer(
 [[nodiscard]] std::vector<uint32_t> writer_runtime_args(
     const ConeExecutionPlan& plan, const ConeWorkingBuffers& buffers, const CoreChunkWork& work) {
     return {
-        static_cast<uint32_t>(buffers.route_config->address()),
+        static_cast<uint32_t>(buffers.route_config->get_backing_buffer()->address()),
         work.chunk_begin,
         work.chunk_count,
         checked_u32(plan.chunks.front().routes.size(), "cone route count"),
@@ -282,6 +356,7 @@ void create_circular_buffer(
     const tt::tt_metal::CoreRangeSet& cores,
     const tt::tt_metal::Buffer& input_buffer,
     const ConeWorkingBuffers& buffers,
+    const bool terminal_scale_fused,
     const char* compute_scheme_header,
     const char* compute_scheme_type) {
     tt::tt_metal::Program program = tt::tt_metal::CreateProgram();
@@ -343,6 +418,7 @@ void create_circular_buffer(
                 {
                     {"TTWV_LWT_SCHEME_HEADER", compute_scheme_header},
                     {"TTWV_LWT_SCHEME_TYPE", compute_scheme_type},
+                    {"TTWV_FUSE_TERMINAL_SCALE", terminal_scale_fused ? "1" : "0"},
                 },
         });
     return ConeProgram{.program = std::move(program), .reader = reader, .compute = compute, .writer = writer};
@@ -393,7 +469,8 @@ ConeStreamedLwtExecutable create_cone_streamed_lwt_executable_impl(
         "ConeStreamed padded input length exceeds device signed-index range");
 
     ConeExecutionPlan plan =
-        make_cone_execution_plan(std::move(full_plan), core_limit(mesh_device), l1_signal_budget_bytes());
+        make_cone_execution_plan(
+            std::move(full_plan), core_limit(mesh_device), l1_signal_budget_bytes(), terminal_scale_fusion_mode());
     std::vector<tt::tt_metal::CoreCoord> cores = select_cores(mesh_device, plan.active_core_count);
     std::array<std::shared_ptr<tt::tt_metal::distributed::MeshBuffer>, 3> slots;
     for (auto& slot : slots) {
@@ -431,13 +508,20 @@ ConeStreamedLwtExecutable create_cone_streamed_lwt_executable_impl(
                 .groups_per_chunk = plan.groups_per_chunk,
                 .workspace_elements = plan.workspace_elements,
                 .max_dependency_overhead = plan.max_dependency_overhead,
+                .terminal_scale_fused = plan.terminal_scale_fused,
             },
     };
 
     const std::vector<CoreChunkWork> work =
         partition_chunk_work(buffers.cores, checked_u32(plan.chunks.size(), "cone chunk count"));
     ConeProgram program = create_program(
-        kernel_root, core_range_set(buffers.cores), input_buffer, buffers, compute_scheme_header, compute_scheme_type);
+        kernel_root,
+        core_range_set(buffers.cores),
+        input_buffer,
+        buffers,
+        plan.terminal_scale_fused,
+        compute_scheme_header,
+        compute_scheme_type);
     set_runtime_args(program, input_buffer, plan, buffers, work);
     return ConeStreamedLwtExecutable{
         .plan = std::move(plan),

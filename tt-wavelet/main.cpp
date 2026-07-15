@@ -477,6 +477,7 @@ int main(int argc, char** argv) {
                           << "lwt_groups_per_chunk: " << scheduler.groups_per_chunk << '\n'
                           << "lwt_workspace_elements: " << scheduler.workspace_elements << '\n'
                           << "lwt_max_dependency_overhead: " << scheduler.max_dependency_overhead << '\n'
+                          << "lwt_terminal_scale_fused: " << (scheduler.terminal_scale_fused ? 1 : 0) << '\n'
                           << "lwt_zero_work_cores_per_route:";
                 for (const uint32_t count : scheduler.zero_work_cores_per_route) {
                     std::cerr << ' ' << count;

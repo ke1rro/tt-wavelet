@@ -6,6 +6,7 @@
 - [Environment setup](#environment-setup)
 - [Build & update scripts](#build--update-scripts)
 - [Environment variables](#environment-variables)
+- [Documentation](#documentation)
 - [Running](#running)
 - [Koyeb ssh](#koyeb-ssh)
 
@@ -65,6 +66,14 @@ Quick way to set them in your shell:
 ```bash
 source ./scripts/set_env.sh
 ```
+
+# Documentation
+
+- [ResidentSharded і ConeStreamed LWT на Wormhole](docs/LWT_MEMORY_MODES.md) — математика,
+  dependency cone, dataflow, L1/DRAM buffers, синхронізація, telemetry та обмеження.
+- [SFPU horizontal stencil](docs/HORIZONTAL_STENCIL.md) — реалізація valid convolution у
+  compute kernel.
+- [LWT / SpliceChain background](docs/LWT.md) — початкове математичне формулювання.
 
 # Running
 

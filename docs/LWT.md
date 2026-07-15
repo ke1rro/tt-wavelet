@@ -1,5 +1,10 @@
 # Lifting Wavelet Transform over SpliceChain
 
+> **Current implementation note.** Опис актуальних `ResidentSharded` і `ConeStreamed`
+> backends, three-slot storage, dependency-cone математики та Wormhole dataflow дивіться у
+> [LWT_MEMORY_MODES.md](./LWT_MEMORY_MODES.md). Цей файл нижче зберігає початковий опис
+> SpliceChain-формулювання.
+
 **Input**: 2x SpliceChain (odd and even), Nx kernels, scheme description
 **Output**: 2x SpliceChain (odd and even)
 
@@ -21,7 +26,7 @@ Array is actually stored as a SpliceChain in memory, except kernels.
 
 Addition will map to the lowest degree, so if we have $A + B$, the polynomial with the highest degree will be extended on the left with random (garbage) elements. Not zeros, because at the end global slice will be used, which will remove the elements that were affected by these garbage elements.
 
-This is implemented using [SHIFT](./SHIFT.md) operation with [RECOVER1](./RECOVER1.md) being next to recover Splice format of the data.
+This is implemented using `SHIFT` operation with `RECOVER1` being next to recover Splice format of the data.
 
 Then elementwise addition of Splices of two signals is done, this will be the result of addition, and degree is the $min(a, b)$ of degrees of input signals.
 
@@ -33,7 +38,7 @@ Multiplication by kernel is done using [HORIZONTAL_STENCIL](./HORIZONTAL_STENCIL
 
 Note that convolution is commutative with shifts, because it is LTI. Thus we can do shift and recover1 before the convolution.
 
-At the same time convolution produces only 6 faces of the output, last two (right-most) are garbage, thus we apply [RECOVER2](./RECOVER2.md) to recover Splice format of the output.
+At the same time convolution produces only 6 faces of the output, last two (right-most) are garbage, thus we apply `RECOVER2` to recover Splice format of the output.
 
 ### Final tree
 

@@ -167,13 +167,12 @@ void kernel_main() {
         for (uint32_t route_index = 0; route_index < route_count; ++route_index, ++flattened_route) {
             const uint32_t config_index = global_chunk * route_count + route_index;
             const uint32_t* route = load_route_config(config_args, route_config_addr, cb_config, config_index);
-            const uint32_t route_type = route[ttwv::device_protocol::kRouteType];
             const uint32_t output_addr = route[ttwv::device_protocol::kRouteOutputAddr];
             const uint32_t output_length = route[ttwv::device_protocol::kRouteOutputLength];
             const uint32_t output_offset = route[ttwv::device_protocol::kRouteOutputOffset];
             const uint32_t group_count = route[ttwv::device_protocol::kRouteGroupCount];
-            const bool final_dram = route_type == static_cast<uint32_t>(ttwv::StepType::kScaleEven) ||
-                                    route_type == static_cast<uint32_t>(ttwv::StepType::kScaleOdd);
+            const uint32_t route_flags = route[ttwv::device_protocol::kRouteFlags];
+            const bool final_dram = (route_flags & ttwv::device_protocol::kRouteFlagFinalDram) != 0;
             if (final_dram) {
                 const auto dst = TensorAccessor(final_args, output_addr, ttwv::device_protocol::kStickBytes);
                 write_dram_output_groups(dst, cb_output, tile_bytes, output_offset, output_length, group_count);

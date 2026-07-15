@@ -54,6 +54,12 @@ struct ConeChunkPlan {
     double dependency_overhead{0.0};
 };
 
+enum class TerminalScaleFusionMode : uint8_t {
+    kAuto,
+    kDisabled,
+    kEnabled,
+};
+
 struct ConeExecutionPlan {
     LiftingForwardPlan full_plan{};
     std::vector<ConeChunkPlan> chunks;
@@ -61,6 +67,7 @@ struct ConeExecutionPlan {
     uint32_t workspace_elements{0};
     uint32_t active_core_count{0};
     double max_dependency_overhead{0.0};
+    bool terminal_scale_fused{false};
 };
 
 namespace cone_detail {
@@ -73,6 +80,12 @@ struct RequiredStreams {
 struct StoredStream {
     StorageSlot slot{StorageSlot::kA};
     IndexInterval storage{};
+};
+
+struct TerminalScaleFusion {
+    size_t predict_update_route_index{0};
+    StepType scale_type{StepType::kScaleEven};
+    RouteOutputStorage final_storage{RouteOutputStorage::kFinalEvenDram};
 };
 
 [[nodiscard]] constexpr bool contains(const IndexInterval outer, const IndexInterval inner) noexcept {
@@ -124,6 +137,44 @@ inline void validate_interval(const IndexInterval interval, const size_t stream_
     const uint32_t count = device_protocol::kStepCoeffCapacity - route.source_left_pad;
     TT_FATAL(count > 0, "Predict/update cone route has no coefficients");
     return count;
+}
+
+[[nodiscard]] inline TerminalScaleFusion terminal_scale_fusion(const LiftingForwardPlan& plan) {
+    TT_FATAL(plan.routes.size() >= 3, "ConeStreamed terminal-scale fusion requires a predict/update and two scales");
+
+    size_t predict_update_route_index = plan.routes.size();
+    for (size_t reverse_index = plan.routes.size() - 2; reverse_index > 0; --reverse_index) {
+        const size_t route_index = reverse_index - 1;
+        if (is_predict_update_step(plan.routes[route_index].type)) {
+            predict_update_route_index = route_index;
+            break;
+        }
+    }
+    TT_FATAL(
+        predict_update_route_index < plan.routes.size(),
+        "ConeStreamed terminal-scale fusion could not find a predict/update route");
+
+    bool final_even = plan.routes[predict_update_route_index].type == StepType::kUpdate;
+    for (size_t route_index = predict_update_route_index + 1; route_index + 2 < plan.routes.size(); ++route_index) {
+        TT_FATAL(
+            plan.routes[route_index].type == StepType::kSwap,
+            "Only metadata swaps may follow the final predict/update before terminal scales");
+        final_even = !final_even;
+    }
+
+    const StepType scale_type = final_even ? StepType::kScaleEven : StepType::kScaleOdd;
+    const auto final_storage =
+        final_even ? RouteOutputStorage::kFinalEvenDram : RouteOutputStorage::kFinalOddDram;
+    const bool scale_exists =
+        std::any_of(plan.routes.end() - 2, plan.routes.end(), [scale_type](const LiftingStepRoute& route) {
+            return route.type == scale_type;
+        });
+    TT_FATAL(scale_exists, "ConeStreamed fused terminal scale is missing from the forward plan");
+    return TerminalScaleFusion{
+        .predict_update_route_index = predict_update_route_index,
+        .scale_type = scale_type,
+        .final_storage = final_storage,
+    };
 }
 
 [[nodiscard]] inline std::vector<RequiredStreams> backpropagate_requirements(
@@ -217,8 +268,12 @@ inline void validate_interval(const IndexInterval interval, const size_t stream_
 }
 
 [[nodiscard]] inline ConeChunkPlan build_chunk(
-    const LiftingForwardPlan& plan, const IndexInterval final_even, const IndexInterval final_odd) {
+    const LiftingForwardPlan& plan,
+    const IndexInterval final_even,
+    const IndexInterval final_odd,
+    const bool fuse_terminal_scale) {
     const std::vector<RequiredStreams> required = backpropagate_requirements(plan, final_even, final_odd);
+    const TerminalScaleFusion fusion = terminal_scale_fusion(plan);
     StoredStream active_even{.slot = StorageSlot::kA, .storage = required.front().even};
     StoredStream active_odd{.slot = StorageSlot::kB, .storage = required.front().odd};
     StorageSlot free_slot = StorageSlot::kScratch;
@@ -237,6 +292,7 @@ inline void validate_interval(const IndexInterval interval, const size_t stream_
 
         if (full_route.type == StepType::kPredict || full_route.type == StepType::kUpdate) {
             const bool predict = full_route.type == StepType::kPredict;
+            const bool fuse_route = fuse_terminal_scale && route_index == fusion.predict_update_route_index;
             const uint32_t k = coefficient_count(full_route);
             const IndexInterval output = predict ? after.odd : after.even;
             const IndexInterval source_required =
@@ -244,19 +300,22 @@ inline void validate_interval(const IndexInterval interval, const size_t stream_
             const IndexInterval base_required = translated(output, full_route.base_offset);
             const StoredStream& source = predict ? active_even : active_odd;
             const StoredStream& base = predict ? active_odd : active_even;
+            const RouteOutputRef output_ref =
+                fuse_route ? RouteOutputRef{.storage = fusion.final_storage, .slot = free_slot}
+                           : detail::resident_output(free_slot);
 
             routes.push_back(ConeStepRoute{
                 .type = full_route.type,
                 .source = StreamRef{.slot = source.slot},
                 .base = StreamRef{.slot = base.slot},
-                .output = detail::resident_output(free_slot),
+                .output = output_ref,
                 .source_storage_length = source.storage.length(),
                 .base_storage_length = base.storage.length(),
                 .source_offset_elements = local_offset(source.storage, source_required),
                 .base_offset_elements = local_offset(base.storage, base_required),
                 .source_left_pad_elements = full_route.source_left_pad,
                 .output_length = output.length(),
-                .output_offset_elements = 0,
+                .output_offset_elements = fuse_route && !output.empty() ? output.begin : 0,
             });
 
             const StoredStream replacement{.slot = free_slot, .storage = output};
@@ -273,6 +332,9 @@ inline void validate_interval(const IndexInterval interval, const size_t stream_
 
         const bool scale_even = full_route.type == StepType::kScaleEven;
         TT_FATAL(scale_even || full_route.type == StepType::kScaleOdd, "Unsupported cone route type");
+        if (fuse_terminal_scale && full_route.type == fusion.scale_type) {
+            continue;
+        }
         const StoredStream& source = scale_even ? active_even : active_odd;
         const IndexInterval output = scale_even ? after.even : after.odd;
         const auto final_storage = scale_even ? RouteOutputStorage::kFinalEvenDram : RouteOutputStorage::kFinalOddDram;
@@ -331,7 +393,9 @@ inline void validate_interval(const IndexInterval interval, const size_t stream_
 }
 
 [[nodiscard]] inline std::vector<ConeChunkPlan> build_chunks(
-    const LiftingForwardPlan& plan, const uint32_t requested_chunk_count) {
+    const LiftingForwardPlan& plan,
+    const uint32_t requested_chunk_count,
+    const bool fuse_terminal_scale) {
     TT_FATAL(requested_chunk_count > 0, "Cone chunk count must be non-zero");
     const size_t max_final_length = std::max(plan.final_even_length, plan.final_odd_length);
     const size_t final_group_count =
@@ -351,7 +415,8 @@ inline void validate_interval(const IndexInterval interval, const size_t stream_
         chunks.push_back(build_chunk(
             plan,
             clipped_chunk_interval(begin, end, plan.final_even_length),
-            clipped_chunk_interval(begin, end, plan.final_odd_length)));
+            clipped_chunk_interval(begin, end, plan.final_odd_length),
+            fuse_terminal_scale));
         group_begin += group_count;
     }
     TT_FATAL(group_begin == final_group_count, "Cone chunks do not cover every final output group");
@@ -361,19 +426,26 @@ inline void validate_interval(const IndexInterval interval, const size_t stream_
 }  // namespace cone_detail
 
 [[nodiscard]] inline ConeExecutionPlan make_cone_execution_plan(
-    LiftingForwardPlan full_plan, const uint32_t core_limit, const uint32_t l1_signal_budget_bytes) {
+    LiftingForwardPlan full_plan,
+    const uint32_t core_limit,
+    const uint32_t l1_signal_budget_bytes,
+    const TerminalScaleFusionMode fusion_mode = TerminalScaleFusionMode::kAuto) {
     TT_FATAL(core_limit > 0, "ConeStreamed requires at least one worker core");
     TT_FATAL(l1_signal_budget_bytes >= 3 * device_protocol::kStickBytes, "ConeStreamed L1 budget is too small");
 
     const size_t max_final_length = std::max(full_plan.final_even_length, full_plan.final_odd_length);
     const uint32_t final_group_count = static_cast<uint32_t>(
         std::max(ceil_div(max_final_length, static_cast<size_t>(device_protocol::kLwtGroupOutputElements)), size_t{1}));
+    const bool terminal_scale_fused =
+        fusion_mode == TerminalScaleFusionMode::kEnabled ||
+        (fusion_mode == TerminalScaleFusionMode::kAuto && final_group_count > core_limit);
     uint32_t chunk_count = std::min(final_group_count, core_limit);
     std::vector<ConeChunkPlan> chunks;
     uint32_t workspace_elements = 0;
 
     const auto build_candidate = [&](const uint32_t candidate_chunk_count) {
-        auto candidate_chunks = cone_detail::build_chunks(full_plan, candidate_chunk_count);
+        auto candidate_chunks =
+            cone_detail::build_chunks(full_plan, candidate_chunk_count, terminal_scale_fused);
         size_t max_workspace_elements = 0;
         for (const auto& chunk : candidate_chunks) {
             max_workspace_elements = std::max(max_workspace_elements, chunk.max_workspace_elements);
@@ -418,6 +490,7 @@ inline void validate_interval(const IndexInterval interval, const size_t stream_
         .workspace_elements = workspace_elements,
         .active_core_count = active_core_count,
         .max_dependency_overhead = max_dependency_overhead,
+        .terminal_scale_fused = terminal_scale_fused,
     };
 }
 

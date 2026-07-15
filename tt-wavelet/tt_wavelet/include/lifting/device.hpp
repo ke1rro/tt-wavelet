@@ -37,6 +37,7 @@ struct LiftingSchedulerTelemetry {
     uint32_t groups_per_chunk{0};
     uint32_t workspace_elements{0};
     double max_dependency_overhead{0.0};
+    bool terminal_scale_fused{false};
 };
 
 struct LiftingWorkingBuffers {
@@ -61,12 +62,18 @@ struct ResidentLwtExecutable {
 };
 
 struct ConeWorkingBuffers {
+    std::array<std::shared_ptr<tt::tt_metal::distributed::MeshBuffer>, 3> slots{};
     std::shared_ptr<tt::tt_metal::distributed::MeshBuffer> final_even{};
     std::shared_ptr<tt::tt_metal::distributed::MeshBuffer> final_odd{};
     std::shared_ptr<tt::tt_metal::distributed::MeshBuffer> route_config{};
     std::shared_ptr<tt::tt_metal::distributed::MeshBuffer> chunk_config{};
     std::vector<tt::tt_metal::CoreCoord> cores;
     LiftingSchedulerTelemetry scheduler{};
+
+    [[nodiscard]] const std::shared_ptr<tt::tt_metal::distributed::MeshBuffer>& at(
+        const StorageSlot slot) const noexcept {
+        return slots[static_cast<size_t>(slot)];
+    }
 };
 
 struct ConeStreamedLwtExecutable {

@@ -17,6 +17,7 @@ constexpr uint32_t kRowsPerGroup = ttwv::device_protocol::kLwtRowsPerGroup;
 constexpr uint32_t kInputTilesPerGroup = 2;
 constexpr uint32_t kOutputBlocksPerRow = ttwv::device_protocol::kLwtOutputBlocksPerRow;
 constexpr uint32_t kGroupOutputElements = ttwv::device_protocol::kLwtGroupOutputElements;
+constexpr uint32_t kSourcePackedElements = kGroupOutputElements + kBlockElements;
 
 template <typename ConfigAccessor>
 ALWI const uint32_t* load_config_page(
@@ -83,6 +84,72 @@ ALWI float read_local_or_zero(
     return logical_index < logical_end ? src[logical_index] : 0.0F;
 }
 
+template <bool BoundsChecked>
+ALWI void fill_source_tiles(
+    const volatile tt_l1_ptr float* src,
+    float* src_tile0,
+    float* src_tile1,
+    const uint32_t source_end,
+    const uint32_t source_offset,
+    const uint32_t source_left_pad,
+    const uint32_t group_base) {
+    for (uint32_t tile = 0; tile < kInputTilesPerGroup; ++tile) {
+        auto* src_tile = tile == 0 ? src_tile0 : src_tile1;
+        for (uint32_t row = 0; row < kRowsPerGroup; ++row) {
+            for (uint32_t local_block = 0; local_block < 2; ++local_block) {
+                const uint32_t block_id = tile * 2 + local_block;
+                auto* tile_block =
+                    src_tile + ttwv::kernels::primitives::tile_offset(row, local_block * kBlockElements);
+                for (uint32_t lane = 0; lane < kBlockElements; ++lane) {
+                    const uint32_t packed_index =
+                        group_base + (row * kOutputBlocksPerRow + block_id) * kBlockElements + lane;
+                    if constexpr (BoundsChecked) {
+                        const int32_t source_local_index =
+                            static_cast<int32_t>(packed_index) - static_cast<int32_t>(source_left_pad);
+                        float value = 0.0F;
+                        if (source_local_index >= 0) {
+                            value = read_local_or_zero(
+                                src, source_end, source_offset + static_cast<uint32_t>(source_local_index));
+                        }
+                        tile_block[lane] = value;
+                    } else {
+                        tile_block[lane] = src[source_offset + packed_index - source_left_pad];
+                    }
+                }
+            }
+        }
+    }
+}
+
+template <bool BoundsChecked>
+ALWI void fill_output_tiles(
+    const volatile tt_l1_ptr float* src,
+    float* full_tile,
+    float* tail_tile,
+    const uint32_t source_end,
+    const uint32_t source_offset,
+    const uint32_t output_length,
+    const uint32_t group_base) {
+    for (uint32_t row = 0; row < kRowsPerGroup; ++row) {
+        for (uint32_t block = 0; block < kOutputBlocksPerRow; ++block) {
+            auto* tile_block =
+                block < 2 ? full_tile + ttwv::kernels::primitives::tile_offset(row, block * kBlockElements)
+                          : tail_tile + ttwv::kernels::primitives::tile_offset(row, 0);
+            for (uint32_t lane = 0; lane < kBlockElements; ++lane) {
+                const uint32_t output_index =
+                    group_base + (row * kOutputBlocksPerRow + block) * kBlockElements + lane;
+                if constexpr (BoundsChecked) {
+                    tile_block[lane] = output_index < output_length
+                                           ? read_local_or_zero(src, source_end, source_offset + output_index)
+                                           : 0.0F;
+                } else {
+                    tile_block[lane] = src[source_offset + output_index];
+                }
+            }
+        }
+    }
+}
+
 ALWI void emit_predict_update_tiles(
     const uint32_t source_addr,
     const uint32_t base_addr,
@@ -106,26 +173,18 @@ ALWI void emit_predict_update_tiles(
         cb_reserve_back(cb_src_tile1, 1);
         auto* src_tile1 = reinterpret_cast<float*>(get_write_ptr(cb_src_tile1));
 
-        for (uint32_t tile = 0; tile < kInputTilesPerGroup; ++tile) {
-            auto* src_tile = tile == 0 ? src_tile0 : src_tile1;
-            for (uint32_t row = 0; row < kRowsPerGroup; ++row) {
-                for (uint32_t local_block = 0; local_block < 2; ++local_block) {
-                    const uint32_t block_id = tile * 2 + local_block;
-                    auto* tile_block =
-                        src_tile + ttwv::kernels::primitives::tile_offset(row, local_block * kBlockElements);
-                    for (uint32_t lane = 0; lane < kBlockElements; ++lane) {
-                        const int32_t packed_index = static_cast<int32_t>(
-                            group_base + (row * kOutputBlocksPerRow + block_id) * kBlockElements + lane);
-                        const int32_t source_local_index = packed_index - static_cast<int32_t>(source_left_pad);
-                        float value = 0.0F;
-                        if (source_local_index >= 0) {
-                            value = read_local_or_zero(
-                                src, source_end, source_offset + static_cast<uint32_t>(source_local_index));
-                        }
-                        tile_block[lane] = value;
-                    }
-                }
-            }
+        bool source_is_dense = group_base >= source_left_pad;
+        if (source_is_dense) {
+            const uint64_t source_begin =
+                static_cast<uint64_t>(source_offset) + group_base - source_left_pad;
+            source_is_dense = source_begin + kSourcePackedElements <= source_end;
+        }
+        if (source_is_dense) {
+            fill_source_tiles<false>(
+                src, src_tile0, src_tile1, source_end, source_offset, source_left_pad, group_base);
+        } else {
+            fill_source_tiles<true>(
+                src, src_tile0, src_tile1, source_end, source_offset, source_left_pad, group_base);
         }
 
         cb_reserve_back(cb_base_tile, 2);
@@ -133,19 +192,15 @@ ALWI void emit_predict_update_tiles(
         auto* base_full_tile = reinterpret_cast<float*>(base_tiles_addr);
         auto* base_tail_tile =
             reinterpret_cast<float*>(base_tiles_addr + ttwv::kernels::primitives::kTileScalars * sizeof(float));
-        for (uint32_t row = 0; row < kRowsPerGroup; ++row) {
-            for (uint32_t block = 0; block < kOutputBlocksPerRow; ++block) {
-                auto* tile_block =
-                    block < 2 ? base_full_tile + ttwv::kernels::primitives::tile_offset(row, block * kBlockElements)
-                              : base_tail_tile + ttwv::kernels::primitives::tile_offset(row, 0);
-                for (uint32_t lane = 0; lane < kBlockElements; ++lane) {
-                    const uint32_t output_index =
-                        group_base + (row * kOutputBlocksPerRow + block) * kBlockElements + lane;
-                    tile_block[lane] = output_index < output_length
-                                           ? read_local_or_zero(base, base_end, base_offset + output_index)
-                                           : 0.0F;
-                }
-            }
+        const bool base_is_dense =
+            static_cast<uint64_t>(group_base) + kGroupOutputElements <= output_length &&
+            static_cast<uint64_t>(base_offset) + group_base + kGroupOutputElements <= base_end;
+        if (base_is_dense) {
+            fill_output_tiles<false>(
+                base, base_full_tile, base_tail_tile, base_end, base_offset, output_length, group_base);
+        } else {
+            fill_output_tiles<true>(
+                base, base_full_tile, base_tail_tile, base_end, base_offset, output_length, group_base);
         }
 
         cb_push_back(cb_src_tile0, 1);
@@ -170,19 +225,15 @@ ALWI void emit_scale_tiles(
         auto* scale_full_tile = reinterpret_cast<float*>(scale_tiles_addr);
         auto* scale_tail_tile =
             reinterpret_cast<float*>(scale_tiles_addr + ttwv::kernels::primitives::kTileScalars * sizeof(float));
-        for (uint32_t row = 0; row < kRowsPerGroup; ++row) {
-            for (uint32_t block = 0; block < kOutputBlocksPerRow; ++block) {
-                auto* tile_block =
-                    block < 2 ? scale_full_tile + ttwv::kernels::primitives::tile_offset(row, block * kBlockElements)
-                              : scale_tail_tile + ttwv::kernels::primitives::tile_offset(row, 0);
-                for (uint32_t lane = 0; lane < kBlockElements; ++lane) {
-                    const uint32_t output_index =
-                        group_base + (row * kOutputBlocksPerRow + block) * kBlockElements + lane;
-                    tile_block[lane] = output_index < output_length
-                                           ? read_local_or_zero(src, source_end, source_offset + output_index)
-                                           : 0.0F;
-                }
-            }
+        const bool source_is_dense =
+            static_cast<uint64_t>(group_base) + kGroupOutputElements <= output_length &&
+            static_cast<uint64_t>(source_offset) + group_base + kGroupOutputElements <= source_end;
+        if (source_is_dense) {
+            fill_output_tiles<false>(
+                src, scale_full_tile, scale_tail_tile, source_end, source_offset, output_length, group_base);
+        } else {
+            fill_output_tiles<true>(
+                src, scale_full_tile, scale_tail_tile, source_end, source_offset, output_length, group_base);
         }
         cb_push_back(cb_scale_tile, 2);
     }

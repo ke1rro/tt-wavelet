@@ -2,3 +2,5 @@ isort
 black
 pre-commit
 cmake-format
+PyWavelets
+tqdm

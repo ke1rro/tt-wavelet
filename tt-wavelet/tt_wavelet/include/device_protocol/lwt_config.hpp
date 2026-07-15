@@ -33,7 +33,10 @@ enum RouteConfigWord : uint32_t {
     kRouteSourceLeftPad = 9,
     kRouteOutputOffset = 10,
     kRouteGroupCount = 11,
+    kRouteFlags = 12,
 };
+
+constexpr uint32_t kRouteFlagFinalDram = 1U << 0;
 
 constexpr uint32_t kConeChunkConfigWordCount = 16;
 constexpr uint32_t kConeChunkConfigPageBytes = kConeChunkConfigWordCount * sizeof(uint32_t);
