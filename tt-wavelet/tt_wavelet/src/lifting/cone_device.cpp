@@ -44,6 +44,7 @@ constexpr uint32_t kTileGroupBuffering = 2;
 constexpr uint32_t kDefaultL1SignalBudgetBytes = 768 * 1024;
 constexpr const char* kL1SignalBudgetEnv = "TT_WAVELET_L1_SIGNAL_BUDGET_BYTES";
 constexpr const char* kTerminalScaleFusionEnv = "TT_WAVELET_LWT_FUSE_TERMINAL_SCALE";
+constexpr const char* kConeNocLocalWriteEnv = "TT_WAVELET_LWT_CONE_NOC_LOCAL_WRITE";
 
 struct ConeProgram {
     tt::tt_metal::Program program;
@@ -109,6 +110,15 @@ struct CoreChunkWork {
         kTerminalScaleFusionEnv,
         raw);
     return TerminalScaleFusionMode::kEnabled;
+}
+
+[[nodiscard]] bool cone_noc_local_write_enabled() {
+    const char* raw = std::getenv(kConeNocLocalWriteEnv);
+    if (raw == nullptr || raw[0] == '\0' || std::strcmp(raw, "1") == 0) {
+        return true;
+    }
+    TT_FATAL(std::strcmp(raw, "0") == 0, "{} must be '0' or '1', got '{}'", kConeNocLocalWriteEnv, raw);
+    return false;
 }
 
 [[nodiscard]] uint32_t core_limit(tt::tt_metal::distributed::MeshDevice& mesh_device) {
@@ -357,6 +367,7 @@ void create_circular_buffer(
     const tt::tt_metal::Buffer& input_buffer,
     const ConeWorkingBuffers& buffers,
     const bool terminal_scale_fused,
+    const bool noc_local_write,
     const char* compute_scheme_header,
     const char* compute_scheme_type) {
     tt::tt_metal::Program program = tt::tt_metal::CreateProgram();
@@ -385,7 +396,8 @@ void create_circular_buffer(
     tt::tt_metal::TensorAccessorArgs(config_buffer).append_to(reader_compile_args);
     tt::tt_metal::TensorAccessorArgs(input_buffer).append_to(reader_compile_args);
 
-    std::vector<uint32_t> writer_compile_args = {kWriterConfigCb, kOutputCb, kSyncCb};
+    std::vector<uint32_t> writer_compile_args = {
+        kWriterConfigCb, kOutputCb, kSyncCb, static_cast<uint32_t>(noc_local_write)};
     tt::tt_metal::TensorAccessorArgs(config_buffer).append_to(writer_compile_args);
     tt::tt_metal::TensorAccessorArgs(final_buffer).append_to(writer_compile_args);
 
@@ -520,6 +532,7 @@ ConeStreamedLwtExecutable create_cone_streamed_lwt_executable_impl(
         input_buffer,
         buffers,
         plan.terminal_scale_fused,
+        cone_noc_local_write_enabled(),
         compute_scheme_header,
         compute_scheme_type);
     set_runtime_args(program, input_buffer, plan, buffers, work);

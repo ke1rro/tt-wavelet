@@ -85,6 +85,7 @@ ALWI void write_dram_output_groups(
     }
 }
 
+template <bool UseNocLocalWrite>
 ALWI void write_local_half_block(
     const uint32_t dst_addr,
     const uint32_t tile_addr,
@@ -97,16 +98,23 @@ ALWI void write_local_half_block(
         return;
     }
 
-    auto* dst = reinterpret_cast<volatile tt_l1_ptr float*>(dst_addr);
-    const auto* src = reinterpret_cast<volatile tt_l1_ptr float*>(tile_addr);
     const uint32_t source_index = ttwv::kernels::primitives::tile_offset(row, col);
     const uint32_t destination_index = output_offset + local_output_index;
+    if constexpr (UseNocLocalWrite) {
+        noc_async_write_one_packet_with_state(
+            tile_addr + source_index * static_cast<uint32_t>(sizeof(float)),
+            dst_addr + destination_index * static_cast<uint32_t>(sizeof(float)));
+    } else {
+        auto* dst = reinterpret_cast<volatile tt_l1_ptr float*>(dst_addr);
+        const auto* src = reinterpret_cast<volatile tt_l1_ptr float*>(tile_addr);
 #pragma unroll
-    for (uint32_t lane = 0; lane < ttwv::device_protocol::kLwtHalfStickElements; ++lane) {
-        dst[destination_index + lane] = src[source_index + lane];
+        for (uint32_t lane = 0; lane < ttwv::device_protocol::kLwtHalfStickElements; ++lane) {
+            dst[destination_index + lane] = src[source_index + lane];
+        }
     }
 }
 
+template <bool UseNocLocalWrite>
 ALWI void write_local_output_groups(
     const uint32_t dst_addr,
     const uint32_t cb_output,
@@ -114,6 +122,11 @@ ALWI void write_local_output_groups(
     const uint32_t output_offset,
     const uint32_t output_length,
     const uint32_t group_count) {
+    if constexpr (UseNocLocalWrite) {
+        noc_async_write_one_packet_set_state(
+            get_noc_addr(dst_addr), ttwv::device_protocol::kLwtHalfStickBytes);
+    }
+
     for (uint32_t group = 0; group < group_count; ++group) {
         cb_wait_front(cb_output, 2);
         const uint32_t output_full_tile = get_read_ptr(cb_output);
@@ -123,8 +136,9 @@ ALWI void write_local_output_groups(
         for (uint32_t row = 0; row < ttwv::device_protocol::kLwtRowsPerGroup; ++row) {
             const uint32_t row_base = group_base + row * ttwv::device_protocol::kLwtOutputBlocksPerRow *
                                                        ttwv::device_protocol::kLwtHalfStickElements;
-            write_local_half_block(dst_addr, output_full_tile, row, 0, row_base, output_offset, output_length);
-            write_local_half_block(
+            write_local_half_block<UseNocLocalWrite>(
+                dst_addr, output_full_tile, row, 0, row_base, output_offset, output_length);
+            write_local_half_block<UseNocLocalWrite>(
                 dst_addr,
                 output_full_tile,
                 row,
@@ -132,7 +146,7 @@ ALWI void write_local_output_groups(
                 row_base + ttwv::device_protocol::kLwtHalfStickElements,
                 output_offset,
                 output_length);
-            write_local_half_block(
+            write_local_half_block<UseNocLocalWrite>(
                 dst_addr,
                 output_tail_tile,
                 row,
@@ -140,6 +154,12 @@ ALWI void write_local_output_groups(
                 row_base + 2 * ttwv::device_protocol::kLwtHalfStickElements,
                 output_offset,
                 output_length);
+        }
+        if constexpr (UseNocLocalWrite) {
+            // Once every write has departed, the NoC no longer reads these CB
+            // pages.  The route-level barrier below still waits for completion
+            // before the next lifting route can consume workspace.
+            noc_async_writes_flushed();
         }
         cb_pop_front(cb_output, 2);
     }
@@ -156,8 +176,9 @@ void kernel_main() {
     constexpr uint32_t cb_config = get_compile_time_arg_val(0);
     constexpr uint32_t cb_output = get_compile_time_arg_val(1);
     constexpr uint32_t cb_sync = get_compile_time_arg_val(2);
+    constexpr bool use_noc_local_write = get_compile_time_arg_val(3) != 0;
     constexpr uint32_t tile_bytes = get_tile_size(cb_output);
-    constexpr auto config_args = TensorAccessorArgs<3>();
+    constexpr auto config_args = TensorAccessorArgs<4>();
     constexpr auto final_args = TensorAccessorArgs<config_args.next_compile_time_args_offset()>();
 
     const uint32_t local_route_count = chunk_count * route_count;
@@ -177,7 +198,7 @@ void kernel_main() {
                 const auto dst = TensorAccessor(final_args, output_addr, ttwv::device_protocol::kStickBytes);
                 write_dram_output_groups(dst, cb_output, tile_bytes, output_offset, output_length, group_count);
             } else {
-                write_local_output_groups(
+                write_local_output_groups<use_noc_local_write>(
                     output_addr, cb_output, tile_bytes, output_offset, output_length, group_count);
             }
 
