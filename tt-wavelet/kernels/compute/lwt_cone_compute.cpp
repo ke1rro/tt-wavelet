@@ -21,12 +21,38 @@
 
 namespace ttwv::kernels {
 
-constexpr uint32_t kDstInput0 = 0;
-constexpr uint32_t kDstInput1 = 1;
-constexpr uint32_t kDstOutput = 2;
-constexpr uint32_t kDstTailOutput = 3;
+// Seven 32x16 FP32 tiles fit in the four 32x32 slots available under
+// tile_regs_acquire().  Place outputs on even narrow-tile indices so the
+// standard packer can address them through W indices 0, 1, and 2.
+constexpr uint32_t kDstBase0 = 0;
+constexpr uint32_t kDstSource0 = 1;
+constexpr uint32_t kDstBase1 = 2;
+constexpr uint32_t kDstSource1 = 3;
+constexpr uint32_t kDstBase2 = 4;
+constexpr uint32_t kDstSource2 = 5;
+constexpr uint32_t kDstSource3 = 6;
+constexpr uint32_t kPackBase0 = 0;
+constexpr uint32_t kPackBase1 = 1;
+constexpr uint32_t kPackBase2 = 2;
 constexpr uint32_t kDstScale = 0;
 constexpr bool kFuseTerminalScale = TTWV_FUSE_TERMINAL_SCALE != 0;
+
+#ifdef TRISC_MATH
+ALWI void copy_narrow_tile_math(const uint32_t dst_tile_index) {
+    math::math_unpack_to_dest_math_ready();
+    math::set_dst_write_addr<DstTileShape::Tile32x16, UnpackDestination::DestReg>(dst_tile_index);
+    math::math_unpack_to_dest_tile_ready();
+}
+#endif
+
+// copy_tile_init_short() still configures the unpack MOP from the 32x16 CB
+// metadata (two faces).  Only the FP32 math-side Dst address needs overriding:
+// Metalium's generic direct-copy path currently hardcodes a 32x32 Dst stride.
+ALWI void copy_narrow_tile(const uint32_t cb, const uint32_t input_tile_index, const uint32_t dst_tile_index) {
+    UNPACK((llk_unpack_A<BroadcastType::NONE, false, EltwiseBinaryReuseDestType::NONE, UnpackToDestEn>(
+        cb, input_tile_index)));
+    MATH((copy_narrow_tile_math(dst_tile_index)));
+}
 
 template <typename Scheme, uint32_t Index = 0>
 constexpr uint32_t last_predict_update_step_index() noexcept {
@@ -95,41 +121,43 @@ inline void run_predict_update_step(
     for (uint32_t group = 0; group < output_group_count; ++group) {
         tile_regs_acquire();
 
-        cb_wait_front(cb_input0, 1);
+        cb_wait_front(cb_input0, 2);
         copy_tile_to_dst_init_short(cb_input0);
-        copy_tile(cb_input0, 0, kDstInput0);
-        cb_pop_front(cb_input0, 1);
+        copy_narrow_tile(cb_input0, 0, kDstSource0);
+        copy_narrow_tile(cb_input0, 1, kDstSource1);
+        cb_pop_front(cb_input0, 2);
 
-        cb_wait_front(cb_input1, 1);
+        cb_wait_front(cb_input1, 2);
         copy_tile_to_dst_init_short(cb_input1);
-        copy_tile(cb_input1, 0, kDstInput1);
-        cb_pop_front(cb_input1, 1);
+        copy_narrow_tile(cb_input1, 0, kDstSource2);
+        copy_narrow_tile(cb_input1, 1, kDstSource3);
+        cb_pop_front(cb_input1, 2);
 
-        cb_wait_front(cb_base, 1);
+        cb_wait_front(cb_base, 3);
         copy_tile_to_dst_init_short(cb_base);
-        copy_tile(cb_base, 0, kDstOutput);
-        cb_pop_front(cb_base, 1);
-
-        cb_wait_front(cb_base, 1);
-        copy_tile_to_dst_init_short(cb_base);
-        copy_tile(cb_base, 0, kDstTailOutput);
-        cb_pop_front(cb_base, 1);
+        copy_narrow_tile(cb_base, 0, kDstBase0);
+        copy_narrow_tile(cb_base, 1, kDstBase1);
+        copy_narrow_tile(cb_base, 2, kDstBase2);
+        cb_pop_front(cb_base, 3);
 
         hstencil_init();
-        hstencil_plus_base_tile<K>(
-            h_coeffs, kDstInput0, kDstInput1, kDstOutput, kDstTailOutput, kDstOutput, kDstTailOutput);
+        hstencil_plus_base_narrow_tiles<K>(
+            h_coeffs, kDstSource0, kDstSource1, kDstSource2, kDstSource3, kDstBase0, kDstBase1, kDstBase2);
+
         if constexpr (FuseTerminalScale) {
-            scale_tile(kDstOutput, TerminalScalePacked);
-            scale_tile(kDstTailOutput, TerminalScalePacked);
+            scale_narrow_tile(kDstBase0, TerminalScalePacked);
+            scale_narrow_tile(kDstBase1, TerminalScalePacked);
+            scale_narrow_tile(kDstBase2, TerminalScalePacked);
         }
 
         tile_regs_commit();
         tile_regs_wait();
 
-        cb_reserve_back(cb_output, 2);
-        pack_tile(kDstOutput, cb_output, 0);
-        pack_tile(kDstTailOutput, cb_output, 1);
-        cb_push_back(cb_output, 2);
+        cb_reserve_back(cb_output, 3);
+        pack_tile(kPackBase0, cb_output, 0);
+        pack_tile(kPackBase1, cb_output, 1);
+        pack_tile(kPackBase2, cb_output, 2);
+        cb_push_back(cb_output, 3);
 
         tile_regs_release();
     }
@@ -141,22 +169,22 @@ inline void run_scale_step(
     const uint32_t scalar_packed,
     const uint32_t output_group_count) {
     for (uint32_t group = 0; group < output_group_count; ++group) {
-        cb_wait_front(cb_input, 2);
-        cb_reserve_back(cb_output, 2);
+        cb_wait_front(cb_input, 3);
+        cb_reserve_back(cb_output, 3);
 
-        for (uint32_t tile = 0; tile < 2; ++tile) {
+        for (uint32_t tile = 0; tile < 3; ++tile) {
             tile_regs_acquire();
             copy_tile_to_dst_init_short(cb_input);
-            copy_tile(cb_input, tile, kDstScale);
-            scale_tile(kDstScale, scalar_packed);
+            copy_narrow_tile(cb_input, tile, kDstScale);
+            scale_narrow_tile(kDstScale, scalar_packed);
             tile_regs_commit();
             tile_regs_wait();
             pack_tile(kDstScale, cb_output, tile);
             tile_regs_release();
         }
 
-        cb_pop_front(cb_input, 2);
-        cb_push_back(cb_output, 2);
+        cb_pop_front(cb_input, 3);
+        cb_push_back(cb_output, 3);
     }
 }
 

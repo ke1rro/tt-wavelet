@@ -32,6 +32,7 @@ TT_MAX_DEPENDENCY_OVERHEAD_PATTERN = re.compile(
     r"lwt_max_dependency_overhead:\s*([0-9eE+.\-]+)"
 )
 TT_TERMINAL_SCALE_FUSED_PATTERN = re.compile(r"lwt_terminal_scale_fused:\s*(\d+)")
+TT_TILE_NATIVE_WORKSPACE_PATTERN = re.compile(r"lwt_tile_native_workspace:\s*(\d+)")
 TT_ZERO_WORK_CORES_PATTERN = re.compile(r"lwt_zero_work_cores_per_route:\s*([0-9 ]*)")
 DEFAULT_LOG_CANDIDATES = [
     PROJECT_ROOT / "wavelets.log",
@@ -59,6 +60,7 @@ class TTTimingResult:
     workspace_elements: int | None = None
     max_dependency_overhead: float | None = None
     terminal_scale_fused: int | None = None
+    tile_native_workspace: int | None = None
     zero_work_cores_per_route: str = ""
 
 
@@ -349,6 +351,9 @@ def run_tt_wavelet(command: str) -> TTTimingResult:
         terminal_scale_fused=optional_pattern_int(
             TT_TERMINAL_SCALE_FUSED_PATTERN, completed.stderr
         ),
+        tile_native_workspace=optional_pattern_int(
+            TT_TILE_NATIVE_WORKSPACE_PATTERN, completed.stderr
+        ),
         zero_work_cores_per_route=(" ".join(zero_work_match.group(1).split()) if zero_work_match else ""),
     )
 
@@ -556,6 +561,7 @@ def main() -> int:
         "lwt_workspace_elements",
         "lwt_max_dependency_overhead",
         "lwt_terminal_scale_fused",
+        "lwt_tile_native_workspace",
         "lwt_zero_work_cores_per_route",
         "speedup_pywt_over_tt",
         "status",
@@ -670,6 +676,11 @@ def main() -> int:
                             row["lwt_terminal_scale_fused"] = (
                                 tt_result.terminal_scale_fused
                                 if tt_result.terminal_scale_fused is not None
+                                else ""
+                            )
+                            row["lwt_tile_native_workspace"] = (
+                                tt_result.tile_native_workspace
+                                if tt_result.tile_native_workspace is not None
                                 else ""
                             )
                             row["lwt_zero_work_cores_per_route"] = tt_result.zero_work_cores_per_route

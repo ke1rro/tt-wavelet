@@ -1,746 +1,493 @@
+Use the `$hpc-modern-cpp` skill for this task.
 
+Work in the `tt-wavelet` repository and investigate whether the current FP32 SFPI horizontal lifting stencil can be redesigned to operate natively on Tensix tile/face layout, or otherwise avoid the current route-by-route row-major ↔ tile repacking and the `17 - K` padding requirement.
 
+This is a research-and-implementation task. Do not begin by assuming that the previously suggested hybrid/tile-native workspace is the correct solution. First inspect the implementation, Wormhole ISA documentation, TT-Metal code, and all supported wavelet schemes. Compare multiple technically plausible designs, select the best one based on evidence, and then implement and benchmark it.
 
+Do not create a commit.
 
-## Мій висновок
+## Repository and documentation sources
 
-Я б **не будував dynamic cache**, де кожен `InputStream::pop()` вирішує: читати з L1 чи DRAM. Це додасть багато станів, coherence, CB ownership і runtime branching.
-
-Краще зробити один backend із двома режимами:
-
-```text
-1. ResidentSharded
-   увесь even/odd signal живе в L1 shards;
-   між lifting steps немає DRAM.
-
-2. ConeStreamed
-   якщо весь signal не влазить:
-   беремо великий chunk фінального output,
-   backward planner знаходить його dependency cone,
-   завантажуємо cone з DRAM,
-   виконуємо всі lifting steps у L1,
-   записуємо лише фінальний chunk.
-```
-
-Тобто DRAM/L1 decision робиться **один раз на host-side planner**, а не всередині кожного читання.
-
----
-
-# 1. Що зараз відбувається
-
-Поточна схема фактично така:
+Primary project:
 
 ```text
-DRAM source/base
-    ↓
-lwt_reader
-    ↓
-CB tiles
-    ↓
-SFPU stencil
-    ↓
-CB output
-    ↓
-lwt_writer
-    ↓
-DRAM ping/pong
-    ↓
-global route barrier
-    ↓
-наступний lifting step знов читає DRAM
+/home/user/tt-wavelet/tt-wavelet
 ```
 
-`create_signal_mesh_buffer()` створює `even.ping`, `even.pong`, `odd.ping`, `odd.pong` саме як `BufferType::DRAM`. Кожен route містить окремі `source_addr`, `base_addr`, `output_addr`, а writer після кожного lifting step матеріалізує весь output назад у DRAM. fileciteturn2file1
-
-Сам SFPU kernel уже має нормальну структуру:
+ISA documentation:
 
 ```text
-output = base + stencil(source)
+/home/user/tt-isa-documentation
 ```
 
-Тому `horizontal_stencil_sfpi.h` і `lwt_compute.cpp` переписувати з нуля не потрібно. Основна проблема — **storage/runtime architecture**, а не stencil math.
+TT-Metal source:
 
----
+* Use `TT_METAL_ROOT` if set.
+* Otherwise locate the local `tt-metal` checkout used by this project.
 
-# 2. Не робити чотири L1 ping/pong buffers
-
-Очевидна заміна:
+Also inspect project documentation and scheme definitions, especially:
 
 ```text
-even_ping DRAM → even_ping L1 sharded
-even_pong DRAM → even_pong L1 sharded
-odd_ping  DRAM → odd_ping  L1 sharded
-odd_pong  DRAM → odd_pong  L1 sharded
+docs/
+wavelets/
 ```
 
-вже прибере DRAM loopback. Але це все ще чотири повнорозмірні buffers.
-
-Натомість я рекомендую **три універсальні storage slots**:
+Relevant project files include, but are not limited to:
 
 ```text
-slot A
-slot B
-slot S — scratch/free
+kernels/sfpi/horizontal_stencil_sfpi.h
+kernels/dataflow/lwt_cone_reader.cpp
+kernels/dataflow/lwt_cone_writer.cpp
+tt_wavelet/include/lifting/
+tt_wavelet/src/lifting/
 ```
 
-Початковий стан:
+Relevant local documentation likely includes:
 
 ```text
-active_even = A
-active_odd  = B
-free        = S
+tiles.rst
+compute_engines_and_dataflow_within_tensix.rst
+SFPI.md
+03_SFPU_REGISTER_MODEL.md
+04_SFPI_PROGRAMMING_MODEL.md
+tensor_layouts.md
+HORIZONTAL_STENCIL.md
+SHIFT.md
+METALIUM_GUIDE.md
 ```
 
-Для predict:
+Search TT-Metal for production examples involving:
+
+* tilize/untilize;
+* tile-native sharded buffers;
+* SFPU kernels that shift or combine lanes across faces or tiles;
+* sliding-window and convolution readers;
+* halo handling;
+* pack/unpack configuration;
+* direct L1 tile reads and writes;
+* DST register addressing;
+* `SFPSHFT2`, shuffle, rotate, lane masking, and related Wormhole instructions;
+* kernels that retain intermediate data in tile layout across multiple operations.
+
+TT-Metal convolution code is a useful architectural reference, but do not assume its high-level convolution operator should be reused directly.
+
+## Current implementation and suspected bottleneck
+
+The compute kernel already executes in tile/DST layout and performs FP32 arithmetic on SFPU.
+
+The current intermediate workspace is compact row-major L1:
 
 ```text
-S = odd + P(even)
-
-active_even залишається A
-active_odd  стає S
-старий odd-buffer B стає free
+row-major L1
+    → reader scalar packing
+    → tile CB
+    → DST registers and SFPU
+    → tile CB
+    → writer
+    → row-major L1
 ```
 
-Для update:
+For each predict/update group producing 1536 useful output values, the current data movement is approximately:
 
 ```text
-B = even + U(odd)
-
-active_even стає B
-active_odd  залишається S
-старий even-buffer A стає free
+source packing:      2048 FP32 values
+base packing:        1536 FP32 values
+output materialize:  1536 FP32 values
+total:               5120 FP32 values
 ```
 
-У загальному вигляді:
+The source region contains only about 1552 unique values, but the reader packs 2048 because overlapping stencil rows repeatedly copy about 496 values.
+
+The writer has already been improved: approximately 1536 scalar copies were replaced with aligned 64-byte NoC writes. The remaining major cost appears to be the reader-side scalar packing.
+
+For `db7`, most lifting steps have `K = 1` or `K = 2`, so the SFPU arithmetic is small and packing can cost more than the stencil itself.
+
+However, a simple switch to `TILE_LAYOUT` may not solve the problem:
+
+* routes have different `source_offset` and `base_offset`;
+* offsets may differ by one FP32 value;
+* the source representation currently requires halo and four half-blocks per row;
+* compact output contains only three half-blocks per row;
+* the next route may require a different alignment;
+* the current SFPI algorithm relies on a particular input arrangement and `17 - K` left padding;
+* tile faces, subvector boundaries, even/odd columns, and cross-tile halo behavior must remain correct.
+
+The core research question is therefore:
+
+> Can the horizontal SFPI lifting stencil and its persistent workspace be redesigned so that intermediate values remain in a native or near-native tile representation across lifting routes, while preserving FP32 SFPU precision and avoiding most or all route-level scalar repacking?
+
+A second, related question is:
+
+> Can the stencil itself be reformulated so that `17 - K` padding is unnecessary, or replaced by a much cheaper representation such as register-level halo injection, shifted tile views, masks, or limited boundary handling?
+
+## Hard constraints
+
+Preserve these invariants:
+
+* FP32 storage and FP32 SFPU arithmetic.
+* Do not replace SFPU FP32 computation with TF32, BF16, FP16, or FPU matmul.
+* Preserve generic predict/update support.
+* Preserve all supported coefficient lengths, including `K = 1` through the maximum currently supported value, expected to be 17.
+* Preserve arbitrary scheme shifts and route geometry.
+* Preserve metadata-only swap semantics.
+* Preserve ConeStreamed execution and terminal direct-to-DRAM output.
+* Do not reintroduce route-by-route DRAM loopback.
+* Do not hard-code `db7` or any individual wavelet into the compute path.
+* Do not require users to provide manually transformed layouts.
+* Boundary behavior and finite-signal correctness must remain consistent with the current backend.
+* Avoid increasing L1 usage so much that useful chunk size or active-core count materially decreases.
+* Do not optimize only the SFPI instruction sequence while leaving a larger layout conversion bottleneck untouched.
+
+## Required initial investigation
+
+Before implementing a design, reconstruct the exact current physical dataflow.
+
+Document, with index and address examples:
+
+1. How one logical row of source, base, and output is represented in:
+
+   * compact row-major workspace;
+   * circular buffers;
+   * tile faces;
+   * DST registers;
+   * SFPU lanes.
+
+2. Why the current SFPI stencil expects two source tiles and two base/output tiles.
+
+3. Why the source uses four half-blocks per row while the output contains three.
+
+4. The exact meaning of the current `17 - K` padding:
+
+   * which logical tap it aligns;
+   * which tile column or lane it aligns with;
+   * whether it is mathematically necessary or only an implementation artifact;
+   * whether it is needed for all `K` or only particular parity/shift combinations.
+
+5. How `_horizontal_stencil_rotate_()` moves values:
+
+   * within a subvector;
+   * across subvectors;
+   * across faces;
+   * across tiles;
+   * which transitions it cannot express.
+
+6. The precise mapping implemented by:
 
 ```cpp
-route.source = active_source;
-route.base   = active_target;
-route.output = free_slot;
-
-free_slot    = active_target;
-active_target = route.output;
+_get_dst_base()
+_horizontal_stencil_rotate_()
+_horizontal_stencil_plus_base_block()
+_horizontal_stencil_plus_base_face()
+_horizontal_stencil_plus_base()
 ```
 
-Для `Swap` лише міняються metadata:
+7. For every supported wavelet scheme, collect:
 
-```cpp
-std::swap(active_even, active_odd);
-```
+   * number of predict/update steps;
+   * distribution of `K`;
+   * shift range;
+   * source/base offset alignment;
+   * frequency of one-element misalignment;
+   * swap count;
+   * maximum halo;
+   * routes that violate any proposed tile-native alignment rule.
 
-## Чому три buffers краще
+Do not infer these properties from `db7` alone. Scan all schemes under `wavelets/`.
 
-Поточна схема має:
+## ISA research questions
+
+Use the Wormhole ISA documentation to answer, with citations to local files or instruction definitions:
+
+1. Can SFPU load directly from a shifted logical view of a tile without physically repacking the data?
+
+2. Can `SFPSHFT2` or another instruction construct a non-wrapping shift using values from:
+
+   * another LREG;
+   * another face;
+   * another tile;
+   * a preloaded halo register?
+
+3. Can the first or last lane of each subvector be replaced efficiently using masks or conditional moves?
+
+4. Can pack/unpack configuration expose a shifted or overlapping tile view without scalar data movement?
+
+5. Can DST addressing or address modifiers represent the required `+1 FP32` route offsets?
+
+6. Can a tile-native persistent workspace be read and written without tilize/untilize between routes?
+
+7. Can source and base be stored in the same physical tile representation while still allowing the three-slot `A/B/Scratch` model?
+
+8. Can overlapping halo columns be stored once per tile row and reused by multiple routes?
+
+9. Can a route produce an output layout that is immediately valid as the input layout of the next route, even when the next route has a different shift?
+
+10. Are there undocumented or subtle limitations involving:
+
+    * face boundaries;
+    * 16-lane subvectors;
+    * tile column parity;
+    * register allocation;
+    * LREG14 configuration;
+    * DST tile count;
+    * synchronization between unpack, math, and pack?
+
+Do not claim that an instruction supports a required cross-boundary behavior unless it is verified from documentation or a minimal hardware experiment.
+
+## Candidate architecture space
+
+Investigate at least the following classes of solutions, but do not assume any one of them is correct.
+
+### 1. Fully tile-native persistent workspace
+
+Store all intermediate `A/B/Scratch` streams in a face-compatible tile layout and avoid row-major materialization between lifting routes.
+
+Determine whether arbitrary route offsets can be represented as metadata, shifted tile origins, or tile-local operations.
+
+### 2. Tile-native body with explicit halo/prologue
+
+Keep aligned interior data tile-native and construct only the small unaligned halo or prologue required by a route.
+
+Determine whether this actually reduces total traffic for `K = 1`, `K = 2`, and high-`K` schemes.
+
+### 3. SFPI stencil redesign without `17 - K` padding
+
+Reformulate the register-level convolution so taps begin at their natural position.
+
+Possible mechanisms to investigate include, but are not limited to:
+
+* preloaded halo registers;
+* masked lane replacement;
+* pairwise tile concatenation;
+* explicit first-lane handling;
+* different even/odd register decomposition;
+* processing taps in the opposite direction;
+* changing which source half-block is considered the center;
+* maintaining shifted state between taps;
+* using a small prologue/epilogue rather than padding every row.
+
+Do not implement one of these merely because it sounds plausible. Verify instruction semantics and estimate instruction cost.
+
+### 4. Redundant persistent tile representation
+
+Store a limited amount of duplicated overlap in each tile so common route offsets require no repacking.
+
+Quantify:
+
+* L1 overhead;
+* extra writer traffic;
+* reduction in reader work;
+* whether redundancy must be regenerated after every route;
+* whether different shifts require multiple redundant views.
+
+### 5. Multiple physical views or phase layouts
+
+Maintain two or more phase-aligned tile views, for example alignment 0 and alignment +1, if that is cheaper than rebuilding a shifted view for each route.
+
+Determine whether the memory and update cost is justified by the actual scheme distribution.
+
+### 6. One-time tilization at cone entry and one-time untilization at exit
+
+Convert the loaded dependency cone to a native tile representation once, execute the complete lifting scheme in that representation, and convert only the final interior to the output format.
+
+Determine whether intermediate route geometry can remain valid without additional repacking.
+
+### 7. Alternative SFPI data decomposition
+
+Investigate whether the current even/odd lane decomposition is itself creating the layout requirement.
+
+Consider whether another mapping of logical consecutive values to:
+
+* LREGs;
+* lanes;
+* faces;
+* DST tiles
+
+would make shifts and tap application simpler while preserving vectorized FP32 execution.
+
+### 8. Current compact representation with a substantially better packer
+
+If a persistent tile-native representation is impossible or too expensive, determine the best achievable reader design:
+
+* aligned block NoC reads for dense regions;
+* reuse of overlapping source data;
+* persistent local cache across groups;
+* reduced duplicated packing;
+* specialized fast paths for common `K` and offset parity;
+* separate interior and boundary paths.
+
+This is the fallback, not the assumed answer.
+
+## Required comparison
+
+For each viable design, provide an evidence table containing:
+
+* physical layout;
+* whether `17 - K` padding remains;
+* support for arbitrary `K`;
+* support for arbitrary shift and route offset;
+* FP32 preservation;
+* source elements read per 1536-output group;
+* base elements read per group;
+* output elements written per group;
+* duplicated values;
+* SFPU instruction overhead;
+* NoC operations;
+* L1 bytes per slot;
+* additional halo storage;
+* expected active-core impact;
+* implementation complexity;
+* correctness risk;
+* compatibility with forward 1D, inverse 1D, and future 2D LWT.
+
+Explicitly identify whether each design solves:
 
 ```text
-4 × приблизно N/2 FP32 = 2N FP32 elements = 8N bytes
+row-major → tile repacking
+tile → row-major materialization
+17 - K padding
+one-FP32 route misalignment
+cross-face halo
+cross-tile halo
 ```
 
-Три slots:
+## Microbenchmarks
+
+Before rewriting the complete backend, build focused hardware microbenchmarks where needed.
+
+At minimum isolate:
+
+1. Current reader packing only.
+2. Current SFPI stencil only.
+3. Current writer only.
+4. Tile-native source/base load into DST.
+5. A one-element shifted tile view.
+6. Cross-face or cross-tile halo injection.
+7. A chain of several predict/update routes without row-major materialization.
+8. `K = 1`, `K = 2`, and `K = 17`.
+9. Aligned and `+1 FP32` offset cases.
+
+Measure device execution only. Exclude program construction and unrelated host work from the timing boundary.
+
+Report median, minimum, p10, p90, and standard deviation over enough repetitions to distinguish small differences.
+
+## Design decision
+
+After the investigation, choose the architecture that provides the best overall reduction in data movement without sacrificing generality or FP32 correctness.
+
+The selected design must be justified by:
+
+* ISA evidence;
+* measured microbenchmarks;
+* scheme-distribution analysis;
+* exact physical layout mapping;
+* projected end-to-end traffic;
+* expected effect on ConeStreamed performance.
+
+Do not select a design solely because it is easiest to implement.
+
+If no fully tile-native design is feasible, clearly explain the exact hardware or layout constraint that prevents it and implement the best evidence-backed hybrid or packing design.
+
+## Implementation requirements
+
+After selecting the design:
+
+1. Implement the smallest coherent architecture that demonstrates the selected persistent layout or stencil model.
+2. Remove obsolete packing paths that the new design replaces.
+3. Keep boundary handling separate from the fast interior path where beneficial.
+4. Keep layout and route geometry explicit in strong C++ types or descriptors.
+5. Do not scatter hidden layout assumptions through reader, compute, and writer code.
+6. Add assertions for alignment, tile capacity, halo size, route offsets, and supported instruction assumptions.
+7. Reuse the three-slot `A/B/Scratch` execution model where it remains appropriate.
+8. Preserve terminal direct-to-DRAM output.
+9. Ensure the design can later be reused for inverse 1D and separable 2D LWT, but do not add speculative abstractions that are not needed by the chosen implementation.
+
+## Correctness validation
+
+Run at least:
+
+* `db7`;
+* one wavelet dominated by `K = 1`;
+* one wavelet dominated by `K = 2`;
+* one wavelet containing the maximum supported `K`;
+* schemes with positive and negative shifts;
+* schemes with swaps;
+* odd and even signal lengths;
+* short signals;
+* chunk-boundary cases;
+* first and last chunks;
+* all 106 supported schemes for runtime stability.
+
+Compare the new backend directly against the current correct ConeStreamed or Resident reference using the same arithmetic ordering where possible.
+
+Track separately:
+
+1. architecture equivalence against the existing backend;
+2. compatibility against PyWavelets.
+
+Do not attribute existing high-order factorization error to the new layout unless the new implementation increases it.
+
+FP32 error must not regress materially relative to the current SFPU implementation.
+
+## Performance validation
+
+Benchmark at least:
 
 ```text
-3 × приблизно N/2 FP32 = 1.5N FP32 elements = 6N bytes
+db7:
+100k–1M sweep
+5M
+8M or the largest stable size
+
+high-K wavelet:
+representative medium and large sizes
 ```
 
-Для сигналу `N = 10,000,000`:
+Use the same device-only timing boundary for old and new implementations.
 
-```text
-4-buffer scheme ≈ 80 MB aggregate L1
-3-buffer scheme ≈ 60 MB aggregate L1
-```
+Report:
 
-При 80 cores це приблизно:
+* total time;
+* reader time if measurable;
+* compute time if measurable;
+* writer time if measurable;
+* source/base/output traffic;
+* scalar operations eliminated;
+* speedup by signal size;
+* speedup by `K`;
+* L1 usage;
+* active-core count;
+* chunk size;
+* any scheduler thresholds.
 
-```text
-60 MB / 80 ≈ 750 KB signal storage per core
-```
+The primary performance objective is not a specific percentage. It is to prove that the selected design materially reduces repeated layout conversion and improves end-to-end execution for low-arithmetic schemes such as `db7`, without causing major regressions for high-`K` schemes.
 
-Поточні CB займають приблизно ще 50 KB/core. На Wormhole є 1.5 MB SRAM на Tensix, хоча частина зарезервована runtime/kernel infrastructure. Тому 10M FP32 signal із трьома slots має значно реалістичніший шанс повністю поміститися в aggregate L1. SRAM і sharded allocation якраз призначені для зберігання проміжних tensors без DRAM round-trip. fileciteturn1file10
+## Required deliverables
 
----
+Produce:
 
-# 3. Нова структура planner
+1. A research note under `docs/` describing:
 
-Зараз `StreamRef` містить:
+   * current physical layout;
+   * ISA findings;
+   * scheme statistics;
+   * candidate comparison;
+   * selected architecture;
+   * rejected alternatives and reasons.
 
-```cpp
-struct StreamRef {
-    LogicalStream family;
-    StreamSlot slot;  // ping/pong
-};
-```
+2. The implementation of the selected design.
 
-і `append_forward_route()` постійно toggle-ить ping/pong. fileciteturn1file0turn1file1
+3. Focused correctness tests.
 
-Я б замінив це на:
+4. Microbenchmark and end-to-end benchmark results.
 
-```cpp
-enum class StorageSlot : uint8_t {
-    kA = 0,
-    kB = 1,
-    kScratch = 2,
-};
+5. A concise final summary containing:
 
-struct StreamRef {
-    StorageSlot slot;
-};
+   * what was proven;
+   * whether native tile persistence is feasible;
+   * whether `17 - K` padding was eliminated;
+   * what data movement was removed;
+   * measured performance changes;
+   * remaining bottlenecks;
+   * exact files changed.
 
-struct LiftingActiveStreams {
-    StreamRef even{StorageSlot::kA};
-    StreamRef odd{StorageSlot::kB};
-    StorageSlot free{StorageSlot::kScratch};
-};
-```
-
-Route геометрія залишається майже без змін:
-
-```cpp
-struct LiftingStepRoute {
-    StepType type;
-
-    StorageSlot source;
-    StorageSlot base;
-    StorageSlot output;
-
-    size_t source_length;
-    size_t base_length;
-    size_t source_offset;
-    size_t base_offset;
-    uint32_t source_left_pad;
-    size_t output_length;
-};
-```
-
-Твій `compute_step_geometry()` уже правильно обчислює:
-
-```text
-output shift
-output length
-source offset
-base offset
-```
-
-Його треба зберегти. fileciteturn1file8
-
----
-
-# 4. ResidentSharded mode
-
-## Memory layout
-
-Кожен із трьох slots — це:
-
-```text
-FP32
-row-major
-stick width = 32
-height-sharded
-BufferType::L1
-```
-
-Логічно tensor можна представити як:
-
-```text
-[num_sticks, 32]
-```
-
-і shard-ити по `num_sticks`.
-
-Бажано зробити shard capacity кратним:
-
-```cpp
-kLwtGroupOutputElements = 32 * 3 * 16 = 1536 elements
-```
-
-тобто:
-
-```text
-1536 elements = 48 sticks
-```
-
-Тоді один output group ніколи не буде розділений між двома cores.
-
-```cpp
-shard_elements =
-    round_up(ceil(max_stream_length / core_count), 1536);
-```
-
-Перевірка capacity:
-
-```cpp
-signal_bytes_per_core =
-    3 * shard_elements * sizeof(float);
-
-fits =
-    signal_bytes_per_core +
-    fixed_cb_bytes +
-    l1_safety_margin
-    <= usable_l1_bytes_per_core;
-```
-
-Не потрібно жорстко припускати, що доступні всі 1.5 MB. Краще мати configurable safety budget, наприклад:
-
-```cpp
-TT_WAVELET_L1_SIGNAL_BUDGET_BYTES
-```
-
-або визначати conservative budget на host.
-
----
-
-## Pad/split
-
-Зараз `pad_split` записує even/odd у DRAM buffers.
-
-У resident mode він повинен одразу записувати:
-
-```text
-even → slot A, L1 sharded
-odd  → slot B, L1 sharded
-```
-
-`pad_split_1d_writer.cpp` концептуально не потрібно міняти: `TensorAccessor` працює і для DRAM, і для sharded L1, якщо правильний layout переданий compile-time. Sharded memory також доступна через `TensorAccessor` на page granularity. fileciteturn0file4
-
----
-
-## LWT reader
-
-Reader отримує три L1-sharded accessors:
-
-```cpp
-slot_a
-slot_b
-slot_scratch
-```
-
-На кожному route він вибирає:
-
-```cpp
-const auto& src  = slots[route.source];
-const auto& base = slots[route.base];
-```
-
-Поточний `StickReadCache` можна лишити.
-
-У більшості випадків source/base sticks будуть локальними. Лише stencil halo біля shard boundary потрапить на сусідній core через NoC.
-
-Тобто замість:
-
-```text
-кожен sample через NoC із DRAM bank
-```
-
-буде:
-
-```text
-основний body: local core L1
-boundary halo: сусідній core L1
-```
-
----
-
-## Compute
-
-`lwt_compute.cpp` можна практично не змінювати:
-
-```cpp
-run_predict_update_step(
-    cb_input0,
-    cb_input1,
-    cb_base,
-    cb_output,
-    Step::coeff_bits,
-    group_count);
-```
-
-Твоя LWT abstraction уже зведена до generic stencil:
-
-```text
-predict: odd  = odd  + P(even)
-update:  even = even + U(odd)
-scale:   stream *= scalar
-swap:    metadata swap
-```
-
-Це саме правильна boundary для нового memory backend. fileciteturn1file6
-
----
-
-## Writer
-
-Writer записує output у sharded L1 slot:
-
-```cpp
-dst = slots[route.output];
-```
-
-Зберігається compact layout:
-
-```text
-output[0 ... output_length)
-```
-
-Тому нинішні 16-element block writes залишаються aligned, а route geometry не треба ускладнювати фізичними origins.
-
-Після route:
-
-```text
-global route barrier
-```
-
-залишається потрібним, тому що наступний step може читати щойно записаний stream, включно з remote halo іншого core.
-
-Важливо: ми прибираємо **DRAM materialization**, але не порядок lifting steps. Lifting steps послідовні за визначенням; всередині одного step усі output samples паралельні. Це також відповідає стандартній in-place/parallel властивості lifting scheme. fileciteturn1file15
-
----
-
-# 5. Не використовувати поточні `InputStream` / `OutputStream`
-
-Я б їх не розвивав як основу нового backend.
-
-В активному LWT path вони взагалі не використовуються. Reader працює через `StickReadCache`, а writer — напряму через tiled output CB.
-
-Також у `InputStream` зараз видно незавершену source-state abstraction:
-
-```cpp
-reset(...) {
-    _source = new_source;
-}
-```
-
-але `_next_blob()` перевіряє:
-
-```cpp
-if (_read_source == kSrcDRAM)
-```
-
-тобто `_source` та `_read_source` не узгоджені. L1 path ще й передбачає, що якийсь writer уже залишив потрібний blob у тому самому CB, що сильно зв’язує producer/consumer state. fileciteturn2file0
-
-Dynamic blob cache створить додаткові проблеми:
-
-- хто володіє CB page;
-- чи актуальна L1 copy;
-- чи потрібно spill-ити dirty page;
-- коли DRAM backing стає authoritative;
-- як працює route barrier;
-- що робити, якщо source і output посилаються на той самий cached blob.
-
-Для LWT це зайва складність.
-
----
-
-# 6. Що робити, коли весь сигнал не влазить
-
-Тут я б **не повертався до route-by-route DRAM spilling**.
-
-Інакше для великого сигналу знов отримаємо:
-
-```text
-step 0: DRAM → L1 → DRAM
-step 1: DRAM → L1 → DRAM
-step 2: DRAM → L1 → DRAM
-...
-```
-
-Замість цього потрібен `ConeStreamed` mode.
-
-## Ідея
-
-Беремо chunk фінального output:
-
-```text
-final output interval Q = [q0, q1)
-```
-
-Йдемо lifting scheme у зворотному порядку і визначаємо, які intervals потрібні до кожного step.
-
-Для predict:
-
-```text
-odd_new[i] = odd_old[i] + Σ c[j] even_old[i + shift + j]
-```
-
-Якщо потрібен interval `I` нового odd, тоді потрібні:
-
-```text
-old odd:  I
-old even: I + [shift, shift + K - 1]
-```
-
-Для update аналогічно.
-
-Для scale:
-
-```text
-required_old = required_new
-```
-
-Для swap:
-
-```text
-swap required_even / required_odd
-```
-
-Після backward pass отримаємо:
-
-```text
-required initial even interval
-required initial odd interval
-```
-
-Далі:
-
-```text
-1. Load required even/odd cone from DRAM.
-2. Розмістити їх у slot A/B.
-3. Виконати всі lifting steps через той самий 3-slot engine.
-4. Взяти лише потрібний final interior.
-5. Записати final coefficients у DRAM.
-6. Перейти до наступного chunk.
-```
-
-Тобто intermediate results **ніколи не потрапляють у DRAM**.
-
-```text
-DRAM initial signal
-       ↓
-large dependency cone
-       ↓
-all lifting steps in L1
-       ↓
-final chunk to DRAM
-```
-
-Є невелике повторне обчислення halo між сусідніми chunks, але для великого chunk overhead буде:
-
-```text
-approximately 1 + cone_halo / chunk_size
-```
-
-і буде набагато дешевшим за повний DRAM pass на кожному step.
-
----
-
-# 7. Unified architecture
-
-Насправді resident і streamed modes можуть використовувати той самий execution engine:
-
-```text
-LwtWindowEngine
-├── slot A
-├── slot B
-├── scratch slot
-├── active_even
-├── active_odd
-├── free_slot
-└── static lifting-step sequence
-```
-
-Різниця лише у window planner:
-
-```cpp
-enum class LwtMemoryMode {
-    kResidentSharded,
-    kConeStreamed,
-};
-
-struct LwtExecutionPlan {
-    LwtMemoryMode mode;
-    uint32_t core_count;
-    uint32_t shard_elements;
-    uint32_t final_chunk_elements;
-    std::vector<StepGeometry> steps;
-};
-```
-
-Selection:
-
-```cpp
-LwtExecutionPlan make_execution_plan(...) {
-    if (full_signal_fits_in_three_sharded_slots()) {
-        return make_resident_plan();
-    }
-
-    return make_dependency_cone_plan();
-}
-```
-
-Не потрібно мати runtime switch у кожному read.
-
-Крім того, `TensorAccessorArgs` кодує memory layout на compile time. Тому host-side вибір між двома kernel variants чистіший:
-
-```text
-lwt_reader_resident_l1.cpp
-lwt_reader_dram_window.cpp
-```
-
-або один kernel із двома compile-time accessors, але не один абстрактний accessor, де лише змінюється address.
-
----
-
-# 8. Які конкретно частини переписати
-
-## `lifting/plan.hpp`
-
-Прибрати:
-
-```cpp
-LogicalStream family;
-StreamSlot ping/pong;
-with_toggled_slot();
-```
-
-Додати:
-
-```cpp
-StorageSlot A/B/Scratch;
-active_even;
-active_odd;
-free_slot;
-```
-
-`compute_step_geometry()` лишити.
-
----
-
-## `lifting/device.hpp`
-
-Замість:
-
-```cpp
-MeshBufferPair even;
-MeshBufferPair odd;
-```
-
-зробити:
-
-```cpp
-struct LiftingWorkingBuffers {
-    std::array<std::shared_ptr<MeshBuffer>, 3> slots;
-    std::shared_ptr<MeshBuffer> route_config;
-};
-```
-
----
-
-## `lifting/device.cpp`
-
-Замінити:
-
-```cpp
-create_signal_mesh_buffer(... BufferType::DRAM)
-```
-
-на створення L1 height-sharded buffer.
-
-`build_route_config_words()` повинен resolve-ити:
-
-```cpp
-slots[route.source]
-slots[route.base]
-slots[route.output]
-```
-
----
-
-## `build_core_work()`
-
-Зараз кожен route заново рівномірно ділиться між cores.
-
-Для sharded layout краще, щоб core завжди обробляв groups, які фізично належать його shard:
-
-```cpp
-core_group_begin = core_index * groups_per_shard;
-core_group_end   = min(
-    core_group_begin + groups_per_shard,
-    route_group_count);
-```
-
-Тоді:
-
-- output writes локальні;
-- source/base body переважно локальні;
-- remote reads залишаються лише для halo.
-
----
-
-## `pad_split`
-
-Додати resident variant, який пише початкові even/odd прямо в slot A/B.
-
----
-
-## Final drain
-
-Після останнього step окремий kernel:
-
-```text
-active even L1 → final even DRAM
-active odd  L1 → final odd DRAM
-```
-
-Це буде єдиний повний L1→DRAM write після transform.
-
-Terminal scale steps пізніше можна застосувати прямо у final drain, але спочатку я б лишив їх звичайними L1 routes.
-
----
-
-# 9. Рекомендований порядок реалізації
-
-### Етап 1 — повністю resident backend
-
-1. Три L1-sharded slots.
-2. Pad/split одразу в L1.
-3. Поточний reader/compute/writer, але source/output — L1.
-4. Static shard ownership.
-5. Один final DRAM drain.
-6. Benchmark.
-
-Це вже має прибрати основний bottleneck без dependency-cone складності.
-
-### Етап 2 — memory planner
-
-Додати перевірку:
-
-```text
-чи влазять 3 slots + CB + safety margin
-```
-
-### Етап 3 — dependency-cone fallback
-
-Для сигналів, які не влазять:
-
-```text
-final chunk → backward cone → DRAM load → all LWT steps → final write
-```
-
----
-
-## Підсумкова схема
-
-```text
-                    ┌──────────────────────────┐
-                    │ Host memory planner      │
-                    └────────────┬─────────────┘
-                                 │
-                 ┌───────────────┴────────────────┐
-                 │                                │
-         signal fits                       signal does not fit
-                 │                                │
-                 ▼                                ▼
-       ResidentSharded                    ConeStreamed
-                 │                                │
-      pad/split → L1 A/B              load cone from DRAM
-                 │                                │
-                 └──────────┬─────────────────────┘
-                            ▼
-                  Three-slot LWT engine
-                   A / B / scratch
-                            │
-                    all lifting steps
-                            │
-                            ▼
-                   one final DRAM write
-```
-
-Це зберігає твою нинішню LWT structure, static scheme і SFPU stencil, але повністю міняє неправильну частину — route-by-route DRAM materialization. Найкращою першою реалізацією я вважаю саме **three-slot L1-sharded resident backend**, а не складний L1/DRAM blob cache.
+Do not return only a speculative plan. Inspect the sources, validate assumptions against Wormhole hardware, implement the evidence-backed solution, and report any unresolved hardware limitation honestly.

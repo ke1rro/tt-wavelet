@@ -32,6 +32,12 @@ inline uint32_t _get_dst_base(const std::uint32_t tile_index, const std::uint32_
     return (tile_index << 6) + (face_index << 4);
 }
 
+inline uint32_t _get_narrow_dst_base(const std::uint32_t tile_index, const std::uint32_t face_index) {
+    // A 32x16 FP32 tile occupies 32 destination rows rather than the 64 rows
+    // used by a 32x32 tile.  Its two faces are the top and bottom 16x16 faces.
+    return (tile_index << 5) + (face_index << 4);
+}
+
 inline void _horizontal_stencil_init() {
     _init_sfpu_config_reg();
 
@@ -199,6 +205,38 @@ inline void _horizontal_stencil_plus_base(
     TTI_STALLWAIT(p_stall::STALL_CFG, p_stall::WAIT_SFPU);
 }
 
+template <uint8_t K>
+inline void _horizontal_stencil_plus_base_narrow(
+    const uint32_t h_packed[K],
+    const uint32_t source0,
+    const uint32_t source1,
+    const uint32_t source2,
+    const uint32_t source3,
+    const uint32_t base0,
+    const uint32_t base1,
+    const uint32_t base2) {
+    math::set_dst_write_addr<DstTileShape::Tile32x16, UnpackDestination::SrcRegs>(0);
+    ckernel::math::clear_addr_mod_base();
+    TTI_STALLWAIT(p_stall::STALL_SFPU, p_stall::MATH);
+
+    const uint32_t sources[4] = {source0, source1, source2, source3};
+    const uint32_t bases[3] = {base0, base1, base2};
+#pragma unroll 3
+    for (uint32_t block = 0; block < 3; ++block) {
+#pragma unroll 2
+        for (uint32_t face = 0; face < 2; ++face) {
+            _horizontal_stencil_plus_base_face<K, 16>(
+                h_packed,
+                _get_narrow_dst_base(sources[block], face),
+                _get_narrow_dst_base(sources[block + 1], face),
+                _get_narrow_dst_base(bases[block], face),
+                _get_narrow_dst_base(bases[block], face));
+        }
+    }
+
+    TTI_STALLWAIT(p_stall::STALL_CFG, p_stall::WAIT_SFPU);
+}
+
 inline void _scale_tile(const uint32_t tile, const uint32_t scalar_packed) {
     _init_sfpu_config_reg();
 
@@ -243,6 +281,50 @@ inline void _scale_tile(const uint32_t tile, const uint32_t scalar_packed) {
     TTI_STALLWAIT(p_stall::STALL_CFG, p_stall::WAIT_SFPU);
 }
 
+inline void _scale_narrow_tile(const uint32_t tile, const uint32_t scalar_packed) {
+    _init_sfpu_config_reg();
+
+    addr_mod_t addr_mod{
+        .srca = {.incr = 0},
+        .srcb = {.incr = 0},
+        .dest = {.incr = 0},
+    };
+    addr_mod.set(ADDR_MOD_3);
+
+    TTI_SFPENCC(sfpi::SFPENCC_IMM12_BOTH, 0, 0, sfpi::SFPENCC_MOD1_EI_RI);
+    math::reset_counters(p_setrwc::SET_ABD_F);
+    math::set_dst_write_addr<DstTileShape::Tile32x16, UnpackDestination::SrcRegs>(0);
+    ckernel::math::clear_addr_mod_base();
+    TTI_STALLWAIT(p_stall::STALL_SFPU, p_stall::MATH);
+
+    const auto& value = p_sfpu::LREG0;
+    const auto& scalar = p_sfpu::LREG1;
+    const auto& product = p_sfpu::LREG2;
+
+    TT_SFPLOADI(scalar, sfpi::SFPLOADI_MOD0_UPPER, scalar_packed >> 16);
+    TT_SFPLOADI(scalar, sfpi::SFPLOADI_MOD0_LOWER, scalar_packed & 0xFFFF);
+
+#pragma unroll 2
+    for (uint32_t face = 0; face < 2; ++face) {
+        const uint32_t face_base = _get_narrow_dst_base(tile, face);
+#pragma unroll 8
+        for (uint32_t row = 0; row < 16; row += 4) {
+            TT_SFPLOAD(value, sfpi::SFPLOAD_MOD0_FMT_FP32, ADDR_MOD_3, face_base + row);
+            TTI_SFPMUL(value, scalar, p_sfpu::LCONST_0, product, 0);
+            TTI_NOP;
+            TT_SFPSTORE(product, sfpi::SFPSTORE_MOD0_FMT_FP32, ADDR_MOD_3, face_base + row);
+
+            TT_SFPLOAD(value, sfpi::SFPLOAD_MOD0_FMT_FP32, ADDR_MOD_3, face_base + row + 2);
+            TTI_SFPMUL(value, scalar, p_sfpu::LCONST_0, product, 0);
+            TTI_NOP;
+            TT_SFPSTORE(product, sfpi::SFPSTORE_MOD0_FMT_FP32, ADDR_MOD_3, face_base + row + 2);
+        }
+    }
+
+    math::clear_dst_reg_addr();
+    TTI_STALLWAIT(p_stall::STALL_CFG, p_stall::WAIT_SFPU);
+}
+
 }  // namespace sfpu
 }  // namespace ckernel
 
@@ -263,4 +345,22 @@ inline void hstencil_plus_base_tile(
 
 inline void scale_tile(const uint32_t tile, const uint32_t scalar_packed) {
     MATH((ckernel::sfpu::_scale_tile(tile, scalar_packed)));
+}
+
+template <uint8_t K>
+inline void hstencil_plus_base_narrow_tiles(
+    std::array<uint32_t, K> h_packed,
+    const uint32_t source0,
+    const uint32_t source1,
+    const uint32_t source2,
+    const uint32_t source3,
+    const uint32_t base0,
+    const uint32_t base1,
+    const uint32_t base2) {
+    MATH((ckernel::sfpu::_horizontal_stencil_plus_base_narrow<K>(
+        h_packed.data(), source0, source1, source2, source3, base0, base1, base2)));
+}
+
+inline void scale_narrow_tile(const uint32_t tile, const uint32_t scalar_packed) {
+    MATH((ckernel::sfpu::_scale_narrow_tile(tile, scalar_packed)));
 }

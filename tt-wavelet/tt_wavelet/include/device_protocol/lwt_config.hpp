@@ -15,6 +15,11 @@ constexpr uint32_t kLwtRowsPerGroup = 32;
 constexpr uint32_t kLwtOutputBlocksPerRow = 3;
 constexpr uint32_t kLwtHalfStickElements = 16;
 constexpr uint32_t kLwtHalfStickBytes = kLwtHalfStickElements * sizeof(float);
+// A native Wormhole 32x16 FP32 tile contains exactly one 16-element block
+// for each row in an LWT processing group.  Keeping this relation explicit
+// prevents the cone kernels from silently falling back to padded 32x32 pages.
+constexpr uint32_t kLwtNarrowTileElements = kLwtRowsPerGroup * kLwtHalfStickElements;
+constexpr uint32_t kLwtNarrowTileBytes = kLwtNarrowTileElements * sizeof(float);
 constexpr uint32_t kLwtGroupOutputElements = kLwtRowsPerGroup * kLwtOutputBlocksPerRow * kLwtHalfStickElements;
 
 constexpr uint32_t kRouteConfigWordCount = 16;

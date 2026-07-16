@@ -38,6 +38,7 @@ struct LiftingSchedulerTelemetry {
     uint32_t workspace_elements{0};
     double max_dependency_overhead{0.0};
     bool terminal_scale_fused{false};
+    bool tile_native_workspace{false};
 };
 
 struct LiftingWorkingBuffers {

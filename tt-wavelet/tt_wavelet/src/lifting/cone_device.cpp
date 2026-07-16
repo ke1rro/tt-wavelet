@@ -2,8 +2,8 @@
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <limits>
 #include <memory>
@@ -19,6 +19,7 @@
 #include "tt-metalium/host_api.hpp"
 #include "tt-metalium/shape.hpp"
 #include "tt-metalium/tensor_accessor_args.hpp"
+#include "tt-metalium/tile.hpp"
 #include "tt_wavelet/include/device_protocol/lwt_config.hpp"
 #include "tt_wavelet/include/lifting/device.hpp"
 
@@ -45,6 +46,7 @@ constexpr uint32_t kDefaultL1SignalBudgetBytes = 768 * 1024;
 constexpr const char* kL1SignalBudgetEnv = "TT_WAVELET_L1_SIGNAL_BUDGET_BYTES";
 constexpr const char* kTerminalScaleFusionEnv = "TT_WAVELET_LWT_FUSE_TERMINAL_SCALE";
 constexpr const char* kConeNocLocalWriteEnv = "TT_WAVELET_LWT_CONE_NOC_LOCAL_WRITE";
+constexpr const char* kConeWorkspaceLayoutEnv = "TT_WAVELET_LWT_CONE_WORKSPACE_LAYOUT";
 
 struct ConeProgram {
     tt::tt_metal::Program program;
@@ -104,11 +106,7 @@ struct CoreChunkWork {
     if (std::strcmp(raw, "0") == 0) {
         return TerminalScaleFusionMode::kDisabled;
     }
-    TT_FATAL(
-        std::strcmp(raw, "1") == 0,
-        "{} must be 'auto', '0', or '1', got '{}'",
-        kTerminalScaleFusionEnv,
-        raw);
+    TT_FATAL(std::strcmp(raw, "1") == 0, "{} must be 'auto', '0', or '1', got '{}'", kTerminalScaleFusionEnv, raw);
     return TerminalScaleFusionMode::kEnabled;
 }
 
@@ -119,6 +117,41 @@ struct CoreChunkWork {
     }
     TT_FATAL(std::strcmp(raw, "0") == 0, "{} must be '0' or '1', got '{}'", kConeNocLocalWriteEnv, raw);
     return false;
+}
+
+[[nodiscard]] std::optional<ConeWorkspaceLayout> cone_workspace_layout_override() {
+    const char* raw = std::getenv(kConeWorkspaceLayoutEnv);
+    if (raw == nullptr || raw[0] == '\0' || std::strcmp(raw, "auto") == 0) {
+        return std::nullopt;
+    }
+    if (std::strcmp(raw, "row-major") == 0) {
+        return ConeWorkspaceLayout::kRowMajor;
+    }
+    TT_FATAL(
+        std::strcmp(raw, "tile-native") == 0,
+        "{} must be 'auto', 'row-major', or 'tile-native', got '{}'",
+        kConeWorkspaceLayoutEnv,
+        raw);
+    return ConeWorkspaceLayout::kTileNative;
+}
+
+[[nodiscard]] bool prefer_tile_native_workspace(const ConeExecutionPlan& plan) {
+    // Tile-native persistence makes an aligned base a three-page transfer and
+    // makes every output write three pages instead of 96 half-sticks.  A
+    // shifted base still needs a tile/row remap, so keep row-major storage for
+    // schemes where fewer than half of predict/update routes can use the page
+    // path.  The override above keeps this policy directly benchmarkable.
+    uint32_t predict_update_count = 0;
+    uint32_t aligned_base_count = 0;
+    TT_FATAL(!plan.chunks.empty(), "Cone workspace selection requires at least one chunk");
+    for (const auto& route : plan.chunks.front().routes) {
+        if (!is_predict_update_step(route.type)) {
+            continue;
+        }
+        ++predict_update_count;
+        aligned_base_count += route.base_offset_elements == 0 ? 1U : 0U;
+    }
+    return predict_update_count > 0 && 2U * aligned_base_count >= predict_update_count;
 }
 
 [[nodiscard]] uint32_t core_limit(tt::tt_metal::distributed::MeshDevice& mesh_device) {
@@ -220,6 +253,19 @@ void create_circular_buffer(
     static_cast<void>(tt::tt_metal::CreateCircularBuffer(program, cores, config));
 }
 
+void create_narrow_tile_circular_buffer(
+    tt::tt_metal::Program& program,
+    const tt::tt_metal::CoreRangeSet& cores,
+    const uint32_t cb_index,
+    const uint32_t entry_count,
+    const tt::tt_metal::Tile& tile) {
+    const uint32_t page_bytes = tile.get_tile_size(kDataFormat);
+    const auto config = tt::tt_metal::CircularBufferConfig(entry_count * page_bytes, {{cb_index, kDataFormat}})
+                            .set_page_size(cb_index, page_bytes)
+                            .set_tile_dims(cb_index, tile);
+    static_cast<void>(tt::tt_metal::CreateCircularBuffer(program, cores, config));
+}
+
 [[nodiscard]] std::vector<CoreChunkWork> partition_chunk_work(
     const std::vector<tt::tt_metal::CoreCoord>& cores, const uint32_t chunk_count) {
     TT_FATAL(!cores.empty(), "Cone chunk partition requires cores");
@@ -311,8 +357,7 @@ void create_circular_buffer(
             words[word_offset + device_protocol::kRouteOutputOffset] = output_offset;
             words[word_offset + device_protocol::kRouteGroupCount] = output_group_count(route.output_length);
             words[word_offset + device_protocol::kRouteFlags] =
-                route.output.storage == RouteOutputStorage::kResidentSlot ? 0U
-                                                                         : device_protocol::kRouteFlagFinalDram;
+                route.output.storage == RouteOutputStorage::kResidentSlot ? 0U : device_protocol::kRouteFlagFinalDram;
         }
     }
     return words;
@@ -368,14 +413,15 @@ void create_circular_buffer(
     const ConeWorkingBuffers& buffers,
     const bool terminal_scale_fused,
     const bool noc_local_write,
+    const ConeWorkspaceLayout workspace_layout,
     const char* compute_scheme_header,
     const char* compute_scheme_type) {
     tt::tt_metal::Program program = tt::tt_metal::CreateProgram();
-    const uint32_t tile_bytes = tt::tile_size(kDataFormat);
-    create_circular_buffer(program, cores, kSrcTile0Cb, kTileGroupBuffering, tile_bytes);
-    create_circular_buffer(program, cores, kSrcTile1Cb, kTileGroupBuffering, tile_bytes);
-    create_circular_buffer(program, cores, kBaseTileCb, 2 * kTileGroupBuffering, tile_bytes);
-    create_circular_buffer(program, cores, kOutputCb, 2 * kTileGroupBuffering, tile_bytes);
+    const tt::tt_metal::Tile narrow_tile({32, 16});
+    create_narrow_tile_circular_buffer(program, cores, kSrcTile0Cb, 2 * kTileGroupBuffering, narrow_tile);
+    create_narrow_tile_circular_buffer(program, cores, kSrcTile1Cb, 2 * kTileGroupBuffering, narrow_tile);
+    create_narrow_tile_circular_buffer(program, cores, kBaseTileCb, 3 * kTileGroupBuffering, narrow_tile);
+    create_narrow_tile_circular_buffer(program, cores, kOutputCb, 3 * kTileGroupBuffering, narrow_tile);
     create_circular_buffer(
         program, cores, kSrcCacheCb, device_protocol::kLwtCacheStickCount, device_protocol::kStickBytes);
     create_circular_buffer(program, cores, kSyncCb, 1, kNocAlignmentBytes);
@@ -392,12 +438,18 @@ void create_circular_buffer(
         kBaseTileCb,
         kSrcCacheCb,
         kSyncCb,
+        static_cast<uint32_t>(workspace_layout == ConeWorkspaceLayout::kTileNative),
     };
     tt::tt_metal::TensorAccessorArgs(config_buffer).append_to(reader_compile_args);
     tt::tt_metal::TensorAccessorArgs(input_buffer).append_to(reader_compile_args);
 
     std::vector<uint32_t> writer_compile_args = {
-        kWriterConfigCb, kOutputCb, kSyncCb, static_cast<uint32_t>(noc_local_write)};
+        kWriterConfigCb,
+        kOutputCb,
+        kSyncCb,
+        static_cast<uint32_t>(noc_local_write),
+        static_cast<uint32_t>(workspace_layout == ConeWorkspaceLayout::kTileNative),
+    };
     tt::tt_metal::TensorAccessorArgs(config_buffer).append_to(writer_compile_args);
     tt::tt_metal::TensorAccessorArgs(final_buffer).append_to(writer_compile_args);
 
@@ -480,9 +532,17 @@ ConeStreamedLwtExecutable create_cone_streamed_lwt_executable_impl(
         full_plan.preprocess_layout.padded_length() <= static_cast<size_t>(std::numeric_limits<int32_t>::max()),
         "ConeStreamed padded input length exceeds device signed-index range");
 
-    ConeExecutionPlan plan =
-        make_cone_execution_plan(
-            std::move(full_plan), core_limit(mesh_device), l1_signal_budget_bytes(), terminal_scale_fusion_mode());
+    const uint32_t max_cores = core_limit(mesh_device);
+    const uint32_t signal_budget_bytes = l1_signal_budget_bytes();
+    const TerminalScaleFusionMode fusion_mode = terminal_scale_fusion_mode();
+    const std::optional<ConeWorkspaceLayout> workspace_override = cone_workspace_layout_override();
+    const ConeWorkspaceLayout initial_workspace_layout = workspace_override.value_or(ConeWorkspaceLayout::kRowMajor);
+    ConeExecutionPlan plan = make_cone_execution_plan(
+        std::move(full_plan), max_cores, signal_budget_bytes, fusion_mode, initial_workspace_layout);
+    if (!workspace_override.has_value() && prefer_tile_native_workspace(plan)) {
+        plan = make_cone_execution_plan(
+            std::move(plan.full_plan), max_cores, signal_budget_bytes, fusion_mode, ConeWorkspaceLayout::kTileNative);
+    }
     std::vector<tt::tt_metal::CoreCoord> cores = select_cores(mesh_device, plan.active_core_count);
     std::array<std::shared_ptr<tt::tt_metal::distributed::MeshBuffer>, 3> slots;
     for (auto& slot : slots) {
@@ -521,6 +581,7 @@ ConeStreamedLwtExecutable create_cone_streamed_lwt_executable_impl(
                 .workspace_elements = plan.workspace_elements,
                 .max_dependency_overhead = plan.max_dependency_overhead,
                 .terminal_scale_fused = plan.terminal_scale_fused,
+                .tile_native_workspace = plan.workspace_layout == ConeWorkspaceLayout::kTileNative,
             },
     };
 
@@ -533,6 +594,7 @@ ConeStreamedLwtExecutable create_cone_streamed_lwt_executable_impl(
         buffers,
         plan.terminal_scale_fused,
         cone_noc_local_write_enabled(),
+        plan.workspace_layout,
         compute_scheme_header,
         compute_scheme_type);
     set_runtime_args(program, input_buffer, plan, buffers, work);
