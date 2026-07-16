@@ -350,9 +350,22 @@ narrow page orchestration не окупається, на великих signal/
 - final runtime smoke tests обох auto variants на N150;
 - `./update.sh Release lwt`, `git diff --check`, Python syntax check.
 
-Для 36 high-order schemes похибка проти PyWavelets перевищує `1e-2`, але cone output
-біт-у-біт збігається з resident. Це існуюча numerical stability межа FP32 lifting
-factorization, а не layout regression.
+На поточному 20-element test signal 49/106 schemes проходять absolute tolerance `1e-5`,
+70/106 проходять `1e-2`, а 36 high-order schemes перевищують `1e-2`. Для всіх 106 schemes
+cone output біт-у-біт збігається з resident, а примусові row-major і tile-native layouts
+також мають `max_abs = 0` між собою.
+
+Це відділяє architecture correctness від compatibility з іншим arithmetic path.
+TT-Wavelet послідовно виконує FP32 predict/update factorization, тому кожен step округлює
+intermediate result. Довгі factorizations із великими або alternating coefficients можуть
+підсилювати накопичену похибку. PyWavelets використовує інший filter-bank execution path з
+іншим порядком операцій і rounding points. Отже ці high-order deviations є numerical
+stability property схеми/factorization, а не regression narrow tiles, workspace layout або
+ConeStreamed scheduling.
+
+Counts не є загальною accuracy guarantee: вони залежать від signal, length і вибраної
+tolerance. Production support для таких schemes потребує окремого accuracy envelope або
+явного виключення зі support matrix.
 
 ## 11. Змінені компоненти
 

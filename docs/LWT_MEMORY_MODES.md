@@ -929,9 +929,35 @@ warmup/repeats.
 
 Correctness перевірено примусовим запуском обох layouts для всіх 106 scheme JSON: довжини
 збіглись, `max_abs(row_major, tile_native) = 0` для надрукованих FP32 coefficients. Окрема
-перевірка проти PyWavelets дала 70/106 схем у tolerance `1e-2`; усі 36 high-order failures
-так само біт-у-біт збігаються з resident backend, отже це наявна FP32 numerical stability
-межа factorization, а не помилка narrow-tile layout.
+перевірка проти PyWavelets на поточному 20-element test signal дала:
+
+| Absolute tolerance | Passed | Failed |
+| ---: | ---: | ---: |
+| `1e-5` | 49 | 57 |
+| `1e-2` | 70 | 36 |
+
+Усі 36 schemes, які перевищують `1e-2`, так само біт-у-біт збігаються з resident backend.
+Отже narrow-tile layout, ConeStreamed scheduling і remap не додають числової похибки.
+
+### 10.2. Чому lifting result може відрізнятися від PyWavelets
+
+Ці відхилення є очікуваною властивістю деяких довгих lifting factorizations у FP32, а не
+ознакою layout corruption. TT-Wavelet виконує послідовність factorized predict/update
+steps. Кожен step округлює проміжний FP32 результат, а наступні steps використовують уже
+округлене значення. У high-order schemes із багатьма steps або великими/alternating
+lifting coefficients попередня похибка може підсилюватися по всьому ланцюжку.
+
+PyWavelets обчислює той самий wavelet через інший filter-bank execution path, тому порядок
+операцій і точки округлення не збігаються з lifting chain. Біт-у-біт збіг із PyWavelets для
+FP32 lifting не є коректною універсальною вимогою; tolerance має визначатися numerical
+contract конкретного application і властивостями scheme.
+
+Водночас це не означає, що будь-яка похибка автоматично прийнятна. Наведені counts залежать
+від test signal, довжини та absolute tolerance. Schemes із великим amplification повинні
+мати окремо визначений accuracy envelope, перевірятися на representative/random inputs або
+бути виключені з production support matrix. Для перевірки layout/backend regression
+правильним reference залишається поточний FP32 resident result: `row-major`, `tile-native`,
+cone і resident мають відтворювати однаковий порядок arithmetic і однаковий результат.
 
 ## 11. Поточні обмеження
 
@@ -958,8 +984,10 @@ Correctness перевірено примусовим запуском обох 
     результату, навіть якщо фізично присутні у buffer.
 14. Cone compute native `32x16`, але це не означає zero-copy для кожного read: shifted
     source/base intervals потребують logical-to-physical remap.
-15. Деякі high-order lifting factorizations чисельно нестабільні у FP32 відносно PyWavelets;
-    row-major, tile-native і resident відтворюють однаковий FP32 результат.
+15. Деякі high-order lifting factorizations чисельно менш стабільні у FP32 через накопичення
+    й підсилення rounding error між predict/update steps. Це scheme/factorization property,
+    а не layout regression: row-major, tile-native, cone і resident відтворюють однаковий
+    FP32 результат.
 
 ## 12. Головні invariants для змін у kernels
 

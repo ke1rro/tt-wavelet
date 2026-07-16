@@ -6,7 +6,8 @@
 //   LREG4: g_e (accumulator for even output)
 //   LREG5: g_o (accumulator for odd output)
 //   LREG6: tmp (broadcast coefficient)
-//   LREG7: lane mask for column 0, preloaded by _horizontal_stencil_init()
+//   LREG7: temporary MAD result
+//   LREG14: lane mask for column 0, preloaded by _horizontal_stencil_init()
 #pragma once
 
 #include <algorithm>
@@ -61,12 +62,30 @@ inline void _horizontal_stencil_init() {
 // _horizontal_stencil_rotate_(a, b): 1-element right shift within subvectors.
 // After rotation, column 0 of b gets the element shifted out of a.
 inline void _horizontal_stencil_rotate_(std::uint32_t a_reg, std::uint32_t b_reg) {
+#if defined(ARCH_BLACKHOLE)
+    // Blackhole fixes the Wormhole SHFLSHR1 erratum: lane zero is now zero,
+    // so it can no longer be used as an implicit cross-register halo.  Rotate
+    // both registers contractually, then replace only lane zero of b with the
+    // value rotated into lane zero of a.
+    TTI_SFPSHFT2(0, a_reg, a_reg, sfpi::SFPSHFT2_MOD1_SUBVEC_SHFLROR1);
+    TTI_SFPNOP;
+    TTI_SFPSHFT2(0, b_reg, b_reg, sfpi::SFPSHFT2_MOD1_SUBVEC_SHFLROR1);
+    TTI_SFPNOP;
+    TTI_SFPSETCC(0, p_sfpu::LREG14, 0, sfpi::SFPSETCC_MOD1_LREG_NE0);
+    TTI_SFPMOV(0, a_reg, b_reg, 0);
+    TTI_SFPENCC(0, 0, 0, sfpi::SFPENCC_MOD1_EU_R1);
+#elif defined(ARCH_WORMHOLE)
     // Shift a to the right. The following SHFLSHR1 uses this instruction's
     // source register as its lane-zero halo, giving b a non-wrapping shift.
+    // This is a Wormhole-only fast path that relies on the documented
+    // SHFLSHR1 hardware erratum and must not be compiled for Blackhole.
     TTI_SFPSHFT2(0, a_reg, a_reg, sfpi::SFPSHFT2_MOD1_SUBVEC_SHFLROR1);
     TTI_SFPNOP;
     TTI_SFPSHFT2(0, b_reg, b_reg, sfpi::SFPSHFT2_MOD1_SUBVEC_SHFLSHR1);
     TTI_SFPNOP;
+#else
+#error "Unsupported Tensix architecture for horizontal SFPI stencil"
+#endif
 }
 
 inline void _horizontal_stencil_mad_accumulate_(
