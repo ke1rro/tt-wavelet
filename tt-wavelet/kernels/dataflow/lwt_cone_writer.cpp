@@ -165,6 +165,75 @@ ALWI void write_local_output_groups(
     }
 }
 
+template <bool TileNative>
+[[nodiscard]] ALWI uint32_t workspace_physical_index(const uint32_t logical_index) {
+    if constexpr (!TileNative) {
+        return logical_index;
+    }
+    constexpr uint32_t group_elements = ttwv::device_protocol::kLwtGroupOutputElements;
+    constexpr uint32_t block_elements = ttwv::device_protocol::kLwtHalfStickElements;
+    constexpr uint32_t blocks_per_row = ttwv::device_protocol::kLwtOutputBlocksPerRow;
+    constexpr uint32_t narrow_tile_elements = ttwv::device_protocol::kLwtNarrowTileElements;
+    const uint32_t group = logical_index / group_elements;
+    const uint32_t in_group = logical_index - group * group_elements;
+    const uint32_t row = in_group / (blocks_per_row * block_elements);
+    const uint32_t in_row = in_group - row * blocks_per_row * block_elements;
+    const uint32_t block = in_row / block_elements;
+    const uint32_t lane = in_row - block * block_elements;
+    return group * group_elements + block * narrow_tile_elements + row * block_elements + lane;
+}
+
+template <bool TileNative, typename DstAccessor>
+ALWI void write_reconstructed_signal(
+    const DstAccessor& dst,
+    const uint32_t cb_interleave,
+    const uint32_t left_pad,
+    const uint32_t even_addr,
+    const uint32_t even_offset,
+    const uint32_t even_begin,
+    const uint32_t odd_addr,
+    const uint32_t odd_offset,
+    const uint32_t odd_begin,
+    const uint32_t output_begin,
+    const uint32_t output_length) {
+    const auto* even = reinterpret_cast<volatile tt_l1_ptr float*>(even_addr);
+    const auto* odd = reinterpret_cast<volatile tt_l1_ptr float*>(odd_addr);
+    const uint32_t output_end = output_begin + output_length;
+    const uint32_t first_stick = output_begin / ttwv::kStickWidth;
+    const uint32_t stick_count = (output_length + ttwv::kStickWidth - 1U) / ttwv::kStickWidth;
+
+    for (uint32_t local_stick = 0; local_stick < stick_count; ++local_stick) {
+        cb_reserve_back(cb_interleave, 1);
+        auto* staging = reinterpret_cast<float*>(get_write_ptr(cb_interleave));
+        const uint32_t signal_base = output_begin + local_stick * ttwv::kStickWidth;
+#pragma unroll
+        for (uint32_t lane = 0; lane < ttwv::kStickWidth; ++lane) {
+            const uint32_t signal_index = signal_base + lane;
+            float value = 0.0F;
+            if (signal_index < output_end) {
+                const uint32_t padded_index = left_pad + signal_index;
+                const uint32_t split_index = padded_index / 2U;
+                if ((padded_index & 1U) == 0) {
+                    const uint32_t logical_index = even_offset + split_index - even_begin;
+                    value = even[workspace_physical_index<TileNative>(logical_index)];
+                } else {
+                    const uint32_t logical_index = odd_offset + split_index - odd_begin;
+                    value = odd[workspace_physical_index<TileNative>(logical_index)];
+                }
+            }
+            staging[lane] = value;
+        }
+        noc_async_write(
+            get_write_ptr(cb_interleave),
+            dst.get_noc_addr(first_stick + local_stick),
+            ttwv::device_protocol::kStickBytes);
+        noc_async_write_barrier();
+        cb_push_back(cb_interleave, 1);
+        cb_wait_front(cb_interleave, 1);
+        cb_pop_front(cb_interleave, 1);
+    }
+}
+
 }  // namespace
 
 void kernel_main() {
@@ -178,36 +247,84 @@ void kernel_main() {
     constexpr uint32_t cb_sync = get_compile_time_arg_val(2);
     constexpr bool use_noc_local_write = get_compile_time_arg_val(3) != 0;
     constexpr bool tile_native_workspace = get_compile_time_arg_val(4) != 0;
+    constexpr bool inverse = get_compile_time_arg_val(5) != 0;
+    constexpr uint32_t cb_interleave = get_compile_time_arg_val(6);
     constexpr uint32_t tile_bytes = get_tile_size(cb_output);
-    constexpr auto config_args = TensorAccessorArgs<5>();
+    constexpr auto config_args = TensorAccessorArgs<7>();
     constexpr auto final_args = TensorAccessorArgs<config_args.next_compile_time_args_offset()>();
 
-    const uint32_t local_route_count = chunk_count * route_count;
-    uint32_t flattened_route = 0;
-    for (uint32_t local_chunk = 0; local_chunk < chunk_count; ++local_chunk) {
-        const uint32_t global_chunk = chunk_begin + local_chunk;
-        for (uint32_t route_index = 0; route_index < route_count; ++route_index, ++flattened_route) {
-            const uint32_t config_index = global_chunk * route_count + route_index;
-            const uint32_t* route = load_route_config(config_args, route_config_addr, cb_config, config_index);
-            const uint32_t output_addr = route[ttwv::device_protocol::kRouteOutputAddr];
-            const uint32_t output_length = route[ttwv::device_protocol::kRouteOutputLength];
-            const uint32_t output_offset = route[ttwv::device_protocol::kRouteOutputOffset];
-            const uint32_t group_count = route[ttwv::device_protocol::kRouteGroupCount];
-            const uint32_t route_flags = route[ttwv::device_protocol::kRouteFlags];
-            const bool final_dram = (route_flags & ttwv::device_protocol::kRouteFlagFinalDram) != 0;
-            if (final_dram) {
-                const auto dst = TensorAccessor(final_args, output_addr, ttwv::device_protocol::kStickBytes);
-                write_dram_output_groups(dst, cb_output, tile_bytes, output_offset, output_length, group_count);
-            } else {
+    if constexpr (inverse) {
+        const uint32_t chunk_config_addr = get_arg_val<uint32_t>(4);
+        const uint32_t output_addr = get_arg_val<uint32_t>(5);
+        const uint32_t left_pad = get_arg_val<uint32_t>(6);
+        const auto output = TensorAccessor(final_args, output_addr, ttwv::device_protocol::kStickBytes);
+        for (uint32_t local_chunk = 0; local_chunk < chunk_count; ++local_chunk) {
+            const uint32_t global_chunk = chunk_begin + local_chunk;
+            for (uint32_t route_index = 0; route_index < route_count; ++route_index) {
+                const uint32_t config_index = global_chunk * route_count + route_index;
+                const uint32_t* route = load_route_config(config_args, route_config_addr, cb_config, config_index);
                 write_local_output_groups<use_noc_local_write, tile_native_workspace>(
-                    output_addr, cb_output, tile_bytes, output_offset, output_length, group_count);
+                    route[ttwv::device_protocol::kRouteOutputAddr],
+                    cb_output,
+                    tile_bytes,
+                    route[ttwv::device_protocol::kRouteOutputOffset],
+                    route[ttwv::device_protocol::kRouteOutputLength],
+                    route[ttwv::device_protocol::kRouteGroupCount]);
+                noc_async_write_barrier();
+                cb_pop_front(cb_config, 1);
+                if (route_index + 1 < route_count) {
+                    cb_reserve_back(cb_sync, 1);
+                    cb_push_back(cb_sync, 1);
+                }
             }
 
-            noc_async_write_barrier();
+            const uint32_t* chunk = load_route_config(config_args, chunk_config_addr, cb_config, global_chunk);
+            write_reconstructed_signal<tile_native_workspace>(
+                output,
+                cb_interleave,
+                left_pad,
+                chunk[ttwv::device_protocol::kIlwtFinalEvenAddr],
+                chunk[ttwv::device_protocol::kIlwtFinalEvenOffset],
+                chunk[ttwv::device_protocol::kIlwtFinalEvenBegin],
+                chunk[ttwv::device_protocol::kIlwtFinalOddAddr],
+                chunk[ttwv::device_protocol::kIlwtFinalOddOffset],
+                chunk[ttwv::device_protocol::kIlwtFinalOddBegin],
+                chunk[ttwv::device_protocol::kIlwtOutputBegin],
+                chunk[ttwv::device_protocol::kIlwtOutputLength]);
             cb_pop_front(cb_config, 1);
-            if (flattened_route + 1 < local_route_count) {
+            if (local_chunk + 1 < chunk_count) {
                 cb_reserve_back(cb_sync, 1);
                 cb_push_back(cb_sync, 1);
+            }
+        }
+    } else {
+        const uint32_t local_route_count = chunk_count * route_count;
+        uint32_t flattened_route = 0;
+        for (uint32_t local_chunk = 0; local_chunk < chunk_count; ++local_chunk) {
+            const uint32_t global_chunk = chunk_begin + local_chunk;
+            for (uint32_t route_index = 0; route_index < route_count; ++route_index, ++flattened_route) {
+                const uint32_t config_index = global_chunk * route_count + route_index;
+                const uint32_t* route = load_route_config(config_args, route_config_addr, cb_config, config_index);
+                const uint32_t output_addr = route[ttwv::device_protocol::kRouteOutputAddr];
+                const uint32_t output_length = route[ttwv::device_protocol::kRouteOutputLength];
+                const uint32_t output_offset = route[ttwv::device_protocol::kRouteOutputOffset];
+                const uint32_t group_count = route[ttwv::device_protocol::kRouteGroupCount];
+                const uint32_t route_flags = route[ttwv::device_protocol::kRouteFlags];
+                const bool final_dram = (route_flags & ttwv::device_protocol::kRouteFlagFinalDram) != 0;
+                if (final_dram) {
+                    const auto dst = TensorAccessor(final_args, output_addr, ttwv::device_protocol::kStickBytes);
+                    write_dram_output_groups(dst, cb_output, tile_bytes, output_offset, output_length, group_count);
+                } else {
+                    write_local_output_groups<use_noc_local_write, tile_native_workspace>(
+                        output_addr, cb_output, tile_bytes, output_offset, output_length, group_count);
+                }
+
+                noc_async_write_barrier();
+                cb_pop_front(cb_config, 1);
+                if (flattened_route + 1 < local_route_count) {
+                    cb_reserve_back(cb_sync, 1);
+                    cb_push_back(cb_sync, 1);
+                }
             }
         }
     }

@@ -6,18 +6,21 @@
 //   LREG4: g_e (accumulator for even output)
 //   LREG5: g_o (accumulator for odd output)
 //   LREG6: tmp (broadcast coefficient)
-//   LREG7: temporary MAD result
-//   LREG14: lane mask for column 0, preloaded by _horizontal_stencil_init()
+//   LREG7: temporary MAD result / Blackhole lane-position scratch
 #pragma once
 
 #include <algorithm>
 #include <array>
 #include <cstdint>
 
-#include "ckernel.h"
+#include "../ckernel.h"
 #include "ckernel_defs.h"
 #include "cmath_common.h"
 #include "sfpi.h"
+
+#ifndef TT_WAVELET_TENSIX_ARCH
+#error "tt-wavelet architecture wrapper was not included"
+#endif
 
 using namespace sfpi;
 
@@ -39,6 +42,18 @@ inline uint32_t _get_narrow_dst_base(const std::uint32_t tile_index, const std::
     return (tile_index << 5) + (face_index << 4);
 }
 
+inline void _horizontal_stencil_clear_addr_mod_base_() {
+#if TT_WAVELET_TENSIX_ARCH == TT_WAVELET_TENSIX_ARCH_WORMHOLE
+    // Wormhole can select address modifiers 4..7 through a programmable
+    // base.  This kernel programs and uses ADDR_MOD_3, so restore that bank.
+    ckernel::math::clear_addr_mod_base();
+#elif TT_WAVELET_TENSIX_ARCH == TT_WAVELET_TENSIX_ARCH_BLACKHOLE
+    // Blackhole has no alternate address-modifier bank or base selector.
+#else
+#error "Unsupported Tensix architecture for horizontal SFPI stencil"
+#endif
+}
+
 inline void _horizontal_stencil_init() {
     _init_sfpu_config_reg();
 
@@ -48,21 +63,12 @@ inline void _horizontal_stencil_init() {
 
     // Enable all lanes
     TTI_SFPENCC(sfpi::SFPENCC_IMM12_BOTH, 0, 0, sfpi::SFPENCC_MOD1_EI_RI);
-
-    // Compute mask in programmable LREG14. SFPCONFIG copies the first eight
-    // lanes of LREG0 and broadcasts them vertically, so seed only lane zero.
-    TTI_SFPMOV(0, p_sfpu::LCONST_0, p_sfpu::LREG0, 0);
-    v_if(vConstTileId == 0) { TT_SFPLOADI(p_sfpu::LREG0, sfpi::SFPLOADI_MOD0_LOWER, 0x0001); }
-    v_endif;
-    TTI_SFPENCC(0, 0, 0, sfpi::SFPENCC_MOD1_EU_R1);
-    TTI_SFPCONFIG(0, p_sfpu::LREG14, 0);
-    TTI_SFPNOP;
 }
 
 // _horizontal_stencil_rotate_(a, b): 1-element right shift within subvectors.
 // After rotation, column 0 of b gets the element shifted out of a.
 inline void _horizontal_stencil_rotate_(std::uint32_t a_reg, std::uint32_t b_reg) {
-#if defined(ARCH_BLACKHOLE)
+#if TT_WAVELET_TENSIX_ARCH == TT_WAVELET_TENSIX_ARCH_BLACKHOLE
     // Blackhole fixes the Wormhole SHFLSHR1 erratum: lane zero is now zero,
     // so it can no longer be used as an implicit cross-register halo.  Rotate
     // both registers contractually, then replace only lane zero of b with the
@@ -71,10 +77,15 @@ inline void _horizontal_stencil_rotate_(std::uint32_t a_reg, std::uint32_t b_reg
     TTI_SFPNOP;
     TTI_SFPSHFT2(0, b_reg, b_reg, sfpi::SFPSHFT2_MOD1_SUBVEC_SHFLROR1);
     TTI_SFPNOP;
-    TTI_SFPSETCC(0, p_sfpu::LREG14, 0, sfpi::SFPSETCC_MOD1_LREG_NE0);
+    // LREG15 contains lane*2. Masking its low four bits yields zero exactly
+    // for lanes 0, 8, 16, and 24: column zero of every 8-lane subvector.
+    // Blackhole's SFPAND USE_VB mode permits LREG15 as the first operand.
+    TTI_SFPLOADI(p_sfpu::LREG7, sfpi::SFPLOADI_MOD0_USHORT, 0x000f);
+    TTI_SFPAND(p_sfpu::LTILEID, p_sfpu::LREG7, p_sfpu::LREG7, 1);
+    TTI_SFPSETCC(0, p_sfpu::LREG7, 0, sfpi::SFPSETCC_MOD1_LREG_EQ0);
     TTI_SFPMOV(0, a_reg, b_reg, 0);
     TTI_SFPENCC(0, 0, 0, sfpi::SFPENCC_MOD1_EU_R1);
-#elif defined(ARCH_WORMHOLE)
+#elif TT_WAVELET_TENSIX_ARCH == TT_WAVELET_TENSIX_ARCH_WORMHOLE
     // Shift a to the right. The following SHFLSHR1 uses this instruction's
     // source register as its lane-zero halo, giving b a non-wrapping shift.
     // This is a Wormhole-only fast path that relies on the documented
@@ -178,7 +189,7 @@ inline void _horizontal_stencil_plus_base(
     const uint32_t output1,
     const uint32_t output2) {
     math::set_dst_write_addr<DstTileShape::Tile32x32, UnpackDestination::SrcRegs>(0);
-    ckernel::math::clear_addr_mod_base();
+    _horizontal_stencil_clear_addr_mod_base_();
     TTI_STALLWAIT(p_stall::STALL_SFPU, p_stall::MATH);
 
     _horizontal_stencil_plus_base_face<K, Rows>(
@@ -235,7 +246,7 @@ inline void _horizontal_stencil_plus_base_narrow(
     const uint32_t base1,
     const uint32_t base2) {
     math::set_dst_write_addr<DstTileShape::Tile32x16, UnpackDestination::SrcRegs>(0);
-    ckernel::math::clear_addr_mod_base();
+    _horizontal_stencil_clear_addr_mod_base_();
     TTI_STALLWAIT(p_stall::STALL_SFPU, p_stall::MATH);
 
     const uint32_t sources[4] = {source0, source1, source2, source3};
@@ -269,7 +280,7 @@ inline void _scale_tile(const uint32_t tile, const uint32_t scalar_packed) {
     TTI_SFPENCC(sfpi::SFPENCC_IMM12_BOTH, 0, 0, sfpi::SFPENCC_MOD1_EI_RI);
     math::reset_counters(p_setrwc::SET_ABD_F);
     math::set_dst_write_addr<DstTileShape::Tile32x32, UnpackDestination::SrcRegs>(0);
-    ckernel::math::clear_addr_mod_base();
+    _horizontal_stencil_clear_addr_mod_base_();
     TTI_STALLWAIT(p_stall::STALL_SFPU, p_stall::MATH);
 
     const auto& value = p_sfpu::LREG0;
@@ -313,7 +324,7 @@ inline void _scale_narrow_tile(const uint32_t tile, const uint32_t scalar_packed
     TTI_SFPENCC(sfpi::SFPENCC_IMM12_BOTH, 0, 0, sfpi::SFPENCC_MOD1_EI_RI);
     math::reset_counters(p_setrwc::SET_ABD_F);
     math::set_dst_write_addr<DstTileShape::Tile32x16, UnpackDestination::SrcRegs>(0);
-    ckernel::math::clear_addr_mod_base();
+    _horizontal_stencil_clear_addr_mod_base_();
     TTI_STALLWAIT(p_stall::STALL_SFPU, p_stall::MATH);
 
     const auto& value = p_sfpu::LREG0;

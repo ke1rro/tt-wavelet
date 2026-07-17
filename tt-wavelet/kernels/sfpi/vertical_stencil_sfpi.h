@@ -12,7 +12,7 @@
 #include <algorithm>
 #include <array>
 
-#include "ckernel.h"
+#include "../ckernel.h"
 #include "ckernel_defs.h"
 #include "cmath_common.h"
 #include "sfpi.h"

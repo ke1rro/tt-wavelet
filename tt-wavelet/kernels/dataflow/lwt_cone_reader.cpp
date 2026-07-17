@@ -227,6 +227,37 @@ ALWI void initialize_cone(
     ttwv::kernels::primitives::release_cache(input_cache);
 }
 
+template <bool TileNative, typename InputAccessor>
+ALWI void initialize_inverse_stream(
+    const InputAccessor& input,
+    const uint32_t input_length,
+    const uint32_t input_begin,
+    const uint32_t output_addr,
+    const uint32_t output_length,
+    const uint32_t cb_input_cache) {
+    ttwv::kernels::primitives::StickReadCache input_cache{
+        cb_input_cache,
+        ttwv::device_protocol::kStickBytes,
+        ttwv::kStickWidth,
+        ttwv::device_protocol::kLwtCacheStickCount,
+        ttwv::kernels::primitives::kInvalidStick,
+        0,
+        false};
+    auto* output = reinterpret_cast<volatile tt_l1_ptr float*>(output_addr);
+    WorkspaceIndexCursor cursor(0);
+    for (uint32_t index = 0; index < output_length; ++index) {
+        const float value =
+            ttwv::kernels::primitives::read_source_value(input, input_cache, input_begin + index, input_length);
+        if constexpr (TileNative) {
+            output[cursor.physical] = value;
+            cursor.advance();
+        } else {
+            output[index] = value;
+        }
+    }
+    ttwv::kernels::primitives::release_cache(input_cache);
+}
+
 template <bool BoundsChecked>
 ALWI void fill_source_row_major(
     const volatile tt_l1_ptr float* src,
@@ -480,9 +511,9 @@ ALWI void emit_scale_tiles(
 }  // namespace
 
 void kernel_main() {
-    const uint32_t input_addr = get_arg_val<uint32_t>(0);
-    const uint32_t input_length = get_arg_val<uint32_t>(1);
-    const uint32_t left_pad = get_arg_val<uint32_t>(2);
+    const uint32_t input0_addr = get_arg_val<uint32_t>(0);
+    const uint32_t input1_or_length = get_arg_val<uint32_t>(1);
+    const uint32_t input_length_or_left_pad = get_arg_val<uint32_t>(2);
     const uint32_t initial_even_addr = get_arg_val<uint32_t>(3);
     const uint32_t initial_odd_addr = get_arg_val<uint32_t>(4);
     const uint32_t chunk_config_addr = get_arg_val<uint32_t>(5);
@@ -498,10 +529,12 @@ void kernel_main() {
     constexpr uint32_t cb_input_cache = get_compile_time_arg_val(4);
     constexpr uint32_t cb_sync = get_compile_time_arg_val(5);
     constexpr bool tile_native_workspace = get_compile_time_arg_val(6) != 0;
-    constexpr auto config_args = TensorAccessorArgs<7>();
-    constexpr auto input_args = TensorAccessorArgs<config_args.next_compile_time_args_offset()>();
+    constexpr bool inverse = get_compile_time_arg_val(7) != 0;
+    constexpr auto config_args = TensorAccessorArgs<8>();
+    constexpr auto input0_args = TensorAccessorArgs<config_args.next_compile_time_args_offset()>();
+    constexpr auto input1_args = TensorAccessorArgs<input0_args.next_compile_time_args_offset()>();
 
-    const auto input = TensorAccessor(input_args, input_addr, ttwv::device_protocol::kStickBytes);
+    const auto input0 = TensorAccessor(input0_args, input0_addr, ttwv::device_protocol::kStickBytes);
 
     bool first_local_route = true;
     for (uint32_t local_chunk = 0; local_chunk < chunk_count; ++local_chunk) {
@@ -512,23 +545,43 @@ void kernel_main() {
 
         const uint32_t global_chunk = chunk_begin + local_chunk;
         const uint32_t* chunk = load_config_page(config_args, chunk_config_addr, cb_config, global_chunk);
-        const uint32_t initial_even_begin = chunk[ttwv::device_protocol::kConeInitialEvenBegin];
-        const uint32_t initial_even_length = chunk[ttwv::device_protocol::kConeInitialEvenLength];
-        const uint32_t initial_odd_begin = chunk[ttwv::device_protocol::kConeInitialOddBegin];
-        const uint32_t initial_odd_length = chunk[ttwv::device_protocol::kConeInitialOddLength];
-        cb_pop_front(cb_config, 1);
-
-        initialize_cone<tile_native_workspace>(
-            input,
-            initial_even_addr,
-            initial_odd_addr,
-            cb_input_cache,
-            input_length,
-            left_pad,
-            initial_even_begin,
-            initial_even_length,
-            initial_odd_begin,
-            initial_odd_length);
+        if constexpr (inverse) {
+            const auto input1 = TensorAccessor(input1_args, input1_or_length, ttwv::device_protocol::kStickBytes);
+            const uint32_t coefficient_length = input_length_or_left_pad;
+            const uint32_t approximation_begin = chunk[ttwv::device_protocol::kIlwtApproximationBegin];
+            const uint32_t approximation_length = chunk[ttwv::device_protocol::kIlwtApproximationLength];
+            const uint32_t detail_begin = chunk[ttwv::device_protocol::kIlwtDetailBegin];
+            const uint32_t detail_length = chunk[ttwv::device_protocol::kIlwtDetailLength];
+            cb_pop_front(cb_config, 1);
+            initialize_inverse_stream<tile_native_workspace>(
+                input0,
+                coefficient_length,
+                approximation_begin,
+                initial_even_addr,
+                approximation_length,
+                cb_input_cache);
+            initialize_inverse_stream<tile_native_workspace>(
+                input1, coefficient_length, detail_begin, initial_odd_addr, detail_length, cb_input_cache);
+        } else {
+            const uint32_t input_length = input1_or_length;
+            const uint32_t left_pad = input_length_or_left_pad;
+            const uint32_t initial_even_begin = chunk[ttwv::device_protocol::kConeInitialEvenBegin];
+            const uint32_t initial_even_length = chunk[ttwv::device_protocol::kConeInitialEvenLength];
+            const uint32_t initial_odd_begin = chunk[ttwv::device_protocol::kConeInitialOddBegin];
+            const uint32_t initial_odd_length = chunk[ttwv::device_protocol::kConeInitialOddLength];
+            cb_pop_front(cb_config, 1);
+            initialize_cone<tile_native_workspace>(
+                input0,
+                initial_even_addr,
+                initial_odd_addr,
+                cb_input_cache,
+                input_length,
+                left_pad,
+                initial_even_begin,
+                initial_even_length,
+                initial_odd_begin,
+                initial_odd_length);
+        }
 
         for (uint32_t route_index = 0; route_index < route_count; ++route_index) {
             if (route_index > 0) {

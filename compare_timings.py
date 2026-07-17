@@ -14,32 +14,39 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 TT_WAVELET_BINARY = PROJECT_ROOT / "build" / "lwt"
 TT_WAVELET_ENV = PROJECT_ROOT / "scripts" / "set_env.sh"
 DEFAULT_SCHEMES_DIR = PROJECT_ROOT / "wavelets"
-TT_TIME_PATTERN = re.compile(r"lwt_execution_time_ms:\s*([0-9eE+.\-]+)")
-TT_MIN_TIME_PATTERN = re.compile(r"lwt_min_time_ms:\s*([0-9eE+.\-]+)")
-TT_MEDIAN_TIME_PATTERN = re.compile(r"lwt_median_time_ms:\s*([0-9eE+.\-]+)")
-TT_P10_TIME_PATTERN = re.compile(r"lwt_p10_time_ms:\s*([0-9eE+.\-]+)")
-TT_P90_TIME_PATTERN = re.compile(r"lwt_p90_time_ms:\s*([0-9eE+.\-]+)")
-TT_STDDEV_TIME_PATTERN = re.compile(r"lwt_stddev_time_ms:\s*([0-9eE+.\-]+)")
-TT_MEMORY_MODE_PATTERN = re.compile(r"lwt_memory_mode:\s*(\S+)")
-TT_MAX_GROUP_COUNT_PATTERN = re.compile(r"lwt_max_group_count:\s*(\d+)")
-TT_GROUPS_PER_SHARD_PATTERN = re.compile(r"lwt_groups_per_shard:\s*(\d+)")
-TT_ACTIVE_CORE_COUNT_PATTERN = re.compile(r"lwt_active_core_count:\s*(\d+)")
-TT_SHARD_ELEMENTS_PATTERN = re.compile(r"lwt_shard_elements:\s*(\d+)")
-TT_CHUNK_COUNT_PATTERN = re.compile(r"lwt_chunk_count:\s*(\d+)")
-TT_GROUPS_PER_CHUNK_PATTERN = re.compile(r"lwt_groups_per_chunk:\s*(\d+)")
-TT_WORKSPACE_ELEMENTS_PATTERN = re.compile(r"lwt_workspace_elements:\s*(\d+)")
+TT_PREFIX = r"(?:lwt|ilwt)"
+TT_TIME_PATTERN = re.compile(rf"{TT_PREFIX}_execution_time_ms:\s*([0-9eE+.\-]+)")
+TT_MIN_TIME_PATTERN = re.compile(rf"{TT_PREFIX}_min_time_ms:\s*([0-9eE+.\-]+)")
+TT_MEDIAN_TIME_PATTERN = re.compile(rf"{TT_PREFIX}_median_time_ms:\s*([0-9eE+.\-]+)")
+TT_P10_TIME_PATTERN = re.compile(rf"{TT_PREFIX}_p10_time_ms:\s*([0-9eE+.\-]+)")
+TT_P90_TIME_PATTERN = re.compile(rf"{TT_PREFIX}_p90_time_ms:\s*([0-9eE+.\-]+)")
+TT_STDDEV_TIME_PATTERN = re.compile(rf"{TT_PREFIX}_stddev_time_ms:\s*([0-9eE+.\-]+)")
+TT_MEMORY_MODE_PATTERN = re.compile(rf"{TT_PREFIX}_memory_mode:\s*(\S+)")
+TT_MAX_GROUP_COUNT_PATTERN = re.compile(rf"{TT_PREFIX}_max_group_count:\s*(\d+)")
+TT_GROUPS_PER_SHARD_PATTERN = re.compile(rf"{TT_PREFIX}_groups_per_shard:\s*(\d+)")
+TT_ACTIVE_CORE_COUNT_PATTERN = re.compile(rf"{TT_PREFIX}_active_core_count:\s*(\d+)")
+TT_SHARD_ELEMENTS_PATTERN = re.compile(rf"{TT_PREFIX}_shard_elements:\s*(\d+)")
+TT_CHUNK_COUNT_PATTERN = re.compile(rf"{TT_PREFIX}_chunk_count:\s*(\d+)")
+TT_GROUPS_PER_CHUNK_PATTERN = re.compile(rf"{TT_PREFIX}_groups_per_chunk:\s*(\d+)")
+TT_WORKSPACE_ELEMENTS_PATTERN = re.compile(rf"{TT_PREFIX}_workspace_elements:\s*(\d+)")
 TT_MAX_DEPENDENCY_OVERHEAD_PATTERN = re.compile(
-    r"lwt_max_dependency_overhead:\s*([0-9eE+.\-]+)"
+    rf"{TT_PREFIX}_max_dependency_overhead:\s*([0-9eE+.\-]+)"
 )
-TT_TERMINAL_SCALE_FUSED_PATTERN = re.compile(r"lwt_terminal_scale_fused:\s*(\d+)")
-TT_TILE_NATIVE_WORKSPACE_PATTERN = re.compile(r"lwt_tile_native_workspace:\s*(\d+)")
-TT_ZERO_WORK_CORES_PATTERN = re.compile(r"lwt_zero_work_cores_per_route:\s*([0-9 ]*)")
+TT_TERMINAL_SCALE_FUSED_PATTERN = re.compile(
+    rf"{TT_PREFIX}_terminal_scale_fused:\s*(\d+)"
+)
+TT_TILE_NATIVE_WORKSPACE_PATTERN = re.compile(
+    rf"{TT_PREFIX}_tile_native_workspace:\s*(\d+)"
+)
+TT_ZERO_WORK_CORES_PATTERN = re.compile(
+    rf"{TT_PREFIX}_zero_work_cores_per_route:\s*([0-9 ]*)"
+)
 DEFAULT_LOG_CANDIDATES = [
     PROJECT_ROOT / "wavelets.log",
     PROJECT_ROOT / "wavelets (1).log",
 ]
 VENV_PYTHON = PROJECT_ROOT / ".venv" / "bin" / "python3"
-TimingKey = tuple[str, int, float, float, str, str]
+TimingKey = tuple[str, str, int, float, float, str, str]
 
 
 @dataclass(frozen=True)
@@ -146,6 +153,15 @@ def parse_args() -> argparse.Namespace:
         help="Benchmark both backends or only one backend (default: %(default)s).",
     )
     parser.add_argument(
+        "--transform",
+        choices=["lwt", "ilwt", "both"],
+        default="lwt",
+        help=(
+            "Benchmark forward LWT, inverse LWT, or both. ILWT coefficients are "
+            "prepared outside the timed interval (default: %(default)s)."
+        ),
+    )
+    parser.add_argument(
         "--tt-mode",
         choices=["benchmark", "legacy"],
         default="benchmark",
@@ -186,7 +202,7 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Legacy TT mode only: granularity at which external TT-wavelet warmup "
             "processes are issued. In benchmark mode, --tt-warmup-runs is handled "
-            "inside the C++ process for every (wavelet, length) pair."
+            "inside the C++ process for every (transform, wavelet, length) tuple."
         ),
     )
     parser.add_argument(
@@ -247,12 +263,24 @@ def sh_quote(value: str) -> str:
     return "'" + value.replace("'", "'\"'\"'") + "'"
 
 
-def build_tt_command(args: argparse.Namespace, wavelet: str, length: int, signal_file: Path) -> str:
+def build_tt_command(
+    args: argparse.Namespace,
+    transform: str,
+    wavelet: str,
+    length: int,
+    signal_file: Path,
+) -> str:
     command_args = [
         str(TT_WAVELET_BINARY),
-        "--memory-mode",
-        args.tt_memory_mode,
     ]
+    if transform == "ilwt":
+        command_args.append("--inverse")
+    command_args.extend(
+        [
+            "--memory-mode",
+            args.tt_memory_mode,
+        ]
+    )
     if args.tt_mode == "benchmark":
         command_args.extend(
             [
@@ -294,7 +322,9 @@ def tt_benchmark_env() -> dict[str, str]:
     return env
 
 
-def optional_pattern_float(pattern: re.Pattern[str], text: str, scale: float = 1.0) -> float | None:
+def optional_pattern_float(
+    pattern: re.Pattern[str], text: str, scale: float = 1.0
+) -> float | None:
     match = pattern.search(text)
     return float(match.group(1)) * scale if match is not None else None
 
@@ -325,7 +355,9 @@ def run_tt_wavelet(command: str) -> TTTimingResult:
         )
     match = TT_TIME_PATTERN.search(completed.stderr)
     if match is None:
-        raise RuntimeError("TT-wavelet output did not include lwt_execution_time_ms.")
+        raise RuntimeError(
+            "TT-wavelet output did not include an LWT/ILWT execution time."
+        )
     min_match = TT_MIN_TIME_PATTERN.search(completed.stderr)
     mean_s = float(match.group(1)) / 1000.0
     min_s = float(min_match.group(1)) / 1000.0 if min_match is not None else mean_s
@@ -334,17 +366,33 @@ def run_tt_wavelet(command: str) -> TTTimingResult:
         mean_s=mean_s,
         min_s=min_s,
         memory_mode=optional_pattern_string(TT_MEMORY_MODE_PATTERN, completed.stderr),
-        median_s=optional_pattern_float(TT_MEDIAN_TIME_PATTERN, completed.stderr, 0.001),
+        median_s=optional_pattern_float(
+            TT_MEDIAN_TIME_PATTERN, completed.stderr, 0.001
+        ),
         p10_s=optional_pattern_float(TT_P10_TIME_PATTERN, completed.stderr, 0.001),
         p90_s=optional_pattern_float(TT_P90_TIME_PATTERN, completed.stderr, 0.001),
-        stddev_s=optional_pattern_float(TT_STDDEV_TIME_PATTERN, completed.stderr, 0.001),
-        max_group_count=optional_pattern_int(TT_MAX_GROUP_COUNT_PATTERN, completed.stderr),
-        groups_per_shard=optional_pattern_int(TT_GROUPS_PER_SHARD_PATTERN, completed.stderr),
-        active_core_count=optional_pattern_int(TT_ACTIVE_CORE_COUNT_PATTERN, completed.stderr),
-        shard_elements=optional_pattern_int(TT_SHARD_ELEMENTS_PATTERN, completed.stderr),
+        stddev_s=optional_pattern_float(
+            TT_STDDEV_TIME_PATTERN, completed.stderr, 0.001
+        ),
+        max_group_count=optional_pattern_int(
+            TT_MAX_GROUP_COUNT_PATTERN, completed.stderr
+        ),
+        groups_per_shard=optional_pattern_int(
+            TT_GROUPS_PER_SHARD_PATTERN, completed.stderr
+        ),
+        active_core_count=optional_pattern_int(
+            TT_ACTIVE_CORE_COUNT_PATTERN, completed.stderr
+        ),
+        shard_elements=optional_pattern_int(
+            TT_SHARD_ELEMENTS_PATTERN, completed.stderr
+        ),
         chunk_count=optional_pattern_int(TT_CHUNK_COUNT_PATTERN, completed.stderr),
-        groups_per_chunk=optional_pattern_int(TT_GROUPS_PER_CHUNK_PATTERN, completed.stderr),
-        workspace_elements=optional_pattern_int(TT_WORKSPACE_ELEMENTS_PATTERN, completed.stderr),
+        groups_per_chunk=optional_pattern_int(
+            TT_GROUPS_PER_CHUNK_PATTERN, completed.stderr
+        ),
+        workspace_elements=optional_pattern_int(
+            TT_WORKSPACE_ELEMENTS_PATTERN, completed.stderr
+        ),
         max_dependency_overhead=optional_pattern_float(
             TT_MAX_DEPENDENCY_OVERHEAD_PATTERN, completed.stderr
         ),
@@ -354,11 +402,15 @@ def run_tt_wavelet(command: str) -> TTTimingResult:
         tile_native_workspace=optional_pattern_int(
             TT_TILE_NATIVE_WORKSPACE_PATTERN, completed.stderr
         ),
-        zero_work_cores_per_route=(" ".join(zero_work_match.group(1).split()) if zero_work_match else ""),
+        zero_work_cores_per_route=(
+            " ".join(zero_work_match.group(1).split()) if zero_work_match else ""
+        ),
     )
 
 
-def time_repeats(run_once: Callable[[], None], repeats: int) -> tuple[float | None, float | None]:
+def time_repeats(
+    run_once: Callable[[], None], repeats: int
+) -> tuple[float | None, float | None]:
     if repeats <= 0:
         return None, None
     times: list[float] = []
@@ -370,7 +422,9 @@ def time_repeats(run_once: Callable[[], None], repeats: int) -> tuple[float | No
     return mean, min(times)
 
 
-def value_repeats(run_once: Callable[[], float], repeats: int) -> tuple[float | None, float | None]:
+def value_repeats(
+    run_once: Callable[[], float], repeats: int
+) -> tuple[float | None, float | None]:
     if repeats <= 0:
         return None, None
     times = [run_once() for _ in range(repeats)]
@@ -379,11 +433,12 @@ def value_repeats(run_once: Callable[[], float], repeats: int) -> tuple[float | 
 
 def should_warmup(
     scope: str,
+    transform: str,
     wavelet: str,
     length: int,
-    warmed: set[str],
+    warmed: set[tuple[str, str]],
     warmed_global: list[bool],
-    warmed_pairs: set[tuple[str, int]],
+    warmed_pairs: set[tuple[str, str, int]],
 ) -> bool:
     if scope == "global":
         if warmed_global[0]:
@@ -391,19 +446,21 @@ def should_warmup(
         warmed_global[0] = True
         return True
     if scope == "length":
-        key = (wavelet, length)
+        key = (transform, wavelet, length)
         if key in warmed_pairs:
             return False
         warmed_pairs.add(key)
         return True
-    if wavelet in warmed:
+    key = (transform, wavelet)
+    if key in warmed:
         return False
-    warmed.add(wavelet)
+    warmed.add(key)
     return True
 
 
 def row_key(row: dict[str, object]) -> TimingKey:
     return (
+        str(row["transform"]),
         str(row["wavelet"]),
         int(row["signal_length"]),
         float(row["signal_start"]),
@@ -425,6 +482,8 @@ def read_existing_rows(
         reader = csv.DictReader(handle)
         for raw_row in reader:
             row = {name: raw_row.get(name, "") for name in fieldnames}
+            # CSV files created before ILWT support contain only forward LWT rows.
+            row["transform"] = row["transform"] or "lwt"
             try:
                 key = row_key(row)
             except (KeyError, TypeError, ValueError):
@@ -436,11 +495,16 @@ def read_existing_rows(
 
 
 def base_row(
-    args: argparse.Namespace, wavelet: str, length: int, fieldnames: list[str]
+    args: argparse.Namespace,
+    transform: str,
+    wavelet: str,
+    length: int,
+    fieldnames: list[str],
 ) -> dict[str, object]:
     row: dict[str, object] = {name: "" for name in fieldnames}
     row.update(
         {
+            "transform": transform,
             "wavelet": wavelet,
             "signal_length": length,
             "signal_start": args.signal_start,
@@ -466,7 +530,9 @@ def refresh_speedup(row: dict[str, object]) -> None:
     pywt_mean = optional_float(row.get("pywt_mean_s"))
     tt_mean = optional_float(row.get("tt_wavelet_mean_s"))
     row["speedup_pywt_over_tt"] = (
-        pywt_mean / tt_mean if pywt_mean is not None and tt_mean is not None and tt_mean > 0 else ""
+        pywt_mean / tt_mean
+        if pywt_mean is not None and tt_mean is not None and tt_mean > 0
+        else ""
     )
 
 
@@ -519,6 +585,10 @@ def main() -> int:
     if args.pywt_repeats < 0:
         raise ValueError("--pywt-repeats cannot be negative.")
 
+    transforms = ["lwt", "ilwt"] if args.transform == "both" else [args.transform]
+    if needs_tt and "ilwt" in transforms and args.tt_memory_mode != "cone":
+        raise ValueError("ILWT currently supports only --tt-memory-mode cone.")
+
     if args.wavelets:
         wavelets = args.wavelets
     else:
@@ -528,14 +598,17 @@ def main() -> int:
     if not args.schemes_dir.exists():
         raise FileNotFoundError(f"Schemes directory not found: {args.schemes_dir}")
 
-    lengths = args.lengths if args.lengths is not None else list(
-        range(args.length_start, args.length_stop + 1, args.length_step)
+    lengths = (
+        args.lengths
+        if args.lengths is not None
+        else list(range(args.length_start, args.length_stop + 1, args.length_step))
     )
 
     csv_path = args.csv
     csv_path.parent.mkdir(parents=True, exist_ok=True)
 
     fieldnames = [
+        "transform",
         "wavelet",
         "signal_length",
         "signal_start",
@@ -568,18 +641,22 @@ def main() -> int:
         "error",
     ]
 
-    warmed_wavelets: set[str] = set()
+    warmed_wavelets: set[tuple[str, str]] = set()
     warmed_global = [False]
-    warmed_pairs: set[tuple[str, int]] = set()
+    warmed_pairs: set[tuple[str, str, int]] = set()
     signal_file = csv_path.with_suffix(".signal.txt")
-    rows, row_order = ({}, []) if args.overwrite else read_existing_rows(csv_path, fieldnames)
+    rows, row_order = (
+        ({}, []) if args.overwrite else read_existing_rows(csv_path, fieldnames)
+    )
 
-    total_runs = len(lengths) * len(wavelets)
+    total_runs = len(lengths) * len(wavelets) * len(transforms)
     with tqdm(total=total_runs, desc="Benchmarking", unit="run") as progress:
         for length in lengths:
             signal = None
             if needs_pywt or (needs_tt and args.tt_mode == "legacy"):
-                signal_list = generate_signal(length, args.signal_start, args.signal_step)
+                signal_list = generate_signal(
+                    length, args.signal_start, args.signal_step
+                )
                 if needs_tt and args.tt_mode == "legacy":
                     write_signal_file(signal_file, signal_list)
                 if needs_pywt:
@@ -590,128 +667,167 @@ def main() -> int:
                     except ImportError:
                         signal = signal_list
             for wavelet in wavelets:
-                key = row_key(base_row(args, wavelet, length, fieldnames))
-                if key not in rows:
-                    rows[key] = base_row(args, wavelet, length, fieldnames)
-                    row_order.append(key)
-                row = rows[key]
-
                 scheme_path = args.schemes_dir / f"{wavelet}.json"
-                if needs_tt and not scheme_path.exists():
-                    tqdm.write(f"Skipping {wavelet}: scheme not found at {scheme_path}")
-                    row["status"] = "missing_scheme"
-                    row["error"] = f"Scheme not found: {scheme_path}"
-                    if needs_pywt:
-                        row["pywt_runs"] = args.pywt_repeats
-                    if needs_tt:
-                        row["tt_wavelet_runs"] = args.tt_repeats
+                for transform in transforms:
+                    key = row_key(
+                        base_row(args, transform, wavelet, length, fieldnames)
+                    )
+                    if key not in rows:
+                        rows[key] = base_row(
+                            args, transform, wavelet, length, fieldnames
+                        )
+                        row_order.append(key)
+                    row = rows[key]
+
+                    if needs_tt and not scheme_path.exists():
+                        tqdm.write(
+                            f"Skipping {wavelet}: scheme not found at {scheme_path}"
+                        )
+                        row["status"] = "missing_scheme"
+                        row["error"] = f"Scheme not found: {scheme_path}"
+                        if needs_pywt:
+                            row["pywt_runs"] = args.pywt_repeats
+                        if needs_tt:
+                            row["tt_wavelet_runs"] = args.tt_repeats
+                        refresh_speedup(row)
+                        write_rows(csv_path, fieldnames, rows, row_order)
+                        progress.update(1)
+                        continue
+
+                    command = (
+                        build_tt_command(args, transform, wavelet, length, signal_file)
+                        if needs_tt
+                        else ""
+                    )
+                    status = "ok"
+                    error_message = ""
+
+                    try:
+                        if needs_pywt:
+                            if transform == "lwt":
+                                pywt_run = lambda: pywt.dwt(
+                                    signal, wavelet, mode=args.pywt_mode
+                                )
+                            else:
+                                # Match the TT ILWT timing boundary: coefficient
+                                # preparation is intentionally not timed.
+                                approximation, detail = pywt.dwt(
+                                    signal, wavelet, mode=args.pywt_mode
+                                )
+                                pywt_run = lambda: pywt.idwt(
+                                    approximation,
+                                    detail,
+                                    wavelet,
+                                    mode=args.pywt_mode,
+                                )
+                            pywt_mean, pywt_min = time_repeats(
+                                pywt_run,
+                                args.pywt_repeats,
+                            )
+                            row["pywt_mean_s"] = (
+                                pywt_mean if pywt_mean is not None else ""
+                            )
+                            row["pywt_min_s"] = pywt_min if pywt_min is not None else ""
+                            row["pywt_runs"] = args.pywt_repeats
+
+                        if needs_tt:
+                            if args.tt_mode == "benchmark":
+                                tt_result = run_tt_wavelet(command)
+                                tt_mean = tt_result.mean_s
+                                tt_min = tt_result.min_s
+                                row["tt_wavelet_median_s"] = tt_result.median_s or ""
+                                row["tt_wavelet_p10_s"] = tt_result.p10_s or ""
+                                row["tt_wavelet_p90_s"] = tt_result.p90_s or ""
+                                row["tt_wavelet_stddev_s"] = tt_result.stddev_s or ""
+                                row["lwt_memory_mode"] = (
+                                    tt_result.memory_mode or args.tt_memory_mode
+                                )
+                                row["lwt_max_group_count"] = (
+                                    tt_result.max_group_count
+                                    if tt_result.max_group_count is not None
+                                    else ""
+                                )
+                                row["lwt_groups_per_shard"] = (
+                                    tt_result.groups_per_shard
+                                    if tt_result.groups_per_shard is not None
+                                    else ""
+                                )
+                                row["lwt_active_core_count"] = (
+                                    tt_result.active_core_count
+                                    if tt_result.active_core_count is not None
+                                    else ""
+                                )
+                                row["lwt_shard_elements"] = (
+                                    tt_result.shard_elements
+                                    if tt_result.shard_elements is not None
+                                    else ""
+                                )
+                                row["lwt_chunk_count"] = (
+                                    tt_result.chunk_count
+                                    if tt_result.chunk_count is not None
+                                    else ""
+                                )
+                                row["lwt_groups_per_chunk"] = (
+                                    tt_result.groups_per_chunk
+                                    if tt_result.groups_per_chunk is not None
+                                    else ""
+                                )
+                                row["lwt_workspace_elements"] = (
+                                    tt_result.workspace_elements
+                                    if tt_result.workspace_elements is not None
+                                    else ""
+                                )
+                                row["lwt_max_dependency_overhead"] = (
+                                    tt_result.max_dependency_overhead
+                                    if tt_result.max_dependency_overhead is not None
+                                    else ""
+                                )
+                                row["lwt_terminal_scale_fused"] = (
+                                    tt_result.terminal_scale_fused
+                                    if tt_result.terminal_scale_fused is not None
+                                    else ""
+                                )
+                                row["lwt_tile_native_workspace"] = (
+                                    tt_result.tile_native_workspace
+                                    if tt_result.tile_native_workspace is not None
+                                    else ""
+                                )
+                                row["lwt_zero_work_cores_per_route"] = (
+                                    tt_result.zero_work_cores_per_route
+                                )
+                            else:
+                                if args.tt_warmup_runs > 0 and should_warmup(
+                                    args.tt_warmup_scope,
+                                    transform,
+                                    wavelet,
+                                    length,
+                                    warmed_wavelets,
+                                    warmed_global,
+                                    warmed_pairs,
+                                ):
+                                    for _ in range(args.tt_warmup_runs):
+                                        run_tt_wavelet(command)
+
+                                tt_mean, tt_min = value_repeats(
+                                    lambda: run_tt_wavelet(command).mean_s,
+                                    args.tt_repeats,
+                                )
+                            row["tt_wavelet_mean_s"] = (
+                                tt_mean if tt_mean is not None else ""
+                            )
+                            row["tt_wavelet_min_s"] = (
+                                tt_min if tt_min is not None else ""
+                            )
+                            row["tt_wavelet_runs"] = args.tt_repeats
+                    except Exception as exc:  # noqa: BLE001
+                        status = "error"
+                        error_message = str(exc)
+
+                    row["status"] = status
+                    row["error"] = error_message
                     refresh_speedup(row)
                     write_rows(csv_path, fieldnames, rows, row_order)
                     progress.update(1)
-                    continue
-
-                command = build_tt_command(args, wavelet, length, signal_file) if needs_tt else ""
-
-                status = "ok"
-                error_message = ""
-
-                try:
-                    if needs_pywt:
-                        pywt_mean, pywt_min = time_repeats(
-                            lambda: pywt.dwt(signal, wavelet, mode=args.pywt_mode),
-                            args.pywt_repeats,
-                        )
-                        row["pywt_mean_s"] = pywt_mean if pywt_mean is not None else ""
-                        row["pywt_min_s"] = pywt_min if pywt_min is not None else ""
-                        row["pywt_runs"] = args.pywt_repeats
-
-                    if needs_tt:
-                        if args.tt_mode == "benchmark":
-                            tt_result = run_tt_wavelet(command)
-                            tt_mean = tt_result.mean_s
-                            tt_min = tt_result.min_s
-                            row["tt_wavelet_median_s"] = tt_result.median_s or ""
-                            row["tt_wavelet_p10_s"] = tt_result.p10_s or ""
-                            row["tt_wavelet_p90_s"] = tt_result.p90_s or ""
-                            row["tt_wavelet_stddev_s"] = tt_result.stddev_s or ""
-                            row["lwt_memory_mode"] = tt_result.memory_mode or args.tt_memory_mode
-                            row["lwt_max_group_count"] = (
-                                tt_result.max_group_count
-                                if tt_result.max_group_count is not None
-                                else ""
-                            )
-                            row["lwt_groups_per_shard"] = (
-                                tt_result.groups_per_shard
-                                if tt_result.groups_per_shard is not None
-                                else ""
-                            )
-                            row["lwt_active_core_count"] = (
-                                tt_result.active_core_count
-                                if tt_result.active_core_count is not None
-                                else ""
-                            )
-                            row["lwt_shard_elements"] = (
-                                tt_result.shard_elements
-                                if tt_result.shard_elements is not None
-                                else ""
-                            )
-                            row["lwt_chunk_count"] = (
-                                tt_result.chunk_count if tt_result.chunk_count is not None else ""
-                            )
-                            row["lwt_groups_per_chunk"] = (
-                                tt_result.groups_per_chunk
-                                if tt_result.groups_per_chunk is not None
-                                else ""
-                            )
-                            row["lwt_workspace_elements"] = (
-                                tt_result.workspace_elements
-                                if tt_result.workspace_elements is not None
-                                else ""
-                            )
-                            row["lwt_max_dependency_overhead"] = (
-                                tt_result.max_dependency_overhead
-                                if tt_result.max_dependency_overhead is not None
-                                else ""
-                            )
-                            row["lwt_terminal_scale_fused"] = (
-                                tt_result.terminal_scale_fused
-                                if tt_result.terminal_scale_fused is not None
-                                else ""
-                            )
-                            row["lwt_tile_native_workspace"] = (
-                                tt_result.tile_native_workspace
-                                if tt_result.tile_native_workspace is not None
-                                else ""
-                            )
-                            row["lwt_zero_work_cores_per_route"] = tt_result.zero_work_cores_per_route
-                        else:
-                            if args.tt_warmup_runs > 0 and should_warmup(
-                                args.tt_warmup_scope,
-                                wavelet,
-                                length,
-                                warmed_wavelets,
-                                warmed_global,
-                                warmed_pairs,
-                            ):
-                                for _ in range(args.tt_warmup_runs):
-                                    run_tt_wavelet(command)
-
-                            tt_mean, tt_min = value_repeats(
-                                lambda: run_tt_wavelet(command).mean_s,
-                                args.tt_repeats,
-                            )
-                        row["tt_wavelet_mean_s"] = tt_mean if tt_mean is not None else ""
-                        row["tt_wavelet_min_s"] = tt_min if tt_min is not None else ""
-                        row["tt_wavelet_runs"] = args.tt_repeats
-                except Exception as exc:  # noqa: BLE001
-                    status = "error"
-                    error_message = str(exc)
-
-                row["status"] = status
-                row["error"] = error_message
-                refresh_speedup(row)
-                write_rows(csv_path, fieldnames, rows, row_order)
-                progress.update(1)
 
     return 0
 

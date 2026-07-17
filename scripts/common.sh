@@ -106,6 +106,9 @@ configure_project() {
   generator=$(select_generator)
 
   log INFO "Configuring CMake ($generator, ${build_type})"
+  # Use the SFPI release pinned and checksummed by this TT-Metal checkout.
+  # The server-wide toolchain can be newer and is not ABI-compatible by
+  # assumption; TT-Metal intentionally rejects such version mismatches.
   cmake -S "$ROOT_DIR" -B "$BUILD_DIR" \
     -G "$generator" \
     -DCMAKE_BUILD_TYPE="$build_type" \
@@ -114,7 +117,7 @@ configure_project() {
     -DBUILD_TT_WAVELET=ON \
     -DENABLE_TRACY:BOOL=OFF \
     -DMETALIUM_INCLUDE_DIRS=ON \
-    -DTT_USE_SYSTEM_SFPI:BOOL=ON \
+    -DTT_USE_SYSTEM_SFPI:BOOL=OFF \
     -DCMAKE_DISABLE_PRECOMPILE_HEADERS=TRUE \
     -DENABLE_CCACHE=TRUE \
     -DTT_UNITY_BUILDS=ON \

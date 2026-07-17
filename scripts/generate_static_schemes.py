@@ -13,7 +13,9 @@ from typing import Any
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
 DEFAULT_JSON_DIR = REPO_ROOT / "wavelets"
-DEFAULT_SCHEME_DIR = REPO_ROOT / "tt-wavelet" / "tt_wavelet" / "include" / "schemes" / "generated"
+DEFAULT_SCHEME_DIR = (
+    REPO_ROOT / "tt-wavelet" / "tt_wavelet" / "include" / "schemes" / "generated"
+)
 DEFAULT_REGISTRY = DEFAULT_SCHEME_DIR / "registry.hpp"
 
 STEP_TYPES = {
@@ -61,6 +63,29 @@ def f32_bits(value: float) -> int:
     return struct.unpack("<I", struct.pack("<f", float(value)))[0]
 
 
+def f32_value(bits: int) -> float:
+    return struct.unpack("<f", struct.pack("<I", bits))[0]
+
+
+def inverse_steps(steps: tuple[Step, ...]) -> tuple[Step, ...]:
+    inverse: list[Step] = []
+    for step in reversed(steps):
+        if step.kind in {"predict", "update"}:
+            # IEEE-754 sign-bit inversion is exact, including signed zero.
+            coeff_bits = tuple(bits ^ 0x80000000 for bits in step.coeff_bits)
+        elif step.kind in {"scale-even", "scale-odd"}:
+            scale = f32_value(step.coeff_bits[0])
+            if scale == 0.0:
+                raise ValueError("inverse scale coefficient must be non-zero")
+            # The forward kernel consumes the rounded FP32 value, so invert
+            # that value and round the reciprocal back to FP32 as well.
+            coeff_bits = (f32_bits(1.0 / scale),)
+        else:
+            coeff_bits = step.coeff_bits
+        inverse.append(Step(kind=step.kind, shift=step.shift, coeff_bits=coeff_bits))
+    return tuple(inverse)
+
+
 def load_scheme(path: Path) -> Scheme:
     obj = json.loads(path.read_text(encoding="utf-8"))
     name = path.stem
@@ -76,7 +101,9 @@ def load_scheme(path: Path) -> Scheme:
             raise ValueError(f"{path.name}: {kind} must have exactly one coefficient")
         if kind == "swap" and coeff_bits:
             raise ValueError(f"{path.name}: swap must not have coefficients")
-        steps.append(Step(kind=kind, shift=int(raw_step["shift"]), coeff_bits=coeff_bits))
+        steps.append(
+            Step(kind=kind, shift=int(raw_step["shift"]), coeff_bits=coeff_bits)
+        )
 
     return Scheme(
         name=name,
@@ -95,12 +122,16 @@ def coeff_args(step: Step) -> str:
 
 
 def render_scheme_header(scheme: Scheme) -> str:
+    inverse_ident = f"{scheme.ident}_inverse"
+    inverse = inverse_steps(scheme.steps)
     lines: list[str] = [
         "#pragma once",
         "",
         '#include "../../lifting/static_scheme.hpp"',
         "",
         "namespace ttwv::schemes {",
+        "",
+        f"struct {inverse_ident};",
         "",
         f"struct {scheme.ident} {{",
         f'    static constexpr const char* name = "{scheme.name}";',
@@ -113,6 +144,7 @@ def render_scheme_header(scheme: Scheme) -> str:
             f'"\\"../../tt_wavelet/include/schemes/generated/{scheme.ident}.hpp\\"";'
         ),
         f'    static constexpr const char* compute_scheme_type = "ttwv::schemes::{scheme.ident}";',
+        f"    using inverse = {inverse_ident};",
         "",
         "    template <std::size_t I>",
         "    struct step;",
@@ -125,6 +157,40 @@ def render_scheme_header(scheme: Scheme) -> str:
             [
                 "template <>",
                 f"struct {scheme.ident}::step<{index}> {{",
+                (
+                    f"    using type = StaticStep<{STEP_TYPES[step.kind]}, {step.shift}"
+                    f"{coeff_args(step)}>;"
+                ),
+                f"    static_assert(type::k == {len(step.coeff_bits)}U);",
+                "};",
+                "",
+            ]
+        )
+
+    lines.extend(
+        [
+            f"struct {inverse_ident} {{",
+            f'    static constexpr const char* name = "{scheme.name}-inverse";',
+            f"    static constexpr uint32_t tap_size = {scheme.tap_size}U;",
+            f"    static constexpr uint32_t num_steps = {len(inverse)}U;",
+            (
+                f"    static constexpr const char* compute_scheme_header = "
+                f'"\\"../../tt_wavelet/include/schemes/generated/{scheme.ident}.hpp\\"";'
+            ),
+            f'    static constexpr const char* compute_scheme_type = "ttwv::schemes::{inverse_ident}";',
+            "",
+            "    template <std::size_t I>",
+            "    struct step;",
+            "};",
+            "",
+        ]
+    )
+
+    for index, step in enumerate(inverse):
+        lines.extend(
+            [
+                "template <>",
+                f"struct {inverse_ident}::step<{index}> {{",
                 (
                     f"    using type = StaticStep<{STEP_TYPES[step.kind]}, {step.shift}"
                     f"{coeff_args(step)}>;"
@@ -152,7 +218,8 @@ def render_registry(schemes: list[Scheme]) -> str:
     )
 
     scheme_id_checks = "\n".join(
-        f'    if (name == "{scheme.name}") return SchemeId::k{scheme.ident};' for scheme in schemes
+        f'    if (name == "{scheme.name}") return SchemeId::k{scheme.ident};'
+        for scheme in schemes
     )
     dispatch_cases = "\n".join(
         (
@@ -253,7 +320,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"ERROR: no JSON schemes found in {args.json_dir}", file=sys.stderr)
         return 1
 
-    schemes = sorted((load_scheme(path) for path in json_files), key=lambda scheme: scheme.name)
+    schemes = sorted(
+        (load_scheme(path) for path in json_files), key=lambda scheme: scheme.name
+    )
     if len({scheme.ident for scheme in schemes}) != len(schemes):
         raise RuntimeError("Generated scheme identifiers are not unique")
 

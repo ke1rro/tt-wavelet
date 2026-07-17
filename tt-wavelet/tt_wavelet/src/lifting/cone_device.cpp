@@ -38,6 +38,7 @@ constexpr uint32_t kSrcTile1Cb = tt::CBIndex::c_1;
 constexpr uint32_t kBaseTileCb = tt::CBIndex::c_2;
 constexpr uint32_t kOutputCb = tt::CBIndex::c_16;
 constexpr uint32_t kSrcCacheCb = tt::CBIndex::c_3;
+constexpr uint32_t kInterleaveCb = tt::CBIndex::c_4;
 constexpr uint32_t kSyncCb = tt::CBIndex::c_5;
 constexpr uint32_t kReaderConfigCb = tt::CBIndex::c_6;
 constexpr uint32_t kWriterConfigCb = tt::CBIndex::c_7;
@@ -424,6 +425,7 @@ void create_narrow_tile_circular_buffer(
     create_narrow_tile_circular_buffer(program, cores, kOutputCb, 3 * kTileGroupBuffering, narrow_tile);
     create_circular_buffer(
         program, cores, kSrcCacheCb, device_protocol::kLwtCacheStickCount, device_protocol::kStickBytes);
+    create_circular_buffer(program, cores, kInterleaveCb, 1, device_protocol::kStickBytes);
     create_circular_buffer(program, cores, kSyncCb, 1, kNocAlignmentBytes);
     create_circular_buffer(program, cores, kReaderConfigCb, 1, device_protocol::kRouteConfigPageBytes);
     create_circular_buffer(program, cores, kWriterConfigCb, 1, device_protocol::kRouteConfigPageBytes);
@@ -439,8 +441,10 @@ void create_narrow_tile_circular_buffer(
         kSrcCacheCb,
         kSyncCb,
         static_cast<uint32_t>(workspace_layout == ConeWorkspaceLayout::kTileNative),
+        0U,
     };
     tt::tt_metal::TensorAccessorArgs(config_buffer).append_to(reader_compile_args);
+    tt::tt_metal::TensorAccessorArgs(input_buffer).append_to(reader_compile_args);
     tt::tt_metal::TensorAccessorArgs(input_buffer).append_to(reader_compile_args);
 
     std::vector<uint32_t> writer_compile_args = {
@@ -449,6 +453,8 @@ void create_narrow_tile_circular_buffer(
         kSyncCb,
         static_cast<uint32_t>(noc_local_write),
         static_cast<uint32_t>(workspace_layout == ConeWorkspaceLayout::kTileNative),
+        0U,
+        kInterleaveCb,
     };
     tt::tt_metal::TensorAccessorArgs(config_buffer).append_to(writer_compile_args);
     tt::tt_metal::TensorAccessorArgs(final_buffer).append_to(writer_compile_args);
@@ -504,6 +510,254 @@ void set_runtime_args(
             program.program, program.compute, core_work.core, compute_runtime_args(plan, core_work));
         tt::tt_metal::SetRuntimeArgs(
             program.program, program.writer, core_work.core, writer_runtime_args(plan, buffers, core_work));
+    }
+}
+
+[[nodiscard]] bool prefer_tile_native_workspace(const InverseConeExecutionPlan& plan) {
+    uint32_t predict_update_count = 0;
+    uint32_t aligned_base_count = 0;
+    TT_FATAL(!plan.chunks.empty(), "Inverse cone workspace selection requires at least one chunk");
+    for (const auto& route : plan.chunks.front().routes) {
+        if (!is_predict_update_step(route.type)) {
+            continue;
+        }
+        ++predict_update_count;
+        aligned_base_count += route.base_offset_elements == 0 ? 1U : 0U;
+    }
+    return predict_update_count > 0 && 2U * aligned_base_count >= predict_update_count;
+}
+
+[[nodiscard]] uint32_t resolve_workspace_address(const ConeIlwtWorkingBuffers& buffers, const StreamRef stream) {
+    return static_cast<uint32_t>(buffers.at(stream.slot)->get_backing_buffer()->address());
+}
+
+[[nodiscard]] std::vector<uint32_t> build_inverse_chunk_config_words(
+    const InverseConeExecutionPlan& plan, const ConeIlwtWorkingBuffers& buffers) {
+    std::vector<uint32_t> words(
+        std::max(plan.chunks.size(), size_t{1}) * device_protocol::kConeChunkConfigWordCount, 0);
+    for (size_t chunk_index = 0; chunk_index < plan.chunks.size(); ++chunk_index) {
+        const auto& chunk = plan.chunks[chunk_index];
+        const size_t offset = chunk_index * device_protocol::kConeChunkConfigWordCount;
+        words[offset + device_protocol::kIlwtApproximationBegin] =
+            checked_u32(chunk.canonical_approximation.begin, "ILWT approximation begin");
+        words[offset + device_protocol::kIlwtApproximationLength] =
+            checked_u32(chunk.canonical_approximation.length(), "ILWT approximation length");
+        words[offset + device_protocol::kIlwtDetailBegin] =
+            checked_u32(chunk.canonical_detail.begin, "ILWT detail begin");
+        words[offset + device_protocol::kIlwtDetailLength] =
+            checked_u32(chunk.canonical_detail.length(), "ILWT detail length");
+        words[offset + device_protocol::kIlwtFinalEvenAddr] = resolve_workspace_address(buffers, chunk.final_even);
+        words[offset + device_protocol::kIlwtFinalEvenStorageLength] =
+            checked_u32(chunk.final_even_storage_length, "ILWT final even storage length");
+        words[offset + device_protocol::kIlwtFinalEvenOffset] =
+            checked_u32(chunk.final_even_offset_elements, "ILWT final even offset");
+        words[offset + device_protocol::kIlwtFinalEvenBegin] =
+            checked_u32(chunk.reconstructed_even.begin, "ILWT final even begin");
+        words[offset + device_protocol::kIlwtFinalOddAddr] = resolve_workspace_address(buffers, chunk.final_odd);
+        words[offset + device_protocol::kIlwtFinalOddStorageLength] =
+            checked_u32(chunk.final_odd_storage_length, "ILWT final odd storage length");
+        words[offset + device_protocol::kIlwtFinalOddOffset] =
+            checked_u32(chunk.final_odd_offset_elements, "ILWT final odd offset");
+        words[offset + device_protocol::kIlwtFinalOddBegin] =
+            checked_u32(chunk.reconstructed_odd.begin, "ILWT final odd begin");
+        words[offset + device_protocol::kIlwtOutputBegin] = checked_u32(chunk.output_signal.begin, "ILWT output begin");
+        words[offset + device_protocol::kIlwtOutputLength] =
+            checked_u32(chunk.output_signal.length(), "ILWT output length");
+    }
+    return words;
+}
+
+[[nodiscard]] std::vector<uint32_t> build_inverse_route_config_words(
+    const InverseConeExecutionPlan& plan, const ConeIlwtWorkingBuffers& buffers) {
+    TT_FATAL(!plan.chunks.empty(), "ConeStreamed ILWT plan has no chunks");
+    const size_t route_count = plan.chunks.front().routes.size();
+    std::vector<uint32_t> words(
+        std::max(plan.chunks.size() * route_count, size_t{1}) * device_protocol::kRouteConfigWordCount, 0);
+    for (size_t chunk_index = 0; chunk_index < plan.chunks.size(); ++chunk_index) {
+        const auto& chunk = plan.chunks[chunk_index];
+        TT_FATAL(chunk.routes.size() == route_count, "ILWT chunks have inconsistent route counts");
+        for (size_t route_index = 0; route_index < route_count; ++route_index) {
+            const auto& route = chunk.routes[route_index];
+            TT_FATAL(
+                route.output.storage == RouteOutputStorage::kResidentSlot,
+                "ILWT intermediate route must target resident L1");
+            const size_t word_offset =
+                (chunk_index * route_count + route_index) * device_protocol::kRouteConfigWordCount;
+            words[word_offset + device_protocol::kRouteType] = static_cast<uint32_t>(route.type);
+            words[word_offset + device_protocol::kRouteSourceAddr] = resolve_workspace_address(buffers, route.source);
+            words[word_offset + device_protocol::kRouteSourceLength] =
+                checked_u32(route.source_storage_length, "ILWT source storage length");
+            words[word_offset + device_protocol::kRouteBaseAddr] = resolve_workspace_address(buffers, route.base);
+            words[word_offset + device_protocol::kRouteBaseLength] =
+                checked_u32(route.base_storage_length, "ILWT base storage length");
+            words[word_offset + device_protocol::kRouteOutputAddr] =
+                resolve_workspace_address(buffers, StreamRef{.slot = route.output.slot});
+            words[word_offset + device_protocol::kRouteOutputLength] =
+                checked_u32(route.output_length, "ILWT output length");
+            words[word_offset + device_protocol::kRouteSourceOffset] =
+                checked_u32(route.source_offset_elements, "ILWT source offset");
+            words[word_offset + device_protocol::kRouteBaseOffset] =
+                checked_u32(route.base_offset_elements, "ILWT base offset");
+            words[word_offset + device_protocol::kRouteSourceLeftPad] = route.source_left_pad_elements;
+            words[word_offset + device_protocol::kRouteOutputOffset] = 0;
+            words[word_offset + device_protocol::kRouteGroupCount] = output_group_count(route.output_length);
+            words[word_offset + device_protocol::kRouteFlags] = 0;
+        }
+    }
+    return words;
+}
+
+[[nodiscard]] std::vector<uint32_t> inverse_reader_runtime_args(
+    const InverseConeExecutionPlan& plan,
+    const ConeIlwtWorkingBuffers& buffers,
+    const tt::tt_metal::Buffer& approximation_buffer,
+    const tt::tt_metal::Buffer& detail_buffer,
+    const CoreChunkWork& work) {
+    return {
+        static_cast<uint32_t>(approximation_buffer.address()),
+        static_cast<uint32_t>(detail_buffer.address()),
+        checked_u32(plan.full_plan.coefficient_length, "ILWT coefficient length"),
+        static_cast<uint32_t>(buffers.at(StorageSlot::kA)->get_backing_buffer()->address()),
+        static_cast<uint32_t>(buffers.at(StorageSlot::kB)->get_backing_buffer()->address()),
+        static_cast<uint32_t>(buffers.chunk_config->get_backing_buffer()->address()),
+        static_cast<uint32_t>(buffers.route_config->get_backing_buffer()->address()),
+        work.chunk_begin,
+        work.chunk_count,
+        checked_u32(plan.chunks.front().routes.size(), "ILWT route count"),
+    };
+}
+
+[[nodiscard]] std::vector<uint32_t> inverse_writer_runtime_args(
+    const InverseConeExecutionPlan& plan, const ConeIlwtWorkingBuffers& buffers, const CoreChunkWork& work) {
+    return {
+        static_cast<uint32_t>(buffers.route_config->get_backing_buffer()->address()),
+        work.chunk_begin,
+        work.chunk_count,
+        checked_u32(plan.chunks.front().routes.size(), "ILWT route count"),
+        static_cast<uint32_t>(buffers.chunk_config->get_backing_buffer()->address()),
+        static_cast<uint32_t>(buffers.output->get_backing_buffer()->address()),
+        plan.full_plan.forward_trace.preprocess_layout.pad_config.left,
+    };
+}
+
+[[nodiscard]] std::vector<uint32_t> inverse_compute_runtime_args(
+    const InverseConeExecutionPlan& plan, const CoreChunkWork& work) {
+    const size_t route_count = plan.chunks.front().routes.size();
+    std::vector<uint32_t> args;
+    args.reserve(1 + static_cast<size_t>(work.chunk_count) * route_count);
+    args.push_back(work.chunk_count);
+    for (uint32_t local_chunk = 0; local_chunk < work.chunk_count; ++local_chunk) {
+        const auto& chunk = plan.chunks[work.chunk_begin + local_chunk];
+        for (const auto& route : chunk.routes) {
+            args.push_back(output_group_count(route.output_length));
+        }
+    }
+    return args;
+}
+
+[[nodiscard]] ConeProgram create_inverse_program(
+    const std::filesystem::path& kernel_root,
+    const tt::tt_metal::CoreRangeSet& cores,
+    const tt::tt_metal::Buffer& approximation_buffer,
+    const tt::tt_metal::Buffer& detail_buffer,
+    const ConeIlwtWorkingBuffers& buffers,
+    const bool noc_local_write,
+    const ConeWorkspaceLayout workspace_layout,
+    const char* compute_scheme_header,
+    const char* compute_scheme_type) {
+    tt::tt_metal::Program program = tt::tt_metal::CreateProgram();
+    const tt::tt_metal::Tile narrow_tile({32, 16});
+    create_narrow_tile_circular_buffer(program, cores, kSrcTile0Cb, 2 * kTileGroupBuffering, narrow_tile);
+    create_narrow_tile_circular_buffer(program, cores, kSrcTile1Cb, 2 * kTileGroupBuffering, narrow_tile);
+    create_narrow_tile_circular_buffer(program, cores, kBaseTileCb, 3 * kTileGroupBuffering, narrow_tile);
+    create_narrow_tile_circular_buffer(program, cores, kOutputCb, 3 * kTileGroupBuffering, narrow_tile);
+    create_circular_buffer(
+        program, cores, kSrcCacheCb, device_protocol::kLwtCacheStickCount, device_protocol::kStickBytes);
+    create_circular_buffer(program, cores, kInterleaveCb, 1, device_protocol::kStickBytes);
+    create_circular_buffer(program, cores, kSyncCb, 1, kNocAlignmentBytes);
+    create_circular_buffer(program, cores, kReaderConfigCb, 1, device_protocol::kRouteConfigPageBytes);
+    create_circular_buffer(program, cores, kWriterConfigCb, 1, device_protocol::kRouteConfigPageBytes);
+
+    const auto& config_buffer = *buffers.route_config->get_backing_buffer();
+    const auto& output_buffer = *buffers.output->get_backing_buffer();
+    std::vector<uint32_t> reader_compile_args = {
+        kReaderConfigCb,
+        kSrcTile0Cb,
+        kSrcTile1Cb,
+        kBaseTileCb,
+        kSrcCacheCb,
+        kSyncCb,
+        static_cast<uint32_t>(workspace_layout == ConeWorkspaceLayout::kTileNative),
+        1U,
+    };
+    tt::tt_metal::TensorAccessorArgs(config_buffer).append_to(reader_compile_args);
+    tt::tt_metal::TensorAccessorArgs(approximation_buffer).append_to(reader_compile_args);
+    tt::tt_metal::TensorAccessorArgs(detail_buffer).append_to(reader_compile_args);
+
+    std::vector<uint32_t> writer_compile_args = {
+        kWriterConfigCb,
+        kOutputCb,
+        kSyncCb,
+        static_cast<uint32_t>(noc_local_write),
+        static_cast<uint32_t>(workspace_layout == ConeWorkspaceLayout::kTileNative),
+        1U,
+        kInterleaveCb,
+    };
+    tt::tt_metal::TensorAccessorArgs(config_buffer).append_to(writer_compile_args);
+    tt::tt_metal::TensorAccessorArgs(output_buffer).append_to(writer_compile_args);
+
+    const std::vector<uint32_t> compute_compile_args = {kSrcTile0Cb, kSrcTile1Cb, kBaseTileCb, kOutputCb};
+    std::vector<UnpackToDestMode> unpack_to_dest_mode(NUM_CIRCULAR_BUFFERS, UnpackToDestMode::Default);
+    unpack_to_dest_mode[kSrcTile0Cb] = UnpackToDestMode::UnpackToDestFp32;
+    unpack_to_dest_mode[kSrcTile1Cb] = UnpackToDestMode::UnpackToDestFp32;
+    unpack_to_dest_mode[kBaseTileCb] = UnpackToDestMode::UnpackToDestFp32;
+
+    const auto reader = tt::tt_metal::CreateKernel(
+        program,
+        kernel_path(kernel_root, kConeReaderKernelPath),
+        cores,
+        tt::tt_metal::ReaderDataMovementConfig(reader_compile_args));
+    const auto writer = tt::tt_metal::CreateKernel(
+        program,
+        kernel_path(kernel_root, kConeWriterKernelPath),
+        cores,
+        tt::tt_metal::WriterDataMovementConfig(writer_compile_args));
+    const auto compute = tt::tt_metal::CreateKernel(
+        program,
+        kernel_path(kernel_root, kConeComputeKernelPath),
+        cores,
+        tt::tt_metal::ComputeConfig{
+            .math_fidelity = MathFidelity::HiFi4,
+            .fp32_dest_acc_en = true,
+            .unpack_to_dest_mode = unpack_to_dest_mode,
+            .compile_args = compute_compile_args,
+            .defines =
+                {
+                    {"TTWV_LWT_SCHEME_HEADER", compute_scheme_header},
+                    {"TTWV_LWT_SCHEME_TYPE", compute_scheme_type},
+                    {"TTWV_FUSE_TERMINAL_SCALE", "0"},
+                },
+        });
+    return ConeProgram{.program = std::move(program), .reader = reader, .compute = compute, .writer = writer};
+}
+
+void set_inverse_runtime_args(
+    const ConeProgram& program,
+    const tt::tt_metal::Buffer& approximation_buffer,
+    const tt::tt_metal::Buffer& detail_buffer,
+    const InverseConeExecutionPlan& plan,
+    const ConeIlwtWorkingBuffers& buffers,
+    const std::vector<CoreChunkWork>& work) {
+    for (const auto& core_work : work) {
+        tt::tt_metal::SetRuntimeArgs(
+            program.program,
+            program.reader,
+            core_work.core,
+            inverse_reader_runtime_args(plan, buffers, approximation_buffer, detail_buffer, core_work));
+        tt::tt_metal::SetRuntimeArgs(
+            program.program, program.compute, core_work.core, inverse_compute_runtime_args(plan, core_work));
+        tt::tt_metal::SetRuntimeArgs(
+            program.program, program.writer, core_work.core, inverse_writer_runtime_args(plan, buffers, core_work));
     }
 }
 
@@ -620,6 +874,114 @@ void execute_cone_streamed_lwt(
     tt::tt_metal::distributed::MeshDevice& mesh_device,
     tt::tt_metal::distributed::MeshCommandQueue& command_queue,
     ConeStreamedLwtExecutable& executable) {
+    enqueue_program(mesh_device, command_queue, std::move(executable.lifting));
+    tt::tt_metal::distributed::Finish(command_queue);
+}
+
+ConeStreamedIlwtExecutable create_cone_streamed_ilwt_executable_impl(
+    const std::filesystem::path& kernel_root,
+    tt::tt_metal::distributed::MeshDevice& mesh_device,
+    const tt::tt_metal::Buffer& approximation_buffer,
+    const tt::tt_metal::Buffer& detail_buffer,
+    LiftingInversePlan full_plan,
+    const char* inverse_compute_scheme_header,
+    const char* inverse_compute_scheme_type) {
+    TT_FATAL(
+        full_plan.forward_trace.preprocess_layout.pad_config.mode == BoundaryMode::kSymmetric,
+        "ConeStreamed ILWT currently supports symmetric boundary mode only");
+    TT_FATAL(
+        full_plan.original_length <= static_cast<size_t>(std::numeric_limits<uint32_t>::max()),
+        "ConeStreamed ILWT output length exceeds device limits");
+
+    const uint32_t max_cores = core_limit(mesh_device);
+    const uint32_t signal_budget_bytes = l1_signal_budget_bytes();
+    const std::optional<ConeWorkspaceLayout> workspace_override = cone_workspace_layout_override();
+    const ConeWorkspaceLayout initial_workspace_layout = workspace_override.value_or(ConeWorkspaceLayout::kRowMajor);
+    InverseConeExecutionPlan plan = make_inverse_cone_execution_plan(
+        std::move(full_plan), max_cores, signal_budget_bytes, initial_workspace_layout);
+    if (!workspace_override.has_value() && prefer_tile_native_workspace(plan)) {
+        plan = make_inverse_cone_execution_plan(
+            std::move(plan.full_plan), max_cores, signal_budget_bytes, ConeWorkspaceLayout::kTileNative);
+    }
+
+    std::vector<tt::tt_metal::CoreCoord> cores = select_cores(mesh_device, plan.active_core_count);
+    std::array<std::shared_ptr<tt::tt_metal::distributed::MeshBuffer>, 3> slots;
+    for (auto& slot : slots) {
+        slot = create_workspace_buffer(mesh_device, cores, plan.workspace_elements);
+    }
+
+    const SignalBuffer output_desc{
+        .dram_address = 0,
+        .length = plan.full_plan.original_length,
+        .stick_width = kStickWidth,
+        .element_size_bytes = sizeof(float),
+    };
+    auto output = create_dram_signal_buffer(mesh_device, output_desc);
+    const size_t route_count = plan.chunks.front().routes.size();
+    auto route_config =
+        create_dram_buffer(mesh_device, plan.chunks.size() * route_count, device_protocol::kRouteConfigPageBytes);
+    auto chunk_config = create_dram_buffer(mesh_device, plan.chunks.size(), device_protocol::kConeChunkConfigPageBytes);
+
+    ConeIlwtWorkingBuffers buffers{
+        .slots = std::move(slots),
+        .output = std::move(output),
+        .route_config = std::move(route_config),
+        .chunk_config = std::move(chunk_config),
+        .cores = std::move(cores),
+        .scheduler =
+            LiftingSchedulerTelemetry{
+                .memory_mode = LwtMemoryMode::kConeStreamed,
+                .max_group_count = checked_u32(
+                    ceil_div(plan.full_plan.original_length, size_t{device_protocol::kIlwtGroupOutputElements}),
+                    "ILWT output group count"),
+                .groups_per_shard = 0,
+                .active_core_count = plan.active_core_count,
+                .shard_elements = plan.workspace_elements,
+                .zero_work_cores_per_route = {},
+                .chunk_count = checked_u32(plan.chunks.size(), "ILWT chunk count"),
+                .groups_per_chunk = plan.output_groups_per_chunk,
+                .workspace_elements = plan.workspace_elements,
+                .max_dependency_overhead = plan.max_dependency_overhead,
+                .terminal_scale_fused = false,
+                .tile_native_workspace = plan.workspace_layout == ConeWorkspaceLayout::kTileNative,
+            },
+    };
+
+    const std::vector<CoreChunkWork> work =
+        partition_chunk_work(buffers.cores, checked_u32(plan.chunks.size(), "ILWT chunk count"));
+    ConeProgram program = create_inverse_program(
+        kernel_root,
+        core_range_set(buffers.cores),
+        approximation_buffer,
+        detail_buffer,
+        buffers,
+        cone_noc_local_write_enabled(),
+        plan.workspace_layout,
+        inverse_compute_scheme_header,
+        inverse_compute_scheme_type);
+    set_inverse_runtime_args(program, approximation_buffer, detail_buffer, plan, buffers, work);
+    return ConeStreamedIlwtExecutable{
+        .plan = std::move(plan),
+        .buffers = std::move(buffers),
+        .lifting = std::move(program.program),
+    };
+}
+
+void prepare_cone_streamed_ilwt(
+    tt::tt_metal::distributed::MeshCommandQueue& command_queue, ConeStreamedIlwtExecutable& executable) {
+    const std::vector<uint32_t> chunk_words = build_inverse_chunk_config_words(executable.plan, executable.buffers);
+    const std::vector<uint32_t> route_words = build_inverse_route_config_words(executable.plan, executable.buffers);
+    tt::tt_metal::distributed::EnqueueWriteMeshBuffer(
+        command_queue, executable.buffers.chunk_config, chunk_words, false);
+    tt::tt_metal::distributed::EnqueueWriteMeshBuffer(
+        command_queue, executable.buffers.route_config, route_words, false);
+    tt::tt_metal::distributed::Finish(command_queue);
+}
+
+void execute_cone_streamed_ilwt(
+    tt::tt_metal::distributed::MeshDevice& mesh_device,
+    tt::tt_metal::distributed::MeshCommandQueue& command_queue,
+    ConeStreamedIlwtExecutable& executable) {
     enqueue_program(mesh_device, command_queue, std::move(executable.lifting));
     tt::tt_metal::distributed::Finish(command_queue);
 }

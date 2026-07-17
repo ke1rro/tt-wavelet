@@ -15,6 +15,7 @@
 #include "tt-metalium/mesh_buffer.hpp"
 #include "tt-metalium/mesh_device.hpp"
 #include "tt_wavelet/include/lifting/cone_plan.hpp"
+#include "tt_wavelet/include/lifting/inverse_plan.hpp"
 #include "tt_wavelet/include/lifting/plan.hpp"
 #include "tt_wavelet/include/lifting/static_scheme.hpp"
 #include "tt_wavelet/include/pad_split/device.hpp"
@@ -80,6 +81,26 @@ struct ConeWorkingBuffers {
 struct ConeStreamedLwtExecutable {
     ConeExecutionPlan plan{};
     ConeWorkingBuffers buffers{};
+    tt::tt_metal::Program lifting{};
+};
+
+struct ConeIlwtWorkingBuffers {
+    std::array<std::shared_ptr<tt::tt_metal::distributed::MeshBuffer>, 3> slots{};
+    std::shared_ptr<tt::tt_metal::distributed::MeshBuffer> output{};
+    std::shared_ptr<tt::tt_metal::distributed::MeshBuffer> route_config{};
+    std::shared_ptr<tt::tt_metal::distributed::MeshBuffer> chunk_config{};
+    std::vector<tt::tt_metal::CoreCoord> cores;
+    LiftingSchedulerTelemetry scheduler{};
+
+    [[nodiscard]] const std::shared_ptr<tt::tt_metal::distributed::MeshBuffer>& at(
+        const StorageSlot slot) const noexcept {
+        return slots[static_cast<size_t>(slot)];
+    }
+};
+
+struct ConeStreamedIlwtExecutable {
+    InverseConeExecutionPlan plan{};
+    ConeIlwtWorkingBuffers buffers{};
     tt::tt_metal::Program lifting{};
 };
 
@@ -173,5 +194,41 @@ void execute_cone_streamed_lwt(
     tt::tt_metal::distributed::MeshDevice& mesh_device,
     tt::tt_metal::distributed::MeshCommandQueue& command_queue,
     ConeStreamedLwtExecutable& executable);
+
+[[nodiscard]] ConeStreamedIlwtExecutable create_cone_streamed_ilwt_executable_impl(
+    const std::filesystem::path& kernel_root,
+    tt::tt_metal::distributed::MeshDevice& mesh_device,
+    const tt::tt_metal::Buffer& approximation_buffer,
+    const tt::tt_metal::Buffer& detail_buffer,
+    LiftingInversePlan full_plan,
+    const char* inverse_compute_scheme_header,
+    const char* inverse_compute_scheme_type);
+
+template <typename Scheme>
+[[nodiscard]] ConeStreamedIlwtExecutable create_cone_streamed_ilwt_executable(
+    const std::filesystem::path& kernel_root,
+    tt::tt_metal::distributed::MeshDevice& mesh_device,
+    const tt::tt_metal::Buffer& approximation_buffer,
+    const tt::tt_metal::Buffer& detail_buffer,
+    const size_t coefficient_length,
+    const size_t original_length) {
+    using InverseScheme = typename Scheme::inverse;
+    return create_cone_streamed_ilwt_executable_impl(
+        kernel_root,
+        mesh_device,
+        approximation_buffer,
+        detail_buffer,
+        make_inverse_lifting_plan<Scheme>(original_length, coefficient_length),
+        InverseScheme::compute_scheme_header,
+        InverseScheme::compute_scheme_type);
+}
+
+void prepare_cone_streamed_ilwt(
+    tt::tt_metal::distributed::MeshCommandQueue& command_queue, ConeStreamedIlwtExecutable& executable);
+
+void execute_cone_streamed_ilwt(
+    tt::tt_metal::distributed::MeshDevice& mesh_device,
+    tt::tt_metal::distributed::MeshCommandQueue& command_queue,
+    ConeStreamedIlwtExecutable& executable);
 
 }  // namespace ttwv

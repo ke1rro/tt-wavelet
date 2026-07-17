@@ -21,6 +21,7 @@ constexpr uint32_t kLwtHalfStickBytes = kLwtHalfStickElements * sizeof(float);
 constexpr uint32_t kLwtNarrowTileElements = kLwtRowsPerGroup * kLwtHalfStickElements;
 constexpr uint32_t kLwtNarrowTileBytes = kLwtNarrowTileElements * sizeof(float);
 constexpr uint32_t kLwtGroupOutputElements = kLwtRowsPerGroup * kLwtOutputBlocksPerRow * kLwtHalfStickElements;
+constexpr uint32_t kIlwtGroupOutputElements = 2 * kLwtGroupOutputElements;
 
 constexpr uint32_t kRouteConfigWordCount = 16;
 constexpr uint32_t kRouteConfigPageBytes = kRouteConfigWordCount * sizeof(uint32_t);
@@ -51,6 +52,23 @@ enum ConeChunkConfigWord : uint32_t {
     kConeInitialEvenLength = 1,
     kConeInitialOddBegin = 2,
     kConeInitialOddLength = 3,
+
+    // ILWT reuses the same 64-byte chunk page with a direction-specific
+    // contract.  The first four words describe canonical coefficient inputs.
+    kIlwtApproximationBegin = 0,
+    kIlwtApproximationLength = 1,
+    kIlwtDetailBegin = 2,
+    kIlwtDetailLength = 3,
+    kIlwtFinalEvenAddr = 4,
+    kIlwtFinalEvenStorageLength = 5,
+    kIlwtFinalEvenOffset = 6,
+    kIlwtFinalEvenBegin = 7,
+    kIlwtFinalOddAddr = 8,
+    kIlwtFinalOddStorageLength = 9,
+    kIlwtFinalOddOffset = 10,
+    kIlwtFinalOddBegin = 11,
+    kIlwtOutputBegin = 12,
+    kIlwtOutputLength = 13,
 };
 
 }  // namespace ttwv::device_protocol

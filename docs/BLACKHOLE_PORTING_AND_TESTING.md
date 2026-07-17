@@ -2,11 +2,13 @@
 
 ## Status
 
-The Blackhole port is **source-ready but not yet hardware-validated**.  The
-architecture difference that matters for the horizontal SFPI stencil is
-verified from the local ISA documentation and TT-Metal source.  The Wormhole
-build and behavior can be validated on the current server; final correctness
-and performance acceptance must be run on the Blackhole server.
+The Blackhole port has been built and exercised on a Blackhole P150b.  The
+representative `db1`, `db2`, `db7`, and `bior3.9` comparisons pass.  All 106
+generated schemes execute without a kernel/JIT/runtime failure; 68 pass the
+existing `1e-2` PyWavelets threshold and 38 high-order schemes exceed it.  The
+saved Wormhole report had 36 such failures, so exact architecture equivalence
+for this set remains open.  Focused synthetic `K=17`, shape-boundary coverage,
+and performance acceptance also remain open.
 
 The first Blackhole run must include the architecture-aware changes in:
 
@@ -64,7 +66,8 @@ b on Blackhole: [0 200 201 202 203 204 205 206]
 The fix is to use contractual operations on Blackhole:
 
 1. rotate both `a` and `b` with `SHFLROR1`;
-2. enable only lane 0 using the mask already stored in `LREG14`;
+2. compare the hardware `LTILEID` register with zero, enabling lane 0 in each
+   8-lane subvector;
 3. move lane 0 of `a` to lane 0 of `b`;
 4. re-enable all lanes.
 
@@ -93,6 +96,11 @@ tt_metal/third_party/tt_llk/tt_llk_blackhole/llk_lib
 It also defines `ARCH_BLACKHOLE` and compiles compute kernels with
 `-mcpu=tt-bh-tensix`.  See
 `tt-metal/tt_metal/llrt/hal/tt-1xx/blackhole/bh_hal.cpp`.
+
+The project maps TT-Metal's JIT define to the single local compile-time value
+`TT_WAVELET_TENSIX_ARCH` in `tt-wavelet/kernels/ckernel.h`.  SFPI branches use
+that value with `TT_WAVELET_TENSIX_ARCH_BLACKHOLE` or
+`TT_WAVELET_TENSIX_ARCH_WORMHOLE`; users must not define it manually.
 
 Header ownership is consequently:
 
@@ -159,6 +167,12 @@ The project environment script points `TT_METAL_ROOT`, `TT_METAL_HOME`, and
 ```bash
 source ./scripts/set_env.sh
 ```
+
+The build deliberately sets `TT_USE_SYSTEM_SFPI=OFF`.  The pinned TT-Metal
+revision requires SFPI 7.17.0, while the P150b server currently has a newer
+system SFPI.  TT-Metal downloads its checksummed 7.17.0 toolchain under the
+checkout's `runtime/` directory instead of weakening the version check or
+replacing the server-wide compiler.
 
 Build only the `lwt` target:
 
@@ -330,7 +344,7 @@ The Blackhole port is accepted only when all of the following are true:
 7. Timings are collected with the same device-only boundary as the Wormhole
    baseline.
 
-## Prompt/checklist for Codex on the Blackhole server
+## Prompt/checklist for remaining Blackhole acceptance
 
 The following can be pasted into a new Codex session:
 
@@ -340,20 +354,19 @@ The following can be pasted into a new Codex session:
 > Verify `tt-smi`, the tt-wavelet commit, and the tt-metal commit.  Do not set
 > `ARCH_NAME` on hardware.  Build only with `./update.sh Release lwt`, then
 > `source ./scripts/set_env.sh`; never use `./build.sh`.  Confirm that TT-Metal
-> selects `ARCH_BLACKHOLE`, the Blackhole LLK paths, and
-> `-mcpu=tt-bh-tensix`.  First implement/run the focused SFPI rotate test from
-> the guide and verify the raw fixed `SHFLSHR1` behavior.  Then run the stated
-> correctness matrix, all 106 schemes for stability, and the db7/bior3.9
-> benchmarks.  Compare outputs against the saved Wormhole/backend baseline,
-> not only against PyWavelets.  Report exact commands, logs, output diffs,
-> timing statistics, device revision, files changed, and any unresolved
-> architecture limitation.
+> selects `ARCH_BLACKHOLE`, maps it to `TT_WAVELET_TENSIX_ARCH`, uses the
+> Blackhole LLK paths, and compiles with `-mcpu=tt-bh-tensix`.  Run the focused
+> SFPI rotate and synthetic `K=17` tests, broaden shape/chunk-boundary coverage,
+> compare the 38 high-order outputs against the same-input Wormhole/backend
+> baseline, and collect the db7/bior3.9 device-only benchmarks.  Report exact
+> commands, logs, output diffs, timing statistics, device revision, files
+> changed, and any unresolved architecture limitation.
 
 ## Remaining uncertainty
 
 The ISA difference and JIT header/compiler selection are proven statically from
-the checked-in sources.  The Blackhole mask-and-move sequence is the same
-contractual sequence previously used by this project, but this server does not
-have Blackhole hardware.  Correctness across Blackhole DST addressing, narrow
-tile faces, and the complete ConeStreamed pipeline remains an explicit remote
-hardware test, not a claimed result.
+the checked-in sources.  Representative schemes and all 106 generated schemes
+have now exercised Blackhole DST addressing, narrow-tile faces, and the complete
+ConeStreamed pipeline on this P150b.  The focused rotate/`K=17` tests, broader
+boundary matrix, same-input Wormhole equivalence, and Blackhole performance
+measurements remain explicit acceptance work rather than claimed results.
