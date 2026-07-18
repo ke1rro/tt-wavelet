@@ -110,18 +110,19 @@ void append_forward_route(
             compute_step_geometry(even_state, Step::shift, Step::k, odd_state);
         const StreamRef output{.slot = active.free};
         const StorageSlot released = active.odd.slot;
-        routes.push_back(LiftingStepRoute{
-            .type = Step::type,
-            .source = active.even,
-            .base = active.odd,
-            .output = resident_output(output.slot),
-            .source_length = even_state.length,
-            .base_length = odd_state.length,
-            .source_offset = src_off,
-            .base_offset = base_off,
-            .source_left_pad = device_protocol::kStepCoeffCapacity - Step::k,
-            .output_length = out_length,
-        });
+        routes.push_back(
+            LiftingStepRoute{
+                .type = Step::type,
+                .source = active.even,
+                .base = active.odd,
+                .output = resident_output(output.slot),
+                .source_length = even_state.length,
+                .base_length = odd_state.length,
+                .source_offset = src_off,
+                .base_offset = base_off,
+                .source_left_pad = device_protocol::kStepCoeffCapacity - Step::k,
+                .output_length = out_length,
+            });
         odd_state = StreamState{.shift = out_shift, .length = out_length};
         active.odd = output;
         active.free = released;
@@ -133,18 +134,19 @@ void append_forward_route(
             compute_step_geometry(odd_state, Step::shift, Step::k, even_state);
         const StreamRef output{.slot = active.free};
         const StorageSlot released = active.even.slot;
-        routes.push_back(LiftingStepRoute{
-            .type = Step::type,
-            .source = active.odd,
-            .base = active.even,
-            .output = resident_output(output.slot),
-            .source_length = odd_state.length,
-            .base_length = even_state.length,
-            .source_offset = src_off,
-            .base_offset = base_off,
-            .source_left_pad = device_protocol::kStepCoeffCapacity - Step::k,
-            .output_length = out_length,
-        });
+        routes.push_back(
+            LiftingStepRoute{
+                .type = Step::type,
+                .source = active.odd,
+                .base = active.even,
+                .output = resident_output(output.slot),
+                .source_length = odd_state.length,
+                .base_length = even_state.length,
+                .source_offset = src_off,
+                .base_offset = base_off,
+                .source_left_pad = device_protocol::kStepCoeffCapacity - Step::k,
+                .output_length = out_length,
+            });
         even_state = StreamState{.shift = out_shift, .length = out_length};
         active.even = output;
         active.free = released;
@@ -152,53 +154,56 @@ void append_forward_route(
         static_assert(Step::k == 1, "Scale odd steps must have exactly one coefficient");
         const StreamRef output{.slot = active.free};
         const StorageSlot released = active.odd.slot;
-        routes.push_back(LiftingStepRoute{
-            .type = Step::type,
-            .source = active.odd,
-            .base = active.odd,
-            .output = resident_output(output.slot),
-            .source_length = odd_state.length,
-            .base_length = odd_state.length,
-            .source_offset = 0,
-            .base_offset = 0,
-            .source_left_pad = 0,
-            .output_length = odd_state.length,
-        });
+        routes.push_back(
+            LiftingStepRoute{
+                .type = Step::type,
+                .source = active.odd,
+                .base = active.odd,
+                .output = resident_output(output.slot),
+                .source_length = odd_state.length,
+                .base_length = odd_state.length,
+                .source_offset = 0,
+                .base_offset = 0,
+                .source_left_pad = 0,
+                .output_length = odd_state.length,
+            });
         active.odd = output;
         active.free = released;
     } else if constexpr (Step::type == StepType::kScaleEven) {
         static_assert(Step::k == 1, "Scale even steps must have exactly one coefficient");
         const StreamRef output{.slot = active.free};
         const StorageSlot released = active.even.slot;
-        routes.push_back(LiftingStepRoute{
-            .type = Step::type,
-            .source = active.even,
-            .base = active.even,
-            .output = resident_output(output.slot),
-            .source_length = even_state.length,
-            .base_length = even_state.length,
-            .source_offset = 0,
-            .base_offset = 0,
-            .source_left_pad = 0,
-            .output_length = even_state.length,
-        });
+        routes.push_back(
+            LiftingStepRoute{
+                .type = Step::type,
+                .source = active.even,
+                .base = active.even,
+                .output = resident_output(output.slot),
+                .source_length = even_state.length,
+                .base_length = even_state.length,
+                .source_offset = 0,
+                .base_offset = 0,
+                .source_left_pad = 0,
+                .output_length = even_state.length,
+            });
         active.even = output;
         active.free = released;
     } else {
         static_assert(Step::type == StepType::kSwap, "Unsupported static lifting step type");
         static_assert(Step::k == 0, "Swap steps must not have coefficients");
-        routes.push_back(LiftingStepRoute{
-            .type = Step::type,
-            .source = active.even,
-            .base = active.odd,
-            .output = resident_output(active.even.slot),
-            .source_length = even_state.length,
-            .base_length = odd_state.length,
-            .source_offset = 0,
-            .base_offset = 0,
-            .source_left_pad = 0,
-            .output_length = 0,
-        });
+        routes.push_back(
+            LiftingStepRoute{
+                .type = Step::type,
+                .source = active.even,
+                .base = active.odd,
+                .output = resident_output(active.even.slot),
+                .source_length = even_state.length,
+                .base_length = odd_state.length,
+                .source_offset = 0,
+                .base_offset = 0,
+                .source_left_pad = 0,
+                .output_length = 0,
+            });
         std::swap(active.even, active.odd);
         std::swap(even_state, odd_state);
     }
@@ -243,7 +248,10 @@ inline void route_terminal_scales_to_final_dram(std::vector<LiftingStepRoute>& r
 
 template <typename Scheme>
 [[nodiscard]] LiftingForwardPlan make_forward_lifting_plan(
-    const SignalBuffer& input, uint64_t initial_even_addr, uint64_t initial_odd_addr) {
+    const SignalBuffer& input,
+    uint64_t initial_even_addr,
+    uint64_t initial_odd_addr,
+    const BoundaryMode boundary_mode = BoundaryMode::kSymmetric) {
     static_assert(Scheme::tap_size > 0, "Static lifting schemes must have a positive tap size");
     static_assert(Scheme::num_steps > 0, "Static lifting schemes must have at least one step");
     TT_FATAL(input.element_size_bytes == sizeof(float), "Forward lifting plan currently supports fp32 only");
@@ -257,7 +265,7 @@ template <typename Scheme>
         input,
         initial_even_addr,
         initial_odd_addr,
-        Pad1DConfig{.mode = BoundaryMode::kSymmetric, .left = wavelet_pad, .right = wavelet_pad});
+        Pad1DConfig{.mode = boundary_mode, .left = wavelet_pad, .right = wavelet_pad});
 
     const SignalBuffer initial_even = preprocess_layout.output.even;
     const SignalBuffer initial_odd = preprocess_layout.output.odd;

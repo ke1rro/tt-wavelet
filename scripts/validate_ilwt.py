@@ -23,23 +23,22 @@ DEFAULT_TOLERANCES = {
 def parse_reconstructed_signal(stdout: str) -> np.ndarray:
     for line in stdout.splitlines():
         if line.startswith("tt-wavelet reconstructed signal"):
-            return np.fromstring(
-                line.split("[", 1)[1].rsplit("]", 1)[0], sep=",", dtype=np.float64
-            )
+            return np.fromstring(line.split("[", 1)[1].rsplit("]", 1)[0], sep=",", dtype=np.float64)
     raise RuntimeError("lwt output did not contain a reconstructed signal")
 
 
 def make_signal(length: int) -> np.ndarray:
     index = np.arange(length, dtype=np.float32)
-    return (
-        0.7 * np.sin(index * 0.071) + 0.2 * np.cos(index * 0.013) + index * 1.0e-4
-    ).astype(np.float32)
+    return (0.7 * np.sin(index * 0.071) + 0.2 * np.cos(index * 0.013) + index * 1.0e-4).astype(
+        np.float32
+    )
 
 
 def run_case(
     binary: Path,
     wavelet: str,
     length: int,
+    mode: str,
     layout: str,
     approximation_path: Path,
     detail_path: Path,
@@ -51,15 +50,15 @@ def run_case(
         "--inverse",
         "--original-length",
         str(length),
+        "--boundary-mode",
+        mode,
         "--approximation-file",
         str(approximation_path),
         "--detail-file",
         str(detail_path),
         wavelet,
     ]
-    result = subprocess.run(
-        command, text=True, capture_output=True, env=environment, check=False
-    )
+    result = subprocess.run(command, text=True, capture_output=True, env=environment, check=False)
     if result.returncode != 0:
         raise RuntimeError(
             f"ILWT failed for {wavelet}, N={length}, layout={layout}:\n{result.stdout}\n{result.stderr}"
@@ -72,14 +71,36 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--binary", type=Path, default=root / "build" / "lwt")
     parser.add_argument("--wavelets", nargs="+", default=["db1", "db7", "bior3.9"])
-    parser.add_argument(
-        "--lengths", nargs="+", type=int, default=[17, 32, 33, 3071, 3072, 3073]
-    )
+    parser.add_argument("--lengths", nargs="+", type=int, default=[17, 32, 33, 3071, 3072, 3073])
     parser.add_argument(
         "--layouts",
         nargs="+",
         choices=["auto", "row-major", "tile-native"],
         default=["auto"],
+    )
+    parser.add_argument(
+        "--modes",
+        nargs="+",
+        choices=[
+            "symmetric",
+            "zero",
+            "constant",
+            "periodic",
+            "antisymmetric",
+            "smooth",
+            "reflect",
+            "antireflect",
+        ],
+        default=[
+            "symmetric",
+            "zero",
+            "constant",
+            "periodic",
+            "antisymmetric",
+            "smooth",
+            "reflect",
+            "antireflect",
+        ],
     )
     parser.add_argument("--tolerance", type=float)
     parser.add_argument("--layout-tolerance", type=float, default=1.0e-7)
@@ -101,52 +122,58 @@ def main() -> None:
             tolerance = args.tolerance or DEFAULT_TOLERANCES.get(wavelet, 1.0e-2)
             for length in args.lengths:
                 signal = make_signal(length)
-                approximation, detail = (
-                    values.astype(np.float32)
-                    for values in pywt.dwt(signal, wavelet, mode="symmetric")
-                )
-                approximation_path = temporary_path / "approximation.txt"
-                detail_path = temporary_path / "detail.txt"
-                np.savetxt(approximation_path, approximation, fmt="%.9g")
-                np.savetxt(detail_path, detail, fmt="%.9g")
-                expected = pywt.idwt(approximation, detail, wavelet, mode="symmetric")[
-                    :length
-                ]
-
-                outputs: dict[str, np.ndarray] = {}
-                for layout in args.layouts:
-                    reconstructed = run_case(
-                        binary,
-                        wavelet,
-                        length,
-                        layout,
-                        approximation_path,
-                        detail_path,
-                    )
-                    outputs[layout] = reconstructed
-                    error = float(np.max(np.abs(reconstructed - expected)))
-                    max_pywavelets_error = max(max_pywavelets_error, error)
-                    case_count += 1
-                    print(
-                        f"{wavelet:10s} N={length:6d} layout={layout:11s} "
-                        f"max_abs_vs_pywavelets={error:.8e}"
-                    )
-                    if not np.all(np.isfinite(reconstructed)) or error > tolerance:
-                        failures.append(
-                            f"{wavelet} N={length} layout={layout}: error {error:.8e} > {tolerance:.8e}"
+                for mode in args.modes:
+                    if mode in {"reflect", "antireflect"} and length == 1:
+                        print(
+                            f"{wavelet:10s} N={length:6d} mode={mode:13s} "
+                            "skipped (PyWavelets DWT requires N > 1)"
                         )
-
-                first_layout = args.layouts[0]
-                for layout in args.layouts[1:]:
-                    layout_error = float(
-                        np.max(np.abs(outputs[layout] - outputs[first_layout]))
+                        continue
+                    approximation, detail = (
+                        values.astype(np.float32) for values in pywt.dwt(signal, wavelet, mode=mode)
                     )
-                    max_layout_error = max(max_layout_error, layout_error)
-                    if layout_error > args.layout_tolerance:
-                        failures.append(
-                            f"{wavelet} N={length}: {first_layout}/{layout} difference "
-                            f"{layout_error:.8e} > {args.layout_tolerance:.8e}"
+                    approximation_path = temporary_path / "approximation.txt"
+                    detail_path = temporary_path / "detail.txt"
+                    np.savetxt(approximation_path, approximation, fmt="%.9g")
+                    np.savetxt(detail_path, detail, fmt="%.9g")
+                    expected = pywt.idwt(approximation, detail, wavelet, mode=mode)[:length]
+
+                    outputs: dict[str, np.ndarray] = {}
+                    for layout in args.layouts:
+                        reconstructed = run_case(
+                            binary,
+                            wavelet,
+                            length,
+                            mode,
+                            layout,
+                            approximation_path,
+                            detail_path,
                         )
+                        outputs[layout] = reconstructed
+                        error = float(np.max(np.abs(reconstructed - expected)))
+                        max_pywavelets_error = max(max_pywavelets_error, error)
+                        case_count += 1
+                        print(
+                            f"{wavelet:10s} N={length:6d} mode={mode:13s} "
+                            f"layout={layout:11s} max_abs_vs_pywavelets={error:.8e}"
+                        )
+                        if not np.all(np.isfinite(reconstructed)) or error > tolerance:
+                            failures.append(
+                                f"{wavelet} N={length} mode={mode} layout={layout}: "
+                                f"error {error:.8e} > {tolerance:.8e}"
+                            )
+
+                    first_layout = args.layouts[0]
+                    for layout in args.layouts[1:]:
+                        layout_error = float(
+                            np.max(np.abs(outputs[layout] - outputs[first_layout]))
+                        )
+                        max_layout_error = max(max_layout_error, layout_error)
+                        if layout_error > args.layout_tolerance:
+                            failures.append(
+                                f"{wavelet} N={length} mode={mode}: {first_layout}/{layout} "
+                                f"difference {layout_error:.8e} > {args.layout_tolerance:.8e}"
+                            )
 
     print(f"validated_device_cases: {case_count}")
     print(f"max_abs_vs_pywavelets: {max_pywavelets_error:.8e}")

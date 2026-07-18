@@ -174,7 +174,8 @@ template <typename Scheme>
     const std::filesystem::path& kernel_root,
     tt::tt_metal::distributed::MeshDevice& mesh_device,
     const tt::tt_metal::Buffer& input_buffer,
-    const SignalBuffer& input_desc) {
+    const SignalBuffer& input_desc,
+    const BoundaryMode boundary_mode = BoundaryMode::kSymmetric) {
     TT_FATAL(input_desc.length > 0, "Input signal must be non-empty");
     TT_FATAL(input_desc.element_size_bytes == sizeof(float), "ConeStreamed LWT currently supports fp32 only");
 
@@ -184,7 +185,7 @@ template <typename Scheme>
         kernel_root,
         mesh_device,
         input_buffer,
-        make_forward_lifting_plan<Scheme>(planned_input, 0, 0),
+        make_forward_lifting_plan<Scheme>(planned_input, 0, 0, boundary_mode),
         Scheme::compute_scheme_header,
         Scheme::compute_scheme_type);
 }
@@ -213,14 +214,15 @@ template <typename Scheme>
     const tt::tt_metal::Buffer& approximation_buffer,
     const tt::tt_metal::Buffer& detail_buffer,
     const size_t coefficient_length,
-    const size_t original_length) {
+    const size_t original_length,
+    const BoundaryMode boundary_mode = BoundaryMode::kSymmetric) {
     using InverseScheme = typename Scheme::inverse;
     return create_cone_streamed_ilwt_executable_impl(
         kernel_root,
         mesh_device,
         approximation_buffer,
         detail_buffer,
-        make_inverse_lifting_plan<Scheme>(original_length, coefficient_length),
+        make_inverse_lifting_plan<Scheme>(original_length, coefficient_length, boundary_mode),
         InverseScheme::compute_scheme_header,
         InverseScheme::compute_scheme_type);
 }

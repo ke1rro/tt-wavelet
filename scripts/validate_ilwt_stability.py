@@ -15,13 +15,28 @@ def main() -> None:
     parser.add_argument("--binary", type=Path, default=root / "build" / "lwt")
     parser.add_argument("--wavelets", type=Path, default=root / "wavelets")
     parser.add_argument("--length", type=int, default=33)
+    parser.add_argument("--layout", choices=["auto", "row-major", "tile-native"], default="auto")
     parser.add_argument(
-        "--layout", choices=["auto", "row-major", "tile-native"], default="auto"
+        "--modes",
+        nargs="+",
+        choices=[
+            "symmetric",
+            "zero",
+            "constant",
+            "periodic",
+            "antisymmetric",
+            "smooth",
+            "reflect",
+            "antireflect",
+        ],
+        default=["symmetric"],
     )
     args = parser.parse_args()
 
     if args.length <= 0:
         parser.error("--length must be positive")
+    if args.length == 1 and any(mode in {"reflect", "antireflect"} for mode in args.modes):
+        parser.error("reflect and antireflect modes require --length greater than one")
     binary = args.binary.resolve()
     if not binary.is_file():
         parser.error(f"binary not found: {binary}")
@@ -30,32 +45,42 @@ def main() -> None:
     environment = os.environ.copy()
     environment["TT_WAVELET_LWT_CONE_WORKSPACE_LAYOUT"] = args.layout
     failures: list[str] = []
-    for index, name in enumerate(names, start=1):
-        command = [
-            str(binary),
-            "--inverse",
-            "--benchmark",
-            "--warmup-runs",
-            "0",
-            "--repeats",
-            "1",
-            "--length",
-            str(args.length),
-            name,
-        ]
-        result = subprocess.run(
-            command,
-            text=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            env=environment,
-        )
-        status = "PASS" if result.returncode == 0 else "FAIL"
-        print(f"[{index:3d}/{len(names)}] {status} {name}", flush=True)
-        if result.returncode != 0:
-            failures.append(f"{name}:\n{result.stderr}")
+    case_count = len(names) * len(args.modes)
+    case_index = 0
+    for name in names:
+        for mode in args.modes:
+            case_index += 1
+            command = [
+                str(binary),
+                "--inverse",
+                "--benchmark",
+                "--warmup-runs",
+                "0",
+                "--repeats",
+                "1",
+                "--length",
+                str(args.length),
+                "--boundary-mode",
+                mode,
+                name,
+            ]
+            result = subprocess.run(
+                command,
+                text=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                env=environment,
+            )
+            status = "PASS" if result.returncode == 0 else "FAIL"
+            print(
+                f"[{case_index:3d}/{case_count}] {status} {name} mode={mode}",
+                flush=True,
+            )
+            if result.returncode != 0:
+                failures.append(f"{name} mode={mode}:\n{result.stderr}")
 
     print(f"validated_schemes: {len(names)}")
+    print(f"validated_device_cases: {case_count}")
     print(f"failed_schemes: {len(failures)}")
     if failures:
         raise SystemExit("\n".join(["ILWT runtime stability failed:", *failures]))

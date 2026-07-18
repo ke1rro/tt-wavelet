@@ -37,6 +37,7 @@ struct CliOptions {
     double signal_start{1.0};
     double signal_step{1.0};
     ttwv::LwtMemoryMode memory_mode{ttwv::LwtMemoryMode::kConeStreamed};
+    ttwv::BoundaryMode boundary_mode{ttwv::BoundaryMode::kSymmetric};
     std::string wavelet_name;
     std::optional<std::filesystem::path> signal_file;
     std::optional<std::filesystem::path> approximation_file;
@@ -77,6 +78,7 @@ struct InverseOutput {
            "<scheme|scheme_path>\n"
            "  lwt [--inverse] --benchmark [--repeats N] [--warmup-runs N] "
            "[--memory-mode cone|resident] "
+           "[--boundary-mode symmetric|zero|constant|periodic|antisymmetric|smooth|reflect|antireflect] "
            "[--length N --signal-start X --signal-step X | <signal_file>] <scheme|scheme_path>\n"
            "\n"
            "  --inverse  Run 1D ILWT from coefficients produced by an untimed forward transform;\n"
@@ -158,7 +160,30 @@ struct InverseOutput {
             } else {
                 throw std::runtime_error("--memory-mode must be 'cone' or 'resident'.");
             }
-        } else if (arg.rfind("--", 0) == 0) {
+        } else if (arg == "--boundary-mode") {
+            const std::string mode = require_option_value(argc, argv, i, arg);
+            if (mode == "symmetric") {
+                options.boundary_mode = ttwv::BoundaryMode::kSymmetric;
+            } else if (mode == "zero") {
+                options.boundary_mode = ttwv::BoundaryMode::kZero;
+            } else if (mode == "constant") {
+                options.boundary_mode = ttwv::BoundaryMode::kConstant;
+            } else if (mode == "periodic") {
+                options.boundary_mode = ttwv::BoundaryMode::kPeriodic;
+            } else if (mode == "antisymmetric") {
+                options.boundary_mode = ttwv::BoundaryMode::kAntisymmetric;
+            } else if (mode == "smooth") {
+                options.boundary_mode = ttwv::BoundaryMode::kSmooth;
+            } else if (mode == "reflect") {
+                options.boundary_mode = ttwv::BoundaryMode::kReflect;
+            } else if (mode == "antireflect") {
+                options.boundary_mode = ttwv::BoundaryMode::kAntireflect;
+            } else {
+                throw std::runtime_error(
+                    "--boundary-mode must be 'symmetric', 'zero', 'constant', 'periodic', "
+                    "'antisymmetric', 'smooth', 'reflect', or 'antireflect'.");
+            }
+        } else if (arg.starts_with("--")) {
             throw std::runtime_error("Unknown option: " + arg + "\n" + usage());
         } else {
             positionals.push_back(arg);
@@ -187,6 +212,14 @@ struct InverseOutput {
         }
         options.wavelet_name = positionals.at(0);
         options.signal_file = std::filesystem::path{positionals.at(1)};
+    }
+
+    if (options.memory_mode != ttwv::LwtMemoryMode::kConeStreamed &&
+        options.boundary_mode != ttwv::BoundaryMode::kSymmetric) {
+        throw std::runtime_error("non-symmetric boundary modes currently require --memory-mode cone.");
+    }
+    if (options.inverse && options.memory_mode != ttwv::LwtMemoryMode::kConeStreamed) {
+        throw std::runtime_error("ILWT currently requires --memory-mode cone.");
     }
 
     return options;
@@ -317,10 +350,11 @@ template <typename Scheme>
     const tt::tt_metal::Buffer& input_buffer,
     const ttwv::SignalBuffer& input_desc,
     const ttwv::LwtMemoryMode memory_mode,
+    const ttwv::BoundaryMode boundary_mode,
     const bool read_outputs) {
     if (memory_mode == ttwv::LwtMemoryMode::kConeStreamed) {
         auto executable = ttwv::create_cone_streamed_lwt_executable<Scheme>(
-            TT_WAVELET_SOURCE_DIR, mesh_device, input_buffer, input_desc);
+            TT_WAVELET_SOURCE_DIR, mesh_device, input_buffer, input_desc, boundary_mode);
         ttwv::prepare_cone_streamed_lwt(command_queue, executable);
 
         const auto execution_start = std::chrono::steady_clock::now();
@@ -397,10 +431,11 @@ template <typename Scheme>
     tt::tt_metal::distributed::MeshCommandQueue& command_queue,
     const tt::tt_metal::Buffer& input_buffer,
     const ttwv::SignalBuffer& input_desc,
-    const ttwv::LwtMemoryMode memory_mode) {
+    const ttwv::LwtMemoryMode memory_mode,
+    const ttwv::BoundaryMode boundary_mode) {
     if (memory_mode == ttwv::LwtMemoryMode::kConeStreamed) {
         auto executable = ttwv::create_cone_streamed_lwt_executable<Scheme>(
-            TT_WAVELET_SOURCE_DIR, mesh_device, input_buffer, input_desc);
+            TT_WAVELET_SOURCE_DIR, mesh_device, input_buffer, input_desc, boundary_mode);
         ttwv::prepare_cone_streamed_lwt(command_queue, executable);
 
         const auto start = std::chrono::steady_clock::now();
@@ -435,9 +470,16 @@ template <typename Scheme>
     const tt::tt_metal::Buffer& detail_buffer,
     const size_t coefficient_length,
     const size_t original_length,
+    const ttwv::BoundaryMode boundary_mode,
     const bool read_output) {
     auto executable = ttwv::create_cone_streamed_ilwt_executable<Scheme>(
-        TT_WAVELET_SOURCE_DIR, mesh_device, approximation_buffer, detail_buffer, coefficient_length, original_length);
+        TT_WAVELET_SOURCE_DIR,
+        mesh_device,
+        approximation_buffer,
+        detail_buffer,
+        coefficient_length,
+        original_length,
+        boundary_mode);
     ttwv::prepare_cone_streamed_ilwt(command_queue, executable);
 
     const auto execution_start = std::chrono::steady_clock::now();
@@ -544,6 +586,12 @@ int main(int argc, char** argv) {
                          : read_signal_file(*options.signal_file);
         }
 
+        const size_t boundary_signal_length = external_coefficients ? *options.original_length : signal.size();
+        if (ttwv::boundary_mode_requires_multiple_samples(options.boundary_mode) && boundary_signal_length <= 1) {
+            throw std::runtime_error(
+                "reflect and antireflect boundary modes require a signal length greater than one.");
+        }
+
         constexpr int device_id{0};
         auto mesh_device{tt::tt_metal::distributed::MeshDevice::create_unit_mesh(device_id)};
         if (options.benchmark) {
@@ -578,6 +626,7 @@ int main(int argc, char** argv) {
                         *(input->buffer->get_backing_buffer()),
                         input->desc,
                         options.memory_mode,
+                        options.boundary_mode,
                         true);
                     approximation_values = coefficients.approximation;
                     detail_values = coefficients.detail;
@@ -601,6 +650,7 @@ int main(int argc, char** argv) {
                             *(detail.buffer->get_backing_buffer()),
                             coefficient_length,
                             original_length,
+                            options.boundary_mode,
                             false));
                     }
 
@@ -615,6 +665,7 @@ int main(int argc, char** argv) {
                             *(detail.buffer->get_backing_buffer()),
                             coefficient_length,
                             original_length,
+                            options.boundary_mode,
                             false);
                         times_ms.push_back(sample.execution_time_ms);
                         scheduler = std::move(sample.scheduler);
@@ -630,6 +681,7 @@ int main(int argc, char** argv) {
                     *(detail.buffer->get_backing_buffer()),
                     coefficient_length,
                     original_length,
+                    options.boundary_mode,
                     true);
                 print_coeffs("tt-wavelet reconstructed signal", output.signal, original_length);
                 if (!external_coefficients) {
@@ -647,7 +699,8 @@ int main(int argc, char** argv) {
                         command_queue,
                         *(input->buffer->get_backing_buffer()),
                         input->desc,
-                        options.memory_mode));
+                        options.memory_mode,
+                        options.boundary_mode));
                 }
 
                 std::vector<double> times_ms;
@@ -659,7 +712,8 @@ int main(int argc, char** argv) {
                         command_queue,
                         *(input->buffer->get_backing_buffer()),
                         input->desc,
-                        options.memory_mode);
+                        options.memory_mode,
+                        options.boundary_mode);
                     times_ms.push_back(sample.execution_time_ms);
                     scheduler = std::move(sample.scheduler);
                 }
@@ -673,6 +727,7 @@ int main(int argc, char** argv) {
                 *(input->buffer->get_backing_buffer()),
                 input->desc,
                 options.memory_mode,
+                options.boundary_mode,
                 true);
 
             print_coeffs("tt-wavelet approximation coefficients", output.approximation, output.logical_length);

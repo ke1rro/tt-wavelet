@@ -230,10 +230,12 @@ if(CI_BUILD_WAVELET_EXECUTABLE)
   add_custom_target(
     tt_wavelet_generate_static_schemes
     COMMAND
-      ${Python3_EXECUTABLE} ${TT_WAVELET_SOURCE_ROOT}/scripts/generate_static_schemes.py
-      --json-dir ${TT_WAVELET_SOURCE_ROOT}/wavelets
-      --scheme-dir ${TT_WAVELET_SOURCE_ROOT}/tt-wavelet/tt_wavelet/include/schemes/generated
-      --registry ${TT_WAVELET_SOURCE_ROOT}/tt-wavelet/tt_wavelet/include/schemes/generated/registry.hpp
+      ${Python3_EXECUTABLE}
+      ${TT_WAVELET_SOURCE_ROOT}/scripts/generate_static_schemes.py --json-dir
+      ${TT_WAVELET_SOURCE_ROOT}/wavelets --scheme-dir
+      ${TT_WAVELET_SOURCE_ROOT}/tt-wavelet/tt_wavelet/include/schemes/generated
+      --registry
+      ${TT_WAVELET_SOURCE_ROOT}/tt-wavelet/tt_wavelet/include/schemes/generated/registry.hpp
     WORKING_DIRECTORY ${TT_WAVELET_SOURCE_ROOT}
     COMMENT "Generating static TT-wavelet scheme headers")
 
@@ -241,7 +243,8 @@ if(CI_BUILD_WAVELET_EXECUTABLE)
     lwt
     ${TT_WAVELET_SOURCE_ROOT}/tt-wavelet/main.cpp
     ${TT_WAVELET_SOURCE_ROOT}/tt-wavelet/tt_wavelet/src/pad_split/device.cpp
-    ${TT_WAVELET_SOURCE_ROOT}/tt-wavelet/tt_wavelet/src/lifting/device.cpp)
+    ${TT_WAVELET_SOURCE_ROOT}/tt-wavelet/tt_wavelet/src/lifting/device.cpp
+    ${TT_WAVELET_SOURCE_ROOT}/tt-wavelet/tt_wavelet/src/lifting/cone_device.cpp)
   add_dependencies(lwt tt_wavelet_generate_static_schemes)
 
   target_compile_definitions(

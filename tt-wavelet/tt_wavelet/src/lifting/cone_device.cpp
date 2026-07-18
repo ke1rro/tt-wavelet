@@ -303,11 +303,12 @@ void create_narrow_tile_circular_buffer(
     work.reserve(cores.size());
     for (uint32_t core_index = 0; core_index < active_core_count; ++core_index) {
         const uint32_t count = base_chunks + (core_index < extra_chunks ? 1U : 0U);
-        work.push_back(CoreChunkWork{
-            .core = cores[core_index],
-            .chunk_begin = chunk_begin,
-            .chunk_count = count,
-        });
+        work.push_back(
+            CoreChunkWork{
+                .core = cores[core_index],
+                .chunk_begin = chunk_begin,
+                .chunk_count = count,
+            });
         chunk_begin += count;
     }
     TT_FATAL(chunk_begin == chunk_count, "Cone chunk partition is incomplete");
@@ -438,6 +439,7 @@ void create_narrow_tile_circular_buffer(
     const bool terminal_scale_fused,
     const bool noc_local_write,
     const ConeWorkspaceLayout workspace_layout,
+    const BoundaryMode boundary_mode,
     const char* compute_scheme_header,
     const char* compute_scheme_type) {
     tt::tt_metal::Program program = tt::tt_metal::CreateProgram();
@@ -465,6 +467,7 @@ void create_narrow_tile_circular_buffer(
         kSyncCb,
         static_cast<uint32_t>(workspace_layout == ConeWorkspaceLayout::kTileNative),
         0U,
+        static_cast<uint32_t>(boundary_mode),
     };
     tt::tt_metal::TensorAccessorArgs(config_buffer).append_to(reader_compile_args);
     tt::tt_metal::TensorAccessorArgs(input_buffer).append_to(reader_compile_args);
@@ -716,6 +719,10 @@ void set_runtime_args(
         kSyncCb,
         static_cast<uint32_t>(workspace_layout == ConeWorkspaceLayout::kTileNative),
         1U,
+        // Inverse reads canonical coefficients, not an extended original
+        // signal. Keep its unused shared-reader boundary specialization fixed
+        // so every ILWT mode reuses the same device binary.
+        static_cast<uint32_t>(BoundaryMode::kSymmetric),
     };
     tt::tt_metal::TensorAccessorArgs(config_buffer).append_to(reader_compile_args);
     tt::tt_metal::TensorAccessorArgs(approximation_buffer).append_to(reader_compile_args);
@@ -807,9 +814,11 @@ ConeStreamedLwtExecutable create_cone_streamed_lwt_executable_impl(
     LiftingForwardPlan full_plan,
     const char* compute_scheme_header,
     const char* compute_scheme_type) {
+    const BoundaryMode boundary_mode = full_plan.preprocess_layout.pad_config.mode;
+    TT_FATAL(is_cone_boundary_mode(boundary_mode), "ConeStreamed received an unsupported boundary mode");
     TT_FATAL(
-        full_plan.preprocess_layout.pad_config.mode == BoundaryMode::kSymmetric,
-        "ConeStreamed currently supports symmetric boundary mode only");
+        !boundary_mode_requires_multiple_samples(boundary_mode) || full_plan.preprocess_layout.input.length > 1,
+        "reflect and antireflect boundary modes require an input length greater than one");
     TT_FATAL(
         full_plan.preprocess_layout.padded_length() <= static_cast<size_t>(std::numeric_limits<int32_t>::max()),
         "ConeStreamed padded input length exceeds device signed-index range");
@@ -877,6 +886,7 @@ ConeStreamedLwtExecutable create_cone_streamed_lwt_executable_impl(
         plan.terminal_scale_fused,
         cone_noc_local_write_enabled(),
         plan.workspace_layout,
+        boundary_mode,
         compute_scheme_header,
         compute_scheme_type);
     set_runtime_args(program, input_buffer, plan, buffers, work);
@@ -915,8 +925,12 @@ ConeStreamedIlwtExecutable create_cone_streamed_ilwt_executable_impl(
     const char* inverse_compute_scheme_header,
     const char* inverse_compute_scheme_type) {
     TT_FATAL(
-        full_plan.forward_trace.preprocess_layout.pad_config.mode == BoundaryMode::kSymmetric,
-        "ConeStreamed ILWT currently supports symmetric boundary mode only");
+        is_cone_boundary_mode(full_plan.forward_trace.preprocess_layout.pad_config.mode),
+        "ConeStreamed ILWT received an unsupported boundary mode");
+    TT_FATAL(
+        !boundary_mode_requires_multiple_samples(full_plan.forward_trace.preprocess_layout.pad_config.mode) ||
+            full_plan.original_length > 1,
+        "reflect and antireflect boundary modes require an original length greater than one");
     TT_FATAL(
         full_plan.original_length <= static_cast<size_t>(std::numeric_limits<uint32_t>::max()),
         "ConeStreamed ILWT output length exceeds device limits");

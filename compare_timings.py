@@ -32,27 +32,19 @@ TT_WORKSPACE_ELEMENTS_PATTERN = re.compile(rf"{TT_PREFIX}_workspace_elements:\s*
 TT_MAX_DEPENDENCY_OVERHEAD_PATTERN = re.compile(
     rf"{TT_PREFIX}_max_dependency_overhead:\s*([0-9eE+.\-]+)"
 )
-TT_TERMINAL_SCALE_FUSED_PATTERN = re.compile(
-    rf"{TT_PREFIX}_terminal_scale_fused:\s*(\d+)"
-)
-TT_INVERSE_SCALE_FUSED_PATTERN = re.compile(
-    rf"{TT_PREFIX}_inverse_scale_fused:\s*(\d+)"
-)
+TT_TERMINAL_SCALE_FUSED_PATTERN = re.compile(rf"{TT_PREFIX}_terminal_scale_fused:\s*(\d+)")
+TT_INVERSE_SCALE_FUSED_PATTERN = re.compile(rf"{TT_PREFIX}_inverse_scale_fused:\s*(\d+)")
 TT_INVERSE_FINAL_INTERLEAVE_FUSED_PATTERN = re.compile(
     rf"{TT_PREFIX}_inverse_final_interleave_fused:\s*(\d+)"
 )
-TT_TILE_NATIVE_WORKSPACE_PATTERN = re.compile(
-    rf"{TT_PREFIX}_tile_native_workspace:\s*(\d+)"
-)
-TT_ZERO_WORK_CORES_PATTERN = re.compile(
-    rf"{TT_PREFIX}_zero_work_cores_per_route:\s*([0-9 ]*)"
-)
+TT_TILE_NATIVE_WORKSPACE_PATTERN = re.compile(rf"{TT_PREFIX}_tile_native_workspace:\s*(\d+)")
+TT_ZERO_WORK_CORES_PATTERN = re.compile(rf"{TT_PREFIX}_zero_work_cores_per_route:\s*([0-9 ]*)")
 DEFAULT_LOG_CANDIDATES = [
     PROJECT_ROOT / "wavelets.log",
     PROJECT_ROOT / "wavelets (1).log",
 ]
 VENV_PYTHON = PROJECT_ROOT / ".venv" / "bin" / "python3"
-TimingKey = tuple[str, str, int, float, float, str, str]
+TimingKey = tuple[str, str, int, float, float, str, str, str]
 
 
 @dataclass(frozen=True)
@@ -186,6 +178,21 @@ def parse_args() -> argparse.Namespace:
         help="TT-wavelet memory backend (default: %(default)s).",
     )
     parser.add_argument(
+        "--tt-boundary-mode",
+        choices=[
+            "symmetric",
+            "zero",
+            "constant",
+            "periodic",
+            "antisymmetric",
+            "smooth",
+            "reflect",
+            "antireflect",
+        ],
+        default="symmetric",
+        help="TT-wavelet signal extension mode (default: %(default)s).",
+    )
+    parser.add_argument(
         "--pywt-repeats",
         type=int,
         default=1,
@@ -287,6 +294,8 @@ def build_tt_command(
         [
             "--memory-mode",
             args.tt_memory_mode,
+            "--boundary-mode",
+            args.tt_boundary_mode,
         ]
     )
     if args.tt_mode == "benchmark":
@@ -330,9 +339,7 @@ def tt_benchmark_env() -> dict[str, str]:
     return env
 
 
-def optional_pattern_float(
-    pattern: re.Pattern[str], text: str, scale: float = 1.0
-) -> float | None:
+def optional_pattern_float(pattern: re.Pattern[str], text: str, scale: float = 1.0) -> float | None:
     match = pattern.search(text)
     return float(match.group(1)) * scale if match is not None else None
 
@@ -363,9 +370,7 @@ def run_tt_wavelet(command: str) -> TTTimingResult:
         )
     match = TT_TIME_PATTERN.search(completed.stderr)
     if match is None:
-        raise RuntimeError(
-            "TT-wavelet output did not include an LWT/ILWT execution time."
-        )
+        raise RuntimeError("TT-wavelet output did not include an LWT/ILWT execution time.")
     min_match = TT_MIN_TIME_PATTERN.search(completed.stderr)
     mean_s = float(match.group(1)) / 1000.0
     min_s = float(min_match.group(1)) / 1000.0 if min_match is not None else mean_s
@@ -374,42 +379,24 @@ def run_tt_wavelet(command: str) -> TTTimingResult:
         mean_s=mean_s,
         min_s=min_s,
         memory_mode=optional_pattern_string(TT_MEMORY_MODE_PATTERN, completed.stderr),
-        median_s=optional_pattern_float(
-            TT_MEDIAN_TIME_PATTERN, completed.stderr, 0.001
-        ),
+        median_s=optional_pattern_float(TT_MEDIAN_TIME_PATTERN, completed.stderr, 0.001),
         p10_s=optional_pattern_float(TT_P10_TIME_PATTERN, completed.stderr, 0.001),
         p90_s=optional_pattern_float(TT_P90_TIME_PATTERN, completed.stderr, 0.001),
-        stddev_s=optional_pattern_float(
-            TT_STDDEV_TIME_PATTERN, completed.stderr, 0.001
-        ),
-        max_group_count=optional_pattern_int(
-            TT_MAX_GROUP_COUNT_PATTERN, completed.stderr
-        ),
-        groups_per_shard=optional_pattern_int(
-            TT_GROUPS_PER_SHARD_PATTERN, completed.stderr
-        ),
-        active_core_count=optional_pattern_int(
-            TT_ACTIVE_CORE_COUNT_PATTERN, completed.stderr
-        ),
-        shard_elements=optional_pattern_int(
-            TT_SHARD_ELEMENTS_PATTERN, completed.stderr
-        ),
+        stddev_s=optional_pattern_float(TT_STDDEV_TIME_PATTERN, completed.stderr, 0.001),
+        max_group_count=optional_pattern_int(TT_MAX_GROUP_COUNT_PATTERN, completed.stderr),
+        groups_per_shard=optional_pattern_int(TT_GROUPS_PER_SHARD_PATTERN, completed.stderr),
+        active_core_count=optional_pattern_int(TT_ACTIVE_CORE_COUNT_PATTERN, completed.stderr),
+        shard_elements=optional_pattern_int(TT_SHARD_ELEMENTS_PATTERN, completed.stderr),
         chunk_count=optional_pattern_int(TT_CHUNK_COUNT_PATTERN, completed.stderr),
-        groups_per_chunk=optional_pattern_int(
-            TT_GROUPS_PER_CHUNK_PATTERN, completed.stderr
-        ),
-        workspace_elements=optional_pattern_int(
-            TT_WORKSPACE_ELEMENTS_PATTERN, completed.stderr
-        ),
+        groups_per_chunk=optional_pattern_int(TT_GROUPS_PER_CHUNK_PATTERN, completed.stderr),
+        workspace_elements=optional_pattern_int(TT_WORKSPACE_ELEMENTS_PATTERN, completed.stderr),
         max_dependency_overhead=optional_pattern_float(
             TT_MAX_DEPENDENCY_OVERHEAD_PATTERN, completed.stderr
         ),
         terminal_scale_fused=optional_pattern_int(
             TT_TERMINAL_SCALE_FUSED_PATTERN, completed.stderr
         ),
-        inverse_scale_fused=optional_pattern_int(
-            TT_INVERSE_SCALE_FUSED_PATTERN, completed.stderr
-        ),
+        inverse_scale_fused=optional_pattern_int(TT_INVERSE_SCALE_FUSED_PATTERN, completed.stderr),
         inverse_final_interleave_fused=optional_pattern_int(
             TT_INVERSE_FINAL_INTERLEAVE_FUSED_PATTERN, completed.stderr
         ),
@@ -422,9 +409,7 @@ def run_tt_wavelet(command: str) -> TTTimingResult:
     )
 
 
-def time_repeats(
-    run_once: Callable[[], None], repeats: int
-) -> tuple[float | None, float | None]:
+def time_repeats(run_once: Callable[[], None], repeats: int) -> tuple[float | None, float | None]:
     if repeats <= 0:
         return None, None
     times: list[float] = []
@@ -436,9 +421,7 @@ def time_repeats(
     return mean, min(times)
 
 
-def value_repeats(
-    run_once: Callable[[], float], repeats: int
-) -> tuple[float | None, float | None]:
+def value_repeats(run_once: Callable[[], float], repeats: int) -> tuple[float | None, float | None]:
     if repeats <= 0:
         return None, None
     times = [run_once() for _ in range(repeats)]
@@ -481,6 +464,7 @@ def row_key(row: dict[str, object]) -> TimingKey:
         float(row["signal_step"]),
         str(row["pywt_mode"]),
         str(row["lwt_memory_mode"]),
+        str(row["lwt_boundary_mode"]),
     )
 
 
@@ -498,6 +482,8 @@ def read_existing_rows(
             row = {name: raw_row.get(name, "") for name in fieldnames}
             # CSV files created before ILWT support contain only forward LWT rows.
             row["transform"] = row["transform"] or "lwt"
+            # CSV files created before boundary-mode support used symmetric.
+            row["lwt_boundary_mode"] = row["lwt_boundary_mode"] or "symmetric"
             try:
                 key = row_key(row)
             except (KeyError, TypeError, ValueError):
@@ -525,6 +511,7 @@ def base_row(
             "signal_step": args.signal_step,
             "pywt_mode": args.pywt_mode,
             "lwt_memory_mode": args.tt_memory_mode,
+            "lwt_boundary_mode": args.tt_boundary_mode,
             "pywt_runs": 0,
             "tt_wavelet_runs": 0,
             "status": "pending",
@@ -544,9 +531,7 @@ def refresh_speedup(row: dict[str, object]) -> None:
     pywt_mean = optional_float(row.get("pywt_mean_s"))
     tt_mean = optional_float(row.get("tt_wavelet_mean_s"))
     row["speedup_pywt_over_tt"] = (
-        pywt_mean / tt_mean
-        if pywt_mean is not None and tt_mean is not None and tt_mean > 0
-        else ""
+        pywt_mean / tt_mean if pywt_mean is not None and tt_mean is not None and tt_mean > 0 else ""
     )
 
 
@@ -602,6 +587,11 @@ def main() -> int:
     transforms = ["lwt", "ilwt"] if args.transform == "both" else [args.transform]
     if needs_tt and "ilwt" in transforms and args.tt_memory_mode != "cone":
         raise ValueError("ILWT currently supports only --tt-memory-mode cone.")
+    if needs_tt and args.tt_boundary_mode != "symmetric":
+        if args.tt_memory_mode != "cone":
+            raise ValueError(
+                "non-symmetric boundary modes currently require --tt-memory-mode cone."
+            )
 
     if args.wavelets:
         wavelets = args.wavelets
@@ -617,6 +607,15 @@ def main() -> int:
         if args.lengths is not None
         else list(range(args.length_start, args.length_stop + 1, args.length_step))
     )
+    if 1 in lengths:
+        if needs_tt and args.tt_boundary_mode in {"reflect", "antireflect"}:
+            raise ValueError(
+                "TT reflect and antireflect modes require signal lengths greater than one."
+            )
+        if needs_pywt and args.pywt_mode in {"reflect", "antireflect"}:
+            raise ValueError(
+                "PyWavelets reflect and antireflect modes require signal lengths greater than one."
+            )
 
     csv_path = args.csv
     csv_path.parent.mkdir(parents=True, exist_ok=True)
@@ -639,6 +638,7 @@ def main() -> int:
         "tt_wavelet_stddev_s",
         "tt_wavelet_runs",
         "lwt_memory_mode",
+        "lwt_boundary_mode",
         "lwt_max_group_count",
         "lwt_groups_per_shard",
         "lwt_active_core_count",
@@ -661,18 +661,14 @@ def main() -> int:
     warmed_global = [False]
     warmed_pairs: set[tuple[str, str, int]] = set()
     signal_file = csv_path.with_suffix(".signal.txt")
-    rows, row_order = (
-        ({}, []) if args.overwrite else read_existing_rows(csv_path, fieldnames)
-    )
+    rows, row_order = ({}, []) if args.overwrite else read_existing_rows(csv_path, fieldnames)
 
     total_runs = len(lengths) * len(wavelets) * len(transforms)
     with tqdm(total=total_runs, desc="Benchmarking", unit="run") as progress:
         for length in lengths:
             signal = None
             if needs_pywt or (needs_tt and args.tt_mode == "legacy"):
-                signal_list = generate_signal(
-                    length, args.signal_start, args.signal_step
-                )
+                signal_list = generate_signal(length, args.signal_start, args.signal_step)
                 if needs_tt and args.tt_mode == "legacy":
                     write_signal_file(signal_file, signal_list)
                 if needs_pywt:
@@ -685,20 +681,14 @@ def main() -> int:
             for wavelet in wavelets:
                 scheme_path = args.schemes_dir / f"{wavelet}.json"
                 for transform in transforms:
-                    key = row_key(
-                        base_row(args, transform, wavelet, length, fieldnames)
-                    )
+                    key = row_key(base_row(args, transform, wavelet, length, fieldnames))
                     if key not in rows:
-                        rows[key] = base_row(
-                            args, transform, wavelet, length, fieldnames
-                        )
+                        rows[key] = base_row(args, transform, wavelet, length, fieldnames)
                         row_order.append(key)
                     row = rows[key]
 
                     if needs_tt and not scheme_path.exists():
-                        tqdm.write(
-                            f"Skipping {wavelet}: scheme not found at {scheme_path}"
-                        )
+                        tqdm.write(f"Skipping {wavelet}: scheme not found at {scheme_path}")
                         row["status"] = "missing_scheme"
                         row["error"] = f"Scheme not found: {scheme_path}"
                         if needs_pywt:
@@ -721,9 +711,7 @@ def main() -> int:
                     try:
                         if needs_pywt:
                             if transform == "lwt":
-                                pywt_run = lambda: pywt.dwt(
-                                    signal, wavelet, mode=args.pywt_mode
-                                )
+                                pywt_run = lambda: pywt.dwt(signal, wavelet, mode=args.pywt_mode)
                             else:
                                 # Match the TT ILWT timing boundary: coefficient
                                 # preparation is intentionally not timed.
@@ -740,9 +728,7 @@ def main() -> int:
                                 pywt_run,
                                 args.pywt_repeats,
                             )
-                            row["pywt_mean_s"] = (
-                                pywt_mean if pywt_mean is not None else ""
-                            )
+                            row["pywt_mean_s"] = pywt_mean if pywt_mean is not None else ""
                             row["pywt_min_s"] = pywt_min if pywt_min is not None else ""
                             row["pywt_runs"] = args.pywt_repeats
 
@@ -810,8 +796,7 @@ def main() -> int:
                                 )
                                 row["lwt_inverse_final_interleave_fused"] = (
                                     tt_result.inverse_final_interleave_fused
-                                    if tt_result.inverse_final_interleave_fused
-                                    is not None
+                                    if tt_result.inverse_final_interleave_fused is not None
                                     else ""
                                 )
                                 row["lwt_tile_native_workspace"] = (
@@ -819,9 +804,9 @@ def main() -> int:
                                     if tt_result.tile_native_workspace is not None
                                     else ""
                                 )
-                                row["lwt_zero_work_cores_per_route"] = (
-                                    tt_result.zero_work_cores_per_route
-                                )
+                                row[
+                                    "lwt_zero_work_cores_per_route"
+                                ] = tt_result.zero_work_cores_per_route
                             else:
                                 if args.tt_warmup_runs > 0 and should_warmup(
                                     args.tt_warmup_scope,
@@ -839,12 +824,8 @@ def main() -> int:
                                     lambda: run_tt_wavelet(command).mean_s,
                                     args.tt_repeats,
                                 )
-                            row["tt_wavelet_mean_s"] = (
-                                tt_mean if tt_mean is not None else ""
-                            )
-                            row["tt_wavelet_min_s"] = (
-                                tt_min if tt_min is not None else ""
-                            )
+                            row["tt_wavelet_mean_s"] = tt_mean if tt_mean is not None else ""
+                            row["tt_wavelet_min_s"] = tt_min if tt_min is not None else ""
                             row["tt_wavelet_runs"] = args.tt_repeats
                     except Exception as exc:  # noqa: BLE001
                         status = "error"

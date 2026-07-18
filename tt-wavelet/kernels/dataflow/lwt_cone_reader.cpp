@@ -1,5 +1,6 @@
 #include <cstdint>
 
+#include "../../tt_wavelet/include/common/boundary.hpp"
 #include "../../tt_wavelet/include/lifting/step.hpp"
 #include "api/dataflow/dataflow_api.h"
 #include "lwt_readers_utils.hpp"
@@ -168,7 +169,7 @@ ALWI const uint32_t* load_config_page(
     return reinterpret_cast<const uint32_t*>(get_read_ptr(cb_config));
 }
 
-template <bool TileNative, typename InputAccessor>
+template <ttwv::BoundaryMode Boundary, bool TileNative, typename InputAccessor>
 ALWI void initialize_cone(
     const InputAccessor& input,
     const uint32_t even_addr,
@@ -202,7 +203,7 @@ ALWI void initialize_cone(
     for (uint32_t split_index = split_begin; split_index < split_end; ++split_index) {
         if (split_index >= even_begin && split_index < even_end) {
             const uint32_t padded_index = 2U * split_index;
-            const float value = ttwv::kernels::primitives::read_padded_symmetric_value(
+            const float value = ttwv::kernels::primitives::read_padded_value<Boundary>(
                 input, input_cache, input_length, left_pad, padded_index);
             if constexpr (TileNative) {
                 even_dst[even_cursor.physical] = value;
@@ -213,7 +214,7 @@ ALWI void initialize_cone(
         }
         if (split_index >= odd_begin && split_index < odd_end) {
             const uint32_t padded_index = 2U * split_index + 1U;
-            const float value = ttwv::kernels::primitives::read_padded_symmetric_value(
+            const float value = ttwv::kernels::primitives::read_padded_value<Boundary>(
                 input, input_cache, input_length, left_pad, padded_index);
             if constexpr (TileNative) {
                 odd_dst[odd_cursor.physical] = value;
@@ -530,7 +531,9 @@ void kernel_main() {
     constexpr uint32_t cb_sync = get_compile_time_arg_val(5);
     constexpr bool tile_native_workspace = get_compile_time_arg_val(6) != 0;
     constexpr bool inverse = get_compile_time_arg_val(7) != 0;
-    constexpr auto config_args = TensorAccessorArgs<8>();
+    constexpr auto boundary_mode = static_cast<ttwv::BoundaryMode>(get_compile_time_arg_val(8));
+    static_assert(ttwv::is_cone_boundary_mode(boundary_mode), "Unsupported ConeStreamed boundary mode");
+    constexpr auto config_args = TensorAccessorArgs<9>();
     constexpr auto input0_args = TensorAccessorArgs<config_args.next_compile_time_args_offset()>();
     constexpr auto input1_args = TensorAccessorArgs<input0_args.next_compile_time_args_offset()>();
 
@@ -570,7 +573,7 @@ void kernel_main() {
             const uint32_t initial_odd_begin = chunk[ttwv::device_protocol::kConeInitialOddBegin];
             const uint32_t initial_odd_length = chunk[ttwv::device_protocol::kConeInitialOddLength];
             cb_pop_front(cb_config, 1);
-            initialize_cone<tile_native_workspace>(
+            initialize_cone<boundary_mode, tile_native_workspace>(
                 input0,
                 initial_even_addr,
                 initial_odd_addr,

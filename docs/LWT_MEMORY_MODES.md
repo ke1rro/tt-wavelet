@@ -45,7 +45,7 @@ A/B наведено в [LWT_TILE_NATIVE_OPTIMIZATION.md](LWT_TILE_NATIVE_OPTIMI
 
 ## 2. Математична модель
 
-### 2.1. Symmetric padding і even/odd split
+### 2.1. Boundary padding і even/odd split
 
 Нехай вхідний сигнал має довжину `N`, а `T = tap_size` wavelet-схеми. Planner використовує
 
@@ -54,7 +54,29 @@ p = T - 1
 padded_length = N + 2p
 ```
 
-і half-sample symmetric extension з періодом `2N`. Для довільного індексу `q`:
+Forward ConeStreamed та ConeStreamed ILWT приймають вісім non-periodization modes; default —
+`symmetric`:
+
+```bash
+./build/lwt --memory-mode cone --boundary-mode symmetric ...
+./build/lwt --memory-mode cone --boundary-mode zero ...
+./build/lwt --memory-mode cone --boundary-mode constant ...
+./build/lwt --memory-mode cone --boundary-mode periodic ...
+./build/lwt --memory-mode cone --boundary-mode antisymmetric ...
+./build/lwt --memory-mode cone --boundary-mode smooth ...
+./build/lwt --memory-mode cone --boundary-mode reflect ...
+./build/lwt --memory-mode cone --boundary-mode antireflect ...
+```
+
+Для довільного логічного індексу `q = t - p`:
+
+```text
+zero:      x_pad[t] = 0,                         якщо q < 0 або q >= N
+constant:  x_pad[t] = x[clamp(q, 0, N - 1)]
+periodic:  x_pad[t] = x[q mod N]
+```
+
+Half-sample symmetric extension має період `2N`:
 
 ```text
 r = q mod 2N,  0 <= r < 2N
@@ -63,8 +85,109 @@ rho_N(q) = r,                 якщо r < N
 x_pad[t] = x[rho_N(t - p)]
 ```
 
-Наприклад, крайні samples повторюються при віддзеркаленні, що відповідає `symmetric`, а не
-`reflect` semantics.
+Наприклад, крайні samples повторюються при віддзеркаленні. Для whole-sample `reflect` вони не
+повторюються; при `N > 1` mapping має період `2(N-1)`:
+
+```text
+r = q mod 2(N-1),  0 <= r < 2(N-1)
+sigma_N(q) = r,                  якщо r <= N-1
+             2(N-1) - r,        якщо r > N-1
+x_pad[t] = x[sigma_N(t - p)]
+```
+
+Як і PyWavelets DWT, `reflect` вимагає `N > 1`.
+
+`antisymmetric` використовує той самий half-sample reflected source index, але знак
+чергується для кожного наступного reflected segment довжини `N`:
+
+```text
+... -x[1] -x[0] | x[0] x[1] ... x[N-1] | -x[N-1] -x[N-2] ...
+```
+
+Для `smooth`, коли `N > 1`, продовжується перша edge difference:
+
+```text
+x[-k]      = x[0]   + k * (x[0]   - x[1])       для k >= 1
+x[N-1+k]   = x[N-1] + k * (x[N-1] - x[N-2])     для k >= 1
+```
+
+Для `N=1` DWT не має визначеної edge difference, тому використовується zero slope, тобто
+constant extension. Це відповідає PyWavelets DWT (public `pywt.pad` для цього degenerate case
+має іншу поведінку).
+
+У першому reflected segment `antireflect` є whole-sample odd reflection навколо значення edge:
+
+```text
+x[-k]      = 2*x[0]   - x[k]
+x[N-1+k]   = 2*x[N-1] - x[N-1-k]
+```
+
+Device accessor використовує closed-form repeated odd reflection також коли padding ширший за
+сигнал. Як і PyWavelets DWT, цей mode вимагає `N > 1`.
+
+У Cone mode boundary policy є compile-time specialization reader kernel. Усі вісім modes
+мають спільний прямий interior path; mode-specific робота виконується лише для prefix/suffix
+padding. Повний padded signal не матеріалізується. `ResidentSharded` наразі підтримує тільки
+`symmetric`.
+
+ILWT не екстраполює original signal повторно. Він інвертує canonical coefficients у потрібні
+інтервали padded even/odd streams і crop-ить `[p, p+N)`. Тому inverse arithmetic і crop geometry
+однакові для всіх восьми modes; mode в ILWT API фіксує контракт походження coefficients і
+перевіряє допустиму комбінацію length/mode без додаткової роботи у device hot path.
+
+Blackhole P150b validation початкових `zero/constant` включає:
+
+- 36 short-signal cases: `db1`, `db2`, `db7`, `bior3.9`, усі три modes, `N=1,2,3`;
+- 54 odd/even і group-boundary cases: `db2`, `db7`, `bior3.9`, усі три modes,
+  `N=17,32,33,3071,3072,3073`;
+- 12 forced-layout cases для `db7` із `zero/constant`, `N=33,3073`, layouts
+  `row-major`, `tile-native`, `auto`;
+- 212 runtime-stability cases: усі 106 schemes, `zero/constant`, `N=33`, із перевіркою
+  output shape та finite values.
+
+Перші три групи порівнювали coefficients з PyWavelets; найбільша absolute error була
+`2.98143605e-05`. All-scheme runtime sweep навмисно не застосовує єдиний PyWavelets
+tolerance: відома похибка high-order FP32 lifting factorization відстежується окремо від
+boundary geometry. Відтворити перевірку можна через
+`scripts/validate_lwt_boundaries.py`; для stability sweep використовуйте
+`--all-schemes --modes zero constant --lengths 33 --runtime-only`.
+
+Для `periodic/antisymmetric/smooth/antireflect` додатково виконано:
+
+- 72 forward PyWavelets cases: `db2`, `db7`, `bior3.9`, чотири modes,
+  `N=17,32,33,3071,3072,3073`, max absolute error `2.98143605e-05`;
+- 24 forced-layout forward cases: `db7`, `N=33,3073`, три layouts;
+- 424 forward runtime-stability cases: 106 schemes, чотири modes, `N=33`;
+- 168 ILWT/PyWavelets cases: `db1`, `db7`, `bior3.9`, сім раніше підтримуваних modes,
+  `N=2,3,17,32,33,3071,3072,3073`, max absolute error `3.29005435e-05`;
+- 42 forced-layout ILWT cases, bitwise identical між `row-major`, `tile-native`, `auto`;
+- 424 ILWT runtime/JIT cases: 106 schemes, чотири нові modes, `N=33`.
+
+Для `reflect` окремо виконано:
+
+- 36 forward PyWavelets cases: `db1`, `db2`, `db7`, `bior3.9`,
+  `N=2,3,17,31,32,33,3071,3072,3073`, max absolute error `2.98143605e-05`;
+- 6 forced-layout forward cases для `db7`, `N=33,3073`;
+- 106/106 forward runtime/JIT cases на `N=33`;
+- 36 ILWT/PyWavelets cases на тій самій representative matrix, max absolute error
+  `3.29005435e-05`;
+- 6 forced-layout ILWT cases, bitwise identical між `row-major`, `tile-native`, `auto`;
+- 106/106 ILWT runtime/JIT cases на `N=33`.
+
+Host mapping також перевірено проти `pywt.pad(reflect)` у 6300 комбінаціях `N=2..64` та
+padding width `1..100`, включно з padding, ширшим за сигнал.
+
+Device-only spot A/B для найбільш arithmetic-heavy boundary mode (`db7`, auto layout,
+5 warmups, 30 repeats) не показав material regression від `smooth`: median на `N=1,000,000`
+становила `2.723318 ms` проти `2.710964 ms` для `symmetric`, а на `N=5,000,000` —
+`7.391035 ms` проти `7.381310 ms`. Різниця менша за run-to-run spread цього вимірювання;
+це не окрема speedup claim. Архітектурно кількість full DRAM passes, L1 workspace і route
+barriers не змінилась; додаткова affine arithmetic виконується лише для bounded edges.
+
+Для `reflect` окремий `db7`, `N=5,000,000`, auto-layout A/B із 50 warmups і 100 repeats дав
+median `7.448676 ms` проти `7.373625 ms` для `symmetric` (приблизно `+1.0%`); p10/p90
+частково перекриваються. Active cores (`110`), workspace (`23072` elements), dependency
+overhead (`0.000287`), DRAM passes, L1 footprint і barriers однакові.
 
 Після padding сигнал ділиться на дві polyphase-послідовності:
 
@@ -961,19 +1084,22 @@ cone і resident мають відтворювати однаковий поря
 
 ## 11. Поточні обмеження
 
-1. Реалізований one-level forward DWT. Inverse transform і автоматична multi-level
-   decomposition цими executables не виконуються.
+1. Реалізовані one-level forward LWT і ConeStreamed ILWT. Автоматична multi-level
+   decomposition не виконується.
 2. Підтримується лише FP32.
-3. Boundary mode — лише half-sample symmetric.
+3. Cone forward та ILWT підтримують `symmetric`, `zero`, `constant`, `periodic`,
+   `antisymmetric`, `smooth`, `reflect`, `antireflect`. Resident forward — лише `symmetric`;
+   `periodization` ще не реалізований. Він не є alias для `periodic`: він змінює canonical
+   coefficient length і потребує окремої geometry роботи.
 4. Один predict/update step може мати максимум 17 coefficients. У поточних 106 schemes
    фактичний максимум — 9.
 5. Scheme повинна закінчуватися однією `ScaleEven` і однією `ScaleOdd`; інших scale routes
    до них бути не може.
 6. `Swap` є тільки metadata operation і не має coefficients.
-7. Input і більшість route fields передаються як `uint32_t`. Cone додатково вимагає
-   `padded_length <= INT32_MAX` через signed symmetric indexing. Resident host check зараз
-   дозволяє `uint32_t`, але той самий device indexing робить практично безпечним обмеження
-   `INT32_MAX` і для resident.
+7. Input і більшість route fields передаються як `uint32_t`. Cone консервативно вимагає
+   `padded_length <= INT32_MAX`; symmetric boundary mapping використовує signed logical
+   indexing. Resident host check зараз дозволяє `uint32_t`, але той самий device indexing
+   робить практично безпечним обмеження `INT32_MAX` і для resident.
 8. Resident не має автоматичного fallback у cone.
 9. Cone не може дробити chunk менше одного 1536-element group.
 10. Cone config storage росте як `chunks * executable_routes * 64 bytes`; дуже велика

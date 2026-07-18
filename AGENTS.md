@@ -22,6 +22,24 @@ Both preserve FP32 storage and FP32 SFPU arithmetic. ConeStreamed keeps the
 three logical `A/B/Scratch` slots in local L1, performs metadata-only swaps, and
 writes terminal results directly to DRAM without route-by-route DRAM loopback.
 
+Forward ConeStreamed and ConeStreamed ILWT accept `--boundary-mode
+symmetric|zero|constant|periodic|antisymmetric|smooth|reflect|antireflect`, with
+`symmetric` as the default. Forward boundary policy is a compile-time reader
+variant; all modes use the same direct interior path and do not materialize a
+complete padded signal. ILWT reconstructs and crops the padded polyphase
+streams, so its arithmetic and crop geometry are mode-independent; the mode
+records which forward extension produced the canonical coefficients.
+`ResidentSharded` forward still supports only `symmetric`. `reflect` and
+`antireflect` require `N > 1`, matching PyWavelets DWT. Validate boundary
+changes with `scripts/validate_lwt_boundaries.py` and `scripts/validate_ilwt.py`.
+
+Blackhole validation covers `N=1..3`, odd/even lengths around 32, and the
+3072-element Cone group boundary. For the five newest modes, all 106 schemes
+complete at `N=33` in both forward and inverse runtime sweeps (530 cases each).
+Representative ILWT/PyWavelets validation covers all eight modes and both
+workspace layouts. High-order FP32 factorization error is tracked separately
+from boundary geometry.
+
 Cone compute already uses native `32x16` FP32 pages:
 
 ```text
@@ -209,6 +227,7 @@ source ./scripts/set_env.sh
 python3 compare.py --wavelet db1 --memory-mode cone --tolerance 1e-5
 python3 compare.py --wavelet db7 --memory-mode cone --tolerance 1e-3
 python3 compare.py --wavelet bior3.9 --memory-mode cone --tolerance 1e-5
+python3 scripts/validate_lwt_boundaries.py
 ```
 
 For a layout change, run representative schemes in forced `row-major`, forced

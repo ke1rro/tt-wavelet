@@ -30,6 +30,7 @@ repos:
         args: [--style=file, --version=20]
         files: ^tt-wavelet/.*\.(c|cc|cpp|cxx|h|hpp)$
       - id: clang-tidy
+        entry: bash ./scripts/run_clang_tidy.sh
         args:
           [
             -p=build/ci-clang-tidy,
