@@ -43,6 +43,7 @@ enum RouteConfigWord : uint32_t {
 };
 
 constexpr uint32_t kRouteFlagFinalDram = 1U << 0;
+constexpr uint32_t kRouteFlagIlwtFinalInterleave = 1U << 1;
 
 constexpr uint32_t kConeChunkConfigWordCount = 16;
 constexpr uint32_t kConeChunkConfigPageBytes = kConeChunkConfigWordCount * sizeof(uint32_t);

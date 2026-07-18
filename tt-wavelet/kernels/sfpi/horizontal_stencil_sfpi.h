@@ -109,7 +109,19 @@ inline void _horizontal_stencil_mad_accumulate_(
     TTI_SFPMOV(0, tmp_acc_reg, accumulator_reg, 0);
 }
 
-template <uint8_t K>
+inline void _horizontal_stencil_scale_register_(
+    const std::uint32_t value_reg, const std::uint32_t scalar_reg, const std::uint32_t product_reg) {
+    TTI_SFPMUL(value_reg, scalar_reg, p_sfpu::LCONST_0, product_reg, 0);
+    TTI_NOP;
+    TTI_SFPMOV(0, product_reg, value_reg, 0);
+}
+
+template <
+    uint8_t K,
+    bool ScaleSource = false,
+    bool ScaleBase = false,
+    uint32_t SourceScalePacked = 0,
+    uint32_t BaseScalePacked = 0>
 inline void _horizontal_stencil_plus_base_block(
     const uint32_t h_packed[K],
     const uint32_t dst_f0,
@@ -130,12 +142,28 @@ inline void _horizontal_stencil_plus_base_block(
     TT_SFPLOAD(f_e_1, sfpi::SFPLOAD_MOD0_FMT_FP32, ADDR_MOD_3, dst_f1);
     TT_SFPLOAD(f_o_1, sfpi::SFPLOAD_MOD0_FMT_FP32, ADDR_MOD_3, dst_f1 + 2);
 
+    if constexpr (ScaleSource) {
+        TT_SFPLOADI(tmp, sfpi::SFPLOADI_MOD0_UPPER, SourceScalePacked >> 16);
+        TT_SFPLOADI(tmp, sfpi::SFPLOADI_MOD0_LOWER, SourceScalePacked & 0xFFFF);
+        _horizontal_stencil_scale_register_(f_e_0, tmp, tmp_acc);
+        _horizontal_stencil_scale_register_(f_o_0, tmp, tmp_acc);
+        _horizontal_stencil_scale_register_(f_e_1, tmp, tmp_acc);
+        _horizontal_stencil_scale_register_(f_o_1, tmp, tmp_acc);
+    }
+
     TTI_SFPMOV(0, p_sfpu::LCONST_0, g_e, 0);
     TTI_SFPMOV(0, p_sfpu::LCONST_0, g_o, 0);
     TT_SFPLOAD(g_e, sfpi::SFPLOAD_MOD0_FMT_FP32, ADDR_MOD_3, dst_base);
     TT_SFPLOAD(g_o, sfpi::SFPLOAD_MOD0_FMT_FP32, ADDR_MOD_3, dst_base + 2);
     TTI_SFPNOP;
     TTI_SFPNOP;
+
+    if constexpr (ScaleBase) {
+        TT_SFPLOADI(tmp, sfpi::SFPLOADI_MOD0_UPPER, BaseScalePacked >> 16);
+        TT_SFPLOADI(tmp, sfpi::SFPLOADI_MOD0_LOWER, BaseScalePacked & 0xFFFF);
+        _horizontal_stencil_scale_register_(g_e, tmp, tmp_acc);
+        _horizontal_stencil_scale_register_(g_o, tmp, tmp_acc);
+    }
 
 #pragma unroll 17
     for (uint8_t j = 0; j < K; j++) {
@@ -163,7 +191,13 @@ inline void _horizontal_stencil_plus_base_block(
     TT_SFPSTORE(g_o, sfpi::SFPSTORE_MOD0_FMT_FP32, ADDR_MOD_3, dst_g + 2);
 }
 
-template <uint8_t K, uint32_t Rows>
+template <
+    uint8_t K,
+    uint32_t Rows,
+    bool ScaleSource = false,
+    bool ScaleBase = false,
+    uint32_t SourceScalePacked = 0,
+    uint32_t BaseScalePacked = 0>
 inline void _horizontal_stencil_plus_base_face(
     const uint32_t h_packed[K],
     const uint32_t input1,
@@ -175,7 +209,8 @@ inline void _horizontal_stencil_plus_base_face(
 
 #pragma unroll 4
     for (uint32_t row = 0; row < ROWS; row += ROW_STRIDE) {
-        _horizontal_stencil_plus_base_block<K>(h_packed, input1 + row, input2 + row, base + row, output + row);
+        _horizontal_stencil_plus_base_block<K, ScaleSource, ScaleBase, SourceScalePacked, BaseScalePacked>(
+            h_packed, input1 + row, input2 + row, base + row, output + row);
     }
 }
 
@@ -235,7 +270,12 @@ inline void _horizontal_stencil_plus_base(
     TTI_STALLWAIT(p_stall::STALL_CFG, p_stall::WAIT_SFPU);
 }
 
-template <uint8_t K>
+template <
+    uint8_t K,
+    bool ScaleSource = false,
+    bool ScaleBase = false,
+    uint32_t SourceScalePacked = 0,
+    uint32_t BaseScalePacked = 0>
 inline void _horizontal_stencil_plus_base_narrow(
     const uint32_t h_packed[K],
     const uint32_t source0,
@@ -255,7 +295,7 @@ inline void _horizontal_stencil_plus_base_narrow(
     for (uint32_t block = 0; block < 3; ++block) {
 #pragma unroll 2
         for (uint32_t face = 0; face < 2; ++face) {
-            _horizontal_stencil_plus_base_face<K, 16>(
+            _horizontal_stencil_plus_base_face<K, 16, ScaleSource, ScaleBase, SourceScalePacked, BaseScalePacked>(
                 h_packed,
                 _get_narrow_dst_base(sources[block], face),
                 _get_narrow_dst_base(sources[block + 1], face),
@@ -389,6 +429,21 @@ inline void hstencil_plus_base_narrow_tiles(
     const uint32_t base2) {
     MATH((ckernel::sfpu::_horizontal_stencil_plus_base_narrow<K>(
         h_packed.data(), source0, source1, source2, source3, base0, base1, base2)));
+}
+
+template <uint8_t K, bool ScaleSource, bool ScaleBase, uint32_t SourceScalePacked, uint32_t BaseScalePacked>
+inline void hstencil_scaled_inputs_plus_base_narrow_tiles(
+    std::array<uint32_t, K> h_packed,
+    const uint32_t source0,
+    const uint32_t source1,
+    const uint32_t source2,
+    const uint32_t source3,
+    const uint32_t base0,
+    const uint32_t base1,
+    const uint32_t base2) {
+    MATH((ckernel::sfpu::
+              _horizontal_stencil_plus_base_narrow<K, ScaleSource, ScaleBase, SourceScalePacked, BaseScalePacked>(
+                  h_packed.data(), source0, source1, source2, source3, base0, base1, base2)));
 }
 
 inline void scale_narrow_tile(const uint32_t tile, const uint32_t scalar_packed) {

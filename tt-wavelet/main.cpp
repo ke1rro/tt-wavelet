@@ -495,6 +495,9 @@ void print_timing_statistics(
               << prefix << "_workspace_elements: " << scheduler.workspace_elements << '\n'
               << prefix << "_max_dependency_overhead: " << scheduler.max_dependency_overhead << '\n'
               << prefix << "_terminal_scale_fused: " << (scheduler.terminal_scale_fused ? 1 : 0) << '\n'
+              << prefix << "_inverse_scale_fused: " << (scheduler.inverse_scale_fused ? 1 : 0) << '\n'
+              << prefix << "_inverse_final_interleave_fused: " << (scheduler.inverse_final_interleave_fused ? 1 : 0)
+              << '\n'
               << prefix << "_tile_native_workspace: " << (scheduler.tile_native_workspace ? 1 : 0) << '\n'
               << prefix << "_zero_work_cores_per_route:";
     for (const uint32_t count : scheduler.zero_work_cores_per_route) {

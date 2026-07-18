@@ -46,6 +46,8 @@ constexpr uint32_t kTileGroupBuffering = 2;
 constexpr uint32_t kDefaultL1SignalBudgetBytes = 768 * 1024;
 constexpr const char* kL1SignalBudgetEnv = "TT_WAVELET_L1_SIGNAL_BUDGET_BYTES";
 constexpr const char* kTerminalScaleFusionEnv = "TT_WAVELET_LWT_FUSE_TERMINAL_SCALE";
+constexpr const char* kInverseScaleFusionEnv = "TT_WAVELET_ILWT_FUSE_INVERSE_SCALE";
+constexpr const char* kInverseFinalInterleaveFusionEnv = "TT_WAVELET_ILWT_FUSE_FINAL_INTERLEAVE";
 constexpr const char* kConeNocLocalWriteEnv = "TT_WAVELET_LWT_CONE_NOC_LOCAL_WRITE";
 constexpr const char* kConeWorkspaceLayoutEnv = "TT_WAVELET_LWT_CONE_WORKSPACE_LAYOUT";
 
@@ -117,6 +119,27 @@ struct CoreChunkWork {
         return true;
     }
     TT_FATAL(std::strcmp(raw, "0") == 0, "{} must be '0' or '1', got '{}'", kConeNocLocalWriteEnv, raw);
+    return false;
+}
+
+[[nodiscard]] bool binary_feature_enabled(const char* name) {
+    const char* raw = std::getenv(name);
+    if (raw == nullptr || raw[0] == '\0' || std::strcmp(raw, "1") == 0) {
+        return true;
+    }
+    TT_FATAL(std::strcmp(raw, "0") == 0, "{} must be '0' or '1', got '{}'", name, raw);
+    return false;
+}
+
+[[nodiscard]] std::optional<bool> binary_feature_override(const char* name) {
+    const char* raw = std::getenv(name);
+    if (raw == nullptr || raw[0] == '\0' || std::strcmp(raw, "auto") == 0) {
+        return std::nullopt;
+    }
+    if (std::strcmp(raw, "1") == 0) {
+        return true;
+    }
+    TT_FATAL(std::strcmp(raw, "0") == 0, "{} must be 'auto', '0', or '1', got '{}'", name, raw);
     return false;
 }
 
@@ -601,7 +624,10 @@ void set_runtime_args(
             words[word_offset + device_protocol::kRouteSourceLeftPad] = route.source_left_pad_elements;
             words[word_offset + device_protocol::kRouteOutputOffset] = 0;
             words[word_offset + device_protocol::kRouteGroupCount] = output_group_count(route.output_length);
-            words[word_offset + device_protocol::kRouteFlags] = 0;
+            words[word_offset + device_protocol::kRouteFlags] =
+                plan.final_interleave_fused && route_index + 1 == route_count
+                    ? device_protocol::kRouteFlagIlwtFinalInterleave
+                    : 0U;
         }
     }
     return words;
@@ -662,6 +688,7 @@ void set_runtime_args(
     const tt::tt_metal::Buffer& detail_buffer,
     const ConeIlwtWorkingBuffers& buffers,
     const bool noc_local_write,
+    const bool inverse_scale_fused,
     const ConeWorkspaceLayout workspace_layout,
     const char* compute_scheme_header,
     const char* compute_scheme_type) {
@@ -736,6 +763,7 @@ void set_runtime_args(
                     {"TTWV_LWT_SCHEME_HEADER", compute_scheme_header},
                     {"TTWV_LWT_SCHEME_TYPE", compute_scheme_type},
                     {"TTWV_FUSE_TERMINAL_SCALE", "0"},
+                    {"TTWV_FUSE_INVERSE_SCALE", inverse_scale_fused ? "1" : "0"},
                 },
         });
     return ConeProgram{.program = std::move(program), .reader = reader, .compute = compute, .writer = writer};
@@ -895,13 +923,28 @@ ConeStreamedIlwtExecutable create_cone_streamed_ilwt_executable_impl(
 
     const uint32_t max_cores = core_limit(mesh_device);
     const uint32_t signal_budget_bytes = l1_signal_budget_bytes();
+    const bool inverse_scale_fused = binary_feature_enabled(kInverseScaleFusionEnv);
+    const std::optional<bool> final_interleave_override = binary_feature_override(kInverseFinalInterleaveFusionEnv);
     const std::optional<ConeWorkspaceLayout> workspace_override = cone_workspace_layout_override();
     const ConeWorkspaceLayout initial_workspace_layout = workspace_override.value_or(ConeWorkspaceLayout::kRowMajor);
+    bool final_interleave_fused =
+        final_interleave_override.value_or(initial_workspace_layout == ConeWorkspaceLayout::kTileNative);
     InverseConeExecutionPlan plan = make_inverse_cone_execution_plan(
-        std::move(full_plan), max_cores, signal_budget_bytes, initial_workspace_layout);
+        std::move(full_plan),
+        max_cores,
+        signal_budget_bytes,
+        initial_workspace_layout,
+        inverse_scale_fused,
+        final_interleave_fused);
     if (!workspace_override.has_value() && prefer_tile_native_workspace(plan)) {
+        final_interleave_fused = final_interleave_override.value_or(true);
         plan = make_inverse_cone_execution_plan(
-            std::move(plan.full_plan), max_cores, signal_budget_bytes, ConeWorkspaceLayout::kTileNative);
+            std::move(plan.full_plan),
+            max_cores,
+            signal_budget_bytes,
+            ConeWorkspaceLayout::kTileNative,
+            inverse_scale_fused,
+            final_interleave_fused);
     }
 
     std::vector<tt::tt_metal::CoreCoord> cores = select_cores(mesh_device, plan.active_core_count);
@@ -943,6 +986,8 @@ ConeStreamedIlwtExecutable create_cone_streamed_ilwt_executable_impl(
                 .workspace_elements = plan.workspace_elements,
                 .max_dependency_overhead = plan.max_dependency_overhead,
                 .terminal_scale_fused = false,
+                .inverse_scale_fused = plan.inverse_scale_fused,
+                .inverse_final_interleave_fused = plan.final_interleave_fused,
                 .tile_native_workspace = plan.workspace_layout == ConeWorkspaceLayout::kTileNative,
             },
     };
@@ -956,6 +1001,7 @@ ConeStreamedIlwtExecutable create_cone_streamed_ilwt_executable_impl(
         detail_buffer,
         buffers,
         cone_noc_local_write_enabled(),
+        plan.inverse_scale_fused,
         plan.workspace_layout,
         inverse_compute_scheme_header,
         inverse_compute_scheme_type);

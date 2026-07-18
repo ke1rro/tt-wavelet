@@ -35,6 +35,12 @@ TT_MAX_DEPENDENCY_OVERHEAD_PATTERN = re.compile(
 TT_TERMINAL_SCALE_FUSED_PATTERN = re.compile(
     rf"{TT_PREFIX}_terminal_scale_fused:\s*(\d+)"
 )
+TT_INVERSE_SCALE_FUSED_PATTERN = re.compile(
+    rf"{TT_PREFIX}_inverse_scale_fused:\s*(\d+)"
+)
+TT_INVERSE_FINAL_INTERLEAVE_FUSED_PATTERN = re.compile(
+    rf"{TT_PREFIX}_inverse_final_interleave_fused:\s*(\d+)"
+)
 TT_TILE_NATIVE_WORKSPACE_PATTERN = re.compile(
     rf"{TT_PREFIX}_tile_native_workspace:\s*(\d+)"
 )
@@ -67,6 +73,8 @@ class TTTimingResult:
     workspace_elements: int | None = None
     max_dependency_overhead: float | None = None
     terminal_scale_fused: int | None = None
+    inverse_scale_fused: int | None = None
+    inverse_final_interleave_fused: int | None = None
     tile_native_workspace: int | None = None
     zero_work_cores_per_route: str = ""
 
@@ -399,6 +407,12 @@ def run_tt_wavelet(command: str) -> TTTimingResult:
         terminal_scale_fused=optional_pattern_int(
             TT_TERMINAL_SCALE_FUSED_PATTERN, completed.stderr
         ),
+        inverse_scale_fused=optional_pattern_int(
+            TT_INVERSE_SCALE_FUSED_PATTERN, completed.stderr
+        ),
+        inverse_final_interleave_fused=optional_pattern_int(
+            TT_INVERSE_FINAL_INTERLEAVE_FUSED_PATTERN, completed.stderr
+        ),
         tile_native_workspace=optional_pattern_int(
             TT_TILE_NATIVE_WORKSPACE_PATTERN, completed.stderr
         ),
@@ -634,6 +648,8 @@ def main() -> int:
         "lwt_workspace_elements",
         "lwt_max_dependency_overhead",
         "lwt_terminal_scale_fused",
+        "lwt_inverse_scale_fused",
+        "lwt_inverse_final_interleave_fused",
         "lwt_tile_native_workspace",
         "lwt_zero_work_cores_per_route",
         "speedup_pywt_over_tt",
@@ -785,6 +801,17 @@ def main() -> int:
                                 row["lwt_terminal_scale_fused"] = (
                                     tt_result.terminal_scale_fused
                                     if tt_result.terminal_scale_fused is not None
+                                    else ""
+                                )
+                                row["lwt_inverse_scale_fused"] = (
+                                    tt_result.inverse_scale_fused
+                                    if tt_result.inverse_scale_fused is not None
+                                    else ""
+                                )
+                                row["lwt_inverse_final_interleave_fused"] = (
+                                    tt_result.inverse_final_interleave_fused
+                                    if tt_result.inverse_final_interleave_fused
+                                    is not None
                                     else ""
                                 )
                                 row["lwt_tile_native_workspace"] = (

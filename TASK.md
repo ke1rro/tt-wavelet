@@ -1,3 +1,21 @@
+## Статус реалізації — 2026-07-18
+
+Phase 3 і Phase 4 нижче реалізовані та перевірені на Blackhole P150b:
+
+- останній inverse predict/update route може йти з output CB прямо у fused interleave/crop writer;
+- обидва reciprocal-scale routes прибрані через lazy FP32 SFPU scale fusion у predict/update chain;
+- 106/106 production inverse schemes пройшли JIT/runtime sweep;
+- fused/unfused equivalence перевірено на odd/even, коротких і 3072-boundary lengths, в обох workspace layouts;
+- synthetic K=17 пройшов Blackhole hardware validation.
+
+Measured default: inverse scale fusion `on`; final interleave fusion `auto` (`on` для tile-native,
+`off` для row-major). Деталі, env overrides і A/B timings: `docs/ILWT_1D.md`.
+
+Невиконаною лишається тільки апаратна Wormhole equivalence: Wormhole на поточному сервері
+недоступний. Високопорядкові FP32 factorization errors відокремлені від ILWT geometry regression.
+
+---
+
 Так, **найправильніший шлях для 1D ILWT — використати той самий ConeStreamed + three-slot + narrow-tile engine**, але є критичне уточнення:
 
 > Недостатньо просто розвернути JSON і передати його в `make_forward_lifting_plan()`.

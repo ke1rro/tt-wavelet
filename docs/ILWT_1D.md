@@ -3,8 +3,8 @@
 ## Статус
 
 1D ILWT реалізовано поверх наявного FP32 ConeStreamed/narrow-tile backend. Перевірка виконана
-2026-07-17 на Blackhole P150b (`TT-KMD 2.9.0`), project revision `ada4f55` і TT-Metal revision
-`f87c34a93ee` з локальними незакоміченими змінами. Wormhole hardware у цій сесії недоступний,
+2026-07-18 на Blackhole P150b (`TT-KMD 2.9.0`), project revision `1f6eae385f0e` і TT-Metal revision
+`f87c34a93ee4` з локальними незакоміченими змінами. Wormhole hardware у цій сесії недоступний,
 тому Wormhole equivalence ще треба зняти на окремій машині.
 
 Device dataflow:
@@ -13,15 +13,16 @@ Device dataflow:
 canonical approximation/detail DRAM
         -> per-chunk dual coefficient reader
         -> local A / B / Scratch
-        -> reciprocal scale + reversed P/U routes in FP32 SFPU
-        -> crop padded even/odd streams + interleave
+        -> lazy reciprocal-scale fusion + reversed P/U routes in FP32 SFPU
+        -> final-route/interleave fusion + crop
         -> reconstructed signal DRAM
 ```
 
-Між inverse routes немає DRAM loopback. Metadata `swap` не запускає compute route. Кінцевий
-writer зараз спершу materialize-ить останні even/odd intervals у L1, потім interleave-ить їх у
-128-byte DRAM sticks. Це коректний Phase 2 варіант; fusion останнього P/U route з interleave ще не
-реалізований.
+Між inverse routes немає DRAM loopback. Metadata `swap` не запускає compute route. Обидва
+початкові reciprocal-scale routes fused у predict/update chain, а кінцевий writer може споживати
+три output-CB pages останнього route без його проміжної materialization у L1. Незмінений final
+stream читається з resident workspace, після чого writer interleave-ить/crop-ить результат у
+128-byte DRAM sticks.
 
 ## Arithmetic і geometry
 
@@ -64,6 +65,30 @@ base_required = target
 Natural ILWT group дорівнює 3072 original samples: приблизно 1536 even і 1536 odd values. Chunk
 config зберігає canonical A/D intervals, final local stream addresses/offsets і output interval.
 Route config використовує той самий 128-byte protocol, що й forward ConeStreamed.
+
+## Реалізовані fusion
+
+Inverse scale fusion не перемножує lifting coefficients зі scale, бо це змінило б FP32 rounding.
+Замість цього compute compile-time відстежує `needs_scale` і scalar окремо для поточних even/odd
+streams. `swap` переставляє metadata разом зі stream, а перший predict/update, який замінює stream,
+виконує його reciprocal multiply у SFPU registers перед тим самим MAD stencil. Тільки після цього
+lazy-scale стан stream скидається. Обидва окремі scale routes, їх L1 outputs і наступні L1 reads
+прибрані. Compile-time assertion не дозволяє завершити схему з невикористаним non-identity scale.
+
+Final route/interleave fusion позначається route flag. Writer не записує final P/U output у
+workspace, а interleave-ить updated parity прямо з трьох narrow output pages разом з другим
+resident stream. Останній неповний 3072-element group підтримує також випадок, коли updated parity
+не має другого CB group.
+
+Виміряна default policy:
+
+- inverse scale fusion — `on`;
+- final interleave fusion — `auto`: `on` для tile-native workspace і `off` для row-major;
+- примусовий A/B: `TT_WAVELET_ILWT_FUSE_INVERSE_SCALE=0|1` і
+  `TT_WAVELET_ILWT_FUSE_FINAL_INTERLEAVE=auto|0|1`.
+
+Telemetry і `compare_timings.py` CSV містять `lwt_inverse_scale_fused` та
+`lwt_inverse_final_interleave_fused`.
 
 ## Blackhole SFPI lane-mask correction
 
@@ -145,7 +170,14 @@ TT ILWT input. Результати для bounded sine/cosine signal:
 Для всіх цих cases `row-major`, `tile-native` та `auto` outputs були bitwise identical
 (`max_abs_between_layouts = 0`). Додатково N=1,2,3,4,5,15,16,17,18 пройшли для всіх трьох
 representative schemes. Synthetic K=17 пройшов N=33,255,3073 у row-major і tile-native з max
-round-trip error `7.15e-7`. Runtime-stability sweep: 106/106 schemes, failures 0.
+round-trip error `7.15e-7`.
+
+Після обох fusion runtime/JIT sweep пройшов 106/106 production inverse schemes без failures;
+forced-on telemetry підтвердила обидві fusion для 106/106. Окремий fused/unfused Blackhole A/B
+для `db7` дав однаковий max round-trip error на довжинах
+`1,2,31,32,33,1535,1536,1537,3071,3072,3073,6143,6144,6145`. Для `db7` і `bior3.9` результати
+також збіглися між fused/unfused у forced `row-major` та `tile-native` на 3073 і 6145. Synthetic
+K=17 пройшов odd/even 64/65 з нульовою round-trip похибкою.
 
 Команди:
 
@@ -157,8 +189,8 @@ round-trip error `7.15e-7`. Runtime-stability sweep: 106/106 schemes, failures 0
 
 ## Blackhole device-only performance
 
-`auto` workspace, 5 measured repetitions, 2 warmups. Forward coefficient generation, program
-construction, config upload і readback не входять до timed interval.
+Pre-fusion reference: `auto` workspace, 5 measured repetitions, 2 warmups. Forward coefficient
+generation, program construction, config upload і readback не входять до timed interval.
 
 Для однакового sweep LWT та ILWT проти відповідних PyWavelets `dwt`/`idwt`:
 
@@ -188,17 +220,28 @@ CSV column `transform` розділяє `lwt` та `ilwt`, тому резуль
 | `bior3.9` | 1,000,000 | 2.404 | 2.348 | 2.367 | 2.561 | 110 | 6,144 FP32 | tile-native |
 | `bior3.9` | 5,000,000 | 7.356 | 7.307 | 7.324 | 7.390 | 110 | 24,576 FP32 | tile-native |
 
-Це перший ILWT backend, тому old/new ILWT speedup відсутній. Наступні performance кроки мають
-порівнювати: (1) materialized-final-stream baseline, (2) fused final interleave, (3) inverse scale
-fusion. Також потрібні окремі Wormhole timings з ідентичним timing boundary.
+Fusion A/B на тому самому Blackhole, N=5,000,000, 20 measured repetitions і 5 warmups:
+
+| Scheme/layout | Mode | median, ms | min, ms | p10, ms | p90, ms |
+|---|---|---:|---:|---:|---:|
+| `db7` / row-major | none | 8.226 | 7.980 | 8.123 | 8.320 |
+| `db7` / row-major | interleave only | 8.644 | 8.550 | 8.559 | 8.700 |
+| `db7` / row-major | scale only (auto default) | 7.695 | 7.490 | 7.548 | 7.781 |
+| `db7` / row-major | both | 8.256 | 8.145 | 8.203 | 8.308 |
+| `bior3.9` / tile-native | none | 7.463 | 7.034 | 7.059 | 7.586 |
+| `bior3.9` / tile-native | interleave only | 6.906 | 6.745 | 6.827 | 7.052 |
+| `bior3.9` / tile-native | scale only | 7.370 | 7.231 | 7.254 | 7.436 |
+| `bior3.9` / tile-native | both (auto default) | 6.819 | 6.725 | 6.793 | 6.866 |
+
+Виміряна auto policy дає приблизно 6.5% для `db7` і 8.6% для `bior3.9` проти повністю unfused
+baseline. Окремі Wormhole timings все ще потрібні з ідентичним timing boundary.
 
 ## Відомі обмеження і наступні кроки
 
 - Тільки symmetric boundary mode і FP32 storage/SFPU arithmetic.
 - Реалізовано 1D single-level ILWT; multi-level і separable 2D ще не додані.
-- Final interleave ще не fused з останнім inverse route.
-- Inverse terminal scales не fused; це свідомо відкладено до профілювання.
 - 106-scheme sweep доводить runtime stability, а не однакову малу numerical error для
-  ill-conditioned high-order FP32 factorizations.
+  ill-conditioned high-order FP32 factorizations. Високопорядкові FP32 factorization errors
+  відокремлені від ILWT geometry regression.
 - Потрібне Wormhole hardware A/B для architecture equivalence; compile-time Wormhole path
   збережений, але на Blackhole server його неможливо апаратно перевірити.

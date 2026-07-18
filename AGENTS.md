@@ -136,6 +136,38 @@ Remaining Blackhole acceptance work:
 
 Do not present the port as fully accepted until these items are complete.
 
+## ILWT status
+
+1D ConeStreamed ILWT is implemented for all 106 production schemes. The two
+initial reciprocal-scale routes are fused lazily into the predict/update chain
+without coefficient folding: FP32 scale multiplication still happens in SFPU
+before the corresponding stencil arithmetic. The last inverse route can be
+interleaved/cropped directly from its three output-CB pages without first
+materializing that updated stream in L1.
+
+Measured defaults are:
+
+* inverse scale fusion enabled;
+* final-route/interleave fusion selected automatically for tile-native
+  workspaces and disabled for row-major workspaces.
+
+For A/B validation:
+
+```bash
+export TT_WAVELET_ILWT_FUSE_INVERSE_SCALE=0  # or 1
+export TT_WAVELET_ILWT_FUSE_FINAL_INTERLEAVE=auto  # or 0/1
+```
+
+Blackhole validation after fusion includes 106/106 inverse scheme JIT/runtime
+success, odd/even and 3072-boundary fused/unfused equivalence, both workspace
+layouts, and synthetic K=17. High-order FP32 factorization error is tracked
+separately from ILWT geometry regression. The remaining ILWT acceptance item is
+hardware Wormhole equivalence; this server cannot provide it.
+
+See `docs/ILWT_1D.md` for the arithmetic contract, validation matrix, and
+Blackhole A/B timings. Do not claim Wormhole ILWT equivalence from compile-time
+coverage or Blackhole results.
+
 ## Build and run workflow
 
 Use the local pinned TT-Metal and SFPI toolchain. `scripts/common.sh` configures
