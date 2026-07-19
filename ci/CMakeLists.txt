@@ -39,25 +39,6 @@ set(TT_WAVELET_INCLUDE_DIRS ${TT_WAVELET_SOURCE_ROOT}/tt-wavelet)
 option(CI_BUILD_WAVELET_EXECUTABLE "Build the tt-wavelet lwt executable in CI"
        OFF)
 
-set(TT_WAVELET_LLK_INCLUDE_CANDIDATES
-    ${TT_METAL_SOURCE_ROOT}/tt_metal/third_party/tt_llk/tt_llk_wormhole_b0/llk_lib
-    ${TT_METAL_SOURCE_ROOT}/tt_metal/third_party/tt_llk/tt_llk_wormhole_b0/common/inc
-    ${TT_METAL_SOURCE_ROOT}/tt_metal/hw/ckernels/wormhole_b0/metal/llk_api
-    ${TT_METAL_SOURCE_ROOT}/tt_metal/hw/ckernels/wormhole_b0/metal/common
-    ${TT_METAL_SOURCE_ROOT}/tt_metal/hw/ckernels/wormhole_b0/metal/llk_io
-    ${TT_METAL_SOURCE_ROOT}/tt_metal/hw/ckernels/wormhole_b0/metal/llk_api/llk_sfpu
-    ${TT_METAL_SOURCE_ROOT}/runtime/sfpi/include
-    ${TT_METAL_SOURCE_ROOT}/tt_metal/hw/inc/internal/tt-1xx
-    ${TT_METAL_SOURCE_ROOT}/tt_metal/hw/inc/internal/tt-1xx/wormhole
-    ${TT_METAL_SOURCE_ROOT}/tt_metal/hw/inc/internal/tt-1xx/wormhole/wormhole_b0_defines
-)
-set(TT_WAVELET_LLK_INCLUDE_DIRS)
-foreach(LLK_INCLUDE_DIR IN LISTS TT_WAVELET_LLK_INCLUDE_CANDIDATES)
-  if(EXISTS "${LLK_INCLUDE_DIR}")
-    list(APPEND TT_WAVELET_LLK_INCLUDE_DIRS "${LLK_INCLUDE_DIR}")
-  endif()
-endforeach()
-
 set(REFLECT_CANDIDATES ${TT_METAL_INCLUDE_ROOT}
                        ${TT_METAL_SOURCE_ROOT}/build/_deps/reflect-src)
 file(GLOB CPM_REFLECT_CANDIDATES "${TT_METAL_SOURCE_ROOT}/.cpmcache/reflect/*")
@@ -230,17 +211,18 @@ if(CI_BUILD_WAVELET_EXECUTABLE)
   add_custom_target(
     tt_wavelet_generate_static_schemes
     COMMAND
-      ${Python3_EXECUTABLE} ${TT_WAVELET_SOURCE_ROOT}/scripts/generate_static_schemes.py
-      --json-dir ${TT_WAVELET_SOURCE_ROOT}/wavelets
-      --scheme-dir ${TT_WAVELET_SOURCE_ROOT}/tt-wavelet/tt_wavelet/include/schemes/generated
-      --registry ${TT_WAVELET_SOURCE_ROOT}/tt-wavelet/tt_wavelet/include/schemes/generated/registry.hpp
+      ${Python3_EXECUTABLE}
+      ${TT_WAVELET_SOURCE_ROOT}/scripts/generate_static_schemes.py --json-dir
+      ${TT_WAVELET_SOURCE_ROOT}/wavelets --scheme-dir
+      ${TT_WAVELET_SOURCE_ROOT}/tt-wavelet/tt_wavelet/include/schemes/generated
+      --registry
+      ${TT_WAVELET_SOURCE_ROOT}/tt-wavelet/tt_wavelet/include/schemes/generated/registry.hpp
     WORKING_DIRECTORY ${TT_WAVELET_SOURCE_ROOT}
     COMMENT "Generating static TT-wavelet scheme headers")
 
   add_executable(
     lwt
     ${TT_WAVELET_SOURCE_ROOT}/tt-wavelet/main.cpp
-    ${TT_WAVELET_SOURCE_ROOT}/tt-wavelet/tt_wavelet/src/pad_split/device.cpp
     ${TT_WAVELET_SOURCE_ROOT}/tt-wavelet/tt_wavelet/src/lifting/device.cpp)
   add_dependencies(lwt tt_wavelet_generate_static_schemes)
 
@@ -249,7 +231,7 @@ if(CI_BUILD_WAVELET_EXECUTABLE)
 
   target_include_directories(
     lwt PRIVATE ${TT_WAVELET_INCLUDE_DIRS} ${TT_WAVELET_SOURCE_ROOT}
-                ${TT_WAVELET_LLK_INCLUDE_DIRS} ${METALIUM_INCLUDE_DIRS})
+                ${METALIUM_INCLUDE_DIRS})
 
   target_link_libraries(lwt PRIVATE Metalium::Metal ${METALIUM_RUNTIME_LIBS})
 endif()

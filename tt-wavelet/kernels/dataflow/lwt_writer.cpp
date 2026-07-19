@@ -1,51 +1,171 @@
 #include <cstdint>
 
+#include "../../tt_wavelet/include/device_protocol/lwt_config.hpp"
+#include "../../tt_wavelet/include/lifting/step.hpp"
 #include "api/dataflow/dataflow_api.h"
-#include "lwt_tile_row_major_utils.hpp"
-
-namespace row_major = ttwv::kernels::primitives;
+#include "../primitives/interleave.hpp"
 
 namespace {
 
+using ttwv::kernels::primitives::write_direct_interleaved_signal;
+using ttwv::kernels::primitives::write_reconstructed_signal;
+
 template <typename ConfigAccessor>
 ALWI const uint32_t* load_route_config(
-    const ConfigAccessor& config, const uint32_t cb_config, const uint32_t route_index) {
+    const ConfigAccessor& config, const uint32_t config_addr, const uint32_t cb_config, const uint32_t page_index) {
+    const auto page_accessor = TensorAccessor(config, config_addr, ttwv::device_protocol::kRouteConfigPageBytes);
     cb_reserve_back(cb_config, 1);
     noc_async_read(
-        config.get_noc_addr(route_index), get_write_ptr(cb_config), ttwv::device_protocol::kRouteConfigPageBytes);
+        page_accessor.get_noc_addr(page_index), get_write_ptr(cb_config), ttwv::device_protocol::kRouteConfigPageBytes);
     noc_async_read_barrier();
     cb_push_back(cb_config, 1);
     cb_wait_front(cb_config, 1);
     return reinterpret_cast<const uint32_t*>(get_read_ptr(cb_config));
 }
 
-ALWI void route_barrier(
-    const uint32_t barrier_semaphore_id,
-    const uint32_t core_index,
-    const uint32_t active_core_count,
-    const uint32_t* core_noc_coords) {
-    if (active_core_count <= 1) {
+template <typename DstAccessor>
+ALWI void write_dram_half_block(
+    const DstAccessor& dst,
+    const uint32_t tile_addr,
+    const uint32_t row,
+    const uint32_t local_output_index,
+    const uint32_t output_offset,
+    const uint32_t output_length) {
+    if (local_output_index >= output_length) {
+        return;
+    }
+    const uint32_t destination_index = output_offset + local_output_index;
+    const uint32_t destination_stick = destination_index / ttwv::kStickWidth;
+    const uint32_t destination_lane = destination_index % ttwv::kStickWidth;
+    const uint32_t source_offset = row * ttwv::device_protocol::kLwtHalfStickBytes;
+    noc_async_write(
+        tile_addr + source_offset,
+        dst.get_noc_addr(destination_stick) + destination_lane * sizeof(float),
+        ttwv::device_protocol::kLwtHalfStickBytes);
+}
+
+template <typename DstAccessor>
+ALWI void write_dram_output_groups(
+    const DstAccessor& dst,
+    const uint32_t cb_output,
+    const uint32_t tile_bytes,
+    const uint32_t output_offset,
+    const uint32_t output_length,
+    const uint32_t group_count) {
+    for (uint32_t group = 0; group < group_count; ++group) {
+        cb_wait_front(cb_output, 3);
+        const uint32_t output_tiles = get_read_ptr(cb_output);
+        const uint32_t group_base = group * ttwv::device_protocol::kLwtGroupOutputElements;
+
+        for (uint32_t row = 0; row < ttwv::device_protocol::kLwtRowsPerGroup; ++row) {
+            const uint32_t row_base = group_base + row * ttwv::device_protocol::kLwtOutputBlocksPerRow *
+                                                       ttwv::device_protocol::kLwtHalfStickElements;
+            for (uint32_t block = 0; block < ttwv::device_protocol::kLwtOutputBlocksPerRow; ++block) {
+                write_dram_half_block(
+                    dst,
+                    output_tiles + block * tile_bytes,
+                    row,
+                    row_base + block * ttwv::device_protocol::kLwtHalfStickElements,
+                    output_offset,
+                    output_length);
+            }
+        }
+        // Bound the number of outstanding NoC writes.  A long dependency route can
+        // contain hundreds of groups, while the output CB pages must not be
+        // released until all writes sourcing those pages have completed.
+        noc_async_write_barrier();
+        cb_pop_front(cb_output, 3);
+    }
+}
+
+template <bool UseNocLocalWrite>
+ALWI void write_local_half_block(
+    const uint32_t dst_addr,
+    const uint32_t tile_addr,
+    const uint32_t row,
+    const uint32_t local_output_index,
+    const uint32_t output_offset,
+    const uint32_t output_length) {
+    if (local_output_index >= output_length) {
         return;
     }
 
-    const uint32_t semaphore_addr = get_semaphore(barrier_semaphore_id);
-    auto* local_semaphore = reinterpret_cast<volatile tt_l1_ptr uint32_t*>(semaphore_addr);
-
-    if (core_index == 0) {
-        noc_semaphore_wait(local_semaphore, active_core_count - 1);
-        noc_semaphore_set(local_semaphore, 0);
-
-        for (uint32_t remote_core = 1; remote_core < active_core_count; ++remote_core) {
-            const uint32_t noc_x = core_noc_coords[remote_core * 2];
-            const uint32_t noc_y = core_noc_coords[remote_core * 2 + 1];
-            noc_semaphore_inc(get_noc_addr(noc_x, noc_y, semaphore_addr), 1);
-        }
+    const uint32_t source_index = row * ttwv::device_protocol::kLwtHalfStickElements;
+    const uint32_t destination_index = output_offset + local_output_index;
+    if constexpr (UseNocLocalWrite) {
+        noc_async_write_one_packet_with_state(
+            tile_addr + source_index * static_cast<uint32_t>(sizeof(float)),
+            dst_addr + destination_index * static_cast<uint32_t>(sizeof(float)));
     } else {
-        const uint32_t master_noc_x = core_noc_coords[0];
-        const uint32_t master_noc_y = core_noc_coords[1];
-        noc_semaphore_inc(get_noc_addr(master_noc_x, master_noc_y, semaphore_addr), 1);
-        noc_semaphore_wait(local_semaphore, 1);
-        noc_semaphore_set(local_semaphore, 0);
+        auto* dst = reinterpret_cast<volatile tt_l1_ptr float*>(dst_addr);
+        const auto* src = reinterpret_cast<volatile tt_l1_ptr float*>(tile_addr);
+#pragma unroll
+        for (uint32_t lane = 0; lane < ttwv::device_protocol::kLwtHalfStickElements; ++lane) {
+            dst[destination_index + lane] = src[source_index + lane];
+        }
+    }
+}
+
+template <bool UseNocLocalWrite, bool TileNative>
+ALWI void write_local_output_groups(
+    const uint32_t dst_addr,
+    const uint32_t cb_output,
+    const uint32_t tile_bytes,
+    const uint32_t output_offset,
+    const uint32_t output_length,
+    const uint32_t group_count) {
+    constexpr uint32_t group_elements = ttwv::device_protocol::kLwtGroupOutputElements;
+    constexpr uint32_t blocks_per_group = ttwv::device_protocol::kLwtOutputBlocksPerRow;
+    const uint32_t group_bytes = blocks_per_group * tile_bytes;
+    if constexpr (UseNocLocalWrite) {
+        const uint32_t write_bytes = TileNative ? tile_bytes : ttwv::device_protocol::kLwtHalfStickBytes;
+        noc_async_write_one_packet_set_state(get_noc_addr(dst_addr), write_bytes);
+    }
+
+    for (uint32_t group = 0; group < group_count; ++group) {
+        cb_wait_front(cb_output, 3);
+        const uint32_t output_tiles = get_read_ptr(cb_output);
+        const uint32_t group_base = group * ttwv::device_protocol::kLwtGroupOutputElements;
+        if constexpr (TileNative) {
+            const uint32_t destination_index = output_offset + group_base;
+            const uint32_t destination_group = destination_index / group_elements;
+            const uint32_t destination_addr = dst_addr + destination_group * group_bytes;
+            if constexpr (UseNocLocalWrite) {
+#pragma unroll
+                for (uint32_t block = 0; block < blocks_per_group; ++block) {
+                    noc_async_write_one_packet_with_state(
+                        output_tiles + block * tile_bytes, destination_addr + block * tile_bytes);
+                }
+            } else {
+                auto* dst = reinterpret_cast<volatile tt_l1_ptr uint32_t*>(destination_addr);
+                const auto* src = reinterpret_cast<volatile tt_l1_ptr uint32_t*>(output_tiles);
+#pragma unroll 4
+                for (uint32_t word = 0; word < group_bytes / sizeof(uint32_t); ++word) {
+                    dst[word] = src[word];
+                }
+            }
+        } else {
+            for (uint32_t row = 0; row < ttwv::device_protocol::kLwtRowsPerGroup; ++row) {
+                const uint32_t row_base =
+                    group_base + row * blocks_per_group * ttwv::device_protocol::kLwtHalfStickElements;
+                for (uint32_t block = 0; block < blocks_per_group; ++block) {
+                    write_local_half_block<UseNocLocalWrite>(
+                        dst_addr,
+                        output_tiles + block * tile_bytes,
+                        row,
+                        row_base + block * ttwv::device_protocol::kLwtHalfStickElements,
+                        output_offset,
+                        output_length);
+                }
+            }
+        }
+        if constexpr (UseNocLocalWrite) {
+            // Once the three tile-page writes have departed, the NoC no longer
+            // reads these CB pages.  The route-level barrier below still waits
+            // for completion before the next lifting route consumes workspace.
+            noc_async_writes_flushed();
+        }
+        cb_pop_front(cb_output, 3);
     }
 }
 
@@ -53,73 +173,126 @@ ALWI void route_barrier(
 
 void kernel_main() {
     const uint32_t route_config_addr = get_arg_val<uint32_t>(0);
-    const uint32_t route_count = get_arg_val<uint32_t>(1);
+    const uint32_t chunk_begin = get_arg_val<uint32_t>(1);
+    const uint32_t chunk_count = get_arg_val<uint32_t>(2);
+    const uint32_t route_count = get_arg_val<uint32_t>(3);
 
     constexpr uint32_t cb_config = get_compile_time_arg_val(0);
     constexpr uint32_t cb_output = get_compile_time_arg_val(1);
     constexpr uint32_t cb_sync = get_compile_time_arg_val(2);
-    constexpr uint32_t route_barrier_semaphore_id = get_compile_time_arg_val(3);
-    constexpr uint32_t tile_nbytes = get_tile_size(cb_output);
-    constexpr auto config_args = TensorAccessorArgs<4>();
-    constexpr auto dst_args = TensorAccessorArgs<config_args.next_compile_time_args_offset()>();
+    constexpr bool use_noc_local_write = get_compile_time_arg_val(3) != 0;
+    constexpr bool tile_native_workspace = get_compile_time_arg_val(4) != 0;
+    constexpr bool inverse = get_compile_time_arg_val(5) != 0;
+    constexpr uint32_t cb_interleave = get_compile_time_arg_val(6);
+    constexpr uint32_t tile_bytes = get_tile_size(cb_output);
+    constexpr auto config_args = TensorAccessorArgs<7>();
+    constexpr auto final_args = TensorAccessorArgs<config_args.next_compile_time_args_offset()>();
 
-    const auto config = TensorAccessor(config_args, route_config_addr, ttwv::device_protocol::kRouteConfigPageBytes);
-    const uint32_t barrier_args_base = 2 + route_count * 2;
-    const uint32_t core_index = get_arg_val<uint32_t>(barrier_args_base);
-    const uint32_t active_core_count = get_arg_val<uint32_t>(barrier_args_base + 1);
-    const auto* core_noc_coords = reinterpret_cast<const uint32_t*>(get_arg_addr(barrier_args_base + 2));
+    if constexpr (inverse) {
+        const uint32_t chunk_config_addr = get_arg_val<uint32_t>(4);
+        const uint32_t output_addr = get_arg_val<uint32_t>(5);
+        const uint32_t left_pad = get_arg_val<uint32_t>(6);
+        const auto output = TensorAccessor(final_args, output_addr, ttwv::device_protocol::kStickBytes);
+        for (uint32_t local_chunk = 0; local_chunk < chunk_count; ++local_chunk) {
+            const uint32_t global_chunk = chunk_begin + local_chunk;
+            uint32_t chunk_words[ttwv::device_protocol::kLwtChunkConfigWordCount];
+            const uint32_t* loaded_chunk = load_route_config(config_args, chunk_config_addr, cb_config, global_chunk);
+#pragma unroll
+            for (uint32_t word = 0; word < ttwv::device_protocol::kLwtChunkConfigWordCount; ++word) {
+                chunk_words[word] = loaded_chunk[word];
+            }
+            cb_pop_front(cb_config, 1);
 
-    for (uint32_t route_index = 0; route_index < route_count; ++route_index) {
-        const uint32_t* route = load_route_config(config, cb_config, route_index);
-        const uint32_t output_addr = route[ttwv::device_protocol::kRouteOutputAddr];
-        const uint32_t output_length = route[ttwv::device_protocol::kRouteOutputLength];
-        const uint32_t route_range_arg_base = 2 + route_index * 2;
-        const uint32_t global_group_begin = get_arg_val<uint32_t>(route_range_arg_base);
-        const uint32_t local_group_count = get_arg_val<uint32_t>(route_range_arg_base + 1);
-
-        const auto dst = TensorAccessor(dst_args, output_addr, ttwv::device_protocol::kStickBytes);
-
-        for (uint32_t local_group = 0; local_group < local_group_count; ++local_group) {
-            cb_wait_front(cb_output, 2);
-            const uint32_t output_full_tile = get_read_ptr(cb_output);
-            const uint32_t output_tail_tile = output_full_tile + tile_nbytes;
-            const uint32_t global_group = global_group_begin + local_group;
-            const uint32_t group_base = global_group * ttwv::device_protocol::kLwtGroupOutputElements;
-
-            for (uint32_t row = 0; row < ttwv::device_protocol::kLwtRowsPerGroup; ++row) {
-                const uint32_t row_base = group_base + row * ttwv::device_protocol::kLwtOutputBlocksPerRow *
-                                                           ttwv::device_protocol::kLwtHalfStickElements;
-                row_major::write_lwt_half_block(
-                    dst, output_full_tile, row, 0, row_base, output_length, ttwv::kStickWidth);
-                row_major::write_lwt_half_block(
-                    dst,
-                    output_full_tile,
-                    row,
-                    ttwv::device_protocol::kLwtHalfStickElements,
-                    row_base + ttwv::device_protocol::kLwtHalfStickElements,
-                    output_length,
-                    ttwv::kStickWidth);
-                row_major::write_lwt_half_block(
-                    dst,
-                    output_tail_tile,
-                    row,
-                    0,
-                    row_base + 2 * ttwv::device_protocol::kLwtHalfStickElements,
-                    output_length,
-                    ttwv::kStickWidth);
+            bool direct_interleave_written = false;
+            for (uint32_t route_index = 0; route_index < route_count; ++route_index) {
+                const uint32_t config_index = global_chunk * route_count + route_index;
+                const uint32_t* route = load_route_config(config_args, route_config_addr, cb_config, config_index);
+                const uint32_t route_flags = route[ttwv::device_protocol::kRouteFlags];
+                const bool direct_interleave =
+                    (route_flags & ttwv::device_protocol::kRouteFlagIlwtFinalInterleave) != 0;
+                if (direct_interleave) {
+                    write_direct_interleaved_signal<tile_native_workspace>(
+                        output,
+                        cb_output,
+                        cb_interleave,
+                        tile_bytes,
+                        left_pad,
+                        route[ttwv::device_protocol::kRouteType],
+                        route[ttwv::device_protocol::kRouteGroupCount],
+                        chunk_words[ttwv::device_protocol::kIlwtFinalEvenAddr],
+                        chunk_words[ttwv::device_protocol::kIlwtFinalEvenOffset],
+                        chunk_words[ttwv::device_protocol::kIlwtFinalEvenBegin],
+                        chunk_words[ttwv::device_protocol::kIlwtFinalOddAddr],
+                        chunk_words[ttwv::device_protocol::kIlwtFinalOddOffset],
+                        chunk_words[ttwv::device_protocol::kIlwtFinalOddBegin],
+                        chunk_words[ttwv::device_protocol::kIlwtOutputBegin],
+                        chunk_words[ttwv::device_protocol::kIlwtOutputLength]);
+                    direct_interleave_written = true;
+                } else {
+                    write_local_output_groups<use_noc_local_write, tile_native_workspace>(
+                        route[ttwv::device_protocol::kRouteOutputAddr],
+                        cb_output,
+                        tile_bytes,
+                        route[ttwv::device_protocol::kRouteOutputOffset],
+                        route[ttwv::device_protocol::kRouteOutputLength],
+                        route[ttwv::device_protocol::kRouteGroupCount]);
+                }
+                noc_async_write_barrier();
+                cb_pop_front(cb_config, 1);
+                if (route_index + 1 < route_count) {
+                    cb_reserve_back(cb_sync, 1);
+                    cb_push_back(cb_sync, 1);
+                }
             }
 
-            cb_pop_front(cb_output, 2);
+            if (!direct_interleave_written) {
+                write_reconstructed_signal<tile_native_workspace>(
+                    output,
+                    cb_interleave,
+                    left_pad,
+                    chunk_words[ttwv::device_protocol::kIlwtFinalEvenAddr],
+                    chunk_words[ttwv::device_protocol::kIlwtFinalEvenOffset],
+                    chunk_words[ttwv::device_protocol::kIlwtFinalEvenBegin],
+                    chunk_words[ttwv::device_protocol::kIlwtFinalOddAddr],
+                    chunk_words[ttwv::device_protocol::kIlwtFinalOddOffset],
+                    chunk_words[ttwv::device_protocol::kIlwtFinalOddBegin],
+                    chunk_words[ttwv::device_protocol::kIlwtOutputBegin],
+                    chunk_words[ttwv::device_protocol::kIlwtOutputLength]);
+            }
+            if (local_chunk + 1 < chunk_count) {
+                cb_reserve_back(cb_sync, 1);
+                cb_push_back(cb_sync, 1);
+            }
         }
+    } else {
+        const uint32_t local_route_count = chunk_count * route_count;
+        uint32_t flattened_route = 0;
+        for (uint32_t local_chunk = 0; local_chunk < chunk_count; ++local_chunk) {
+            const uint32_t global_chunk = chunk_begin + local_chunk;
+            for (uint32_t route_index = 0; route_index < route_count; ++route_index, ++flattened_route) {
+                const uint32_t config_index = global_chunk * route_count + route_index;
+                const uint32_t* route = load_route_config(config_args, route_config_addr, cb_config, config_index);
+                const uint32_t output_addr = route[ttwv::device_protocol::kRouteOutputAddr];
+                const uint32_t output_length = route[ttwv::device_protocol::kRouteOutputLength];
+                const uint32_t output_offset = route[ttwv::device_protocol::kRouteOutputOffset];
+                const uint32_t group_count = route[ttwv::device_protocol::kRouteGroupCount];
+                const uint32_t route_flags = route[ttwv::device_protocol::kRouteFlags];
+                const bool final_dram = (route_flags & ttwv::device_protocol::kRouteFlagFinalDram) != 0;
+                if (final_dram) {
+                    const auto dst = TensorAccessor(final_args, output_addr, ttwv::device_protocol::kStickBytes);
+                    write_dram_output_groups(dst, cb_output, tile_bytes, output_offset, output_length, group_count);
+                } else {
+                    write_local_output_groups<use_noc_local_write, tile_native_workspace>(
+                        output_addr, cb_output, tile_bytes, output_offset, output_length, group_count);
+                }
 
-        noc_async_write_barrier();
-        cb_pop_front(cb_config, 1);
-
-        const bool has_next_route = route_index + 1 < route_count;
-        if (has_next_route) {
-            route_barrier(route_barrier_semaphore_id, core_index, active_core_count, core_noc_coords);
-            cb_reserve_back(cb_sync, 1);
-            cb_push_back(cb_sync, 1);
+                noc_async_write_barrier();
+                cb_pop_front(cb_config, 1);
+                if (flattened_route + 1 < local_route_count) {
+                    cb_reserve_back(cb_sync, 1);
+                    cb_push_back(cb_sync, 1);
+                }
+            }
         }
     }
 }

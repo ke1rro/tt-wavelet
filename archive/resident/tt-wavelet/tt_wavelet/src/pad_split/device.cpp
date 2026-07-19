@@ -60,6 +60,48 @@ struct CoreChunk {
     uint32_t odd_stick_count;
 };
 
+[[nodiscard]] std::vector<CoreChunk> partition_sharded_output(
+    const uint32_t padded_length,
+    const uint32_t stick_width,
+    const uint32_t shard_stick_count,
+    const uint32_t core_count) {
+    TT_FATAL(shard_stick_count > 0, "pad split shard must contain at least one stick");
+    TT_FATAL(core_count > 0, "pad split sharded output requires at least one owner core");
+
+    const uint64_t padded_elements_per_core = uint64_t{2} * shard_stick_count * stick_width;
+    std::vector<CoreChunk> chunks;
+    chunks.reserve(core_count);
+
+    for (uint32_t core_index = 0; core_index < core_count; ++core_index) {
+        const uint64_t begin64 = static_cast<uint64_t>(core_index) * padded_elements_per_core;
+        if (begin64 >= padded_length) {
+            break;
+        }
+
+        const uint32_t padded_begin = static_cast<uint32_t>(begin64);
+        const uint32_t padded_end = static_cast<uint32_t>(
+            std::min<uint64_t>(static_cast<uint64_t>(padded_length), begin64 + padded_elements_per_core));
+        const uint32_t chunk_length = padded_end - padded_begin;
+        const uint32_t even_elements = (chunk_length + 1) / 2;
+        const uint32_t odd_elements = chunk_length / 2;
+        chunks.push_back(CoreChunk{
+            .padded_begin = padded_begin,
+            .padded_end = padded_end,
+            .even_stick_begin = core_index * shard_stick_count,
+            .even_stick_count = ceil_div(even_elements, stick_width),
+            .odd_stick_begin = core_index * shard_stick_count,
+            .odd_stick_count = ceil_div(odd_elements, stick_width),
+        });
+    }
+
+    TT_FATAL(
+        !chunks.empty() && chunks.back().padded_end == padded_length,
+        "pad split sharded capacity covers {} of {} padded elements",
+        chunks.empty() ? 0U : chunks.back().padded_end,
+        padded_length);
+    return chunks;
+}
+
 [[nodiscard]] std::vector<CoreChunk> partition_output(
     const uint32_t padded_length, const uint32_t stick_width, const uint32_t core_count) {
     const uint32_t chunk_alignment = 2 * stick_width;
@@ -90,15 +132,14 @@ struct CoreChunk {
         const uint32_t even_stick_count = ceil_div((chunk_length + 1) / 2, stick_width);
         const uint32_t odd_stick_count = ceil_div(chunk_length / 2, stick_width);
 
-        chunks.push_back(
-            CoreChunk{
-                .padded_begin = chunk_begin,
-                .padded_end = chunk_end,
-                .even_stick_begin = even_stick_offset,
-                .even_stick_count = even_stick_count,
-                .odd_stick_begin = odd_stick_offset,
-                .odd_stick_count = odd_stick_count,
-            });
+        chunks.push_back(CoreChunk{
+            .padded_begin = chunk_begin,
+            .padded_end = chunk_end,
+            .even_stick_begin = even_stick_offset,
+            .even_stick_count = even_stick_count,
+            .odd_stick_begin = odd_stick_offset,
+            .odd_stick_count = odd_stick_count,
+        });
 
         padded_offset = chunk_end;
         even_stick_offset += even_stick_count;
@@ -130,13 +171,36 @@ PadSplit1DDeviceProgram create_pad_split_1d_program(
         layout.padded_length());
 
     const uint32_t padded_length = static_cast<uint32_t>(layout.padded_length());
-    const uint32_t requested_cores = pad_split_core_count(mesh_device);
-    const std::vector<CoreChunk> chunks = partition_output(padded_length, kStickWidth, requested_cores);
+    std::vector<tt::tt_metal::CoreCoord> cores;
+    std::vector<CoreChunk> chunks;
+    if (even_buffer.buffer_distribution_spec().has_value()) {
+        TT_FATAL(
+            odd_buffer.buffer_distribution_spec().has_value(),
+            "pad split even and odd outputs must use the same memory layout");
+        const auto& even_distribution = even_buffer.buffer_distribution_spec().value();
+        const auto& odd_distribution = odd_buffer.buffer_distribution_spec().value();
+        TT_FATAL(
+            even_distribution.cores() == odd_distribution.cores() &&
+                even_distribution.shard_shape_in_pages() == odd_distribution.shard_shape_in_pages(),
+            "pad split even and odd sharding must match");
+        TT_FATAL(
+            even_distribution.shard_shape_in_pages().volume() <= std::numeric_limits<uint32_t>::max(),
+            "pad split shard page count overflows uint32_t");
+        cores = even_distribution.cores();
+        chunks = partition_sharded_output(
+            padded_length,
+            kStickWidth,
+            static_cast<uint32_t>(even_distribution.shard_shape_in_pages().volume()),
+            static_cast<uint32_t>(cores.size()));
+        cores.resize(chunks.size());
+    } else {
+        const uint32_t requested_cores = pad_split_core_count(mesh_device);
+        chunks = partition_output(padded_length, kStickWidth, requested_cores);
+        const auto grid = mesh_device.compute_with_storage_grid_size();
+        cores = tt::tt_metal::grid_to_cores(
+            static_cast<uint32_t>(chunks.size()), static_cast<uint32_t>(grid.x), static_cast<uint32_t>(grid.y), true);
+    }
     const uint32_t active_cores = static_cast<uint32_t>(chunks.size());
-
-    const auto grid = mesh_device.compute_with_storage_grid_size();
-    const auto cores =
-        tt::tt_metal::grid_to_cores(active_cores, static_cast<uint32_t>(grid.x), static_cast<uint32_t>(grid.y), true);
 
     std::vector<tt::tt_metal::CoreRange> ranges;
     ranges.reserve(cores.size());
