@@ -7,6 +7,15 @@
 #include "indexing.hpp"
 #define ALWI inline __attribute__((always_inline))
 
+// Wormhole NCRISC has a 16 KiB instruction region.  Keep the shared interior
+// test inline, but emit one callable copy of the larger boundary-only path
+// instead of duplicating it at the even and odd initialization sites.
+#if defined(ARCH_WORMHOLE)
+#define TTWV_BOUNDARY_SLOW_PATH __attribute__((noinline))
+#else
+#define TTWV_BOUNDARY_SLOW_PATH ALWI
+#endif
+
 namespace ttwv::kernels::primitives {
 
 constexpr uint32_t kInvalidStick = 0xFFFFFFFFU;
@@ -89,6 +98,75 @@ ALWI float read_source_value(
     return cached_values[cached_offset * cache.stick_width + source_lane];
 }
 
+template <typename SrcAccessor>
+TTWV_BOUNDARY_SLOW_PATH float read_extended_source_value(
+    const SrcAccessor& src, StickReadCache& cache, const uint32_t source_index, const uint32_t source_length) {
+    return read_source_value(src, cache, source_index, source_length);
+}
+
+template <ttwv::BoundaryMode Mode, typename SrcAccessor>
+TTWV_BOUNDARY_SLOW_PATH float read_extended_value(
+    const SrcAccessor& src,
+    StickReadCache& cache,
+    const uint32_t input_length,
+    const uint32_t left_pad,
+    const uint32_t out_idx) {
+    static_assert(ttwv::is_cone_boundary_mode(Mode), "Unsupported compile-time boundary mode");
+
+    if constexpr (Mode == ttwv::BoundaryMode::kZero) {
+        return 0.0F;
+    } else if constexpr (Mode == ttwv::BoundaryMode::kConstant) {
+        const uint32_t source_index = out_idx < left_pad ? 0U : input_length - 1U;
+        return read_extended_source_value(src, cache, source_index, input_length);
+    } else if constexpr (Mode == ttwv::BoundaryMode::kSymmetric) {
+        const int32_t logical = static_cast<int32_t>(out_idx) - static_cast<int32_t>(left_pad);
+        return read_extended_source_value(src, cache, symmetric_index(logical, input_length), input_length);
+    } else if constexpr (Mode == ttwv::BoundaryMode::kReflect) {
+        const int32_t logical = static_cast<int32_t>(out_idx) - static_cast<int32_t>(left_pad);
+        return read_extended_source_value(src, cache, reflect_index(logical, input_length), input_length);
+    } else if constexpr (Mode == ttwv::BoundaryMode::kPeriodic) {
+        const int32_t logical = static_cast<int32_t>(out_idx) - static_cast<int32_t>(left_pad);
+        return read_extended_source_value(src, cache, positive_mod(logical, input_length), input_length);
+    } else if constexpr (Mode == ttwv::BoundaryMode::kAntisymmetric) {
+        const int32_t logical = static_cast<int32_t>(out_idx) - static_cast<int32_t>(left_pad);
+        const AntisymmetricIndex mapped = antisymmetric_index(logical, input_length);
+        const float value = read_extended_source_value(src, cache, mapped.source_index, input_length);
+        return mapped.negate ? -value : value;
+    } else if constexpr (Mode == ttwv::BoundaryMode::kSmooth) {
+        const int32_t logical = static_cast<int32_t>(out_idx) - static_cast<int32_t>(left_pad);
+        if (input_length == 1U) {
+            // A one-sample DWT has no edge difference. PyWavelets' DWT treats
+            // the missing slope as zero (its public pad helper behaves
+            // differently for this degenerate input).
+            return read_extended_source_value(src, cache, 0U, input_length);
+        }
+        const bool left = logical < 0;
+        const uint32_t edge_index = left ? 0U : input_length - 1U;
+        const uint32_t neighbor_index = left ? 1U : input_length - 2U;
+        const int32_t distance = left ? -logical : logical - static_cast<int32_t>(input_length - 1U);
+        const float edge = read_extended_source_value(src, cache, edge_index, input_length);
+        const float neighbor = read_extended_source_value(src, cache, neighbor_index, input_length);
+        return edge + static_cast<float>(distance) * (edge - neighbor);
+    } else {
+        static_assert(Mode == ttwv::BoundaryMode::kAntireflect);
+        if (input_length == 1U) {
+            return read_extended_source_value(src, cache, 0U, input_length);
+        }
+        const int32_t logical = static_cast<int32_t>(out_idx) - static_cast<int32_t>(left_pad);
+        const uint32_t last_index = input_length - 1U;
+        const uint64_t period = 2U * static_cast<uint64_t>(last_index);
+        const SignedPeriodIndex mapped = decompose_signed_period(logical, period);
+        const bool reflected = mapped.remainder > last_index;
+        const uint32_t source_index =
+            reflected ? static_cast<uint32_t>(period - mapped.remainder) : static_cast<uint32_t>(mapped.remainder);
+        const float source_value = read_extended_source_value(src, cache, source_index, input_length);
+        const float first = read_extended_source_value(src, cache, 0U, input_length);
+        const float last = read_extended_source_value(src, cache, last_index, input_length);
+        const float base = reflected ? 2.0F * last - source_value : source_value;
+        return base + static_cast<float>(2 * mapped.quotient) * (last - first);
+    }
+}
+
 template <ttwv::BoundaryMode Mode, typename SrcAccessor>
 ALWI float read_padded_value(
     const SrcAccessor& src,
@@ -98,67 +176,16 @@ ALWI float read_padded_value(
     const uint32_t out_idx) {
     static_assert(ttwv::is_cone_boundary_mode(Mode), "Unsupported compile-time boundary mode");
 
-    // All supported modes share the same direct interior path.  Only the
-    // bounded prefix/suffix performs mode-specific extension work.
+    // All supported modes share this direct interior path.  On Wormhole the
+    // bounded prefix/suffix calls one out-of-line specialization so its larger
+    // extension arithmetic is not duplicated in the reader binary.
     if (out_idx >= left_pad) {
         const uint32_t source_index = out_idx - left_pad;
         if (source_index < input_length) {
             return read_source_value(src, cache, source_index, input_length);
         }
     }
-
-    if constexpr (Mode == ttwv::BoundaryMode::kZero) {
-        return 0.0F;
-    } else if constexpr (Mode == ttwv::BoundaryMode::kConstant) {
-        const uint32_t source_index = out_idx < left_pad ? 0U : input_length - 1U;
-        return read_source_value(src, cache, source_index, input_length);
-    } else if constexpr (Mode == ttwv::BoundaryMode::kSymmetric) {
-        const int32_t logical = static_cast<int32_t>(out_idx) - static_cast<int32_t>(left_pad);
-        return read_source_value(src, cache, symmetric_index(logical, input_length), input_length);
-    } else if constexpr (Mode == ttwv::BoundaryMode::kReflect) {
-        const int32_t logical = static_cast<int32_t>(out_idx) - static_cast<int32_t>(left_pad);
-        return read_source_value(src, cache, reflect_index(logical, input_length), input_length);
-    } else if constexpr (Mode == ttwv::BoundaryMode::kPeriodic) {
-        const int32_t logical = static_cast<int32_t>(out_idx) - static_cast<int32_t>(left_pad);
-        return read_source_value(src, cache, positive_mod(logical, input_length), input_length);
-    } else if constexpr (Mode == ttwv::BoundaryMode::kAntisymmetric) {
-        const int32_t logical = static_cast<int32_t>(out_idx) - static_cast<int32_t>(left_pad);
-        const AntisymmetricIndex mapped = antisymmetric_index(logical, input_length);
-        const float value = read_source_value(src, cache, mapped.source_index, input_length);
-        return mapped.negate ? -value : value;
-    } else if constexpr (Mode == ttwv::BoundaryMode::kSmooth) {
-        const int32_t logical = static_cast<int32_t>(out_idx) - static_cast<int32_t>(left_pad);
-        if (input_length == 1U) {
-            // A one-sample DWT has no edge difference. PyWavelets' DWT treats
-            // the missing slope as zero (its public pad helper behaves
-            // differently for this degenerate input).
-            return read_source_value(src, cache, 0U, input_length);
-        }
-        const bool left = logical < 0;
-        const uint32_t edge_index = left ? 0U : input_length - 1U;
-        const uint32_t neighbor_index = left ? 1U : input_length - 2U;
-        const int32_t distance = left ? -logical : logical - static_cast<int32_t>(input_length - 1U);
-        const float edge = read_source_value(src, cache, edge_index, input_length);
-        const float neighbor = read_source_value(src, cache, neighbor_index, input_length);
-        return edge + static_cast<float>(distance) * (edge - neighbor);
-    } else {
-        static_assert(Mode == ttwv::BoundaryMode::kAntireflect);
-        if (input_length == 1U) {
-            return read_source_value(src, cache, 0U, input_length);
-        }
-        const int32_t logical = static_cast<int32_t>(out_idx) - static_cast<int32_t>(left_pad);
-        const uint32_t last_index = input_length - 1U;
-        const uint64_t period = 2U * static_cast<uint64_t>(last_index);
-        const SignedPeriodIndex mapped = decompose_signed_period(logical, period);
-        const bool reflected = mapped.remainder > last_index;
-        const uint32_t source_index =
-            reflected ? static_cast<uint32_t>(period - mapped.remainder) : static_cast<uint32_t>(mapped.remainder);
-        const float source_value = read_source_value(src, cache, source_index, input_length);
-        const float first = read_source_value(src, cache, 0U, input_length);
-        const float last = read_source_value(src, cache, last_index, input_length);
-        const float base = reflected ? 2.0F * last - source_value : source_value;
-        return base + static_cast<float>(2 * mapped.quotient) * (last - first);
-    }
+    return read_extended_value<Mode>(src, cache, input_length, left_pad, out_idx);
 }
 
 template <typename SrcAccessor>
@@ -183,3 +210,5 @@ ALWI void release_cache(StickReadCache& cache) {
 }
 
 }  // namespace ttwv::kernels::primitives
+
+#undef TTWV_BOUNDARY_SLOW_PATH

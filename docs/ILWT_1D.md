@@ -2,10 +2,11 @@
 
 ## Статус
 
-1D ILWT реалізовано поверх наявного FP32 ConeStreamed/narrow-tile backend. Перевірка виконана
-2026-07-18 на Blackhole P150b (`TT-KMD 2.9.0`), project revision `1f6eae385f0e` і TT-Metal revision
-`f87c34a93ee4` з локальними незакоміченими змінами. Wormhole hardware у цій сесії недоступний,
-тому Wormhole equivalence ще треба зняти на окремій машині.
+1D ILWT реалізовано поверх наявного FP32 ConeStreamed/narrow-tile backend. Blackhole перевірка
+виконана 2026-07-18 на P150b (`TT-KMD 2.9.0`), project revision `1f6eae385f0e` і TT-Metal revision
+`f87c34a93ee4` з локальними незакоміченими змінами. Окрема hardware перевірка виконана
+2026-07-19 на Wormhole N150 L (`TT-KMD 2.3.0`, firmware bundle `19.11.0.0`), project revision
+`6738a33305aa` і той самий TT-Metal revision `f87c34a93ee4`, також із локальними змінами.
 
 Device dataflow:
 
@@ -210,6 +211,23 @@ Boundary-mode extension перевірено окремо canonical PyWavelets c
 .venv/bin/python scripts/validate_ilwt_stability.py --length 33
 ```
 
+### Wormhole N150 L, 2026-07-19
+
+Wormhole run використовував pinned SFPI `7.17.0[182]` і реальний `ARCH_WORMHOLE` JIT path.
+Результати після clean `./update.sh Release lwt`:
+
+- geometry model: 106 schemes, 59,042 chunk cases;
+- representative PyWavelets matrix: 432/432 device cases для `db1`, `db7`, `bior3.9`,
+  усіх восьми boundary modes, довжин `17,32,33,3071,3072,3073` і layouts
+  `row-major`, `tile-native`, `auto`;
+- max absolute ILWT error `3.29005435e-05`; layouts bitwise identical;
+- runtime/JIT stability: 106/106 production inverse schemes на `N=33`;
+- synthetic K=17: `N=33,255,3073`, обидва layouts, zero round-trip error.
+
+Отже ILWT geometry, JIT/runtime і workspace-layout equivalence пройшли на Wormhole hardware.
+High-order FP32 factorization accuracy лишається окремим scheme-level contract, як і на
+Blackhole.
+
 ## Blackhole device-only performance
 
 Pre-fusion reference: `auto` workspace, 5 measured repetitions, 2 warmups. Forward coefficient
@@ -257,7 +275,29 @@ Fusion A/B на тому самому Blackhole, N=5,000,000, 20 measured repeti
 | `bior3.9` / tile-native | both (auto default) | 6.819 | 6.725 | 6.793 | 6.866 |
 
 Виміряна auto policy дає приблизно 6.5% для `db7` і 8.6% для `bior3.9` проти повністю unfused
-baseline. Окремі Wormhole timings все ще потрібні з ідентичним timing boundary.
+baseline на Blackhole.
+
+## Wormhole device-only performance
+
+N150 L measurements використовують 20 repetitions, 5 warmups, program construction і
+coefficient preparation поза timed interval. Усі великі cases використовують 64 active cores.
+
+| Scheme | N | auto median, ms | auto layout | forced row-major, ms | forced tile-native, ms |
+|---|---:|---:|---|---:|---:|
+| `db7` | 1,000,000 | 5.840 | row-major | 5.898 | 6.660 |
+| `db7` | 5,000,000 | 19.486 | row-major | 19.291 | 23.623 |
+| `db7` | 8,000,000 | 29.757 | row-major | 29.717 | 36.516 |
+| `bior3.9` | 1,000,000 | 4.420 | tile-native | 3.539 | 4.424 |
+| `bior3.9` | 5,000,000 | 15.677 | tile-native | 11.339 | 15.520 |
+| `bior3.9` | 8,000,000 | 23.998 | tile-native | 17.347 | 23.947 |
+
+На Wormhole inverse-scale fusion корисна, але final-interleave fusion корисна лише для
+tile-native і не компенсує його reader/remap cost. На `N=5,000,000` forced row-major із
+scale fusion та без final-interleave fusion дав `19.577 ms` проти `21.035 ms` без fusion для
+`db7`, і `11.375 ms` проти `12.695 ms` для `bior3.9`. Поточний shared `auto` policy помилково
+обирає tile-native для `bior3.9`: це приблизно 38% повільніше за row-major. Перед production
+default потрібен architecture-aware ILWT policy: Wormhole має лишати inverse у row-major і
+final-interleave off; виміряний Blackhole tile-native default треба зберегти.
 
 ## Відомі обмеження і наступні кроки
 
@@ -267,5 +307,6 @@ baseline. Окремі Wormhole timings все ще потрібні з іден
 - 106-scheme sweep доводить runtime stability, а не однакову малу numerical error для
   ill-conditioned high-order FP32 factorizations. Високопорядкові FP32 factorization errors
   відокремлені від ILWT geometry regression.
-- Потрібне Wormhole hardware A/B для architecture equivalence; compile-time Wormhole path
-  збережений, але на Blackhole server його неможливо апаратно перевірити.
+- Поточний shared ILWT `auto` workspace heuristic не є performance-portable: для Wormhole
+  потрібен architecture-aware row-major default, тоді як виміряний Blackhole `bior3.9`
+  виграє від tile-native/final-interleave fusion.

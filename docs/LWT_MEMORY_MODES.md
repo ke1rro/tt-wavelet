@@ -177,6 +177,24 @@ boundary geometry. Відтворити перевірку можна через
 Host mapping також перевірено проти `pywt.pad(reflect)` у 6300 комбінаціях `N=2..64` та
 padding width `1..100`, включно з padding, ширшим за сигнал.
 
+Wormhole N150 L revalidation 2026-07-19 (`TT-KMD 2.3.0`, firmware bundle `19.11.0.0`,
+project `6738a33305aa`, TT-Metal `f87c34a93ee4`) дала:
+
+- 312/312 representative forward PyWavelets cases для всіх восьми modes, включно з short,
+  odd/even і 3072-group boundaries; max absolute error `2.98143605e-05`;
+- 848/848 runtime/JIT cases (`106 schemes * 8 modes`) на `N=33`;
+- 106/106 schemes bitwise identical між production ConeStreamed і ResidentSharded на
+  однаковому symmetric input;
+- current PyWavelets count `70/106` при absolute tolerance `1e-2`, тобто точно історичний
+  Wormhole baseline; 36 high-order failures лишаються FP32 factorization питанням;
+- усі 106 JSON schemes точно відповідають згенерованим static headers.
+
+Під час цієї перевірки tile-native `antireflect` reader перевищив 16 KiB Wormhole NCRISC
+instruction region на 280 bytes. Boundary-only extension і source-cache lookup винесені в один
+callable slow path лише для `ARCH_WORMHOLE`; direct interior path лишився inline, а Blackhole
+inline path не змінений. Після cleanup reader `.text` становить 15,004 bytes, тобто має
+1,380 bytes запасу, і наведені вище matrices пройшли повторно.
+
 Device-only spot A/B для найбільш arithmetic-heavy boundary mode (`db7`, auto layout,
 5 warmups, 30 repeats) не показав material regression від `smooth`: median на `N=1,000,000`
 становила `2.723318 ms` проти `2.710964 ms` для `symmetric`, а на `N=5,000,000` —
@@ -1045,6 +1063,23 @@ tile-native.
 | --- | --- | ---: | ---: | ---: |
 | `db7` | row-major | 21.767 ms | tile-native 22.165 ms | auto приблизно 1.8% швидше |
 | `bior3.9` | tile-native | 13.310 ms | row-major 13.861 ms | auto приблизно 4.1% швидше |
+
+Повторний N150 L A/B 2026-07-19 (`warmup=5`, `repeats=20`, 64 active cores) підтвердив
+forward policy на поточній revision:
+
+| Scheme | N | row-major median | tile-native median | auto median/layout |
+| --- | ---: | ---: | ---: | ---: |
+| `db7` | 1,000,000 | 6.676 ms | **6.475 ms** | 6.607 ms / row-major |
+| `db7` | 5,000,000 | 23.604 ms | **23.545 ms** | 23.617 ms / row-major |
+| `db7` | 8,000,000 | **36.148 ms** | 36.251 ms | 36.119 ms / row-major |
+| `bior3.9` | 1,000,000 | 4.399 ms | **4.146 ms** | 4.201 ms / tile-native |
+| `bior3.9` | 5,000,000 | 15.554 ms | **14.802 ms** | 14.795 ms / tile-native |
+| `bior3.9` | 8,000,000 | 23.974 ms | **22.702 ms** | 22.715 ms / tile-native |
+
+Для `db7` різниця між layouts мала і змінює знак із довжиною; current auto row-major є
+консервативним. Для `bior3.9` tile-native стабільно швидший приблизно на 5%. Ці дані
+стосуються forward LWT: inverse має окремий architecture-dependent result у
+[ILWT_1D.md](ILWT_1D.md).
 
 Це не performance guarantee: для коротких signals launch/runtime noise близький до різниці
 між layouts. Для A/B тесту задайте environment variable явно й використовуйте однакові
