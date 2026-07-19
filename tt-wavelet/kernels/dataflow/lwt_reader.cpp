@@ -1,10 +1,11 @@
 #include <cstdint>
 
 #include "../../tt_wavelet/include/common/boundary.hpp"
+#include "../../tt_wavelet/include/device_protocol/lwt_config.hpp"
 #include "../../tt_wavelet/include/lifting/step.hpp"
 #include "api/dataflow/dataflow_api.h"
-#include "lwt_readers_utils.hpp"
-#include "lwt_tile_row_major_utils.hpp"
+#include "../primitives/stick_cache.hpp"
+#include "../primitives/workspace_layout.hpp"
 
 namespace {
 
@@ -22,57 +23,7 @@ constexpr uint32_t kNarrowTileElements = ttwv::device_protocol::kLwtNarrowTileEl
 constexpr uint32_t kNarrowTileBytes = ttwv::device_protocol::kLwtNarrowTileBytes;
 constexpr uint32_t kGroupOutputBytes = kGroupOutputElements * sizeof(float);
 
-struct WorkspaceIndexCursor {
-    uint32_t group{0};
-    uint32_t row{0};
-    uint32_t block{0};
-    uint32_t lane{0};
-    uint32_t physical{0};
-
-    ALWI explicit WorkspaceIndexCursor(const uint32_t logical_index) {
-        group = logical_index / kGroupOutputElements;
-        const uint32_t group_index = logical_index - group * kGroupOutputElements;
-        row = group_index / (kOutputBlocksPerRow * kBlockElements);
-        const uint32_t row_index = group_index - row * kOutputBlocksPerRow * kBlockElements;
-        block = row_index / kBlockElements;
-        lane = row_index - block * kBlockElements;
-        physical = group * kGroupOutputElements + block * kNarrowTileElements + row * kBlockElements + lane;
-    }
-
-    ALWI void advance() {
-        ++lane;
-        ++physical;
-        if (lane == kBlockElements) {
-            lane = 0;
-            ++block;
-            if (block == kOutputBlocksPerRow) {
-                block = 0;
-                ++row;
-                if (row == kRowsPerGroup) {
-                    row = 0;
-                    ++group;
-                }
-            }
-            physical = group * kGroupOutputElements + block * kNarrowTileElements + row * kBlockElements;
-        }
-    }
-
-    // Advance by one logical 16-element block while preserving the lane.  In
-    // tile-native storage this is usually a jump to another narrow tile, not a
-    // contiguous physical increment.
-    ALWI void advance_block() {
-        ++block;
-        if (block == kOutputBlocksPerRow) {
-            block = 0;
-            ++row;
-            if (row == kRowsPerGroup) {
-                row = 0;
-                ++group;
-            }
-        }
-        physical = group * kGroupOutputElements + block * kNarrowTileElements + row * kBlockElements + lane;
-    }
-};
+using ttwv::kernels::primitives::WorkspaceIndexCursor;
 
 ALWI void read_workspace_block(const volatile tt_l1_ptr float* src, WorkspaceIndexCursor& cursor, float* dst) {
     // A logical 16-element block crosses at most one physical narrow-tile
@@ -170,7 +121,7 @@ ALWI const uint32_t* load_config_page(
 }
 
 template <ttwv::BoundaryMode Boundary, bool TileNative, typename InputAccessor>
-ALWI void initialize_cone(
+ALWI void initialize_lwt_streams(
     const InputAccessor& input,
     const uint32_t even_addr,
     const uint32_t odd_addr,
@@ -532,7 +483,7 @@ void kernel_main() {
     constexpr bool tile_native_workspace = get_compile_time_arg_val(6) != 0;
     constexpr bool inverse = get_compile_time_arg_val(7) != 0;
     constexpr auto boundary_mode = static_cast<ttwv::BoundaryMode>(get_compile_time_arg_val(8));
-    static_assert(ttwv::is_cone_boundary_mode(boundary_mode), "Unsupported ConeStreamed boundary mode");
+    static_assert(ttwv::is_supported_lwt_boundary_mode(boundary_mode), "Unsupported LWT boundary mode");
     constexpr auto config_args = TensorAccessorArgs<9>();
     constexpr auto input0_args = TensorAccessorArgs<config_args.next_compile_time_args_offset()>();
     constexpr auto input1_args = TensorAccessorArgs<input0_args.next_compile_time_args_offset()>();
@@ -568,12 +519,12 @@ void kernel_main() {
         } else {
             const uint32_t input_length = input1_or_length;
             const uint32_t left_pad = input_length_or_left_pad;
-            const uint32_t initial_even_begin = chunk[ttwv::device_protocol::kConeInitialEvenBegin];
-            const uint32_t initial_even_length = chunk[ttwv::device_protocol::kConeInitialEvenLength];
-            const uint32_t initial_odd_begin = chunk[ttwv::device_protocol::kConeInitialOddBegin];
-            const uint32_t initial_odd_length = chunk[ttwv::device_protocol::kConeInitialOddLength];
+            const uint32_t initial_even_begin = chunk[ttwv::device_protocol::kLwtInitialEvenBegin];
+            const uint32_t initial_even_length = chunk[ttwv::device_protocol::kLwtInitialEvenLength];
+            const uint32_t initial_odd_begin = chunk[ttwv::device_protocol::kLwtInitialOddBegin];
+            const uint32_t initial_odd_length = chunk[ttwv::device_protocol::kLwtInitialOddLength];
             cb_pop_front(cb_config, 1);
-            initialize_cone<boundary_mode, tile_native_workspace>(
+            initialize_lwt_streams<boundary_mode, tile_native_workspace>(
                 input0,
                 initial_even_addr,
                 initial_odd_addr,

@@ -7,8 +7,8 @@ namespace ttwv {
 /**
  * @brief Signal extension mode used when accessing out-of-bounds indices during padding.
  *
- * @note Resident pad/split materializes the extension; ConeStreamed maps it
- *       while loading each dependency cone.
+ * @note LWT maps the extension while loading each dependency-local chunk and
+ *       never materializes a complete padded signal.
  *
  * Mirrors the non-periodization modes supported by PyWavelets.
  */
@@ -23,7 +23,7 @@ enum class BoundaryMode : uint8_t {
     kReflect = 7,        ///< Whole-sample symmetric reflection
 };
 
-[[nodiscard]] constexpr bool is_cone_boundary_mode(const BoundaryMode mode) noexcept {
+[[nodiscard]] constexpr bool is_supported_lwt_boundary_mode(const BoundaryMode mode) noexcept {
     switch (mode) {
         case BoundaryMode::kZero:
         case BoundaryMode::kConstant:

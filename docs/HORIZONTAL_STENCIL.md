@@ -1,123 +1,46 @@
-# SFPU kernel for horizontal stencil
+# Horizontal FP32 SFPU stencil
 
-The stencil on SFPI assumes the following:
-- The stencil filter $h$ has a length $1 < k < 18$.
-- The input signal $f$ is padded with $17-k$ (any) elements on the left and on the right to fit into Tile sizes.
-
-Convolution (called stencil in our documentation) in a valid mode (which includes only elements that do not depend on the out-of-the-bound signal elements) is defined by the following formula:
+The production stencil supports compile-time `K=1..17` and computes valid convolution in the lifting arithmetic order:
 
 $$
-    g[i] = (h*f)[i+k-1] = \sum_{j=0}^{k-1}h[j]f[i+k-1-j]
+g[i] = b[i] + \sum_{j=0}^{K-1} h[j] f[i+K-1-j].
 $$
 
-By introducing linear operator $(R_jf)[i] = f[i-j]$ we can rewrite formula as:
+The reader supplies `17-K` left alignment positions so the same 17-tap register window works for every route. This is an internal alignment rule, not materialization of an entire padded signal.
+
+## Narrow-page window
+
+One group uses four source `32x16` pages and three base pages. The fourth source page is the first page shifted by one 48-element logical row, supplying the right halo needed by the three output pages. The compute kernel loads even and odd columns into separate SFPU registers and accumulates the two parities independently.
+
+For shifted source `f`, define `f_e[i]=f[2i]` and `f_o[i]=f[2i+1]`. Even coefficients multiply the matching parity. Odd coefficients cross parity, requiring a one-lane shift and a halo from the preceding register:
 
 $$
-    g = R_{k-1}(h*f) = \sum_{j=0}^{k-1}h[j]R_j(R_{-(k-1)}f)
-$$
-
-Thus, convolution is a linear combination of shifts of $f$.
-
-## Mathematical background
-
-For the horizontal convolution consider $f' = R_{16}(R_{-(k-1)}f) = R_{17-k}f$, then:
-
-$$
-    g = R_{-16}\sum_{j=0}^{k-1}h[j]R_jf'
-$$
-
-That is to compute first block of $16$ elements ($0-15$) of $g$ we can start with second block of $16$ elements of $f'$ and progressively shift it to the right using $R_1$ $k-1$ times, multiplying by $h[j]$ and accumulating. But since SFPU can only operate on even and odd columns separately, we need to rewrite the formula. For now, we compute $g' = \sum_{j=0}^{k-1}h[j]R_jf'$, but only starting from the position $i=16$, because later we simply do $g = R_{-16}g'$.
-
-Define: $f_e'[i] = f'[2i]$ and $f_o'[i] = f'[2i+1]$. Then we easily derive the following formulas:
-
-$$
-g_e' = \sum_{j=0}^{\lfloor (k-1)/2 \rfloor} h[2j] \cdot (R_j f_e') + \sum_{j=0}^{\lfloor (k-2)/2 \rfloor} h[2j+1] \cdot (R_{j+1} f_o')
+g_e = b_e + \sum_j h[2j]R_j f_e + \sum_j h[2j+1]R_{j+1}f_o,
 $$
 
 $$
-g_o' = \sum_{j=0}^{\lfloor (k-1)/2 \rfloor} h[2j] \cdot (R_j f_o') + \sum_{j=0}^{\lfloor (k-2)/2 \rfloor} h[2j+1] \cdot (R_j f_e')
+g_o = b_o + \sum_j h[2j]R_j f_o + \sum_j h[2j+1]R_jf_e.
 $$
 
-$R_1f_e'$ for example is computed for two consecutive horizontal 4x8 blocks, thus we shift 4x8 to the right, but the first column is not valid. Only second block participates in the computation, thus we can do at most 8 such shifts on $f_e'$. Given above formula we derive that $k\leq 17$, but this limitation is sufficient for our LWT problem, which requires support of  $k\leq9$.
+The maximum eight shifts between two 8-lane subvectors gives the `K<=17` bound.
 
-Also this requires physical padding by $17-k$ elements to the left for $f$ to get $f'$.
+![Horizontal stencil register windows](figs/HorizontalStencilExamples.svg)
 
+## Architecture-specific rotate
 
-## Implementation details
+TT-Metal defines exactly one official JIT macro. [`horizontal_stencil_sfpi.h`](../tt-wavelet/kernels/sfpi/horizontal_stencil_sfpi.h) branches directly on it.
 
-Our kernel is the operator $g'[i:i+16] = g[i+16:i+32] = T(f[i:i+16], f[i+16:i+32], h)$, where $g$ and $f$ are 4 consecutive rows of the tensor (refer to the [Tenstorrent ISA Documentation](https://github.com/tenstorrent/tt-isa-documentation/) for details on the SFPU registers and the tile layout).
+- On Wormhole (`ARCH_WORMHOLE`), `SHFLSHR1` retains the documented erratum behavior used to inject the cross-register lane-zero halo after rotating the preceding register.
+- On Blackhole (`ARCH_BLACKHOLE`), that erratum is fixed. Both registers are rotated, lane zero is selected from `LREG15` lane positions, and a masked move injects the halo explicitly.
 
-We have implemented a 1-element shift operator for two consecutive SRegisters (a, b). It produces a valid results for the SRegister (b) while first SRegister is used as a halo for the elements to be shifted out to the right. You can do the same shift up to 8 elements for the same pair of SRegisters (a, b).
+Never compile the Wormhole rotate for Blackhole.
 
-It is implemented as follows (call it `ROTATE(a, b)`):
+![Horizontal one-element rotate](figs/HorizontalRotate.svg)
 
-```c++
-// Shift a to the right
-SFPSHFT2(0, a, a, SFPSHFT2_MOD1_SUBVEC_SHFLROR1);
-// Shift b to the right
-SFPSHFT2(0, b, b, SFPSHFT2_MOD1_SUBVEC_SHFLROR1);
-// Set LaneEnable=true for lanes with col=0 and LaneEnable=false for others
-SFPSETCC(0, mask, 0, SFPSETCC_MOD1_LREG_NE0);
-// Copy first column of a to the first column of b
-SFPMOV(0, a, b, 0);
-// Set all LaneEnable=true
-SFPENCC(0, 0, 0, SFPENCC_MOD1_EU_R1);
-```
+## Scale integration
 
-The register `mask` is preloaded with the following values:
+[`scale_sfpi.h`](../tt-wavelet/kernels/sfpi/scale_sfpi.h) owns FP32 scale primitives. For inline inverse scaling, source and/or base registers are multiplied before stencil accumulation. Forward terminal scaling multiplies the last updated output registers after accumulation. This keeps coefficient multiplication in SFPU and preserves operation order without materializing an avoidable local route.
 
-$$
-\text{mask} = \begin{bmatrix}
-1 & 0 & 0 & 0 & 0 & 0 & 0 & 0 \\
-1 & 0 & 0 & 0 & 0 & 0 & 0 & 0 \\
-1 & 0 & 0 & 0 & 0 & 0 & 0 & 0 \\
-1 & 0 & 0 & 0 & 0 & 0 & 0 & 0
-\end{bmatrix}
-$$
+## Required validation
 
-It can also be viewed as in figure below.
-
-![](./figs/HorizontalRotate.svg)
-
-The whole algorithm is implemented by alternating between doing the shift on even and odd SRegisters and doing the multiplication and reduction for the stencil formula.
-
-Recall the formulas:
-
-$$
-g_e = \sum_{j=0}^{\lfloor (k-1)/2 \rfloor} h[2j] \cdot (R_j f_e)[i] + \sum_{j=0}^{\lfloor (k-2)/2 \rfloor} h[2j+1] \cdot (R_{j+1} f_o)[i]
-$$
-$$
-g_o = \sum_{j=0}^{\lfloor (k-1)/2 \rfloor} h[2j] \cdot (R_j f_o)[i] + \sum_{j=0}^{\lfloor (k-2)/2 \rfloor} h[2j+1] \cdot (R_j f_e)[i]
-$$
-
-It is implemented as follows (call it `STENCIL(f_e_0, f_o_0, f_e_1, f_o_1, g_e, g_o)`, with `h` being a compile-time (for kernel) array)
-```c++
-for (uint8_t j = 0; j < k; j++) {
-    BROADCAST(h[j], tmp);
-    if((j & 1) == 0) {
-        // Even
-        SFPMAD(f_e_1, tmp, g_e, 0);
-        SFPMAD(f_o_1, tmp, g_o, 0);
-    } else {
-        // Odd
-        SFPMAD(f_e_1, tmp, g_o, 0);
-        ROTATE(f_o_0, f_o_1);
-        SFPMAD(f_o_1, tmp, g_e, 0);
-        ROTATE(f_e_0, f_e_1);
-    }
-}
-```
-
-With `BROADCAST(c, r)` defined as follows:
-```c++
-SFPLOADI(r, SFPLOADI_MOD0_UPPER, c >> 16);
-SFPLOADI(r, SFPLOADI_MOD0_LOWER, c & 0xffff);
-```
-
-### Processing Tiles
-
-Above code works for two DRegisters (4x16) of the Tile and outputs one DRegister (4x16) of the output. On the figure below can be seen how choice of the input DRegisters (blue) influences where output DRegister (red) is located. By sliding over the input DRegisters horizontally we compute whole Tile of the output.
-
-![](./figs/HorizontalStencilExamples.svg)
-
-From Tile 0 and Tile 1 of the input, we compute Tile 0 of the output. Then we can either add Tile 2, and compute stenctil over Tile 1 and Tile 2 to produce Tile 1 of the output, or we can just compute final stencil over Tile 1, whcih will produce half of the Tile 1, with block 0 of face 1 (as show of figure) will not be valid.
+Exercise `K=1`, `K=2`, shipped `K=9`, and synthetic `K=17`, including aligned and `+1 FP32` offsets, both layouts, odd/even lengths, and the 3,072-element chunk boundary. A successful host build is insufficient because SFPI is JIT compiled on first device use.

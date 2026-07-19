@@ -28,13 +28,13 @@ struct StreamRef {
 };
 
 enum class RouteOutputStorage : uint8_t {
-    kResidentSlot = 0,
+    kWorkspaceSlot = 0,
     kFinalEvenDram = 1,
     kFinalOddDram = 2,
 };
 
 struct RouteOutputRef {
-    RouteOutputStorage storage{RouteOutputStorage::kResidentSlot};
+    RouteOutputStorage storage{RouteOutputStorage::kWorkspaceSlot};
     StorageSlot slot{StorageSlot::kA};
 };
 
@@ -74,8 +74,8 @@ struct StreamState {
     size_t length{0};
 };
 
-[[nodiscard]] constexpr RouteOutputRef resident_output(const StorageSlot slot) noexcept {
-    return RouteOutputRef{.storage = RouteOutputStorage::kResidentSlot, .slot = slot};
+[[nodiscard]] constexpr RouteOutputRef workspace_output(const StorageSlot slot) noexcept {
+    return RouteOutputRef{.storage = RouteOutputStorage::kWorkspaceSlot, .slot = slot};
 }
 
 [[nodiscard]] inline std::tuple<int, size_t, size_t, size_t> compute_step_geometry(
@@ -115,7 +115,7 @@ void append_forward_route(
                 .type = Step::type,
                 .source = active.even,
                 .base = active.odd,
-                .output = resident_output(output.slot),
+                .output = workspace_output(output.slot),
                 .source_length = even_state.length,
                 .base_length = odd_state.length,
                 .source_offset = src_off,
@@ -139,7 +139,7 @@ void append_forward_route(
                 .type = Step::type,
                 .source = active.odd,
                 .base = active.even,
-                .output = resident_output(output.slot),
+                .output = workspace_output(output.slot),
                 .source_length = odd_state.length,
                 .base_length = even_state.length,
                 .source_offset = src_off,
@@ -159,7 +159,7 @@ void append_forward_route(
                 .type = Step::type,
                 .source = active.odd,
                 .base = active.odd,
-                .output = resident_output(output.slot),
+                .output = workspace_output(output.slot),
                 .source_length = odd_state.length,
                 .base_length = odd_state.length,
                 .source_offset = 0,
@@ -178,7 +178,7 @@ void append_forward_route(
                 .type = Step::type,
                 .source = active.even,
                 .base = active.even,
-                .output = resident_output(output.slot),
+                .output = workspace_output(output.slot),
                 .source_length = even_state.length,
                 .base_length = even_state.length,
                 .source_offset = 0,
@@ -196,7 +196,7 @@ void append_forward_route(
                 .type = Step::type,
                 .source = active.even,
                 .base = active.odd,
-                .output = resident_output(active.even.slot),
+                .output = workspace_output(active.even.slot),
                 .source_length = even_state.length,
                 .base_length = odd_state.length,
                 .source_offset = 0,

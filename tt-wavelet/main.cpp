@@ -36,12 +36,12 @@ struct CliOptions {
     std::optional<size_t> original_length;
     double signal_start{1.0};
     double signal_step{1.0};
-    ttwv::LwtMemoryMode memory_mode{ttwv::LwtMemoryMode::kConeStreamed};
     ttwv::BoundaryMode boundary_mode{ttwv::BoundaryMode::kSymmetric};
     std::string wavelet_name;
     std::optional<std::filesystem::path> signal_file;
     std::optional<std::filesystem::path> approximation_file;
     std::optional<std::filesystem::path> detail_file;
+    std::optional<std::filesystem::path> output_prefix;
 };
 
 struct ForwardOutput {
@@ -49,6 +49,7 @@ struct ForwardOutput {
     std::vector<float> detail;
     size_t logical_length{0};
     double execution_time_ms{0.0};
+    ttwv::LiftingSchedulerTelemetry scheduler{};
 };
 
 struct TimedTransform {
@@ -77,7 +78,7 @@ struct InverseOutput {
            "  lwt --inverse --original-length N --approximation-file PATH --detail-file PATH "
            "<scheme|scheme_path>\n"
            "  lwt [--inverse] --benchmark [--repeats N] [--warmup-runs N] "
-           "[--memory-mode cone|resident] "
+           "[--output-prefix PATH] "
            "[--boundary-mode symmetric|zero|constant|periodic|antisymmetric|smooth|reflect|antireflect] "
            "[--length N --signal-start X --signal-step X | <signal_file>] <scheme|scheme_path>\n"
            "\n"
@@ -147,19 +148,12 @@ struct InverseOutput {
             options.approximation_file = require_option_value(argc, argv, i, arg);
         } else if (arg == "--detail-file") {
             options.detail_file = require_option_value(argc, argv, i, arg);
+        } else if (arg == "--output-prefix") {
+            options.output_prefix = require_option_value(argc, argv, i, arg);
         } else if (arg == "--signal-start") {
             options.signal_start = parse_double(require_option_value(argc, argv, i, arg), "--signal-start");
         } else if (arg == "--signal-step") {
             options.signal_step = parse_double(require_option_value(argc, argv, i, arg), "--signal-step");
-        } else if (arg == "--memory-mode") {
-            const std::string mode = require_option_value(argc, argv, i, arg);
-            if (mode == "cone") {
-                options.memory_mode = ttwv::LwtMemoryMode::kConeStreamed;
-            } else if (mode == "resident") {
-                options.memory_mode = ttwv::LwtMemoryMode::kResidentSharded;
-            } else {
-                throw std::runtime_error("--memory-mode must be 'cone' or 'resident'.");
-            }
         } else if (arg == "--boundary-mode") {
             const std::string mode = require_option_value(argc, argv, i, arg);
             if (mode == "symmetric") {
@@ -214,14 +208,6 @@ struct InverseOutput {
         options.signal_file = std::filesystem::path{positionals.at(1)};
     }
 
-    if (options.memory_mode != ttwv::LwtMemoryMode::kConeStreamed &&
-        options.boundary_mode != ttwv::BoundaryMode::kSymmetric) {
-        throw std::runtime_error("non-symmetric boundary modes currently require --memory-mode cone.");
-    }
-    if (options.inverse && options.memory_mode != ttwv::LwtMemoryMode::kConeStreamed) {
-        throw std::runtime_error("ILWT currently requires --memory-mode cone.");
-    }
-
     return options;
 }
 
@@ -244,6 +230,31 @@ struct InverseOutput {
     }
 
     return signal;
+}
+
+[[nodiscard]] std::filesystem::path output_path(const std::filesystem::path& prefix, const std::string_view suffix) {
+    return std::filesystem::path{prefix.string() + std::string{suffix}};
+}
+
+void write_fp32_file(const std::filesystem::path& path, const std::vector<float>& values) {
+    std::ofstream handle(path, std::ios::binary | std::ios::trunc);
+    if (!handle.good()) {
+        throw std::runtime_error("Failed to open FP32 output file: " + path.string());
+    }
+    handle.write(
+        reinterpret_cast<const char*>(values.data()), static_cast<std::streamsize>(values.size() * sizeof(float)));
+    if (!handle.good()) {
+        throw std::runtime_error("Failed to write FP32 output file: " + path.string());
+    }
+}
+
+void write_forward_outputs(const std::filesystem::path& prefix, const ForwardOutput& output) {
+    write_fp32_file(output_path(prefix, ".approximation.f32"), output.approximation);
+    write_fp32_file(output_path(prefix, ".detail.f32"), output.detail);
+}
+
+void write_inverse_output(const std::filesystem::path& prefix, const InverseOutput& output) {
+    write_fp32_file(output_path(prefix, ".reconstructed.f32"), output.signal);
 }
 
 [[nodiscard]] std::vector<float> generate_signal(const size_t length, const double start, const double step) {
@@ -349,52 +360,22 @@ template <typename Scheme>
     tt::tt_metal::distributed::MeshCommandQueue& command_queue,
     const tt::tt_metal::Buffer& input_buffer,
     const ttwv::SignalBuffer& input_desc,
-    const ttwv::LwtMemoryMode memory_mode,
     const ttwv::BoundaryMode boundary_mode,
     const bool read_outputs) {
-    if (memory_mode == ttwv::LwtMemoryMode::kConeStreamed) {
-        auto executable = ttwv::create_cone_streamed_lwt_executable<Scheme>(
-            TT_WAVELET_SOURCE_DIR, mesh_device, input_buffer, input_desc, boundary_mode);
-        ttwv::prepare_cone_streamed_lwt(command_queue, executable);
-
-        const auto execution_start = std::chrono::steady_clock::now();
-        ttwv::execute_cone_streamed_lwt(mesh_device, command_queue, executable);
-        const auto execution_stop = std::chrono::steady_clock::now();
-        const std::chrono::duration<double, std::milli> execution_time_ms = execution_stop - execution_start;
-        if (!read_outputs) {
-            return ForwardOutput{.execution_time_ms = execution_time_ms.count()};
-        }
-
-        std::vector<float> device_even_result;
-        std::vector<float> device_odd_result;
-        tt::tt_metal::distributed::EnqueueReadMeshBuffer(
-            command_queue, device_even_result, executable.buffers.final_even, true);
-        tt::tt_metal::distributed::EnqueueReadMeshBuffer(
-            command_queue, device_odd_result, executable.buffers.final_odd, true);
-        const auto& plan = executable.plan.full_plan;
-        const size_t canonical_length = plan.output_length;
-        constexpr int canonical_start = static_cast<int>(Scheme::tap_size / 2);
-        return ForwardOutput{
-            .approximation = canonicalize_forward_output(
-                device_even_result, plan.final_even_length, canonical_length, plan.final_even_shift, canonical_start),
-            .detail = canonicalize_forward_output(
-                device_odd_result, plan.final_odd_length, canonical_length, plan.final_odd_shift, canonical_start),
-            .logical_length = canonical_length,
-            .execution_time_ms = execution_time_ms.count(),
-        };
-    }
-
-    auto executable =
-        ttwv::create_resident_lwt_executable<Scheme>(TT_WAVELET_SOURCE_DIR, mesh_device, input_buffer, input_desc);
-    ttwv::prepare_resident_lwt(command_queue, executable);
+    auto executable = ttwv::create_lwt_executable<Scheme>(
+        TT_WAVELET_SOURCE_DIR, mesh_device, input_buffer, input_desc, boundary_mode);
+    ttwv::prepare_lwt(command_queue, executable);
 
     const auto execution_start = std::chrono::steady_clock::now();
-    ttwv::execute_resident_lwt(mesh_device, command_queue, executable);
+    ttwv::execute_lwt(mesh_device, command_queue, executable);
     const auto execution_stop = std::chrono::steady_clock::now();
     const std::chrono::duration<double, std::milli> execution_time_ms = execution_stop - execution_start;
 
     if (!read_outputs) {
-        return ForwardOutput{.execution_time_ms = execution_time_ms.count()};
+        return ForwardOutput{
+            .execution_time_ms = execution_time_ms.count(),
+            .scheduler = executable.buffers.scheduler,
+        };
     }
 
     std::vector<float> device_even_result;
@@ -404,24 +385,26 @@ template <typename Scheme>
     tt::tt_metal::distributed::EnqueueReadMeshBuffer(
         command_queue, device_odd_result, executable.buffers.final_odd, true);
 
-    const size_t canonical_length = executable.plan.output_length;
+    const auto& plan = executable.plan.full_plan;
+    const size_t canonical_length = plan.output_length;
     constexpr int canonical_start = static_cast<int>(Scheme::tap_size / 2);
 
     return ForwardOutput{
         .approximation = canonicalize_forward_output(
             device_even_result,
-            executable.plan.final_even_length,
+            plan.final_even_length,
             canonical_length,
-            executable.plan.final_even_shift,
+            plan.final_even_shift,
             canonical_start),
         .detail = canonicalize_forward_output(
             device_odd_result,
-            executable.plan.final_odd_length,
+            plan.final_odd_length,
             canonical_length,
-            executable.plan.final_odd_shift,
+            plan.final_odd_shift,
             canonical_start),
         .logical_length = canonical_length,
         .execution_time_ms = execution_time_ms.count(),
+        .scheduler = executable.buffers.scheduler,
     };
 }
 
@@ -431,29 +414,13 @@ template <typename Scheme>
     tt::tt_metal::distributed::MeshCommandQueue& command_queue,
     const tt::tt_metal::Buffer& input_buffer,
     const ttwv::SignalBuffer& input_desc,
-    const ttwv::LwtMemoryMode memory_mode,
     const ttwv::BoundaryMode boundary_mode) {
-    if (memory_mode == ttwv::LwtMemoryMode::kConeStreamed) {
-        auto executable = ttwv::create_cone_streamed_lwt_executable<Scheme>(
-            TT_WAVELET_SOURCE_DIR, mesh_device, input_buffer, input_desc, boundary_mode);
-        ttwv::prepare_cone_streamed_lwt(command_queue, executable);
-
-        const auto start = std::chrono::steady_clock::now();
-        ttwv::execute_cone_streamed_lwt(mesh_device, command_queue, executable);
-        const auto stop = std::chrono::steady_clock::now();
-        const std::chrono::duration<double, std::milli> elapsed_ms = stop - start;
-        return TimedTransform{
-            .execution_time_ms = elapsed_ms.count(),
-            .scheduler = executable.buffers.scheduler,
-        };
-    }
-
-    auto executable =
-        ttwv::create_resident_lwt_executable<Scheme>(TT_WAVELET_SOURCE_DIR, mesh_device, input_buffer, input_desc);
-    ttwv::prepare_resident_lwt(command_queue, executable);
+    auto executable = ttwv::create_lwt_executable<Scheme>(
+        TT_WAVELET_SOURCE_DIR, mesh_device, input_buffer, input_desc, boundary_mode);
+    ttwv::prepare_lwt(command_queue, executable);
 
     const auto start = std::chrono::steady_clock::now();
-    ttwv::execute_resident_lwt(mesh_device, command_queue, executable);
+    ttwv::execute_lwt(mesh_device, command_queue, executable);
     const auto stop = std::chrono::steady_clock::now();
     const std::chrono::duration<double, std::milli> elapsed_ms = stop - start;
     return TimedTransform{
@@ -472,7 +439,7 @@ template <typename Scheme>
     const size_t original_length,
     const ttwv::BoundaryMode boundary_mode,
     const bool read_output) {
-    auto executable = ttwv::create_cone_streamed_ilwt_executable<Scheme>(
+    auto executable = ttwv::create_ilwt_executable<Scheme>(
         TT_WAVELET_SOURCE_DIR,
         mesh_device,
         approximation_buffer,
@@ -480,10 +447,10 @@ template <typename Scheme>
         coefficient_length,
         original_length,
         boundary_mode);
-    ttwv::prepare_cone_streamed_ilwt(command_queue, executable);
+    ttwv::prepare_ilwt(command_queue, executable);
 
     const auto execution_start = std::chrono::steady_clock::now();
-    ttwv::execute_cone_streamed_ilwt(mesh_device, command_queue, executable);
+    ttwv::execute_ilwt(mesh_device, command_queue, executable);
     const auto execution_stop = std::chrono::steady_clock::now();
     const std::chrono::duration<double, std::milli> execution_time_ms = execution_stop - execution_start;
 
@@ -496,6 +463,37 @@ template <typename Scheme>
         output.signal.resize(original_length);
     }
     return output;
+}
+
+void print_scheduler_telemetry(const char* prefix, const ttwv::LiftingSchedulerTelemetry& scheduler) {
+    std::cerr << prefix << "_architecture: " << tt::arch_to_str(scheduler.architecture) << '\n'
+              << prefix << "_layout: "
+              << (scheduler.workspace_layout == ttwv::WorkspaceLayout::kTileNative ? "tile-native" : "row-major")
+              << '\n'
+              << prefix << "_signal_length: " << scheduler.signal_length << '\n'
+              << prefix << "_max_group_count: " << scheduler.max_group_count << '\n'
+              << prefix << "_active_core_count: " << scheduler.active_core_count << '\n'
+              << prefix << "_chunk_count: " << scheduler.chunk_count << '\n'
+              << prefix << "_groups_per_chunk: " << scheduler.groups_per_chunk << '\n'
+              << prefix << "_workspace_elements: " << scheduler.workspace_elements << '\n'
+              << prefix << "_max_workspace_elements: " << scheduler.max_workspace_elements << '\n'
+              << prefix << "_max_dependency_overhead: " << scheduler.max_dependency_overhead << '\n'
+              << prefix << "_terminal_scale_inline: " << (scheduler.terminal_scale_inline ? 1 : 0) << '\n'
+              << prefix << "_inverse_scale_inline: " << (scheduler.inverse_scale_inline ? 1 : 0) << '\n'
+              << prefix << "_inverse_final_interleave_direct: " << (scheduler.inverse_final_interleave_direct ? 1 : 0)
+              << '\n'
+              << prefix << "_l1_slots_bytes: " << scheduler.l1_slots_bytes << '\n'
+              << prefix << "_l1_circular_buffers_bytes: " << scheduler.l1_circular_buffers_bytes << '\n'
+              << prefix << "_l1_cache_bytes: " << scheduler.l1_cache_bytes << '\n'
+              << prefix << "_l1_output_bytes: " << scheduler.l1_output_bytes << '\n'
+              << prefix << "_l1_synchronization_bytes: " << scheduler.l1_synchronization_bytes << '\n'
+              << prefix << "_l1_metadata_bytes: " << scheduler.l1_metadata_bytes << '\n'
+              << prefix << "_l1_alignment_bytes: " << scheduler.l1_alignment_bytes << '\n'
+              << prefix << "_l1_padding_bytes: " << scheduler.l1_padding_bytes << '\n'
+              << prefix << "_l1_architecture_scratch_bytes: " << scheduler.l1_architecture_scratch_bytes << '\n'
+              << prefix << "_l1_total_bytes: " << scheduler.l1_total_bytes << '\n'
+              << prefix << "_l1_capacity_bytes: " << scheduler.l1_capacity_bytes << '\n'
+              << prefix << "_l1_headroom_bytes: " << scheduler.l1_headroom_bytes << '\n';
 }
 
 void print_timing_statistics(
@@ -524,28 +522,8 @@ void print_timing_statistics(
               << prefix << "_p90_time_ms: " << p90_ms << '\n'
               << prefix << "_stddev_time_ms: " << stddev_ms << '\n'
               << prefix << "_repeats: " << times_ms.size() << '\n'
-              << prefix << "_warmup_runs: " << warmup_runs << '\n'
-              << prefix
-              << "_memory_mode: " << (scheduler.memory_mode == ttwv::LwtMemoryMode::kConeStreamed ? "cone" : "resident")
-              << '\n'
-              << prefix << "_max_group_count: " << scheduler.max_group_count << '\n'
-              << prefix << "_groups_per_shard: " << scheduler.groups_per_shard << '\n'
-              << prefix << "_active_core_count: " << scheduler.active_core_count << '\n'
-              << prefix << "_shard_elements: " << scheduler.shard_elements << '\n'
-              << prefix << "_chunk_count: " << scheduler.chunk_count << '\n'
-              << prefix << "_groups_per_chunk: " << scheduler.groups_per_chunk << '\n'
-              << prefix << "_workspace_elements: " << scheduler.workspace_elements << '\n'
-              << prefix << "_max_dependency_overhead: " << scheduler.max_dependency_overhead << '\n'
-              << prefix << "_terminal_scale_fused: " << (scheduler.terminal_scale_fused ? 1 : 0) << '\n'
-              << prefix << "_inverse_scale_fused: " << (scheduler.inverse_scale_fused ? 1 : 0) << '\n'
-              << prefix << "_inverse_final_interleave_fused: " << (scheduler.inverse_final_interleave_fused ? 1 : 0)
-              << '\n'
-              << prefix << "_tile_native_workspace: " << (scheduler.tile_native_workspace ? 1 : 0) << '\n'
-              << prefix << "_zero_work_cores_per_route:";
-    for (const uint32_t count : scheduler.zero_work_cores_per_route) {
-        std::cerr << ' ' << count;
-    }
-    std::cerr << '\n';
+              << prefix << "_warmup_runs: " << warmup_runs << '\n';
+    print_scheduler_telemetry(prefix, scheduler);
 }
 
 void print_reconstruction_error(const std::vector<float>& reference, const std::vector<float>& reconstructed) {
@@ -625,7 +603,6 @@ int main(int argc, char** argv) {
                         command_queue,
                         *(input->buffer->get_backing_buffer()),
                         input->desc,
-                        options.memory_mode,
                         options.boundary_mode,
                         true);
                     approximation_values = coefficients.approximation;
@@ -671,6 +648,18 @@ int main(int argc, char** argv) {
                         scheduler = std::move(sample.scheduler);
                     }
                     print_timing_statistics("ilwt", times_ms, options.warmup_runs, scheduler);
+                    if (options.output_prefix.has_value()) {
+                        const InverseOutput output = run_inverse_once<Scheme>(
+                            *mesh_device,
+                            command_queue,
+                            *(approximation.buffer->get_backing_buffer()),
+                            *(detail.buffer->get_backing_buffer()),
+                            coefficient_length,
+                            original_length,
+                            options.boundary_mode,
+                            true);
+                        write_inverse_output(*options.output_prefix, output);
+                    }
                     return EXIT_SUCCESS;
                 }
 
@@ -687,8 +676,12 @@ int main(int argc, char** argv) {
                 if (!external_coefficients) {
                     print_reconstruction_error(signal, output.signal);
                 }
+                if (options.output_prefix.has_value()) {
+                    write_inverse_output(*options.output_prefix, output);
+                }
                 std::cerr << "ilwt_execution_time_ms: " << std::fixed << std::setprecision(6)
                           << output.execution_time_ms << '\n';
+                print_scheduler_telemetry("ilwt", output.scheduler);
                 return EXIT_SUCCESS;
             }
 
@@ -699,7 +692,6 @@ int main(int argc, char** argv) {
                         command_queue,
                         *(input->buffer->get_backing_buffer()),
                         input->desc,
-                        options.memory_mode,
                         options.boundary_mode));
                 }
 
@@ -712,12 +704,21 @@ int main(int argc, char** argv) {
                         command_queue,
                         *(input->buffer->get_backing_buffer()),
                         input->desc,
-                        options.memory_mode,
                         options.boundary_mode);
                     times_ms.push_back(sample.execution_time_ms);
                     scheduler = std::move(sample.scheduler);
                 }
                 print_timing_statistics("lwt", times_ms, options.warmup_runs, scheduler);
+                if (options.output_prefix.has_value()) {
+                    const ForwardOutput output = run_forward_once<Scheme>(
+                        *mesh_device,
+                        command_queue,
+                        *(input->buffer->get_backing_buffer()),
+                        input->desc,
+                        options.boundary_mode,
+                        true);
+                    write_forward_outputs(*options.output_prefix, output);
+                }
                 return EXIT_SUCCESS;
             }
 
@@ -726,15 +727,18 @@ int main(int argc, char** argv) {
                 command_queue,
                 *(input->buffer->get_backing_buffer()),
                 input->desc,
-                options.memory_mode,
                 options.boundary_mode,
                 true);
 
             print_coeffs("tt-wavelet approximation coefficients", output.approximation, output.logical_length);
             print_coeffs("tt-wavelet detail coefficients", output.detail, output.logical_length);
+            if (options.output_prefix.has_value()) {
+                write_forward_outputs(*options.output_prefix, output);
+            }
 
             std::cerr << "lwt_execution_time_ms: " << std::fixed << std::setprecision(6) << output.execution_time_ms
                       << '\n';
+            print_scheduler_telemetry("lwt", output.scheduler);
             return EXIT_SUCCESS;
         };
         if (wavelet_name == ttwv::schemes::testing::synthetic_k17::name) {

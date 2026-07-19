@@ -75,12 +75,6 @@ def parse_args() -> argparse.Namespace:
         help="Skip running the TT-wavelet device executable.",
     )
     parser.add_argument(
-        "--memory-mode",
-        choices=["cone", "resident"],
-        default="cone",
-        help="TT-wavelet memory backend (default: %(default)s).",
-    )
-    parser.add_argument(
         "--boundary-mode",
         choices=[
             "symmetric",
@@ -112,10 +106,7 @@ def parse_args() -> argparse.Namespace:
         default=PROJECT_ROOT / "wavelets",
         help="Directory with lifting-scheme JSON files (default: %(default)s).",
     )
-    args = parser.parse_args()
-    if args.memory_mode == "resident" and args.boundary_mode != "symmetric":
-        parser.error("non-symmetric boundary modes currently require --memory-mode cone")
-    return args
+    return parser.parse_args()
 
 
 def read_signal_file(path: Path) -> list[float]:
@@ -172,9 +163,7 @@ def print_error_metrics(reference: Sequence[float], candidate: Sequence[float], 
     )
 
 
-def run_tt_wavelet(
-    wavelet: str, signal_file: Path, memory_mode: str, boundary_mode: str
-) -> dict[str, list[float]]:
+def run_tt_wavelet(wavelet: str, signal_file: Path, boundary_mode: str) -> dict[str, list[float]]:
     if not TT_WAVELET_BINARY.exists():
         raise FileNotFoundError(
             f"TT-wavelet binary not found at {TT_WAVELET_BINARY}. Rebuild with ./update.sh Release lwt"
@@ -182,8 +171,7 @@ def run_tt_wavelet(
 
     command = (
         f"source {sh_quote(str(TT_WAVELET_ENV))} "
-        f"&& {sh_quote(str(TT_WAVELET_BINARY))} --memory-mode {sh_quote(memory_mode)} "
-        f"--boundary-mode {sh_quote(boundary_mode)} "
+        f"&& {sh_quote(str(TT_WAVELET_BINARY))} --boundary-mode {sh_quote(boundary_mode)} "
         f"{sh_quote(wavelet)} {sh_quote(str(signal_file))}"
     )
     completed = subprocess.run(
@@ -369,7 +357,7 @@ def run_single_comparison(args: argparse.Namespace, wavelet: str) -> bool:
         print("tt-wavelet run skipped.")
         print()
     else:
-        tt_wavelet = run_tt_wavelet(wavelet, args.signal_file, args.memory_mode, args.boundary_mode)
+        tt_wavelet = run_tt_wavelet(wavelet, args.signal_file, args.boundary_mode)
         print(
             f"tt-wavelet approximation coefficients: {format_coeffs(tt_wavelet['approximation'])}"
         )

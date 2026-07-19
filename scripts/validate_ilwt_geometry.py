@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate 1D ILWT dependency-cone geometry for every JSON scheme.
+"""Validate 1D ILWT dependency geometry for every JSON scheme.
 
 This is an independent model of inverse_plan.hpp.  It intentionally derives
 inverse requirements from each forward trace instead of planning a synthetic

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the ConeStreamed ILWT kernel chain for every generated scheme."""
+"""Run the production ILWT kernel chain for every generated scheme."""
 
 from __future__ import annotations
 
@@ -7,6 +7,12 @@ import argparse
 import os
 import subprocess
 from pathlib import Path
+
+from runtime_checks import (
+    check_consistent_architecture,
+    parse_runtime_architecture,
+    run_ncrisc_elf_gate,
+)
 
 
 def main() -> None:
@@ -43,8 +49,9 @@ def main() -> None:
 
     names = sorted(path.stem for path in args.wavelets.glob("*.json"))
     environment = os.environ.copy()
-    environment["TT_WAVELET_LWT_CONE_WORKSPACE_LAYOUT"] = args.layout
+    environment["TT_WAVELET_LWT_WORKSPACE_LAYOUT"] = args.layout
     failures: list[str] = []
+    architecture: str | None = None
     case_count = len(names) * len(args.modes)
     case_index = 0
     for name in names:
@@ -78,12 +85,19 @@ def main() -> None:
             )
             if result.returncode != 0:
                 failures.append(f"{name} mode={mode}:\n{result.stderr}")
+            else:
+                architecture = check_consistent_architecture(
+                    architecture, parse_runtime_architecture(result.stderr)
+                )
 
     print(f"validated_schemes: {len(names)}")
     print(f"validated_device_cases: {case_count}")
     print(f"failed_schemes: {len(failures)}")
     if failures:
         raise SystemExit("\n".join(["ILWT runtime stability failed:", *failures]))
+    if architecture is None:
+        raise SystemExit("ILWT stability validation did not execute a device case")
+    run_ncrisc_elf_gate(root, architecture)
 
 
 if __name__ == "__main__":

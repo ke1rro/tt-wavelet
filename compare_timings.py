@@ -21,54 +21,56 @@ TT_MEDIAN_TIME_PATTERN = re.compile(rf"{TT_PREFIX}_median_time_ms:\s*([0-9eE+.\-
 TT_P10_TIME_PATTERN = re.compile(rf"{TT_PREFIX}_p10_time_ms:\s*([0-9eE+.\-]+)")
 TT_P90_TIME_PATTERN = re.compile(rf"{TT_PREFIX}_p90_time_ms:\s*([0-9eE+.\-]+)")
 TT_STDDEV_TIME_PATTERN = re.compile(rf"{TT_PREFIX}_stddev_time_ms:\s*([0-9eE+.\-]+)")
-TT_MEMORY_MODE_PATTERN = re.compile(rf"{TT_PREFIX}_memory_mode:\s*(\S+)")
+TT_ARCHITECTURE_PATTERN = re.compile(rf"{TT_PREFIX}_architecture:\s*(\S+)")
+TT_LAYOUT_PATTERN = re.compile(rf"{TT_PREFIX}_layout:\s*(\S+)")
 TT_MAX_GROUP_COUNT_PATTERN = re.compile(rf"{TT_PREFIX}_max_group_count:\s*(\d+)")
-TT_GROUPS_PER_SHARD_PATTERN = re.compile(rf"{TT_PREFIX}_groups_per_shard:\s*(\d+)")
 TT_ACTIVE_CORE_COUNT_PATTERN = re.compile(rf"{TT_PREFIX}_active_core_count:\s*(\d+)")
-TT_SHARD_ELEMENTS_PATTERN = re.compile(rf"{TT_PREFIX}_shard_elements:\s*(\d+)")
 TT_CHUNK_COUNT_PATTERN = re.compile(rf"{TT_PREFIX}_chunk_count:\s*(\d+)")
 TT_GROUPS_PER_CHUNK_PATTERN = re.compile(rf"{TT_PREFIX}_groups_per_chunk:\s*(\d+)")
 TT_WORKSPACE_ELEMENTS_PATTERN = re.compile(rf"{TT_PREFIX}_workspace_elements:\s*(\d+)")
+TT_MAX_WORKSPACE_ELEMENTS_PATTERN = re.compile(rf"{TT_PREFIX}_max_workspace_elements:\s*(\d+)")
 TT_MAX_DEPENDENCY_OVERHEAD_PATTERN = re.compile(
     rf"{TT_PREFIX}_max_dependency_overhead:\s*([0-9eE+.\-]+)"
 )
-TT_TERMINAL_SCALE_FUSED_PATTERN = re.compile(rf"{TT_PREFIX}_terminal_scale_fused:\s*(\d+)")
-TT_INVERSE_SCALE_FUSED_PATTERN = re.compile(rf"{TT_PREFIX}_inverse_scale_fused:\s*(\d+)")
-TT_INVERSE_FINAL_INTERLEAVE_FUSED_PATTERN = re.compile(
-    rf"{TT_PREFIX}_inverse_final_interleave_fused:\s*(\d+)"
+TT_TERMINAL_SCALE_INLINE_PATTERN = re.compile(rf"{TT_PREFIX}_terminal_scale_inline:\s*(\d+)")
+TT_INVERSE_SCALE_INLINE_PATTERN = re.compile(rf"{TT_PREFIX}_inverse_scale_inline:\s*(\d+)")
+TT_INVERSE_FINAL_INTERLEAVE_DIRECT_PATTERN = re.compile(
+    rf"{TT_PREFIX}_inverse_final_interleave_direct:\s*(\d+)"
 )
-TT_TILE_NATIVE_WORKSPACE_PATTERN = re.compile(rf"{TT_PREFIX}_tile_native_workspace:\s*(\d+)")
-TT_ZERO_WORK_CORES_PATTERN = re.compile(rf"{TT_PREFIX}_zero_work_cores_per_route:\s*([0-9 ]*)")
+TT_L1_TOTAL_BYTES_PATTERN = re.compile(rf"{TT_PREFIX}_l1_total_bytes:\s*(\d+)")
+TT_L1_CAPACITY_BYTES_PATTERN = re.compile(rf"{TT_PREFIX}_l1_capacity_bytes:\s*(\d+)")
+TT_L1_HEADROOM_BYTES_PATTERN = re.compile(rf"{TT_PREFIX}_l1_headroom_bytes:\s*(\d+)")
 DEFAULT_LOG_CANDIDATES = [
     PROJECT_ROOT / "wavelets.log",
     PROJECT_ROOT / "wavelets (1).log",
 ]
 VENV_PYTHON = PROJECT_ROOT / ".venv" / "bin" / "python3"
-TimingKey = tuple[str, str, int, float, float, str, str, str]
+TimingKey = tuple[str, str, int, float, float, str, str]
 
 
 @dataclass(frozen=True)
 class TTTimingResult:
     mean_s: float
     min_s: float
-    memory_mode: str = ""
+    architecture: str = ""
+    layout: str = ""
     median_s: float | None = None
     p10_s: float | None = None
     p90_s: float | None = None
     stddev_s: float | None = None
     max_group_count: int | None = None
-    groups_per_shard: int | None = None
     active_core_count: int | None = None
-    shard_elements: int | None = None
     chunk_count: int | None = None
     groups_per_chunk: int | None = None
     workspace_elements: int | None = None
+    max_workspace_elements: int | None = None
     max_dependency_overhead: float | None = None
-    terminal_scale_fused: int | None = None
-    inverse_scale_fused: int | None = None
-    inverse_final_interleave_fused: int | None = None
-    tile_native_workspace: int | None = None
-    zero_work_cores_per_route: str = ""
+    terminal_scale_inline: int | None = None
+    inverse_scale_inline: int | None = None
+    inverse_final_interleave_direct: int | None = None
+    l1_total_bytes: int | None = None
+    l1_capacity_bytes: int | None = None
+    l1_headroom_bytes: int | None = None
 
 
 def ensure_runtime_packages(require_pywt: bool) -> None:
@@ -170,12 +172,6 @@ def parse_args() -> argparse.Namespace:
             "process with program cache and no coefficient readback. 'legacy' launches "
             "one lwt process per repeat (default: %(default)s)."
         ),
-    )
-    parser.add_argument(
-        "--tt-memory-mode",
-        choices=["cone", "resident"],
-        default="cone",
-        help="TT-wavelet memory backend (default: %(default)s).",
     )
     parser.add_argument(
         "--tt-boundary-mode",
@@ -292,8 +288,6 @@ def build_tt_command(
         command_args.append("--inverse")
     command_args.extend(
         [
-            "--memory-mode",
-            args.tt_memory_mode,
             "--boundary-mode",
             args.tt_boundary_mode,
         ]
@@ -354,11 +348,16 @@ def optional_pattern_string(pattern: re.Pattern[str], text: str) -> str:
     return match.group(1) if match is not None else ""
 
 
-def run_tt_wavelet(command: str) -> TTTimingResult:
+def run_tt_wavelet(
+    command: str, environment_overrides: dict[str, str] | None = None
+) -> TTTimingResult:
+    environment = tt_benchmark_env()
+    if environment_overrides is not None:
+        environment.update(environment_overrides)
     completed = subprocess.run(
         ["bash", "-lc", command],
         cwd=PROJECT_ROOT,
-        env=tt_benchmark_env(),
+        env=environment,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
         text=True,
@@ -374,38 +373,34 @@ def run_tt_wavelet(command: str) -> TTTimingResult:
     min_match = TT_MIN_TIME_PATTERN.search(completed.stderr)
     mean_s = float(match.group(1)) / 1000.0
     min_s = float(min_match.group(1)) / 1000.0 if min_match is not None else mean_s
-    zero_work_match = TT_ZERO_WORK_CORES_PATTERN.search(completed.stderr)
     return TTTimingResult(
         mean_s=mean_s,
         min_s=min_s,
-        memory_mode=optional_pattern_string(TT_MEMORY_MODE_PATTERN, completed.stderr),
+        architecture=optional_pattern_string(TT_ARCHITECTURE_PATTERN, completed.stderr),
+        layout=optional_pattern_string(TT_LAYOUT_PATTERN, completed.stderr),
         median_s=optional_pattern_float(TT_MEDIAN_TIME_PATTERN, completed.stderr, 0.001),
         p10_s=optional_pattern_float(TT_P10_TIME_PATTERN, completed.stderr, 0.001),
         p90_s=optional_pattern_float(TT_P90_TIME_PATTERN, completed.stderr, 0.001),
         stddev_s=optional_pattern_float(TT_STDDEV_TIME_PATTERN, completed.stderr, 0.001),
         max_group_count=optional_pattern_int(TT_MAX_GROUP_COUNT_PATTERN, completed.stderr),
-        groups_per_shard=optional_pattern_int(TT_GROUPS_PER_SHARD_PATTERN, completed.stderr),
         active_core_count=optional_pattern_int(TT_ACTIVE_CORE_COUNT_PATTERN, completed.stderr),
-        shard_elements=optional_pattern_int(TT_SHARD_ELEMENTS_PATTERN, completed.stderr),
         chunk_count=optional_pattern_int(TT_CHUNK_COUNT_PATTERN, completed.stderr),
         groups_per_chunk=optional_pattern_int(TT_GROUPS_PER_CHUNK_PATTERN, completed.stderr),
         workspace_elements=optional_pattern_int(TT_WORKSPACE_ELEMENTS_PATTERN, completed.stderr),
+        max_workspace_elements=optional_pattern_int(TT_MAX_WORKSPACE_ELEMENTS_PATTERN, completed.stderr),
         max_dependency_overhead=optional_pattern_float(
             TT_MAX_DEPENDENCY_OVERHEAD_PATTERN, completed.stderr
         ),
-        terminal_scale_fused=optional_pattern_int(
-            TT_TERMINAL_SCALE_FUSED_PATTERN, completed.stderr
+        terminal_scale_inline=optional_pattern_int(
+            TT_TERMINAL_SCALE_INLINE_PATTERN, completed.stderr
         ),
-        inverse_scale_fused=optional_pattern_int(TT_INVERSE_SCALE_FUSED_PATTERN, completed.stderr),
-        inverse_final_interleave_fused=optional_pattern_int(
-            TT_INVERSE_FINAL_INTERLEAVE_FUSED_PATTERN, completed.stderr
+        inverse_scale_inline=optional_pattern_int(TT_INVERSE_SCALE_INLINE_PATTERN, completed.stderr),
+        inverse_final_interleave_direct=optional_pattern_int(
+            TT_INVERSE_FINAL_INTERLEAVE_DIRECT_PATTERN, completed.stderr
         ),
-        tile_native_workspace=optional_pattern_int(
-            TT_TILE_NATIVE_WORKSPACE_PATTERN, completed.stderr
-        ),
-        zero_work_cores_per_route=(
-            " ".join(zero_work_match.group(1).split()) if zero_work_match else ""
-        ),
+        l1_total_bytes=optional_pattern_int(TT_L1_TOTAL_BYTES_PATTERN, completed.stderr),
+        l1_capacity_bytes=optional_pattern_int(TT_L1_CAPACITY_BYTES_PATTERN, completed.stderr),
+        l1_headroom_bytes=optional_pattern_int(TT_L1_HEADROOM_BYTES_PATTERN, completed.stderr),
     )
 
 
@@ -463,7 +458,6 @@ def row_key(row: dict[str, object]) -> TimingKey:
         float(row["signal_start"]),
         float(row["signal_step"]),
         str(row["pywt_mode"]),
-        str(row["lwt_memory_mode"]),
         str(row["lwt_boundary_mode"]),
     )
 
@@ -510,7 +504,6 @@ def base_row(
             "signal_start": args.signal_start,
             "signal_step": args.signal_step,
             "pywt_mode": args.pywt_mode,
-            "lwt_memory_mode": args.tt_memory_mode,
             "lwt_boundary_mode": args.tt_boundary_mode,
             "pywt_runs": 0,
             "tt_wavelet_runs": 0,
@@ -585,14 +578,6 @@ def main() -> int:
         raise ValueError("--pywt-repeats cannot be negative.")
 
     transforms = ["lwt", "ilwt"] if args.transform == "both" else [args.transform]
-    if needs_tt and "ilwt" in transforms and args.tt_memory_mode != "cone":
-        raise ValueError("ILWT currently supports only --tt-memory-mode cone.")
-    if needs_tt and args.tt_boundary_mode != "symmetric":
-        if args.tt_memory_mode != "cone":
-            raise ValueError(
-                "non-symmetric boundary modes currently require --tt-memory-mode cone."
-            )
-
     if args.wavelets:
         wavelets = args.wavelets
     else:
@@ -637,21 +622,22 @@ def main() -> int:
         "tt_wavelet_p90_s",
         "tt_wavelet_stddev_s",
         "tt_wavelet_runs",
-        "lwt_memory_mode",
         "lwt_boundary_mode",
+        "lwt_architecture",
+        "lwt_layout",
         "lwt_max_group_count",
-        "lwt_groups_per_shard",
         "lwt_active_core_count",
-        "lwt_shard_elements",
         "lwt_chunk_count",
         "lwt_groups_per_chunk",
         "lwt_workspace_elements",
+        "lwt_max_workspace_elements",
         "lwt_max_dependency_overhead",
-        "lwt_terminal_scale_fused",
-        "lwt_inverse_scale_fused",
-        "lwt_inverse_final_interleave_fused",
-        "lwt_tile_native_workspace",
-        "lwt_zero_work_cores_per_route",
+        "lwt_terminal_scale_inline",
+        "lwt_inverse_scale_inline",
+        "lwt_inverse_final_interleave_direct",
+        "lwt_l1_total_bytes",
+        "lwt_l1_capacity_bytes",
+        "lwt_l1_headroom_bytes",
         "speedup_pywt_over_tt",
         "status",
         "error",
@@ -741,27 +727,16 @@ def main() -> int:
                                 row["tt_wavelet_p10_s"] = tt_result.p10_s or ""
                                 row["tt_wavelet_p90_s"] = tt_result.p90_s or ""
                                 row["tt_wavelet_stddev_s"] = tt_result.stddev_s or ""
-                                row["lwt_memory_mode"] = (
-                                    tt_result.memory_mode or args.tt_memory_mode
-                                )
+                                row["lwt_architecture"] = tt_result.architecture
+                                row["lwt_layout"] = tt_result.layout
                                 row["lwt_max_group_count"] = (
                                     tt_result.max_group_count
                                     if tt_result.max_group_count is not None
                                     else ""
                                 )
-                                row["lwt_groups_per_shard"] = (
-                                    tt_result.groups_per_shard
-                                    if tt_result.groups_per_shard is not None
-                                    else ""
-                                )
                                 row["lwt_active_core_count"] = (
                                     tt_result.active_core_count
                                     if tt_result.active_core_count is not None
-                                    else ""
-                                )
-                                row["lwt_shard_elements"] = (
-                                    tt_result.shard_elements
-                                    if tt_result.shard_elements is not None
                                     else ""
                                 )
                                 row["lwt_chunk_count"] = (
@@ -779,34 +754,40 @@ def main() -> int:
                                     if tt_result.workspace_elements is not None
                                     else ""
                                 )
+                                row["lwt_max_workspace_elements"] = (
+                                    tt_result.max_workspace_elements
+                                    if tt_result.max_workspace_elements is not None
+                                    else ""
+                                )
                                 row["lwt_max_dependency_overhead"] = (
                                     tt_result.max_dependency_overhead
                                     if tt_result.max_dependency_overhead is not None
                                     else ""
                                 )
-                                row["lwt_terminal_scale_fused"] = (
-                                    tt_result.terminal_scale_fused
-                                    if tt_result.terminal_scale_fused is not None
+                                row["lwt_terminal_scale_inline"] = (
+                                    tt_result.terminal_scale_inline
+                                    if tt_result.terminal_scale_inline is not None
                                     else ""
                                 )
-                                row["lwt_inverse_scale_fused"] = (
-                                    tt_result.inverse_scale_fused
-                                    if tt_result.inverse_scale_fused is not None
+                                row["lwt_inverse_scale_inline"] = (
+                                    tt_result.inverse_scale_inline
+                                    if tt_result.inverse_scale_inline is not None
                                     else ""
                                 )
-                                row["lwt_inverse_final_interleave_fused"] = (
-                                    tt_result.inverse_final_interleave_fused
-                                    if tt_result.inverse_final_interleave_fused is not None
+                                row["lwt_inverse_final_interleave_direct"] = (
+                                    tt_result.inverse_final_interleave_direct
+                                    if tt_result.inverse_final_interleave_direct is not None
                                     else ""
                                 )
-                                row["lwt_tile_native_workspace"] = (
-                                    tt_result.tile_native_workspace
-                                    if tt_result.tile_native_workspace is not None
-                                    else ""
+                                row["lwt_l1_total_bytes"] = (
+                                    tt_result.l1_total_bytes if tt_result.l1_total_bytes is not None else ""
                                 )
-                                row[
-                                    "lwt_zero_work_cores_per_route"
-                                ] = tt_result.zero_work_cores_per_route
+                                row["lwt_l1_capacity_bytes"] = (
+                                    tt_result.l1_capacity_bytes if tt_result.l1_capacity_bytes is not None else ""
+                                )
+                                row["lwt_l1_headroom_bytes"] = (
+                                    tt_result.l1_headroom_bytes if tt_result.l1_headroom_bytes is not None else ""
+                                )
                             else:
                                 if args.tt_warmup_runs > 0 and should_warmup(
                                     args.tt_warmup_scope,

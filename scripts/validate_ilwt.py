@@ -12,6 +12,12 @@ from pathlib import Path
 import numpy as np
 import pywt
 
+from runtime_checks import (
+    check_consistent_architecture,
+    parse_runtime_architecture,
+    run_ncrisc_elf_gate,
+)
+
 DEFAULT_TOLERANCES = {
     "db1": 2.0e-6,
     "haar": 2.0e-6,
@@ -42,9 +48,9 @@ def run_case(
     layout: str,
     approximation_path: Path,
     detail_path: Path,
-) -> np.ndarray:
+) -> tuple[np.ndarray, str]:
     environment = os.environ.copy()
-    environment["TT_WAVELET_LWT_CONE_WORKSPACE_LAYOUT"] = layout
+    environment["TT_WAVELET_LWT_WORKSPACE_LAYOUT"] = layout
     command = [
         str(binary),
         "--inverse",
@@ -63,7 +69,10 @@ def run_case(
         raise RuntimeError(
             f"ILWT failed for {wavelet}, N={length}, layout={layout}:\n{result.stdout}\n{result.stderr}"
         )
-    return parse_reconstructed_signal(result.stdout)
+    return (
+        parse_reconstructed_signal(result.stdout),
+        parse_runtime_architecture(result.stdout + result.stderr),
+    )
 
 
 def main() -> None:
@@ -116,6 +125,7 @@ def main() -> None:
     max_pywavelets_error = 0.0
     max_layout_error = 0.0
     case_count = 0
+    architecture: str | None = None
     with tempfile.TemporaryDirectory(prefix="ttwv-ilwt-") as temporary:
         temporary_path = Path(temporary)
         for wavelet in args.wavelets:
@@ -140,7 +150,7 @@ def main() -> None:
 
                     outputs: dict[str, np.ndarray] = {}
                     for layout in args.layouts:
-                        reconstructed = run_case(
+                        reconstructed, case_architecture = run_case(
                             binary,
                             wavelet,
                             length,
@@ -148,6 +158,9 @@ def main() -> None:
                             layout,
                             approximation_path,
                             detail_path,
+                        )
+                        architecture = check_consistent_architecture(
+                            architecture, case_architecture
                         )
                         outputs[layout] = reconstructed
                         error = float(np.max(np.abs(reconstructed - expected)))
@@ -180,6 +193,9 @@ def main() -> None:
     print(f"max_abs_between_layouts: {max_layout_error:.8e}")
     if failures:
         raise SystemExit("\n".join(["ILWT validation failed:", *failures]))
+    if architecture is None:
+        raise SystemExit("ILWT validation did not execute a device case")
+    run_ncrisc_elf_gate(root, architecture)
 
 
 if __name__ == "__main__":

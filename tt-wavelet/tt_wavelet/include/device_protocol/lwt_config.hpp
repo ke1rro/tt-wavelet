@@ -17,7 +17,7 @@ constexpr uint32_t kLwtHalfStickElements = 16;
 constexpr uint32_t kLwtHalfStickBytes = kLwtHalfStickElements * sizeof(float);
 // A native Wormhole 32x16 FP32 tile contains exactly one 16-element block
 // for each row in an LWT processing group.  Keeping this relation explicit
-// prevents the cone kernels from silently falling back to padded 32x32 pages.
+// prevents the LWT kernels from silently falling back to padded 32x32 pages.
 constexpr uint32_t kLwtNarrowTileElements = kLwtRowsPerGroup * kLwtHalfStickElements;
 constexpr uint32_t kLwtNarrowTileBytes = kLwtNarrowTileElements * sizeof(float);
 constexpr uint32_t kLwtGroupOutputElements = kLwtRowsPerGroup * kLwtOutputBlocksPerRow * kLwtHalfStickElements;
@@ -45,14 +45,14 @@ enum RouteConfigWord : uint32_t {
 constexpr uint32_t kRouteFlagFinalDram = 1U << 0;
 constexpr uint32_t kRouteFlagIlwtFinalInterleave = 1U << 1;
 
-constexpr uint32_t kConeChunkConfigWordCount = 16;
-constexpr uint32_t kConeChunkConfigPageBytes = kConeChunkConfigWordCount * sizeof(uint32_t);
+constexpr uint32_t kLwtChunkConfigWordCount = 16;
+constexpr uint32_t kLwtChunkConfigPageBytes = kLwtChunkConfigWordCount * sizeof(uint32_t);
 
-enum ConeChunkConfigWord : uint32_t {
-    kConeInitialEvenBegin = 0,
-    kConeInitialEvenLength = 1,
-    kConeInitialOddBegin = 2,
-    kConeInitialOddLength = 3,
+enum LwtChunkConfigWord : uint32_t {
+    kLwtInitialEvenBegin = 0,
+    kLwtInitialEvenLength = 1,
+    kLwtInitialOddBegin = 2,
+    kLwtInitialOddLength = 3,
 
     // ILWT reuses the same 64-byte chunk page with a direction-specific
     // contract.  The first four words describe canonical coefficient inputs.

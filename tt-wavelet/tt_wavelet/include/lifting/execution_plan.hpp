@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <limits>
 #include <tt_stl/assert.hpp>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -22,14 +23,14 @@ struct IndexInterval {
     [[nodiscard]] constexpr size_t length() const noexcept { return end - begin; }
 };
 
-struct ConeDescriptor {
+struct DependencyExtent {
     int32_t even_left{0};
     int32_t even_right{0};
     int32_t odd_left{0};
     int32_t odd_right{0};
 };
 
-struct ConeStepRoute {
+struct LwtStepRoute {
     StepType type{StepType::kPredict};
     StreamRef source{};
     StreamRef base{};
@@ -43,40 +44,34 @@ struct ConeStepRoute {
     size_t output_offset_elements{0};
 };
 
-struct ConeChunkPlan {
+struct LwtChunkPlan {
     IndexInterval final_even{};
     IndexInterval final_odd{};
     IndexInterval initial_even{};
     IndexInterval initial_odd{};
-    ConeDescriptor descriptor{};
-    std::vector<ConeStepRoute> routes;
+    DependencyExtent descriptor{};
+    std::vector<LwtStepRoute> routes;
     size_t max_workspace_elements{0};
     double dependency_overhead{0.0};
 };
 
-enum class TerminalScaleFusionMode : uint8_t {
-    kAuto,
-    kDisabled,
-    kEnabled,
-};
-
-enum class ConeWorkspaceLayout : uint8_t {
+enum class WorkspaceLayout : uint8_t {
     kRowMajor,
     kTileNative,
 };
 
-struct ConeExecutionPlan {
+struct LwtExecutionPlan {
     LiftingForwardPlan full_plan{};
-    std::vector<ConeChunkPlan> chunks;
+    std::vector<LwtChunkPlan> chunks;
     uint32_t groups_per_chunk{0};
     uint32_t workspace_elements{0};
+    uint32_t max_workspace_elements{0};
     uint32_t active_core_count{0};
     double max_dependency_overhead{0.0};
-    bool terminal_scale_fused{false};
-    ConeWorkspaceLayout workspace_layout{ConeWorkspaceLayout::kRowMajor};
+    WorkspaceLayout workspace_layout{WorkspaceLayout::kRowMajor};
 };
 
-namespace cone_detail {
+namespace execution_detail {
 
 struct RequiredStreams {
     IndexInterval even{};
@@ -88,7 +83,7 @@ struct StoredStream {
     IndexInterval storage{};
 };
 
-struct TerminalScaleFusion {
+struct TerminalScaleInline {
     size_t predict_update_route_index{0};
     StepType scale_type{StepType::kScaleEven};
     RouteOutputStorage final_storage{RouteOutputStorage::kFinalEvenDram};
@@ -116,7 +111,7 @@ struct TerminalScaleFusion {
     TT_FATAL(
         interval.begin <= std::numeric_limits<size_t>::max() - left_offset &&
             interval.end <= std::numeric_limits<size_t>::max() - left_offset - right_expansion,
-        "Cone interval translation overflows size_t");
+        "LWT dependency interval translation overflows size_t");
     return IndexInterval{
         .begin = interval.begin + left_offset,
         .end = interval.end + left_offset + right_expansion,
@@ -124,10 +119,10 @@ struct TerminalScaleFusion {
 }
 
 inline void validate_interval(const IndexInterval interval, const size_t stream_length, const char* label) {
-    TT_FATAL(interval.begin <= interval.end, "{} cone interval is inverted", label);
+    TT_FATAL(interval.begin <= interval.end, "{} LWT interval is inverted", label);
     TT_FATAL(
         interval.end <= stream_length,
-        "{} cone interval [{}, {}) exceeds stream length {}",
+        "{} LWT interval [{}, {}) exceeds stream length {}",
         label,
         interval.begin,
         interval.end,
@@ -141,12 +136,12 @@ inline void validate_interval(const IndexInterval interval, const size_t stream_
         route.source_left_pad,
         device_protocol::kStepCoeffCapacity);
     const uint32_t count = device_protocol::kStepCoeffCapacity - route.source_left_pad;
-    TT_FATAL(count > 0, "Predict/update cone route has no coefficients");
+    TT_FATAL(count > 0, "Predict/update LWT route has no coefficients");
     return count;
 }
 
-[[nodiscard]] inline TerminalScaleFusion terminal_scale_fusion(const LiftingForwardPlan& plan) {
-    TT_FATAL(plan.routes.size() >= 3, "ConeStreamed terminal-scale fusion requires a predict/update and two scales");
+[[nodiscard]] inline TerminalScaleInline terminal_scale_inline(const LiftingForwardPlan& plan) {
+    TT_FATAL(plan.routes.size() >= 3, "LWT terminal-scale inline path requires a predict/update and two scales");
 
     size_t predict_update_route_index = plan.routes.size();
     for (size_t reverse_index = plan.routes.size() - 2; reverse_index > 0; --reverse_index) {
@@ -158,7 +153,7 @@ inline void validate_interval(const IndexInterval interval, const size_t stream_
     }
     TT_FATAL(
         predict_update_route_index < plan.routes.size(),
-        "ConeStreamed terminal-scale fusion could not find a predict/update route");
+        "LWT terminal-scale inline path could not find a predict/update route");
 
     bool final_even = plan.routes[predict_update_route_index].type == StepType::kUpdate;
     for (size_t route_index = predict_update_route_index + 1; route_index + 2 < plan.routes.size(); ++route_index) {
@@ -174,8 +169,8 @@ inline void validate_interval(const IndexInterval interval, const size_t stream_
         std::any_of(plan.routes.end() - 2, plan.routes.end(), [scale_type](const LiftingStepRoute& route) {
             return route.type == scale_type;
         });
-    TT_FATAL(scale_exists, "ConeStreamed fused terminal scale is missing from the forward plan");
-    return TerminalScaleFusion{
+    TT_FATAL(scale_exists, "LWT inline terminal scale is missing from the forward plan");
+    return TerminalScaleInline{
         .predict_update_route_index = predict_update_route_index,
         .scale_type = scale_type,
         .final_storage = final_storage,
@@ -254,37 +249,36 @@ inline void validate_interval(const IndexInterval interval, const size_t stream_
     TT_FATAL(
         even_length == plan.preprocess_layout.output.even.length &&
             odd_length == plan.preprocess_layout.output.odd.length,
-        "Backward cone did not reach the initial split-stream lengths");
+        "Backward dependency propagation did not reach the initial split-stream lengths");
     return required;
 }
 
 [[nodiscard]] inline size_t local_offset(const IndexInterval storage, const IndexInterval required) {
-    TT_FATAL(contains(storage, required), "Cone route requires data outside its resident local storage");
+    TT_FATAL(contains(storage, required), "LWT route requires data outside its local workspace");
     return required.empty() ? 0 : required.begin - storage.begin;
 }
 
 [[nodiscard]] inline int32_t checked_descriptor_extent(const int64_t value, const char* label) {
     TT_FATAL(
         value >= std::numeric_limits<int32_t>::min() && value <= std::numeric_limits<int32_t>::max(),
-        "{} cone extent {} overflows int32_t",
+        "{} dependency extent {} overflows int32_t",
         label,
         value);
     return static_cast<int32_t>(value);
 }
 
-[[nodiscard]] inline ConeChunkPlan build_chunk(
+[[nodiscard]] inline LwtChunkPlan build_chunk(
     const LiftingForwardPlan& plan,
     const IndexInterval final_even,
-    const IndexInterval final_odd,
-    const bool fuse_terminal_scale) {
+    const IndexInterval final_odd) {
     const std::vector<RequiredStreams> required = backpropagate_requirements(plan, final_even, final_odd);
-    const TerminalScaleFusion fusion = terminal_scale_fusion(plan);
+    const TerminalScaleInline inline_scale = terminal_scale_inline(plan);
     StoredStream active_even{.slot = StorageSlot::kA, .storage = required.front().even};
     StoredStream active_odd{.slot = StorageSlot::kB, .storage = required.front().odd};
     StorageSlot free_slot = StorageSlot::kScratch;
     size_t max_workspace_elements = std::max(required.front().even.length(), required.front().odd.length());
 
-    std::vector<ConeStepRoute> routes;
+    std::vector<LwtStepRoute> routes;
     routes.reserve(plan.routes.size());
     for (size_t route_index = 0; route_index < plan.routes.size(); ++route_index) {
         const auto& full_route = plan.routes[route_index];
@@ -297,7 +291,7 @@ inline void validate_interval(const IndexInterval interval, const size_t stream_
 
         if (full_route.type == StepType::kPredict || full_route.type == StepType::kUpdate) {
             const bool predict = full_route.type == StepType::kPredict;
-            const bool fuse_route = fuse_terminal_scale && route_index == fusion.predict_update_route_index;
+            const bool inline_scale_route = route_index == inline_scale.predict_update_route_index;
             const uint32_t k = coefficient_count(full_route);
             const IndexInterval output = predict ? after.odd : after.even;
             const IndexInterval source_required =
@@ -305,11 +299,11 @@ inline void validate_interval(const IndexInterval interval, const size_t stream_
             const IndexInterval base_required = translated(output, full_route.base_offset);
             const StoredStream& source = predict ? active_even : active_odd;
             const StoredStream& base = predict ? active_odd : active_even;
-            const RouteOutputRef output_ref = fuse_route
-                                                  ? RouteOutputRef{.storage = fusion.final_storage, .slot = free_slot}
-                                                  : detail::resident_output(free_slot);
+            const RouteOutputRef output_ref = inline_scale_route
+                                                  ? RouteOutputRef{.storage = inline_scale.final_storage, .slot = free_slot}
+                                                  : detail::workspace_output(free_slot);
 
-            routes.push_back(ConeStepRoute{
+            routes.push_back(LwtStepRoute{
                 .type = full_route.type,
                 .source = StreamRef{.slot = source.slot},
                 .base = StreamRef{.slot = base.slot},
@@ -320,7 +314,7 @@ inline void validate_interval(const IndexInterval interval, const size_t stream_
                 .base_offset_elements = local_offset(base.storage, base_required),
                 .source_left_pad_elements = full_route.source_left_pad,
                 .output_length = output.length(),
-                .output_offset_elements = fuse_route && !output.empty() ? output.begin : 0,
+                .output_offset_elements = inline_scale_route && !output.empty() ? output.begin : 0,
             });
 
             const StoredStream replacement{.slot = free_slot, .storage = output};
@@ -336,14 +330,14 @@ inline void validate_interval(const IndexInterval interval, const size_t stream_
         }
 
         const bool scale_even = full_route.type == StepType::kScaleEven;
-        TT_FATAL(scale_even || full_route.type == StepType::kScaleOdd, "Unsupported cone route type");
-        if (fuse_terminal_scale && full_route.type == fusion.scale_type) {
+        TT_FATAL(scale_even || full_route.type == StepType::kScaleOdd, "Unsupported LWT route type");
+        if (full_route.type == inline_scale.scale_type) {
             continue;
         }
         const StoredStream& source = scale_even ? active_even : active_odd;
         const IndexInterval output = scale_even ? after.even : after.odd;
         const auto final_storage = scale_even ? RouteOutputStorage::kFinalEvenDram : RouteOutputStorage::kFinalOddDram;
-        routes.push_back(ConeStepRoute{
+        routes.push_back(LwtStepRoute{
             .type = full_route.type,
             .source = StreamRef{.slot = source.slot},
             .base = StreamRef{.slot = source.slot},
@@ -369,13 +363,13 @@ inline void validate_interval(const IndexInterval interval, const size_t stream_
                             : static_cast<double>(dependency_elements - std::min(dependency_elements, final_elements)) /
                                   static_cast<double>(final_elements);
 
-    return ConeChunkPlan{
+    return LwtChunkPlan{
         .final_even = final_even,
         .final_odd = final_odd,
         .initial_even = initial_even,
         .initial_odd = initial_odd,
         .descriptor =
-            ConeDescriptor{
+            DependencyExtent{
                 .even_left = checked_descriptor_extent(
                     static_cast<int64_t>(final_begin) - static_cast<int64_t>(initial_even.begin), "even-left"),
                 .even_right = checked_descriptor_extent(
@@ -397,9 +391,9 @@ inline void validate_interval(const IndexInterval interval, const size_t stream_
     return IndexInterval{.begin = clipped_begin, .end = std::min(end, stream_length)};
 }
 
-[[nodiscard]] inline std::vector<ConeChunkPlan> build_chunks(
-    const LiftingForwardPlan& plan, const uint32_t requested_chunk_count, const bool fuse_terminal_scale) {
-    TT_FATAL(requested_chunk_count > 0, "Cone chunk count must be non-zero");
+[[nodiscard]] inline std::vector<LwtChunkPlan> build_chunks(
+    const LiftingForwardPlan& plan, const uint32_t requested_chunk_count) {
+    TT_FATAL(requested_chunk_count > 0, "LWT chunk count must be non-zero");
     const size_t max_final_length = std::max(plan.final_even_length, plan.final_odd_length);
     const size_t final_group_count =
         std::max(ceil_div(max_final_length, static_cast<size_t>(device_protocol::kLwtGroupOutputElements)), size_t{1});
@@ -407,7 +401,7 @@ inline void validate_interval(const IndexInterval interval, const size_t stream_
     const size_t base_groups = final_group_count / chunk_count;
     const size_t extra_groups = final_group_count % chunk_count;
 
-    std::vector<ConeChunkPlan> chunks;
+    std::vector<LwtChunkPlan> chunks;
     chunks.reserve(chunk_count);
     size_t group_begin = 0;
     for (size_t chunk_index = 0; chunk_index < chunk_count; ++chunk_index) {
@@ -418,62 +412,63 @@ inline void validate_interval(const IndexInterval interval, const size_t stream_
         chunks.push_back(build_chunk(
             plan,
             clipped_chunk_interval(begin, end, plan.final_even_length),
-            clipped_chunk_interval(begin, end, plan.final_odd_length),
-            fuse_terminal_scale));
+            clipped_chunk_interval(begin, end, plan.final_odd_length)));
         group_begin += group_count;
     }
-    TT_FATAL(group_begin == final_group_count, "Cone chunks do not cover every final output group");
+    TT_FATAL(group_begin == final_group_count, "LWT chunks do not cover every final output group");
     return chunks;
 }
 
-}  // namespace cone_detail
+}  // namespace execution_detail
 
-[[nodiscard]] inline ConeExecutionPlan make_cone_execution_plan(
+[[nodiscard]] inline LwtExecutionPlan make_lwt_execution_plan(
     LiftingForwardPlan full_plan,
     const uint32_t core_limit,
     const uint32_t l1_signal_budget_bytes,
-    const TerminalScaleFusionMode fusion_mode = TerminalScaleFusionMode::kAuto,
-    const ConeWorkspaceLayout workspace_layout = ConeWorkspaceLayout::kRowMajor) {
-    TT_FATAL(core_limit > 0, "ConeStreamed requires at least one worker core");
-    TT_FATAL(l1_signal_budget_bytes >= 3 * device_protocol::kStickBytes, "ConeStreamed L1 budget is too small");
+    const WorkspaceLayout workspace_layout = WorkspaceLayout::kRowMajor) {
+    TT_FATAL(core_limit > 0, "LWT requires at least one worker core");
+    TT_FATAL(l1_signal_budget_bytes >= 3 * device_protocol::kStickBytes, "LWT L1 budget is too small");
 
     const size_t max_final_length = std::max(full_plan.final_even_length, full_plan.final_odd_length);
     const uint32_t final_group_count = static_cast<uint32_t>(
         std::max(ceil_div(max_final_length, static_cast<size_t>(device_protocol::kLwtGroupOutputElements)), size_t{1}));
-    const bool terminal_scale_fused = fusion_mode == TerminalScaleFusionMode::kEnabled ||
-                                      (fusion_mode == TerminalScaleFusionMode::kAuto && final_group_count > core_limit);
     uint32_t chunk_count = std::min(final_group_count, core_limit);
-    std::vector<ConeChunkPlan> chunks;
+    std::vector<LwtChunkPlan> chunks;
     uint32_t workspace_elements = 0;
+    uint32_t max_workspace_elements = 0;
 
     const auto build_candidate = [&](const uint32_t candidate_chunk_count) {
-        auto candidate_chunks = cone_detail::build_chunks(full_plan, candidate_chunk_count, terminal_scale_fused);
-        size_t max_workspace_elements = 0;
+        auto candidate_chunks = execution_detail::build_chunks(full_plan, candidate_chunk_count);
+        size_t candidate_max_workspace_elements = 0;
         for (const auto& chunk : candidate_chunks) {
-            max_workspace_elements = std::max(max_workspace_elements, chunk.max_workspace_elements);
+            candidate_max_workspace_elements = std::max(candidate_max_workspace_elements, chunk.max_workspace_elements);
         }
-        const size_t workspace_alignment = workspace_layout == ConeWorkspaceLayout::kTileNative
+        const size_t workspace_alignment = workspace_layout == WorkspaceLayout::kTileNative
                                                ? static_cast<size_t>(device_protocol::kLwtGroupOutputElements)
                                                : static_cast<size_t>(kStickWidth);
-        const size_t aligned_workspace = round_up(max_workspace_elements, workspace_alignment);
+        const size_t aligned_workspace = round_up(candidate_max_workspace_elements, workspace_alignment);
         TT_FATAL(
             aligned_workspace <= static_cast<size_t>(std::numeric_limits<uint32_t>::max()),
-            "Cone workspace length {} overflows uint32_t",
+            "LWT workspace length {} overflows uint32_t",
             aligned_workspace);
-        return std::pair{std::move(candidate_chunks), static_cast<uint32_t>(aligned_workspace)};
+        return std::tuple{
+            std::move(candidate_chunks),
+            static_cast<uint32_t>(aligned_workspace),
+            static_cast<uint32_t>(candidate_max_workspace_elements)};
     };
 
     for (;;) {
         auto candidate = build_candidate(chunk_count);
-        chunks = std::move(candidate.first);
-        workspace_elements = candidate.second;
+        chunks = std::move(std::get<0>(candidate));
+        workspace_elements = std::get<1>(candidate);
+        max_workspace_elements = std::get<2>(candidate);
         const uint64_t workspace_bytes_per_core = uint64_t{3} * workspace_elements * sizeof(float);
         if (workspace_bytes_per_core <= l1_signal_budget_bytes) {
             break;
         }
         TT_FATAL(
             chunk_count < final_group_count,
-            "One-group ConeStreamed workspace requires {} bytes/core, exceeding the {}-byte L1 signal budget",
+            "One-group LWT workspace requires {} bytes/core, exceeding the {}-byte L1 signal budget",
             workspace_bytes_per_core,
             l1_signal_budget_bytes);
         chunk_count =
@@ -488,14 +483,14 @@ inline void validate_interval(const IndexInterval interval, const size_t stream_
         max_dependency_overhead = std::max(max_dependency_overhead, chunk.dependency_overhead);
     }
 
-    return ConeExecutionPlan{
+    return LwtExecutionPlan{
         .full_plan = std::move(full_plan),
         .chunks = std::move(chunks),
         .groups_per_chunk = groups_per_chunk,
         .workspace_elements = workspace_elements,
+        .max_workspace_elements = max_workspace_elements,
         .active_core_count = active_core_count,
         .max_dependency_overhead = max_dependency_overhead,
-        .terminal_scale_fused = terminal_scale_fused,
         .workspace_layout = workspace_layout,
     };
 }

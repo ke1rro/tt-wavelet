@@ -12,15 +12,17 @@
 #include "compute_kernel_api/common.h"
 #include "compute_kernel_api/eltwise_unary/eltwise_unary.h"
 #include "compute_kernel_api/tile_move_copy.h"
-#include "lwt_compute_utils.hpp"
+#include "../../tt_wavelet/include/device_protocol/lwt_config.hpp"
+#include "../../tt_wavelet/include/lifting/static_scheme.hpp"
+#include "../sfpi/horizontal_stencil_sfpi.h"
 #include TTWV_LWT_SCHEME_HEADER
 
-#ifndef TTWV_FUSE_TERMINAL_SCALE
-#define TTWV_FUSE_TERMINAL_SCALE 0
+#ifndef TTWV_INLINE_TERMINAL_SCALE
+#define TTWV_INLINE_TERMINAL_SCALE 0
 #endif
 
-#ifndef TTWV_FUSE_INVERSE_SCALE
-#define TTWV_FUSE_INVERSE_SCALE 0
+#ifndef TTWV_INLINE_INVERSE_SCALE
+#define TTWV_INLINE_INVERSE_SCALE 0
 #endif
 
 namespace ttwv::kernels {
@@ -39,8 +41,8 @@ constexpr uint32_t kPackBase0 = 0;
 constexpr uint32_t kPackBase1 = 1;
 constexpr uint32_t kPackBase2 = 2;
 constexpr uint32_t kDstScale = 0;
-constexpr bool kFuseTerminalScale = TTWV_FUSE_TERMINAL_SCALE != 0;
-constexpr bool kFuseInverseScale = TTWV_FUSE_INVERSE_SCALE != 0;
+constexpr bool kInlineTerminalScale = TTWV_INLINE_TERMINAL_SCALE != 0;
+constexpr bool kInlineInverseScale = TTWV_INLINE_INVERSE_SCALE != 0;
 
 #ifdef TRISC_MATH
 ALWI void copy_narrow_tile_math(const uint32_t dst_tile_index) {
@@ -112,9 +114,9 @@ constexpr uint32_t swap_count_from() noexcept {
 }
 
 template <typename Scheme>
-constexpr StepType fused_terminal_scale_type() noexcept {
+constexpr StepType inline_terminal_scale_type() noexcept {
     constexpr uint32_t last_step = last_predict_update_step_index<Scheme>();
-    static_assert(last_step < Scheme::num_steps, "ConeStreamed terminal-scale fusion requires predict/update");
+    static_assert(last_step < Scheme::num_steps, "Inline terminal scaling requires a predict/update step");
     using LastStep = SchemeStep<Scheme, last_step>;
     constexpr bool target_even = LastStep::type == StepType::kUpdate;
     constexpr bool swapped = (swap_count_from<Scheme, last_step + 1>() & 1U) != 0;
@@ -137,24 +139,24 @@ constexpr uint32_t terminal_scale_bits() noexcept {
     }
 }
 
-template <typename Scheme, bool FuseInverseScale, StepType ScaleType>
+template <typename Scheme, bool InlineInverseScale, StepType ScaleType>
 constexpr uint32_t maybe_inverse_scale_bits() noexcept {
-    if constexpr (!FuseInverseScale) {
+    if constexpr (!InlineInverseScale) {
         return 0U;
     } else {
         constexpr uint32_t first_step = first_predict_update_step_index<Scheme>();
-        static_assert(first_step < Scheme::num_steps, "Inverse scale fusion requires predict/update");
+        static_assert(first_step < Scheme::num_steps, "Inline inverse scaling requires a predict/update step");
         static_assert(
-            scale_count_before<Scheme, first_step>() == 2, "Inverse scale fusion requires two leading scales");
+            scale_count_before<Scheme, first_step>() == 2, "Inline inverse scaling requires two leading scales");
         constexpr uint32_t bits = terminal_scale_bits<Scheme, ScaleType>();
-        static_assert(bits != 0, "Inverse scale fusion could not find the required reciprocal scale");
+        static_assert(bits != 0, "Inline inverse scaling could not find the required reciprocal scale");
         return bits;
     }
 }
 
 template <
     uint32_t K,
-    bool FuseTerminalScale,
+    bool InlineTerminalScale,
     uint32_t TerminalScalePacked,
     bool ScaleSource,
     bool ScaleBase,
@@ -194,7 +196,7 @@ inline void run_predict_update_step(
 
         hstencil_init();
         if constexpr (ScaleSource || ScaleBase) {
-            // Preserve the unfused arithmetic exactly: reciprocal scaling is
+            // Preserve the ordered arithmetic exactly: reciprocal scaling is
             // performed lazily in FP32 registers until each inverse stream is
             // first replaced, without materializing scaled streams in L1.
             hstencil_scaled_inputs_plus_base_narrow_tiles<
@@ -209,7 +211,7 @@ inline void run_predict_update_step(
                 h_coeffs, kDstSource0, kDstSource1, kDstSource2, kDstSource3, kDstBase0, kDstBase1, kDstBase2);
         }
 
-        if constexpr (FuseTerminalScale) {
+        if constexpr (InlineTerminalScale) {
             scale_narrow_tile(kDstBase0, TerminalScalePacked);
             scale_narrow_tile(kDstBase1, TerminalScalePacked);
             scale_narrow_tile(kDstBase2, TerminalScalePacked);
@@ -255,8 +257,8 @@ inline void run_scale_step(
 
 template <
     typename Scheme,
-    bool FuseTerminalScale,
-    bool FuseInverseScale,
+    bool InlineTerminalScale,
+    bool InlineInverseScale,
     bool EvenNeedsScale,
     bool OddNeedsScale,
     uint32_t EvenScalePacked,
@@ -274,8 +276,8 @@ inline void run_static_steps(
         if constexpr (Step::type == StepType::kSwap) {
             run_static_steps<
                 Scheme,
-                FuseTerminalScale,
-                FuseInverseScale,
+                InlineTerminalScale,
+                InlineInverseScale,
                 OddNeedsScale,
                 EvenNeedsScale,
                 OddScalePacked,
@@ -285,17 +287,17 @@ inline void run_static_steps(
         } else if constexpr (Step::type == StepType::kPredict || Step::type == StepType::kUpdate) {
             const uint32_t output_group_count = get_arg_val<uint32_t>(runtime_arg_base + ExecutableIndex);
             constexpr uint32_t last_predict_update = last_predict_update_step_index<Scheme>();
-            constexpr bool fuse_terminal_scale = FuseTerminalScale && StepIndex == last_predict_update;
+            constexpr bool inline_terminal_scale = InlineTerminalScale && StepIndex == last_predict_update;
             constexpr bool predict = Step::type == StepType::kPredict;
-            constexpr bool scale_source = FuseInverseScale && (predict ? EvenNeedsScale : OddNeedsScale);
-            constexpr bool scale_base = FuseInverseScale && (predict ? OddNeedsScale : EvenNeedsScale);
+            constexpr bool scale_source = InlineInverseScale && (predict ? EvenNeedsScale : OddNeedsScale);
+            constexpr bool scale_base = InlineInverseScale && (predict ? OddNeedsScale : EvenNeedsScale);
             constexpr uint32_t source_scale_bits = predict ? EvenScalePacked : OddScalePacked;
             constexpr uint32_t base_scale_bits = predict ? OddScalePacked : EvenScalePacked;
-            constexpr StepType scale_type = fused_terminal_scale_type<Scheme>();
+            constexpr StepType scale_type = inline_terminal_scale_type<Scheme>();
             constexpr uint32_t scale_bits = terminal_scale_bits<Scheme, scale_type>();
             run_predict_update_step<
                 Step::k,
-                fuse_terminal_scale,
+                inline_terminal_scale,
                 scale_bits,
                 scale_source,
                 scale_base,
@@ -303,8 +305,8 @@ inline void run_static_steps(
                 base_scale_bits>(cb_input0, cb_input1, cb_base, cb_output, Step::coeff_bits, output_group_count);
             run_static_steps<
                 Scheme,
-                FuseTerminalScale,
-                FuseInverseScale,
+                InlineTerminalScale,
+                InlineInverseScale,
                 predict ? EvenNeedsScale : false,
                 predict ? false : OddNeedsScale,
                 EvenScalePacked,
@@ -313,23 +315,23 @@ inline void run_static_steps(
                 ExecutableIndex + 1>(cb_input0, cb_input1, cb_base, cb_output, runtime_arg_base);
         } else if constexpr (Step::type == StepType::kScaleEven || Step::type == StepType::kScaleOdd) {
             constexpr uint32_t first_predict_update = first_predict_update_step_index<Scheme>();
-            if constexpr (FuseInverseScale && StepIndex < first_predict_update) {
+            if constexpr (InlineInverseScale && StepIndex < first_predict_update) {
                 run_static_steps<
                     Scheme,
-                    FuseTerminalScale,
-                    FuseInverseScale,
+                    InlineTerminalScale,
+                    InlineInverseScale,
                     EvenNeedsScale,
                     OddNeedsScale,
                     EvenScalePacked,
                     OddScalePacked,
                     StepIndex + 1,
                     ExecutableIndex>(cb_input0, cb_input1, cb_base, cb_output, runtime_arg_base);
-            } else if constexpr (FuseTerminalScale) {
-                if constexpr (Step::type == fused_terminal_scale_type<Scheme>()) {
+            } else if constexpr (InlineTerminalScale) {
+                if constexpr (Step::type == inline_terminal_scale_type<Scheme>()) {
                     run_static_steps<
                         Scheme,
-                        FuseTerminalScale,
-                        FuseInverseScale,
+                        InlineTerminalScale,
+                        InlineInverseScale,
                         EvenNeedsScale,
                         OddNeedsScale,
                         EvenScalePacked,
@@ -342,8 +344,8 @@ inline void run_static_steps(
                     run_scale_step(cb_base, cb_output, Step::coeff_bits[0], output_group_count);
                     run_static_steps<
                         Scheme,
-                        FuseTerminalScale,
-                        FuseInverseScale,
+                        InlineTerminalScale,
+                        InlineInverseScale,
                         EvenNeedsScale,
                         OddNeedsScale,
                         EvenScalePacked,
@@ -352,51 +354,40 @@ inline void run_static_steps(
                         ExecutableIndex + 1>(cb_input0, cb_input1, cb_base, cb_output, runtime_arg_base);
                 }
             } else {
-                static_assert(Step::k == 1, "Scale steps must have exactly one coefficient");
-                const uint32_t output_group_count = get_arg_val<uint32_t>(runtime_arg_base + ExecutableIndex);
-                run_scale_step(cb_base, cb_output, Step::coeff_bits[0], output_group_count);
-                run_static_steps<
-                    Scheme,
-                    FuseTerminalScale,
-                    FuseInverseScale,
-                    EvenNeedsScale,
-                    OddNeedsScale,
-                    EvenScalePacked,
-                    OddScalePacked,
-                    StepIndex + 1,
-                    ExecutableIndex + 1>(cb_input0, cb_input1, cb_base, cb_output, runtime_arg_base);
+                static_assert(InlineInverseScale, "Every production scale route must use an inline scale policy");
             }
         }
     } else {
         static_assert(
-            !FuseInverseScale || ((!EvenNeedsScale || EvenScalePacked == 0x3f800000U) &&
+            !InlineInverseScale || ((!EvenNeedsScale || EvenScalePacked == 0x3f800000U) &&
                                   (!OddNeedsScale || OddScalePacked == 0x3f800000U)),
-            "Inverse scale fusion left a final stream unscaled");
+            "Inline inverse scaling left a final stream unscaled");
     }
 }
 
 template <typename Scheme>
-void lwt_cone_compute() {
+void lwt_compute() {
     constexpr uint32_t cb_input0 = get_compile_time_arg_val(0);
     constexpr uint32_t cb_input1 = get_compile_time_arg_val(1);
     constexpr uint32_t cb_base = get_compile_time_arg_val(2);
     constexpr uint32_t cb_output = get_compile_time_arg_val(3);
     static_assert(
-        !(kFuseTerminalScale && kFuseInverseScale), "Forward and inverse scale fusion are mutually exclusive");
+        kInlineTerminalScale != kInlineInverseScale,
+        "Exactly one production scale policy must be selected for LWT or ILWT");
     constexpr uint32_t route_count =
-        executable_step_count<Scheme>() - (kFuseTerminalScale ? 1U : 0U) - (kFuseInverseScale ? 2U : 0U);
-    constexpr uint32_t inverse_even_scale = maybe_inverse_scale_bits<Scheme, kFuseInverseScale, StepType::kScaleEven>();
-    constexpr uint32_t inverse_odd_scale = maybe_inverse_scale_bits<Scheme, kFuseInverseScale, StepType::kScaleOdd>();
+        executable_step_count<Scheme>() - (kInlineTerminalScale ? 1U : 0U) - (kInlineInverseScale ? 2U : 0U);
+    constexpr uint32_t inverse_even_scale = maybe_inverse_scale_bits<Scheme, kInlineInverseScale, StepType::kScaleEven>();
+    constexpr uint32_t inverse_odd_scale = maybe_inverse_scale_bits<Scheme, kInlineInverseScale, StepType::kScaleOdd>();
     const uint32_t chunk_count = get_arg_val<uint32_t>(0);
 
     ckernel::init_sfpu(cb_base, cb_output);
     for (uint32_t chunk = 0; chunk < chunk_count; ++chunk) {
         run_static_steps<
             Scheme,
-            kFuseTerminalScale,
-            kFuseInverseScale,
-            kFuseInverseScale,
-            kFuseInverseScale,
+            kInlineTerminalScale,
+            kInlineInverseScale,
+            kInlineInverseScale,
+            kInlineInverseScale,
             inverse_even_scale,
             inverse_odd_scale,
             0,
@@ -406,4 +397,4 @@ void lwt_cone_compute() {
 
 }  // namespace ttwv::kernels
 
-void kernel_main() { ttwv::kernels::lwt_cone_compute<TTWV_LWT_SCHEME_TYPE>(); }
+void kernel_main() { ttwv::kernels::lwt_compute<TTWV_LWT_SCHEME_TYPE>(); }

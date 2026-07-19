@@ -5,12 +5,13 @@
 #include <cstdint>
 #include <limits>
 #include <tt_stl/assert.hpp>
+#include <tuple>
 #include <utility>
 #include <vector>
 
 #include "tt_wavelet/include/common/signal.hpp"
 #include "tt_wavelet/include/device_protocol/lwt_config.hpp"
-#include "tt_wavelet/include/lifting/cone_plan.hpp"
+#include "tt_wavelet/include/lifting/execution_plan.hpp"
 #include "tt_wavelet/include/lifting/plan.hpp"
 
 namespace ttwv {
@@ -21,13 +22,13 @@ struct LiftingInversePlan {
     size_t coefficient_length{0};
 };
 
-struct InverseConeChunkPlan {
+struct IlwtChunkPlan {
     IndexInterval output_signal{};
     IndexInterval reconstructed_even{};
     IndexInterval reconstructed_odd{};
     IndexInterval canonical_approximation{};
     IndexInterval canonical_detail{};
-    std::vector<ConeStepRoute> routes;
+    std::vector<LwtStepRoute> routes;
     StreamRef final_even{};
     StreamRef final_odd{};
     size_t final_even_storage_length{0};
@@ -38,38 +39,38 @@ struct InverseConeChunkPlan {
     double dependency_overhead{0.0};
 };
 
-struct InverseConeExecutionPlan {
+struct IlwtExecutionPlan {
     LiftingInversePlan full_plan{};
-    std::vector<InverseConeChunkPlan> chunks;
+    std::vector<IlwtChunkPlan> chunks;
     uint32_t output_groups_per_chunk{0};
     uint32_t workspace_elements{0};
+    uint32_t max_workspace_elements{0};
     uint32_t active_core_count{0};
     double max_dependency_overhead{0.0};
-    bool inverse_scale_fused{false};
-    bool final_interleave_fused{false};
-    ConeWorkspaceLayout workspace_layout{ConeWorkspaceLayout::kRowMajor};
+    bool final_interleave_direct{false};
+    WorkspaceLayout workspace_layout{WorkspaceLayout::kRowMajor};
 };
 
 namespace inverse_detail {
 
-using RequiredStreams = cone_detail::RequiredStreams;
+using RequiredStreams = execution_detail::RequiredStreams;
 
 struct StoredStream {
     StorageSlot slot{StorageSlot::kA};
     IndexInterval storage{};
 };
 
-inline void validate_inverse_scale_fusion(const LiftingForwardPlan& plan) {
-    TT_FATAL(plan.routes.size() >= 3, "Inverse scale fusion requires predict/update routes and two terminal scales");
+inline void validate_inverse_scale_inline(const LiftingForwardPlan& plan) {
+    TT_FATAL(plan.routes.size() >= 3, "Inline inverse scaling requires predict/update routes and two terminal scales");
     bool found_even = false;
     bool found_odd = false;
     for (size_t route_index = plan.routes.size() - 2; route_index < plan.routes.size(); ++route_index) {
         const StepType type = plan.routes[route_index].type;
-        TT_FATAL(is_scale_step(type), "Inverse scale fusion requires the final two forward routes to be scales");
+        TT_FATAL(is_scale_step(type), "Inline inverse scaling requires the final two forward routes to be scales");
         found_even = found_even || type == StepType::kScaleEven;
         found_odd = found_odd || type == StepType::kScaleOdd;
     }
-    TT_FATAL(found_even && found_odd, "Inverse scale fusion requires one terminal scale for each split stream");
+    TT_FATAL(found_even && found_odd, "Inline inverse scaling requires one terminal scale for each split stream");
 }
 
 [[nodiscard]] inline IndexInterval subtract_offset(
@@ -111,14 +112,14 @@ inline void validate_inverse_scale_fusion(const LiftingForwardPlan& plan) {
 
     size_t even_length = plan.preprocess_layout.output.even.length;
     size_t odd_length = plan.preprocess_layout.output.odd.length;
-    cone_detail::validate_interval(target_even, even_length, "inverse target even");
-    cone_detail::validate_interval(target_odd, odd_length, "inverse target odd");
+    execution_detail::validate_interval(target_even, even_length, "inverse target even");
+    execution_detail::validate_interval(target_odd, odd_length, "inverse target odd");
 
     for (size_t route_index = 0; route_index < plan.routes.size(); ++route_index) {
         const auto& route = plan.routes[route_index];
         const RequiredStreams before = required[route_index];
-        cone_detail::validate_interval(before.even, even_length, "inverse required even before route");
-        cone_detail::validate_interval(before.odd, odd_length, "inverse required odd before route");
+        execution_detail::validate_interval(before.even, even_length, "inverse required even before route");
+        execution_detail::validate_interval(before.odd, odd_length, "inverse required odd before route");
 
         RequiredStreams after{};
         switch (route.type) {
@@ -129,16 +130,16 @@ inline void validate_inverse_scale_fusion(const LiftingForwardPlan& plan) {
                 const IndexInterval reconstructable{
                     .begin = route.base_offset, .end = route.base_offset + route.output_length};
                 TT_FATAL(
-                    cone_detail::contains(reconstructable, before.odd),
+                    execution_detail::contains(reconstructable, before.odd),
                     "Inverse predict requires discarded odd values [{}, {}) outside [{}, {})",
                     before.odd.begin,
                     before.odd.end,
                     reconstructable.begin,
                     reconstructable.end);
                 const IndexInterval target = subtract_offset(before.odd, route.base_offset, "inverse predict");
-                const uint32_t k = cone_detail::coefficient_count(route);
-                after.even = cone_detail::hull(
-                    before.even, cone_detail::translated(target, route.source_offset, static_cast<size_t>(k - 1)));
+                const uint32_t k = execution_detail::coefficient_count(route);
+                after.even = execution_detail::hull(
+                    before.even, execution_detail::translated(target, route.source_offset, static_cast<size_t>(k - 1)));
                 after.odd = target;
                 even_length = route.source_length;
                 odd_length = route.output_length;
@@ -151,17 +152,17 @@ inline void validate_inverse_scale_fusion(const LiftingForwardPlan& plan) {
                 const IndexInterval reconstructable{
                     .begin = route.base_offset, .end = route.base_offset + route.output_length};
                 TT_FATAL(
-                    cone_detail::contains(reconstructable, before.even),
+                    execution_detail::contains(reconstructable, before.even),
                     "Inverse update requires discarded even values [{}, {}) outside [{}, {})",
                     before.even.begin,
                     before.even.end,
                     reconstructable.begin,
                     reconstructable.end);
                 const IndexInterval target = subtract_offset(before.even, route.base_offset, "inverse update");
-                const uint32_t k = cone_detail::coefficient_count(route);
+                const uint32_t k = execution_detail::coefficient_count(route);
                 after.even = target;
-                after.odd = cone_detail::hull(
-                    before.odd, cone_detail::translated(target, route.source_offset, static_cast<size_t>(k - 1)));
+                after.odd = execution_detail::hull(
+                    before.odd, execution_detail::translated(target, route.source_offset, static_cast<size_t>(k - 1)));
                 even_length = route.output_length;
                 odd_length = route.source_length;
                 break;
@@ -185,8 +186,8 @@ inline void validate_inverse_scale_fusion(const LiftingForwardPlan& plan) {
                 break;
         }
 
-        cone_detail::validate_interval(after.even, even_length, "inverse required even after route");
-        cone_detail::validate_interval(after.odd, odd_length, "inverse required odd after route");
+        execution_detail::validate_interval(after.even, even_length, "inverse required even after route");
+        execution_detail::validate_interval(after.odd, odd_length, "inverse required odd after route");
         required[route_index + 1] = after;
     }
 
@@ -196,8 +197,8 @@ inline void validate_inverse_scale_fusion(const LiftingForwardPlan& plan) {
     return required;
 }
 
-[[nodiscard]] inline InverseConeChunkPlan build_chunk(
-    const LiftingInversePlan& inverse_plan, const IndexInterval output_signal, const bool inverse_scale_fused) {
+[[nodiscard]] inline IlwtChunkPlan build_chunk(
+    const LiftingInversePlan& inverse_plan, const IndexInterval output_signal) {
     const auto& plan = inverse_plan.forward_trace;
     const size_t pad = plan.preprocess_layout.pad_config.left;
     TT_FATAL(
@@ -228,12 +229,10 @@ inline void validate_inverse_scale_fusion(const LiftingForwardPlan& plan) {
     StoredStream active_odd{.slot = StorageSlot::kB, .storage = required.back().odd};
     StorageSlot free_slot = StorageSlot::kScratch;
     size_t max_workspace_elements = std::max(active_even.storage.length(), active_odd.storage.length());
-    std::vector<ConeStepRoute> routes;
+    std::vector<LwtStepRoute> routes;
     routes.reserve(plan.routes.size());
 
-    if (inverse_scale_fused) {
-        validate_inverse_scale_fusion(plan);
-    }
+    validate_inverse_scale_inline(plan);
 
     for (size_t reverse_index = plan.routes.size(); reverse_index > 0; --reverse_index) {
         const size_t route_index = reverse_index - 1;
@@ -248,9 +247,9 @@ inline void validate_inverse_scale_fusion(const LiftingForwardPlan& plan) {
         // The inverse scheme starts with the reciprocal of the two terminal
         // forward scales.  When enabled, compute applies both reciprocal
         // scales to the first predict/update inputs before the stencil, so no
-        // scaled stream needs a separate resident slot.
-        if (inverse_scale_fused && route_index + 2 >= plan.routes.size()) {
-            TT_FATAL(is_scale_step(forward_route.type), "Only terminal inverse scales may be fused");
+        // scaled stream needs a separate workspace slot.
+        if (route_index + 2 >= plan.routes.size()) {
+            TT_FATAL(is_scale_step(forward_route.type), "Only terminal inverse scales may be applied inline");
             continue;
         }
 
@@ -259,23 +258,23 @@ inline void validate_inverse_scale_fusion(const LiftingForwardPlan& plan) {
             const IndexInterval output = predict ? before.odd : before.even;
             const IndexInterval target =
                 subtract_offset(output, forward_route.base_offset, "inverse predict/update route");
-            const uint32_t k = cone_detail::coefficient_count(forward_route);
+            const uint32_t k = execution_detail::coefficient_count(forward_route);
             const IndexInterval source_required =
-                cone_detail::translated(target, forward_route.source_offset, static_cast<size_t>(k - 1));
+                execution_detail::translated(target, forward_route.source_offset, static_cast<size_t>(k - 1));
             const IndexInterval base_required = target;
             const StoredStream& source = predict ? active_even : active_odd;
             const StoredStream& base = predict ? active_odd : active_even;
 
             routes.push_back(
-                ConeStepRoute{
+                LwtStepRoute{
                     .type = forward_route.type,
                     .source = StreamRef{.slot = source.slot},
                     .base = StreamRef{.slot = base.slot},
-                    .output = detail::resident_output(free_slot),
+                    .output = detail::workspace_output(free_slot),
                     .source_storage_length = source.storage.length(),
                     .base_storage_length = base.storage.length(),
-                    .source_offset_elements = cone_detail::local_offset(source.storage, source_required),
-                    .base_offset_elements = cone_detail::local_offset(base.storage, base_required),
+                    .source_offset_elements = execution_detail::local_offset(source.storage, source_required),
+                    .base_offset_elements = execution_detail::local_offset(base.storage, base_required),
                     .source_left_pad_elements = forward_route.source_left_pad,
                     .output_length = output.length(),
                     .output_offset_elements = 0,
@@ -298,15 +297,15 @@ inline void validate_inverse_scale_fusion(const LiftingForwardPlan& plan) {
         const IndexInterval output = scale_even ? before.even : before.odd;
         const StoredStream& source = scale_even ? active_even : active_odd;
         routes.push_back(
-            ConeStepRoute{
+            LwtStepRoute{
                 .type = forward_route.type,
                 .source = StreamRef{.slot = source.slot},
                 .base = StreamRef{.slot = source.slot},
-                .output = detail::resident_output(free_slot),
+                .output = detail::workspace_output(free_slot),
                 .source_storage_length = source.storage.length(),
                 .base_storage_length = source.storage.length(),
-                .source_offset_elements = cone_detail::local_offset(source.storage, output),
-                .base_offset_elements = cone_detail::local_offset(source.storage, output),
+                .source_offset_elements = execution_detail::local_offset(source.storage, output),
+                .base_offset_elements = execution_detail::local_offset(source.storage, output),
                 .source_left_pad_elements = 0,
                 .output_length = output.length(),
                 .output_offset_elements = 0,
@@ -324,8 +323,8 @@ inline void validate_inverse_scale_fusion(const LiftingForwardPlan& plan) {
     }
 
     TT_FATAL(
-        cone_detail::contains(active_even.storage, target_even) &&
-            cone_detail::contains(active_odd.storage, target_odd),
+        execution_detail::contains(active_even.storage, target_even) &&
+            execution_detail::contains(active_odd.storage, target_odd),
         "Inverse routes did not reconstruct the requested initial split intervals");
     const size_t output_elements = output_signal.length();
     const size_t dependency_elements = canonical_approximation.length() + canonical_detail.length();
@@ -335,7 +334,7 @@ inline void validate_inverse_scale_fusion(const LiftingForwardPlan& plan) {
             : static_cast<double>(dependency_elements - std::min(dependency_elements, output_elements)) /
                   static_cast<double>(output_elements);
 
-    return InverseConeChunkPlan{
+    return IlwtChunkPlan{
         .output_signal = output_signal,
         .reconstructed_even = target_even,
         .reconstructed_odd = target_odd,
@@ -346,33 +345,33 @@ inline void validate_inverse_scale_fusion(const LiftingForwardPlan& plan) {
         .final_odd = StreamRef{.slot = active_odd.slot},
         .final_even_storage_length = active_even.storage.length(),
         .final_odd_storage_length = active_odd.storage.length(),
-        .final_even_offset_elements = cone_detail::local_offset(active_even.storage, target_even),
-        .final_odd_offset_elements = cone_detail::local_offset(active_odd.storage, target_odd),
+        .final_even_offset_elements = execution_detail::local_offset(active_even.storage, target_even),
+        .final_odd_offset_elements = execution_detail::local_offset(active_odd.storage, target_odd),
         .max_workspace_elements = max_workspace_elements,
         .dependency_overhead = dependency_overhead,
     };
 }
 
-[[nodiscard]] inline std::vector<InverseConeChunkPlan> build_chunks(
-    const LiftingInversePlan& plan, const uint32_t requested_chunk_count, const bool inverse_scale_fused) {
-    TT_FATAL(requested_chunk_count > 0, "Inverse cone chunk count must be non-zero");
+[[nodiscard]] inline std::vector<IlwtChunkPlan> build_chunks(
+    const LiftingInversePlan& plan, const uint32_t requested_chunk_count) {
+    TT_FATAL(requested_chunk_count > 0, "ILWT chunk count must be non-zero");
     constexpr size_t output_group_elements = 2 * device_protocol::kLwtGroupOutputElements;
     const size_t output_group_count = std::max(ceil_div(plan.original_length, output_group_elements), size_t{1});
     const size_t chunk_count = std::min(static_cast<size_t>(requested_chunk_count), output_group_count);
     const size_t base_groups = output_group_count / chunk_count;
     const size_t extra_groups = output_group_count % chunk_count;
 
-    std::vector<InverseConeChunkPlan> chunks;
+    std::vector<IlwtChunkPlan> chunks;
     chunks.reserve(chunk_count);
     size_t group_begin = 0;
     for (size_t chunk_index = 0; chunk_index < chunk_count; ++chunk_index) {
         const size_t group_count = base_groups + (chunk_index < extra_groups ? 1 : 0);
         const size_t begin = group_begin * output_group_elements;
         const size_t end = std::min((group_begin + group_count) * output_group_elements, plan.original_length);
-        chunks.push_back(build_chunk(plan, IndexInterval{.begin = begin, .end = end}, inverse_scale_fused));
+        chunks.push_back(build_chunk(plan, IndexInterval{.begin = begin, .end = end}));
         group_begin += group_count;
     }
-    TT_FATAL(group_begin == output_group_count, "Inverse cone chunks do not cover every output group");
+    TT_FATAL(group_begin == output_group_count, "ILWT chunks do not cover every output group");
     return chunks;
 }
 
@@ -405,51 +404,55 @@ template <typename Scheme>
     };
 }
 
-[[nodiscard]] inline InverseConeExecutionPlan make_inverse_cone_execution_plan(
+[[nodiscard]] inline IlwtExecutionPlan make_ilwt_execution_plan(
     LiftingInversePlan full_plan,
     const uint32_t core_limit,
     const uint32_t l1_signal_budget_bytes,
-    const ConeWorkspaceLayout workspace_layout = ConeWorkspaceLayout::kRowMajor,
-    const bool inverse_scale_fused = true,
-    const bool final_interleave_fused = true) {
-    TT_FATAL(core_limit > 0, "ConeStreamed ILWT requires at least one worker core");
-    TT_FATAL(l1_signal_budget_bytes >= 3 * device_protocol::kStickBytes, "ConeStreamed ILWT L1 budget is too small");
+    const WorkspaceLayout workspace_layout,
+    const bool final_interleave_direct) {
+    TT_FATAL(core_limit > 0, "ILWT requires at least one worker core");
+    TT_FATAL(l1_signal_budget_bytes >= 3 * device_protocol::kStickBytes, "ILWT L1 budget is too small");
 
     constexpr size_t output_group_elements = 2 * device_protocol::kLwtGroupOutputElements;
     const uint32_t final_group_count =
         static_cast<uint32_t>(std::max(ceil_div(full_plan.original_length, output_group_elements), size_t{1}));
     uint32_t chunk_count = std::min(final_group_count, core_limit);
-    std::vector<InverseConeChunkPlan> chunks;
+    std::vector<IlwtChunkPlan> chunks;
     uint32_t workspace_elements = 0;
+    uint32_t max_workspace_elements = 0;
 
     const auto build_candidate = [&](const uint32_t candidate_chunk_count) {
-        auto candidate_chunks = inverse_detail::build_chunks(full_plan, candidate_chunk_count, inverse_scale_fused);
-        size_t max_workspace_elements = 0;
+        auto candidate_chunks = inverse_detail::build_chunks(full_plan, candidate_chunk_count);
+        size_t candidate_max_workspace_elements = 0;
         for (const auto& chunk : candidate_chunks) {
-            max_workspace_elements = std::max(max_workspace_elements, chunk.max_workspace_elements);
+            candidate_max_workspace_elements = std::max(candidate_max_workspace_elements, chunk.max_workspace_elements);
         }
-        const size_t workspace_alignment = workspace_layout == ConeWorkspaceLayout::kTileNative
+        const size_t workspace_alignment = workspace_layout == WorkspaceLayout::kTileNative
                                                ? static_cast<size_t>(device_protocol::kLwtGroupOutputElements)
                                                : static_cast<size_t>(kStickWidth);
-        const size_t aligned_workspace = round_up(max_workspace_elements, workspace_alignment);
+        const size_t aligned_workspace = round_up(candidate_max_workspace_elements, workspace_alignment);
         TT_FATAL(
             aligned_workspace > 0 && aligned_workspace <= static_cast<size_t>(std::numeric_limits<uint32_t>::max()),
-            "Inverse cone workspace length {} is invalid",
+            "ILWT workspace length {} is invalid",
             aligned_workspace);
-        return std::pair{std::move(candidate_chunks), static_cast<uint32_t>(aligned_workspace)};
+        return std::tuple{
+            std::move(candidate_chunks),
+            static_cast<uint32_t>(aligned_workspace),
+            static_cast<uint32_t>(candidate_max_workspace_elements)};
     };
 
     for (;;) {
         auto candidate = build_candidate(chunk_count);
-        chunks = std::move(candidate.first);
-        workspace_elements = candidate.second;
+        chunks = std::move(std::get<0>(candidate));
+        workspace_elements = std::get<1>(candidate);
+        max_workspace_elements = std::get<2>(candidate);
         const uint64_t workspace_bytes_per_core = uint64_t{3} * workspace_elements * sizeof(float);
         if (workspace_bytes_per_core <= l1_signal_budget_bytes) {
             break;
         }
         TT_FATAL(
             chunk_count < final_group_count,
-            "One-group ConeStreamed ILWT workspace requires {} bytes/core, exceeding the {}-byte L1 budget",
+            "One-group ILWT workspace requires {} bytes/core, exceeding the {}-byte L1 budget",
             workspace_bytes_per_core,
             l1_signal_budget_bytes);
         chunk_count =
@@ -462,12 +465,12 @@ template <typename Scheme>
     double max_dependency_overhead = 0.0;
     for (const auto& chunk : chunks) {
         max_dependency_overhead = std::max(max_dependency_overhead, chunk.dependency_overhead);
-        TT_FATAL(!chunk.routes.empty(), "ConeStreamed ILWT requires at least one inverse predict/update route");
-        if (final_interleave_fused) {
+        TT_FATAL(!chunk.routes.empty(), "ILWT requires at least one inverse predict/update route");
+        if (final_interleave_direct) {
             const auto& final_route = chunk.routes.back();
             TT_FATAL(
                 is_predict_update_step(final_route.type),
-                "Fused ILWT interleave requires the final inverse route to be predict/update");
+                "Direct ILWT interleave requires the final inverse route to be predict/update");
             const bool updates_even = final_route.type == StepType::kUpdate;
             const StreamRef final_stream = updates_even ? chunk.final_even : chunk.final_odd;
             const size_t final_offset =
@@ -477,19 +480,19 @@ template <typename Scheme>
             TT_FATAL(
                 final_stream.slot == final_route.output.slot && final_offset == 0 &&
                     reconstructed_length == final_route.output_length,
-                "Fused ILWT interleave requires the final route to produce the complete reconstructed split stream");
+                "Direct ILWT interleave requires the final route to produce the complete reconstructed split stream");
         }
     }
 
-    return InverseConeExecutionPlan{
+    return IlwtExecutionPlan{
         .full_plan = std::move(full_plan),
         .chunks = std::move(chunks),
         .output_groups_per_chunk = groups_per_chunk,
         .workspace_elements = workspace_elements,
+        .max_workspace_elements = max_workspace_elements,
         .active_core_count = active_core_count,
         .max_dependency_overhead = max_dependency_overhead,
-        .inverse_scale_fused = inverse_scale_fused,
-        .final_interleave_fused = final_interleave_fused,
+        .final_interleave_direct = final_interleave_direct,
         .workspace_layout = workspace_layout,
     };
 }

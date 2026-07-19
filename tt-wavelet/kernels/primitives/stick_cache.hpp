@@ -11,9 +11,9 @@
 // test inline, but emit one callable copy of the larger boundary-only path
 // instead of duplicating it at the even and odd initialization sites.
 #if defined(ARCH_WORMHOLE)
-#define TTWV_BOUNDARY_SLOW_PATH __attribute__((noinline))
+#define TTWV_BOUNDARY_CALLABLE __attribute__((noinline))
 #else
-#define TTWV_BOUNDARY_SLOW_PATH ALWI
+#define TTWV_BOUNDARY_CALLABLE ALWI
 #endif
 
 namespace ttwv::kernels::primitives {
@@ -99,19 +99,19 @@ ALWI float read_source_value(
 }
 
 template <typename SrcAccessor>
-TTWV_BOUNDARY_SLOW_PATH float read_extended_source_value(
+TTWV_BOUNDARY_CALLABLE float read_extended_source_value(
     const SrcAccessor& src, StickReadCache& cache, const uint32_t source_index, const uint32_t source_length) {
     return read_source_value(src, cache, source_index, source_length);
 }
 
 template <ttwv::BoundaryMode Mode, typename SrcAccessor>
-TTWV_BOUNDARY_SLOW_PATH float read_extended_value(
+TTWV_BOUNDARY_CALLABLE float read_extended_value(
     const SrcAccessor& src,
     StickReadCache& cache,
     const uint32_t input_length,
     const uint32_t left_pad,
     const uint32_t out_idx) {
-    static_assert(ttwv::is_cone_boundary_mode(Mode), "Unsupported compile-time boundary mode");
+    static_assert(ttwv::is_supported_lwt_boundary_mode(Mode), "Unsupported compile-time boundary mode");
 
     if constexpr (Mode == ttwv::BoundaryMode::kZero) {
         return 0.0F;
@@ -174,7 +174,7 @@ ALWI float read_padded_value(
     const uint32_t input_length,
     const uint32_t left_pad,
     const uint32_t out_idx) {
-    static_assert(ttwv::is_cone_boundary_mode(Mode), "Unsupported compile-time boundary mode");
+    static_assert(ttwv::is_supported_lwt_boundary_mode(Mode), "Unsupported compile-time boundary mode");
 
     // All supported modes share this direct interior path.  On Wormhole the
     // bounded prefix/suffix calls one out-of-line specialization so its larger
@@ -211,4 +211,4 @@ ALWI void release_cache(StickReadCache& cache) {
 
 }  // namespace ttwv::kernels::primitives
 
-#undef TTWV_BOUNDARY_SLOW_PATH
+#undef TTWV_BOUNDARY_CALLABLE

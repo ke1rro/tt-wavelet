@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate ConeStreamed LWT boundary modes against PyWavelets."""
+"""Validate production LWT boundary modes against PyWavelets."""
 
 from __future__ import annotations
 
@@ -11,6 +11,12 @@ from pathlib import Path
 
 import numpy as np
 import pywt
+
+from runtime_checks import (
+    check_consistent_architecture,
+    parse_runtime_architecture,
+    run_ncrisc_elf_gate,
+)
 
 DEFAULT_TOLERANCES = {
     "db1": 2.0e-6,
@@ -34,9 +40,9 @@ def parse_coefficients(stdout: str, label: str) -> np.ndarray:
 
 def make_signal(length: int) -> np.ndarray:
     index = np.arange(length, dtype=np.float32)
-    return (0.7 * np.sin(index * 0.071) + 0.2 * np.cos(index * 0.013) + index * 1.0e-4).astype(
-        np.float32
-    )
+    return (
+        0.7 * np.sin(index * 0.071) + 0.2 * np.cos(index * 0.013) + index * 1.0e-4
+    ).astype(np.float32)
 
 
 def run_case(
@@ -45,20 +51,20 @@ def run_case(
     mode: str,
     layout: str,
     signal_path: Path,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, str]:
     environment = os.environ.copy()
     environment["TT_LOGGER_LEVEL"] = "FATAL"
-    environment["TT_WAVELET_LWT_CONE_WORKSPACE_LAYOUT"] = layout
+    environment["TT_WAVELET_LWT_WORKSPACE_LAYOUT"] = layout
     command = [
         str(binary),
-        "--memory-mode",
-        "cone",
         "--boundary-mode",
         mode,
         wavelet,
         str(signal_path),
     ]
-    result = subprocess.run(command, text=True, capture_output=True, env=environment, check=False)
+    result = subprocess.run(
+        command, text=True, capture_output=True, env=environment, check=False
+    )
     if result.returncode != 0:
         raise RuntimeError(
             f"LWT failed for {wavelet}, mode={mode}, layout={layout}:\n"
@@ -67,6 +73,7 @@ def run_case(
     return (
         parse_coefficients(result.stdout, "approximation"),
         parse_coefficients(result.stdout, "detail"),
+        parse_runtime_architecture(result.stdout + result.stderr),
     )
 
 
@@ -83,7 +90,9 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--binary", type=Path, default=root / "build" / "lwt")
     parser.add_argument("--schemes-dir", type=Path, default=root / "wavelets")
-    parser.add_argument("--wavelets", nargs="+", default=["db1", "db2", "db7", "bior3.9"])
+    parser.add_argument(
+        "--wavelets", nargs="+", default=["db1", "db2", "db7", "bior3.9"]
+    )
     parser.add_argument(
         "--all-schemes",
         action="store_true",
@@ -146,7 +155,9 @@ def main() -> None:
 
     failures: list[str] = []
     max_error = 0.0
+    max_layout_error = 0.0
     case_count = 0
+    architecture: str | None = None
     with tempfile.TemporaryDirectory(prefix="ttwv-lwt-boundary-") as temporary:
         signal_path = Path(temporary) / "signal.txt"
         for length in args.lengths:
@@ -162,11 +173,18 @@ def main() -> None:
                         )
                         continue
                     expected_a, expected_d = (
-                        values.astype(np.float64) for values in pywt.dwt(signal, wavelet, mode=mode)
+                        values.astype(np.float64)
+                        for values in pywt.dwt(signal, wavelet, mode=mode)
                     )
+                    reference_layout = ""
+                    reference_a: np.ndarray | None = None
+                    reference_d: np.ndarray | None = None
                     for layout in args.layouts:
-                        candidate_a, candidate_d = run_case(
+                        candidate_a, candidate_d, case_architecture = run_case(
                             binary, wavelet, mode, layout, signal_path
+                        )
+                        architecture = check_consistent_architecture(
+                            architecture, case_architecture
                         )
                         error_a = max_abs_error(candidate_a, expected_a)
                         error_d = max_abs_error(candidate_d, expected_d)
@@ -186,19 +204,57 @@ def main() -> None:
                             np.isfinite(candidate_d)
                         )
                         tolerance_failure = not args.runtime_only and error > tolerance
-                        if shape_mismatch or non_finite or tolerance_failure:
+                        layout_mismatch = False
+                        if reference_a is None or reference_d is None:
+                            reference_layout = layout
+                            reference_a = candidate_a.astype(np.float32)
+                            reference_d = candidate_d.astype(np.float32)
+                        elif (
+                            candidate_a.shape != reference_a.shape
+                            or candidate_d.shape != reference_d.shape
+                        ):
+                            layout_mismatch = True
+                        else:
+                            candidate_a_fp32 = candidate_a.astype(np.float32)
+                            candidate_d_fp32 = candidate_d.astype(np.float32)
+                            layout_error = max(
+                                max_abs_error(candidate_a_fp32, reference_a),
+                                max_abs_error(candidate_d_fp32, reference_d),
+                            )
+                            max_layout_error = max(max_layout_error, layout_error)
+                            layout_mismatch = not (
+                                np.array_equal(
+                                    candidate_a_fp32.view(np.uint32),
+                                    reference_a.view(np.uint32),
+                                )
+                                and np.array_equal(
+                                    candidate_d_fp32.view(np.uint32),
+                                    reference_d.view(np.uint32),
+                                )
+                            )
+                        if (
+                            shape_mismatch
+                            or non_finite
+                            or tolerance_failure
+                            or layout_mismatch
+                        ):
                             failures.append(
                                 f"{wavelet} N={length} mode={mode} layout={layout}: "
                                 f"shapes {candidate_a.shape}/{candidate_d.shape} vs "
                                 f"{expected_a.shape}/{expected_d.shape}, "
                                 f"finite={not non_finite}, error={error:.8e}, "
-                                f"tolerance={tolerance:.8e}"
+                                f"tolerance={tolerance:.8e}, "
+                                f"bit_identical_to_{reference_layout}={not layout_mismatch}"
                             )
 
     print(f"validated_device_cases: {case_count}")
     print(f"max_abs_vs_pywavelets: {max_error:.8e}")
+    print(f"max_abs_between_layouts: {max_layout_error:.8e}")
     if failures:
         raise SystemExit("\n".join(["LWT boundary validation failed:", *failures]))
+    if architecture is None:
+        raise SystemExit("LWT boundary validation did not execute a device case")
+    run_ncrisc_elf_gate(root, architecture)
 
 
 if __name__ == "__main__":
