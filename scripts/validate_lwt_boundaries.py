@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """Validate production LWT boundary modes against PyWavelets."""
 
-from __future__ import annotations
-
 import argparse
 import os
 import subprocess

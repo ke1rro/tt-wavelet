@@ -6,8 +6,6 @@ inverse requirements from each forward trace instead of planning a synthetic
 "inverse forward" scheme, which would lose the original crop geometry.
 """
 
-from __future__ import annotations
-
 import argparse
 import json
 from dataclasses import dataclass

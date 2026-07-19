@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """Capture and compare deterministic Wormhole/Blackhole FP32 LWT results."""
 
-from __future__ import annotations
-
 import argparse
 import json
 import os

@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """Run the production ILWT kernel chain for every generated scheme."""
 
-from __future__ import annotations
-
 import argparse
 import os
 import subprocess

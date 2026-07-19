@@ -16,8 +16,6 @@ from the documented high-order FP32/PyWavelets compatibility limitation:
   FP32 limitation and do not by themselves fail this layout benchmark.
 """
 
-from __future__ import annotations
-
 import argparse
 import csv
 import math

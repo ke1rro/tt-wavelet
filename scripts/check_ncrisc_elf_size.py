@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """Gate Wormhole LWT NCRISC instruction size from generated ELF metadata."""
 
-from __future__ import annotations
-
 import argparse
 import re
 import subprocess

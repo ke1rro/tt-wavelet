@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """Validate the production synthetic K=17 LWT/ILWT round trip on hardware."""
 
-from __future__ import annotations
-
 import argparse
 import os
 import subprocess

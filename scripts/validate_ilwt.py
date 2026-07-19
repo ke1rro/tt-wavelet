@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """Validate Blackhole/Wormhole 1D ILWT against PyWavelets coefficients."""
 
-from __future__ import annotations
-
 import argparse
 import os
 import subprocess
