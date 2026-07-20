@@ -64,25 +64,6 @@ ALWI void cache_source_sticks(
 }
 
 template <typename SrcAccessor>
-ALWI void cache_source_stick(const SrcAccessor& src, StickReadCache& cache, const uint32_t source_stick) {
-    cache_source_sticks(src, cache, source_stick, source_stick + 1);
-}
-
-template <typename SrcAccessor>
-ALWI float read_source_value(const SrcAccessor& src, StickReadCache& cache, const uint32_t source_index) {
-    const uint32_t source_stick = source_index / cache.stick_width;
-    const uint32_t source_lane = source_index % cache.stick_width;
-
-    if (!cache_contains_stick(cache, source_stick)) {
-        cache_source_stick(src, cache, source_stick);
-    }
-
-    const auto* cached_values = reinterpret_cast<const float*>(get_read_ptr(cache.cb_id));
-    const uint32_t cached_offset = source_stick - cache.cached_stick_id;
-    return cached_values[cached_offset * cache.stick_width + source_lane];
-}
-
-template <typename SrcAccessor>
 ALWI float read_source_value(
     const SrcAccessor& src, StickReadCache& cache, const uint32_t source_index, const uint32_t source_length) {
     const uint32_t source_stick = source_index / cache.stick_width;
@@ -186,16 +167,6 @@ ALWI float read_padded_value(
         }
     }
     return read_extended_value<Mode>(src, cache, input_length, left_pad, out_idx);
-}
-
-template <typename SrcAccessor>
-ALWI float read_padded_symmetric_value(
-    const SrcAccessor& src,
-    StickReadCache& cache,
-    const uint32_t input_length,
-    const uint32_t left_pad,
-    const uint32_t out_idx) {
-    return read_padded_value<ttwv::BoundaryMode::kSymmetric>(src, cache, input_length, left_pad, out_idx);
 }
 
 ALWI void release_cache(StickReadCache& cache) {

@@ -8,7 +8,6 @@ namespace ttwv::device_protocol {
 
 constexpr uint32_t kStepCoeffCapacity = 17;
 constexpr uint32_t kStickBytes = kStickWidth * sizeof(float);
-constexpr uint32_t kPadSplitCacheStickCount = 8;
 constexpr uint32_t kLwtCacheStickCount = 4;
 
 constexpr uint32_t kLwtRowsPerGroup = 32;

@@ -77,5 +77,3 @@ python3 scripts/check_ncrisc_elf_size.py --architecture wormhole_b0
 - [Horizontal SFPU stencil](docs/HORIZONTAL_STENCIL.md)
 - [Vertical SFPU stencil](docs/VERTICAL_STENCIL.md)
 - [Definitions](docs/DEFINITIONS.md)
-
-Historical implementations and standalone verification programs are isolated under `archive/` and excluded from production builds.

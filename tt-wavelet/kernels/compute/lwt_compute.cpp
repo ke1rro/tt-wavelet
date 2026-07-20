@@ -53,7 +53,7 @@ ALWI void copy_narrow_tile_math(const uint32_t dst_tile_index) {
 #endif
 
 // copy_tile_init_short() still configures the unpack MOP from the 32x16 CB
-// metadata (two faces).  Only the FP32 math-side Dst address needs overriding:
+// metadata (two faces). Only the FP32 math-side Dst address needs overriding:
 // Metalium's generic direct-copy path currently hardcodes a 32x32 Dst stride.
 ALWI void copy_narrow_tile(const uint32_t cb, const uint32_t input_tile_index, const uint32_t dst_tile_index) {
     UNPACK((llk_unpack_A<BroadcastType::NONE, false, EltwiseBinaryReuseDestType::NONE, UnpackToDestEn>(
