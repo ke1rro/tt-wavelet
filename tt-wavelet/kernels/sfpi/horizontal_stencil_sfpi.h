@@ -228,6 +228,37 @@ inline void _horizontal_stencil_plus_base(
     TTI_STALLWAIT(p_stall::STALL_CFG, p_stall::WAIT_SFPU);
 }
 
+template <uint8_t K>
+inline void _horizontal_stencil_dense_tile(
+    const uint32_t h_packed[K],
+    const uint32_t input0,
+    const uint32_t input1,
+    const uint32_t base,
+    const uint32_t output) {
+    static_assert(K > 0 && K <= 17, "Dense horizontal stencil supports 1..17 coefficients");
+    math::set_dst_write_addr<DstTileShape::Tile32x32, UnpackDestination::SrcRegs>(0);
+    _lwt_clear_addr_mod_base_();
+    TTI_STALLWAIT(p_stall::STALL_SFPU, p_stall::MATH);
+
+    // The reader places 17-K alignment positions before the source interval,
+    // making column 16 the newest sample for output column zero. The two
+    // source tiles then contain the invariant 48-position packed window:
+    //
+    //   (17-K) alignment + 32 outputs + (K-1) halo = 48.
+    //
+    // Each output face consumes its preceding and current source faces.
+    _horizontal_stencil_plus_base_face<K, 16>(
+        h_packed, _lwt_dst_base(input0, 0), _lwt_dst_base(input0, 1), _lwt_dst_base(base, 0), _lwt_dst_base(output, 0));
+    _horizontal_stencil_plus_base_face<K, 16>(
+        h_packed, _lwt_dst_base(input0, 1), _lwt_dst_base(input1, 0), _lwt_dst_base(base, 1), _lwt_dst_base(output, 1));
+    _horizontal_stencil_plus_base_face<K, 16>(
+        h_packed, _lwt_dst_base(input0, 2), _lwt_dst_base(input0, 3), _lwt_dst_base(base, 2), _lwt_dst_base(output, 2));
+    _horizontal_stencil_plus_base_face<K, 16>(
+        h_packed, _lwt_dst_base(input0, 3), _lwt_dst_base(input1, 2), _lwt_dst_base(base, 3), _lwt_dst_base(output, 3));
+
+    TTI_STALLWAIT(p_stall::STALL_CFG, p_stall::WAIT_SFPU);
+}
+
 template <
     uint8_t K,
     bool ScaleSource = false,
@@ -281,6 +312,16 @@ inline void hstencil_plus_base_tile(
     const uint32_t output2) {
     MATH((ckernel::sfpu::_horizontal_stencil_plus_base<K, Rows>(
         h_packed.data(), input1, input2, base1, base2, output1, output2)));
+}
+
+template <uint8_t K>
+inline void hstencil_dense_tile(
+    std::array<uint32_t, K> h_packed,
+    const uint32_t input0,
+    const uint32_t input1,
+    const uint32_t base,
+    const uint32_t output) {
+    MATH((ckernel::sfpu::_horizontal_stencil_dense_tile<K>(h_packed.data(), input0, input1, base, output)));
 }
 
 template <uint8_t K>

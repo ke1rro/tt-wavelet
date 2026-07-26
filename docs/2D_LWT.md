@@ -1,14 +1,27 @@
-# 2D LWT implementation proposal
+# 2D LWT architecture and implementation status
 
-This document describes implementation details of proposed 2D LWT algorithm on Tenstorrent hardware. It assumes the reader to already understand [1D LWT](./LWT.md) implementation.
+This document specifies the vertical-first, separable 2D LWT architecture for
+Tenstorrent hardware. It assumes the reader already understands the
+[1D LWT](./LWT.md) implementation.
+
+The exact dependency-cone planner, mandatory tile-padding contract, FP32
+scalar oracle, dense full-tile horizontal stencil, `K=14..17` vertical
+stencil, and fused reader/compute/writer device program are implemented. The
+current device path is a correctness-first five-plane implementation:
+intermediate vertical and horizontal routes remain core-local, and only
+LL/LH/HL/HH are written to DRAM.
 
 ## Note on tensors
 
-All tensors we discuss in this document are considered to be two-dimensional (in tile layout) or one-dimensional (in row-major layout), but latter is used only for demonstrations, and final code will work solely with 2D tensors in tile layout. For detailed documentation refer to [Tenstorrent documentation]().
+Persistent 2D workspace uses full FP32 `32x32` tiles. Row-major arrays below
+are mathematical pseudocode only.
 
 ## Main idea
 
-We will not explain why, but 2D wavelet transform is similar to first applying 1D wavelet transform along horizontal axis (for each row) and then on each of the bands (produced by vertical transformation: approximation and details) we apply 1D wavelet transform along vertical axis (for each column in each band). This produces 4 2D matrices/tensors: LL, LH, HL, HH (for each axis respectively: **h**igh frequencies - details, **l**ow frequencies - approximations).
+The production contract is vertical-first: apply the 1D transform to each
+column and then apply it to every row of the two vertical bands. This produces
+LL, LH, HL, and HH. The first letter names the vertical result and the second
+letter names the horizontal result.
 
 For this we should do the following steps (for original matrix $D$ of the shape $2M \times 2N$):
 
@@ -17,32 +30,34 @@ def lwt2d(D: np.ndarray):
     M = D.shape[0] // 2 # Assume height is even
     N = D.shape[1] // 2 # Assume width is even
 
-    L = np.zeros(M, 2*N) # create empty matrix Mx2N
-    H = np.zeros(M, 2*N) # create empty matrix Mx2N
+    L = np.zeros((M, 2*N))
+    H = np.zeros((M, 2*N))
 
     for c in range(2*N):
-        row = D[:, c] # Row is now 1D matrix of shape 2Mx1
-        even, odd = split(row) # Same split as in 1D LWT -> even and odd are of shape Mx1
+        column = D[:, c] # 1D column of shape 2M
+        even, odd = split(column)
         approx, details = lwt(even, odd) # Same lwt as in 1D
         L[:, c] = approx
-        H[:, c] = odd
+        H[:, c] = details
 
-    LL = np.zeros(M, N)
-    LH = np.zeros(M, N)
-    HL = np.zeros(M, N)
-    HH = np.zeros(M, N)
+    LL = np.zeros((M, N))
+    LH = np.zeros((M, N))
+    HL = np.zeros((M, N))
+    HH = np.zeros((M, N))
     for r in range(M):
-        column = L[r, :] # Column is now 1D matrix of shape 1x2N
-        even, odd = split1d(column.T) # Do same split on transpose of column
+        row = L[r, :]
+        even, odd = split1d(row)
         approx, details = lwt1d(even, odd)
         LL[r, :] = approx
-        HL[r, :] = details
+        LH[r, :] = details
 
-        column = H[r, :] # Column is now 1D matrix of shape 1x2N
-        even, odd = split1d(column.T) # Do same split on transpose of column
+        row = H[r, :]
+        even, odd = split1d(row)
         approx, details = lwt1d(even, odd)
-        LH[r, :] = approx
+        HL[r, :] = approx
         HH[r, :] = details
+
+    return LL, LH, HL, HH
 ```
 
 
@@ -53,10 +68,10 @@ Also additional functions defined:
 ```python
 def split_horizontal(D: np.ndarray):
     M = D.shape[0]
-    N = d.shape[1] // 2 # Assume width is even
+    N = D.shape[1] // 2 # Assume width is even
 
-    even = zeros(M, N)
-    odd = zeros(M, N)
+    even = np.zeros((M, N))
+    odd = np.zeros((M, N))
 
     for r in range(M):
         for c in range(N):
@@ -68,10 +83,10 @@ def split_horizontal(D: np.ndarray):
 
 def split_vertical(D: np.ndarray):
     M = D.shape[0] // 2 # Assume height is even
-    N = d.shape[1]
+    N = D.shape[1]
 
-    even = np.zeros(M, N)
-    odd = np.zeros(M, N)
+    even = np.zeros((M, N))
+    odd = np.zeros((M, N))
 
     for r in range(M):
         for c in range(N):
@@ -110,12 +125,12 @@ But with this approach there are separate splits, which require separate program
 def split2d(D: np.ndarray):
     M = D.shape[0] // 2 # Assume height is even
     N = D.shape[1] // 2 # Assume width is even
-    EE = np.zeros(M, N)
-    EO = np.zeros(M, N)
-    OE = np.zeros(M, N)
-    OO = np.zeros(M, N)
+    EE = np.zeros((M, N))
+    EO = np.zeros((M, N))
+    OE = np.zeros((M, N))
+    OO = np.zeros((M, N))
 
-    for r in range(M):whole tiles
+    for r in range(M):
         for c in range(N):
             EE[r, c] = D[2*r, 2*c]
             EO[r, c] = D[2*r, 2*c+1]
@@ -150,3 +165,165 @@ def lwt2d(D: np.ndarray):
 
 The implementation is similar to the 1D LWT, but we drop the idea of Splice and process tiles without pre-processing. 
 
+## Exact dependency cones
+
+Every lifting route expands dependencies along one axis only. For requested
+output interval \(I=[a,b)\), a route with source offset \(s\), base offset
+\(t\), and \(K\) coefficients requires:
+
+$$
+I_{\text{source}}=[a+s,b+s+K-1), \qquad
+I_{\text{base}}=[a+t,b+t).
+$$
+
+Run the existing backward interval planner independently for the final band
+intervals \(Q_y\) and \(Q_x\):
+
+$$
+(E_y,O_y)=B_y(Q_y,Q_y), \qquad
+(E_x,O_x)=B_x(Q_x,Q_x).
+$$
+
+The exact initial polyphase rectangles are:
+
+$$
+R_{EE}=E_y\times E_x,\quad R_{EO}=E_y\times O_x,\quad
+R_{OE}=O_y\times E_x,\quad R_{OO}=O_y\times O_x.
+$$
+
+[`plan_2d.hpp`](../tt-wavelet/tt_wavelet/include/lifting/plan_2d.hpp)
+implements this product construction, retains per-route axis requirements,
+assigns every vertical and horizontal route explicit source/base/output
+rectangles and plane slots, searches rectangular band-tile chunk shapes, and
+rejects candidates that exceed the configured L1 budget.
+
+## Ownership and local workspace
+
+One worker owns one rectangular output region in all four final bands. It
+loads the exact raw-input cone, applies the boundary operator in original
+image coordinates, splits locally to EE/EO/OE/OO, executes both axis
+transforms in its own L1, and writes only LL/LH/HL/HH to DRAM. No worker reads
+another worker's intermediate state.
+
+The production workspace is currently four active full-tile planes plus one
+scratch plane. The four-plane in-place policy remains a later optimization.
+The dependency-local design removes global shift materialization but does not
+remove route offsets, \(K-1\) halos, boundary mapping, or local gather/scatter
+alignment.
+
+The conservative per-core model currently accounts:
+
+```text
+workspace = sum(per-slot phase-aware tile span * 4 bytes)
+circular buffers = 8 * 32 * 32 * 4
+metadata = 4 * 96
+synchronization and scalar NoC staging = 32 + 128
+```
+
+The planner uses these exact allocations and rejects a chunk shape when the
+uniform per-core allocation would exceed the selected L1 budget.
+
+## Current fused device pipeline
+
+One transform is one Metalium `Program` with three kernels:
+
+```text
+reader: padded raw input -> symmetric cone gather -> EE/EO/OE/OO in L1
+compute: two vertical route chains -> two horizontal route chains
+writer: persist every intermediate route in local L1 -> LL/LH/HL/HH in DRAM
+```
+
+There is no device-program launch between the vertical and horizontal axes,
+and no intermediate band is looped through DRAM. Debug snapshot mode is the
+only exception: `--route-snapshot-prefix` explicitly copies each route result
+to diagnostic DRAM storage and writes a JSON manifest.
+
+The benchmark executable creates and prepares one device program per
+wavelet/shape case. Warmups and repeats enqueue that same `MeshWorkload`
+again. Thus `--warmup-runs 1 --repeats 3` performs four launches of one
+prepared fused program, not four program constructions. Each launch is one
+complete reader/compute/writer transform. Benchmark mode also enables the
+program cache.
+
+## Performance status
+
+The current split uses face-contiguous NoC bursts for interior rows and an
+alignment-safe scalar fallback only for reflected left/right edge segments.
+Final bands use face-contiguous burst writes for both interior and edge
+chunks. Indicative no-watcher N150 measurements for `db7`, 64-core limit,
+three repeats were:
+
+| Input | TT fused mean | PyWavelets mean | Active cores | Chunks |
+|---|---:|---:|---:|---:|
+| 512x512 | 32.1 ms | 13.8 ms | 64 | 81 |
+| 1000x1000 | 50.1 ms | 25.1 ms | 64 | 64 |
+
+These numbers show that correctness fusion is complete, but performance
+sign-off is not. The next changes with the largest expected effect are:
+
+1. replace BRISC face-burst parity gather with tile/block reads and local
+   SFPU parity deinterleave;
+2. add a whole-tile final-band fast path above the general face-burst writer;
+3. tune the 2D chunk cost model using measured halo duplication and core
+   utilization;
+4. add the four-plane aligned in-place route fast path;
+5. evaluate trace replay after tile-native split removes the remaining
+   reader-side staging.
+
+## FP32 contract
+
+- workspace and circular buffers are FP32;
+- destination accumulation enables `fp32_dest_acc_en`;
+- taps execute in scheme order with the generated FP32 bit patterns;
+- scale routes remain at their defined semantic positions;
+- vertical-first axis order is fixed;
+- no algebraically equivalent long filter bank may replace the lifting route
+  sequence.
+
+The scalar oracle supports `ieee`, `wormhole-sfpu`, and `blackhole-sfpu`
+arithmetic. Device validation defaults to the matching SFPU model. The
+checked-in PyWavelets compatibility manifest intentionally uses IEEE
+arithmetic because it classifies the generated lifting factorization against
+an external IEEE-oriented library, not device instruction behavior.
+
+Horizontal-first and vertical-first transforms are algebraically equivalent,
+but their FP32 results need not be bit-identical.
+
+## Validation
+
+Build the implemented planner, reference, and vertical-kernel checks:
+
+```bash
+./update.sh Release lwt_2d_planner_tests
+./update.sh Release lwt_2d_reference
+./update.sh Release lwt_2d
+./update.sh Release vertical_stencil_k17_test
+./update.sh Release horizontal_dense_stencil_test
+```
+
+Run them with:
+
+```bash
+./build/lwt_2d_planner_tests
+./compare.py --wavelet db1 --shape 4 5 --signal-file signal.txt
+./compare_timings.py --backend tt-wavelet --wavelets db7 \
+  --shapes 256x256 512x512 --tt-repeats 5 --tt-cores 64
+.venv/bin/python scripts/validate_lwt_2d_device.py --schemes db1
+source scripts/set_env.sh
+./build/vertical_stencil_k17_test
+./build/horizontal_dense_stencil_test
+```
+
+The planner test covers all generated schemes and the required 23-shape
+corpus. `db1` passes that entire corpus, including 513x769 multi-chunk
+execution, with exact device/oracle output and bit-identical
+single-core/multi-core results. At 33x33, all 63 schemes in the
+empirical PyWavelets-stable manifest pass the device/oracle `1e-4` gate.
+A full single-core Wormhole-oracle sweep at 33x33 passes 63 of 106 schemes;
+43 long, ill-conditioned `db`/`coif` schemes exceed `1e-4`, and 50 schemes
+miss the preferred `1e-5` target. Architecture-exact primitive tests are
+bit-identical, so closing this route-chain numerical gap remains required.
+The exhaustive artifact explicitly records that its multi-core check was
+skipped; db1 and selected large-scheme runs cover multi-core identity
+separately. This internal gate is distinct from PyWavelets compatibility
+classification.

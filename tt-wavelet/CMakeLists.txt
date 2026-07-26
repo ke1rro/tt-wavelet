@@ -35,4 +35,24 @@ if(BUILD_TT_WAVELET)
     ${TT_WAVELET_LWT_TARGET} main.cpp tt_wavelet/src/lifting/device.cpp)
   add_dependencies(${TT_WAVELET_LWT_TARGET} tt_wavelet_generate_static_schemes)
   tt_wavelet_configure_metal_target(${TT_WAVELET_LWT_TARGET})
+
+  add_executable(lwt_2d_planner_tests tests/lwt_2d_planner_tests.cpp)
+  add_dependencies(lwt_2d_planner_tests tt_wavelet_generate_static_schemes)
+  tt_wavelet_configure_metal_target(lwt_2d_planner_tests)
+
+  add_executable(lwt_2d_reference reference_2d.cpp)
+  add_dependencies(lwt_2d_reference tt_wavelet_generate_static_schemes)
+  tt_wavelet_configure_metal_target(lwt_2d_reference)
+
+  add_executable(lwt_2d main_2d.cpp tt_wavelet/src/lifting/device_2d.cpp)
+  add_dependencies(lwt_2d tt_wavelet_generate_static_schemes)
+  tt_wavelet_configure_metal_target(lwt_2d)
+
+  add_executable(vertical_stencil_k17_test
+                 tests/vertical_stencil_k17_test.cpp)
+  tt_wavelet_configure_metal_target(vertical_stencil_k17_test)
+
+  add_executable(horizontal_dense_stencil_test
+                 tests/horizontal_dense_stencil_test.cpp)
+  tt_wavelet_configure_metal_target(horizontal_dense_stencil_test)
 endif()

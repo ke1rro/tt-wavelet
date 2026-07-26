@@ -1,0 +1,772 @@
+{
+  "schema_version": 1,
+  "fp32_arithmetic": "wormhole-sfpu",
+  "hard_tolerance": 0.0001,
+  "target_tolerance": 1e-05,
+  "multi_core_limit": 64,
+  "multi_core_checked": true,
+  "case_count": 23,
+  "failed_case_count": 0,
+  "target_miss_count": 0,
+  "results": [
+    {
+      "scheme": "db1",
+      "shape": [
+        1,
+        1
+      ],
+      "input_type": "random",
+      "seed": 0,
+      "passed": true,
+      "reached_target": true,
+      "bands": {
+        "LL": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        },
+        "LH": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        },
+        "HL": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        },
+        "HH": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        }
+      }
+    },
+    {
+      "scheme": "db1",
+      "shape": [
+        1,
+        7
+      ],
+      "input_type": "random",
+      "seed": 0,
+      "passed": true,
+      "reached_target": true,
+      "bands": {
+        "LL": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        },
+        "LH": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        },
+        "HL": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        },
+        "HH": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        }
+      }
+    },
+    {
+      "scheme": "db1",
+      "shape": [
+        7,
+        1
+      ],
+      "input_type": "random",
+      "seed": 0,
+      "passed": true,
+      "reached_target": true,
+      "bands": {
+        "LL": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        },
+        "LH": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        },
+        "HL": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        },
+        "HH": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        }
+      }
+    },
+    {
+      "scheme": "db1",
+      "shape": [
+        2,
+        2
+      ],
+      "input_type": "random",
+      "seed": 0,
+      "passed": true,
+      "reached_target": true,
+      "bands": {
+        "LL": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        },
+        "LH": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        },
+        "HL": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        },
+        "HH": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        }
+      }
+    },
+    {
+      "scheme": "db1",
+      "shape": [
+        2,
+        3
+      ],
+      "input_type": "random",
+      "seed": 0,
+      "passed": true,
+      "reached_target": true,
+      "bands": {
+        "LL": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        },
+        "LH": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        },
+        "HL": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        },
+        "HH": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        }
+      }
+    },
+    {
+      "scheme": "db1",
+      "shape": [
+        3,
+        2
+      ],
+      "input_type": "random",
+      "seed": 0,
+      "passed": true,
+      "reached_target": true,
+      "bands": {
+        "LL": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        },
+        "LH": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        },
+        "HL": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        },
+        "HH": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        }
+      }
+    },
+    {
+      "scheme": "db1",
+      "shape": [
+        5,
+        7
+      ],
+      "input_type": "random",
+      "seed": 0,
+      "passed": true,
+      "reached_target": true,
+      "bands": {
+        "LL": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        },
+        "LH": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        },
+        "HL": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        },
+        "HH": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        }
+      }
+    },
+    {
+      "scheme": "db1",
+      "shape": [
+        15,
+        17
+      ],
+      "input_type": "random",
+      "seed": 0,
+      "passed": true,
+      "reached_target": true,
+      "bands": {
+        "LL": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        },
+        "LH": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        },
+        "HL": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        },
+        "HH": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        }
+      }
+    },
+    {
+      "scheme": "db1",
+      "shape": [
+        17,
+        15
+      ],
+      "input_type": "random",
+      "seed": 0,
+      "passed": true,
+      "reached_target": true,
+      "bands": {
+        "LL": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        },
+        "LH": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        },
+        "HL": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        },
+        "HH": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        }
+      }
+    },
+    {
+      "scheme": "db1",
+      "shape": [
+        31,
+        31
+      ],
+      "input_type": "random",
+      "seed": 0,
+      "passed": true,
+      "reached_target": true,
+      "bands": {
+        "LL": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        },
+        "LH": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        },
+        "HL": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        },
+        "HH": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        }
+      }
+    },
+    {
+      "scheme": "db1",
+      "shape": [
+        31,
+        32
+      ],
+      "input_type": "random",
+      "seed": 0,
+      "passed": true,
+      "reached_target": true,
+      "bands": {
+        "LL": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        },
+        "LH": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        },
+        "HL": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        },
+        "HH": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        }
+      }
+    },
+    {
+      "scheme": "db1",
+      "shape": [
+        32,
+        31
+      ],
+      "input_type": "random",
+      "seed": 0,
+      "passed": true,
+      "reached_target": true,
+      "bands": {
+        "LL": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        },
+        "LH": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        },
+        "HL": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        },
+        "HH": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        }
+      }
+    },
+    {
+      "scheme": "db1",
+      "shape": [
+        32,
+        32
+      ],
+      "input_type": "random",
+      "seed": 0,
+      "passed": true,
+      "reached_target": true,
+      "bands": {
+        "LL": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        },
+        "LH": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        },
+        "HL": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        },
+        "HH": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        }
+      }
+    },
+    {
+      "scheme": "db1",
+      "shape": [
+        32,
+        33
+      ],
+      "input_type": "random",
+      "seed": 0,
+      "passed": true,
+      "reached_target": true,
+      "bands": {
+        "LL": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        },
+        "LH": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        },
+        "HL": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        },
+        "HH": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        }
+      }
+    },
+    {
+      "scheme": "db1",
+      "shape": [
+        33,
+        32
+      ],
+      "input_type": "random",
+      "seed": 0,
+      "passed": true,
+      "reached_target": true,
+      "bands": {
+        "LL": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        },
+        "LH": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        },
+        "HL": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        },
+        "HH": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        }
+      }
+    },
+    {
+      "scheme": "db1",
+      "shape": [
+        33,
+        33
+      ],
+      "input_type": "random",
+      "seed": 0,
+      "passed": true,
+      "reached_target": true,
+      "bands": {
+        "LL": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        },
+        "LH": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        },
+        "HL": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        },
+        "HH": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        }
+      }
+    },
+    {
+      "scheme": "db1",
+      "shape": [
+        63,
+        65
+      ],
+      "input_type": "random",
+      "seed": 0,
+      "passed": true,
+      "reached_target": true,
+      "bands": {
+        "LL": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        },
+        "LH": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        },
+        "HL": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        },
+        "HH": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        }
+      }
+    },
+    {
+      "scheme": "db1",
+      "shape": [
+        64,
+        64
+      ],
+      "input_type": "random",
+      "seed": 0,
+      "passed": true,
+      "reached_target": true,
+      "bands": {
+        "LL": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        },
+        "LH": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        },
+        "HL": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        },
+        "HH": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        }
+      }
+    },
+    {
+      "scheme": "db1",
+      "shape": [
+        65,
+        63
+      ],
+      "input_type": "random",
+      "seed": 0,
+      "passed": true,
+      "reached_target": true,
+      "bands": {
+        "LL": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        },
+        "LH": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        },
+        "HL": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        },
+        "HH": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        }
+      }
+    },
+    {
+      "scheme": "db1",
+      "shape": [
+        65,
+        97
+      ],
+      "input_type": "random",
+      "seed": 0,
+      "passed": true,
+      "reached_target": true,
+      "bands": {
+        "LL": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        },
+        "LH": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        },
+        "HL": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        },
+        "HH": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        }
+      }
+    },
+    {
+      "scheme": "db1",
+      "shape": [
+        127,
+        129
+      ],
+      "input_type": "random",
+      "seed": 0,
+      "passed": true,
+      "reached_target": true,
+      "bands": {
+        "LL": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        },
+        "LH": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        },
+        "HL": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        },
+        "HH": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        }
+      }
+    },
+    {
+      "scheme": "db1",
+      "shape": [
+        256,
+        256
+      ],
+      "input_type": "random",
+      "seed": 0,
+      "passed": true,
+      "reached_target": true,
+      "bands": {
+        "LL": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        },
+        "LH": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        },
+        "HL": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        },
+        "HH": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        }
+      }
+    },
+    {
+      "scheme": "db1",
+      "shape": [
+        513,
+        769
+      ],
+      "input_type": "random",
+      "seed": 0,
+      "passed": true,
+      "reached_target": true,
+      "bands": {
+        "LL": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        },
+        "LH": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        },
+        "HL": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        },
+        "HH": {
+          "max_abs_error": 0.0,
+          "multi_core_bit_identical": true,
+          "passed": true
+        }
+      }
+    }
+  ]
+}

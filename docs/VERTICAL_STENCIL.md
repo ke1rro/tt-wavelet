@@ -1,6 +1,9 @@
 # Vertical FP32 SFPU stencil
 
-The production vertical stencil primitive remains available in [`vertical_stencil_sfpi.h`](../tt-wavelet/kernels/sfpi/vertical_stencil_sfpi.h). The standalone verification executable and its test-only kernels are preserved only in `archive/vertical_stencil_test` and are excluded from production builds.
+The production vertical stencil primitive is implemented in
+[`vertical_stencil_sfpi.h`](../tt-wavelet/kernels/sfpi/vertical_stencil_sfpi.h).
+The hardware regression executable and its small reader/compute/writer kernels
+live under [`tt-wavelet/tests`](../tt-wavelet/tests).
 
 For a column signal `f` and filter `h`, the valid output is:
 
@@ -23,6 +26,29 @@ Register capacity selects one of three compile-time output heights:
 
 - `K < 6`: 12 valid rows;
 - `K < 10`: 8 valid rows;
-- `K < 14`: 4 valid rows.
+- `K >= 10`: 4 valid rows.
+
+For `K = 14..17`, four output rows need at most 20 source rows. The kernel
+therefore uses two source segments while keeping the FP32 output accumulator
+live:
+
+1. taps `0..12` use the original four-register source window;
+2. source rows `r+12..r+27` are reloaded;
+3. one rotate aligns the window at `r+13`;
+4. taps `13..K-1` continue into the same accumulator.
+
+No partial result is written to L1, so the coefficient order and FP32 MAD
+sequence are unchanged.
 
 Unlike the horizontal stencil, columns do not need even/odd decomposition or an explicit cross-register masked move. This primitive is not part of the current 1D LWT/ILWT executable, but it is retained as production kernel infrastructure rather than verification-only code.
+
+Build and run the Wormhole regression with:
+
+```bash
+./update.sh Release vertical_stencil_k17_test
+source scripts/set_env.sh
+./build/vertical_stencil_k17_test
+```
+
+The test covers `K = 13, 14, 17`, all 32 output rows, all 32 columns, and
+compares the device output with an ordered `std::fma` reference.

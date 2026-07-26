@@ -26,6 +26,21 @@ The maximum eight shifts between two 8-lane subvectors gives the `K<=17` bound.
 
 ![Horizontal stencil register windows](figs/HorizontalStencilExamples.svg)
 
+## Dense 2D tile window
+
+`hstencil_dense_tile<K>` computes exactly one full `32x32` output tile from
+two source tiles and one base tile. The reader supplies `17-K` alignment
+positions before the source interval, so the packed width is invariant:
+
+$$
+(17-K) + 32 + (K-1) = 48.
+$$
+
+The primitive uses three full FP32 input destination slots and overwrites the
+fourth slot with the result. It is the horizontal route primitive for the 2D
+full-plane workspace; it does not use the synthetic three-block 1D row
+geometry.
+
 ## Architecture-specific rotate
 
 TT-Metal defines exactly one official JIT macro. [`horizontal_stencil_sfpi.h`](../tt-wavelet/kernels/sfpi/horizontal_stencil_sfpi.h) branches directly on it.
@@ -44,3 +59,14 @@ Never compile the Wormhole rotate for Blackhole.
 ## Required validation
 
 Exercise `K=1`, `K=2`, shipped `K=9`, and synthetic `K=17`, including aligned and `+1 FP32` offsets, both layouts, odd/even lengths, and the 3,072-element chunk boundary. A successful host build is insufficient because SFPI is JIT compiled on first device use.
+
+The dense full-tile primitive has a dedicated Wormhole regression:
+
+```bash
+./update.sh Release horizontal_dense_stencil_test
+source scripts/set_env.sh
+./build/horizontal_dense_stencil_test
+```
+
+It covers `K=1,2,9,17` and compares all 1,024 results with an ordered FP32
+`std::fma` reference.

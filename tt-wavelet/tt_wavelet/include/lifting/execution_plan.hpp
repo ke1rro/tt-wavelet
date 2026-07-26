@@ -23,6 +23,30 @@ struct IndexInterval {
     [[nodiscard]] constexpr size_t length() const noexcept { return end - begin; }
 };
 
+struct AxisRequiredStreams {
+    IndexInterval even{};
+    IndexInterval odd{};
+};
+
+struct AxisRouteRequirement {
+    StepType type{StepType::kPredict};
+    AxisRequiredStreams before{};
+    AxisRequiredStreams after{};
+    IndexInterval source{};
+    IndexInterval base{};
+    IndexInterval output{};
+};
+
+struct AxisConePlan {
+    IndexInterval final_even{};
+    IndexInterval final_odd{};
+    IndexInterval initial_even{};
+    IndexInterval initial_odd{};
+    std::vector<AxisRouteRequirement> routes;
+    size_t max_workspace_elements{0};
+    bool base_transitions_aligned_32{false};
+};
+
 struct DependencyExtent {
     int32_t even_left{0};
     int32_t even_right{0};
@@ -73,10 +97,7 @@ struct LwtExecutionPlan {
 
 namespace execution_detail {
 
-struct RequiredStreams {
-    IndexInterval even{};
-    IndexInterval odd{};
-};
+using RequiredStreams = AxisRequiredStreams;
 
 struct StoredStream {
     StorageSlot slot{StorageSlot::kA};
@@ -268,9 +289,7 @@ inline void validate_interval(const IndexInterval interval, const size_t stream_
 }
 
 [[nodiscard]] inline LwtChunkPlan build_chunk(
-    const LiftingForwardPlan& plan,
-    const IndexInterval final_even,
-    const IndexInterval final_odd) {
+    const LiftingForwardPlan& plan, const IndexInterval final_even, const IndexInterval final_odd) {
     const std::vector<RequiredStreams> required = backpropagate_requirements(plan, final_even, final_odd);
     const TerminalScaleInline inline_scale = terminal_scale_inline(plan);
     StoredStream active_even{.slot = StorageSlot::kA, .storage = required.front().even};
@@ -299,9 +318,9 @@ inline void validate_interval(const IndexInterval interval, const size_t stream_
             const IndexInterval base_required = translated(output, full_route.base_offset);
             const StoredStream& source = predict ? active_even : active_odd;
             const StoredStream& base = predict ? active_odd : active_even;
-            const RouteOutputRef output_ref = inline_scale_route
-                                                  ? RouteOutputRef{.storage = inline_scale.final_storage, .slot = free_slot}
-                                                  : detail::workspace_output(free_slot);
+            const RouteOutputRef output_ref =
+                inline_scale_route ? RouteOutputRef{.storage = inline_scale.final_storage, .slot = free_slot}
+                                   : detail::workspace_output(free_slot);
 
             routes.push_back(LwtStepRoute{
                 .type = full_route.type,
@@ -420,6 +439,83 @@ inline void validate_interval(const IndexInterval interval, const size_t stream_
 }
 
 }  // namespace execution_detail
+
+/**
+ * Build the exact one-dimensional dependency cone for a requested pair of
+ * terminal stream intervals.
+ *
+ * The returned route records retain both sides of every lifting transition.
+ * Predict/update source and base intervals are therefore directly reusable by
+ * a 2D planner: a horizontal route changes only x, while a vertical route
+ * changes only y.
+ */
+[[nodiscard]] inline AxisConePlan build_axis_cone(
+    const LiftingForwardPlan& plan, const IndexInterval final_even, const IndexInterval final_odd) {
+    const std::vector<AxisRequiredStreams> required =
+        execution_detail::backpropagate_requirements(plan, final_even, final_odd);
+
+    std::vector<AxisRouteRequirement> routes;
+    routes.reserve(plan.routes.size());
+    for (size_t route_index = 0; route_index < plan.routes.size(); ++route_index) {
+        const LiftingStepRoute& route = plan.routes[route_index];
+        const AxisRequiredStreams before = required[route_index];
+        const AxisRequiredStreams after = required[route_index + 1];
+        AxisRouteRequirement requirement{
+            .type = route.type,
+            .before = before,
+            .after = after,
+        };
+
+        switch (route.type) {
+            case StepType::kPredict: {
+                const uint32_t k = execution_detail::coefficient_count(route);
+                requirement.output = after.odd;
+                requirement.source =
+                    execution_detail::translated(requirement.output, route.source_offset, static_cast<size_t>(k - 1));
+                requirement.base = execution_detail::translated(requirement.output, route.base_offset);
+                break;
+            }
+            case StepType::kUpdate: {
+                const uint32_t k = execution_detail::coefficient_count(route);
+                requirement.output = after.even;
+                requirement.source =
+                    execution_detail::translated(requirement.output, route.source_offset, static_cast<size_t>(k - 1));
+                requirement.base = execution_detail::translated(requirement.output, route.base_offset);
+                break;
+            }
+            case StepType::kScaleEven:
+                requirement.output = after.even;
+                requirement.source = execution_detail::translated(requirement.output, route.source_offset);
+                requirement.base = requirement.source;
+                break;
+            case StepType::kScaleOdd:
+                requirement.output = after.odd;
+                requirement.source = execution_detail::translated(requirement.output, route.source_offset);
+                requirement.base = requirement.source;
+                break;
+            case StepType::kSwap:
+                // A swap changes stream descriptors only and has no data
+                // source/base/output transfer of its own.
+                break;
+        }
+        routes.push_back(requirement);
+    }
+
+    const LwtChunkPlan chunk = execution_detail::build_chunk(plan, final_even, final_odd);
+    const bool base_transitions_aligned_32 =
+        std::all_of(chunk.routes.begin(), chunk.routes.end(), [](const LwtStepRoute& route) {
+            return !is_predict_update_step(route.type) || route.base_offset_elements % 32 == 0;
+        });
+    return AxisConePlan{
+        .final_even = final_even,
+        .final_odd = final_odd,
+        .initial_even = required.front().even,
+        .initial_odd = required.front().odd,
+        .routes = std::move(routes),
+        .max_workspace_elements = chunk.max_workspace_elements,
+        .base_transitions_aligned_32 = base_transitions_aligned_32,
+    };
+}
 
 [[nodiscard]] inline LwtExecutionPlan make_lwt_execution_plan(
     LiftingForwardPlan full_plan,
