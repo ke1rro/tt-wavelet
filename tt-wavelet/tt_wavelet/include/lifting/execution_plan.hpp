@@ -199,14 +199,31 @@ inline void validate_interval(const IndexInterval interval, const size_t stream_
 }
 
 [[nodiscard]] inline std::vector<RequiredStreams> backpropagate_requirements(
-    const LiftingForwardPlan& plan, const IndexInterval final_even, const IndexInterval final_odd) {
+    const LiftingForwardPlan& plan,
+    const IndexInterval final_even,
+    const IndexInterval final_odd,
+    const size_t closure_extent = 0) {
+    const auto close_interval = [closure_extent](const IndexInterval interval, const size_t stream_length) {
+        if (closure_extent == 0 || interval.empty()) {
+            return interval;
+        }
+        const size_t begin = (interval.begin / closure_extent) * closure_extent;
+        const size_t rounded_end =
+            interval.end > std::numeric_limits<size_t>::max() - (closure_extent - 1)
+                ? stream_length
+                : round_up(interval.end, closure_extent);
+        return IndexInterval{.begin = begin, .end = std::min(rounded_end, stream_length)};
+    };
     std::vector<RequiredStreams> required(plan.routes.size() + 1);
-    required.back() = RequiredStreams{.even = final_even, .odd = final_odd};
 
     size_t even_length = plan.final_even_length;
     size_t odd_length = plan.final_odd_length;
     validate_interval(final_even, even_length, "final even");
     validate_interval(final_odd, odd_length, "final odd");
+    required.back() = RequiredStreams{
+        .even = close_interval(final_even, even_length),
+        .odd = close_interval(final_odd, odd_length),
+    };
 
     for (size_t reverse_index = plan.routes.size(); reverse_index > 0; --reverse_index) {
         const size_t route_index = reverse_index - 1;
@@ -262,6 +279,8 @@ inline void validate_interval(const IndexInterval interval, const size_t stream_
                 break;
         }
 
+        before.even = close_interval(before.even, even_length);
+        before.odd = close_interval(before.odd, odd_length);
         validate_interval(before.even, even_length, "required even before route");
         validate_interval(before.odd, odd_length, "required odd before route");
         required[route_index] = before;
@@ -450,9 +469,12 @@ inline void validate_interval(const IndexInterval interval, const size_t stream_
  * changes only y.
  */
 [[nodiscard]] inline AxisConePlan build_axis_cone(
-    const LiftingForwardPlan& plan, const IndexInterval final_even, const IndexInterval final_odd) {
+    const LiftingForwardPlan& plan,
+    const IndexInterval final_even,
+    const IndexInterval final_odd,
+    const size_t closure_extent = 0) {
     const std::vector<AxisRequiredStreams> required =
-        execution_detail::backpropagate_requirements(plan, final_even, final_odd);
+        execution_detail::backpropagate_requirements(plan, final_even, final_odd, closure_extent);
 
     std::vector<AxisRouteRequirement> routes;
     routes.reserve(plan.routes.size());
@@ -501,18 +523,22 @@ inline void validate_interval(const IndexInterval interval, const size_t stream_
         routes.push_back(requirement);
     }
 
-    const LwtChunkPlan chunk = execution_detail::build_chunk(plan, final_even, final_odd);
+    size_t max_workspace_elements = 0;
+    for (const AxisRequiredStreams& streams : required) {
+        max_workspace_elements =
+            std::max(max_workspace_elements, std::max(streams.even.length(), streams.odd.length()));
+    }
     const bool base_transitions_aligned_32 =
-        std::all_of(chunk.routes.begin(), chunk.routes.end(), [](const LwtStepRoute& route) {
-            return !is_predict_update_step(route.type) || route.base_offset_elements % 32 == 0;
+        std::all_of(plan.routes.begin(), plan.routes.end(), [](const LiftingStepRoute& route) {
+            return !is_predict_update_step(route.type) || route.base_offset % 32 == 0;
         });
     return AxisConePlan{
-        .final_even = final_even,
-        .final_odd = final_odd,
+        .final_even = required.back().even,
+        .final_odd = required.back().odd,
         .initial_even = required.front().even,
         .initial_odd = required.front().odd,
         .routes = std::move(routes),
-        .max_workspace_elements = chunk.max_workspace_elements,
+        .max_workspace_elements = max_workspace_elements,
         .base_transitions_aligned_32 = base_transitions_aligned_32,
     };
 }

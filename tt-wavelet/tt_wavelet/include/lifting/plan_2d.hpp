@@ -54,6 +54,11 @@ enum class Lwt2DWorkspacePolicy : uint8_t {
     kFourPlaneAligned,
 };
 
+enum class Lwt2DRouteDomainPolicy : uint8_t {
+    kExact,
+    kTileClosed,
+};
+
 enum class Lwt2DAxis : uint8_t {
     kVertical,
     kHorizontal,
@@ -124,6 +129,12 @@ struct Lwt2DChunkPlan {
     Lwt2DBandSourceRectangles final_band_sources{};
     Lwt2DResourceModel resources{};
     double dependency_overhead{0.0};
+    uint64_t exact_initial_elements{0};
+    uint64_t internal_initial_elements{0};
+    uint64_t exact_route_elements{0};
+    uint64_t internal_route_elements{0};
+    uint64_t exact_final_elements{0};
+    uint64_t internal_final_elements{0};
 };
 
 struct Lwt2DExecutionPlan {
@@ -140,6 +151,7 @@ struct Lwt2DExecutionPlan {
     uint32_t executable_route_count{0};
     uint32_t scale_routes_removed{0};
     bool latency_oriented_planner{false};
+    Lwt2DRouteDomainPolicy route_domain{Lwt2DRouteDomainPolicy::kExact};
     uint64_t estimated_latency_cycles{0};
     std::vector<Lwt2DChunkPlan> chunks;
     double max_dependency_overhead{0.0};
@@ -149,6 +161,12 @@ struct Lwt2DExecutionPlan {
     std::array<uint64_t, 5> allocated_plane_slot_bytes{};
     uint64_t allocated_workspace_bytes{0};
     uint64_t allocated_l1_bytes{0};
+    uint64_t exact_initial_elements{0};
+    uint64_t internal_initial_elements{0};
+    uint64_t exact_route_elements{0};
+    uint64_t internal_route_elements{0};
+    uint64_t exact_final_elements{0};
+    uint64_t internal_final_elements{0};
 };
 
 namespace plan_2d_detail {
@@ -159,10 +177,11 @@ constexpr uint32_t kTileHeight = static_cast<uint32_t>(kTileHeight2D);
 constexpr uint32_t kTileWidth = static_cast<uint32_t>(kTileWidth2D);
 constexpr uint64_t kFullFp32TileBytes = static_cast<uint64_t>(kTileHeight) * kTileWidth * sizeof(float);
 
-// Two source tiles, one base tile, and one output tile, double-buffered. The
-// writer may alias base/output later, but accounting the generic path keeps
-// the planner conservative.
-constexpr uint64_t kCircularBufferBytes = 8 * kFullFp32TileBytes;
+// Two source tiles, one base tile, and one output tile, double-buffered, plus
+// one persistent zero tile used by bounded route assembly. The writer may
+// alias base/output later, but accounting the generic path keeps the planner
+// conservative.
+constexpr uint64_t kCircularBufferBytes = 9 * kFullFp32TileBytes;
 // Reader chunk + route pages and independent writer route + band pages.
 constexpr uint64_t kMetadataBytes = device_protocol::kLwt2DChunkConfigPageBytes +
                                     2 * device_protocol::kLwt2DRouteConfigPageBytes +
@@ -490,7 +509,8 @@ inline void append_axis_routes(
     const LiftingForwardPlan& x_plan,
     const IndexRectangle final_band_rect,
     const uint64_t l1_budget_bytes,
-    const bool fuse_terminal_scale) {
+    const bool fuse_terminal_scale,
+    const Lwt2DRouteDomainPolicy route_domain) {
     const size_t y_tap_size = static_cast<size_t>(y_plan.preprocess_layout.pad_config.left) + 1;
     const size_t x_tap_size = static_cast<size_t>(x_plan.preprocess_layout.pad_config.left) + 1;
     const IndexInterval final_y_even = canonical_to_stream_interval(
@@ -502,8 +522,16 @@ inline void append_axis_routes(
     const IndexInterval final_x_odd = canonical_to_stream_interval(
         final_band_rect.x, x_plan.final_odd_shift, x_plan.final_odd_length, x_tap_size / 2, "horizontal odd");
 
-    AxisConePlan y_cone = build_axis_cone(y_plan, final_y_even, final_y_odd);
-    AxisConePlan x_cone = build_axis_cone(x_plan, final_x_even, final_x_odd);
+    const AxisConePlan exact_y_cone = build_axis_cone(y_plan, final_y_even, final_y_odd);
+    const AxisConePlan exact_x_cone = build_axis_cone(x_plan, final_x_even, final_x_odd);
+    AxisConePlan y_cone =
+        route_domain == Lwt2DRouteDomainPolicy::kTileClosed
+            ? build_axis_cone(y_plan, final_y_even, final_y_odd, kTileHeight)
+            : exact_y_cone;
+    AxisConePlan x_cone =
+        route_domain == Lwt2DRouteDomainPolicy::kTileClosed
+            ? build_axis_cone(x_plan, final_x_even, final_x_odd, kTileWidth)
+            : exact_x_cone;
     const PolyphaseDependencyRectangles initial{
         .ee = interval_product(y_cone.initial_even, x_cone.initial_even),
         .eo = interval_product(y_cone.initial_even, x_cone.initial_odd),
@@ -522,12 +550,19 @@ inline void append_axis_routes(
         workspace_policy,
         fuse_terminal_scale ? &y_terminal_scale : nullptr,
         fuse_terminal_scale ? &x_terminal_scale : nullptr);
+    auto [exact_routes, exact_final_bands] = build_route_schedule(
+        exact_y_cone,
+        exact_x_cone,
+        workspace_policy,
+        fuse_terminal_scale ? &y_terminal_scale : nullptr,
+        fuse_terminal_scale ? &x_terminal_scale : nullptr);
+    static_cast<void>(exact_final_bands);
     const Lwt2DResourceModel resources = make_resource_model(initial, routes, workspace_policy, l1_budget_bytes);
     const Lwt2DBandSourceRectangles final_band_sources{
-        .ll = interval_product(y_cone.final_even, x_cone.final_even),
-        .lh = interval_product(y_cone.final_even, x_cone.final_odd),
-        .hl = interval_product(y_cone.final_odd, x_cone.final_even),
-        .hh = interval_product(y_cone.final_odd, x_cone.final_odd),
+        .ll = interval_product(exact_y_cone.final_even, exact_x_cone.final_even),
+        .lh = interval_product(exact_y_cone.final_even, exact_x_cone.final_odd),
+        .hl = interval_product(exact_y_cone.final_odd, exact_x_cone.final_even),
+        .hh = interval_product(exact_y_cone.final_odd, exact_x_cone.final_odd),
     };
     const size_t final_area =
         checked_area(final_band_rect.height(), final_band_rect.width(), "2D LWT final band rectangle");
@@ -545,6 +580,25 @@ inline void append_axis_routes(
         final_elements == 0 ? 0.0
                             : static_cast<double>(dependency_elements - std::min(dependency_elements, final_elements)) /
                                   static_cast<double>(final_elements);
+    const PolyphaseDependencyRectangles exact_initial{
+        .ee = interval_product(exact_y_cone.initial_even, exact_x_cone.initial_even),
+        .eo = interval_product(exact_y_cone.initial_even, exact_x_cone.initial_odd),
+        .oe = interval_product(exact_y_cone.initial_odd, exact_x_cone.initial_even),
+        .oo = interval_product(exact_y_cone.initial_odd, exact_x_cone.initial_odd),
+    };
+    const auto route_elements = [](const std::vector<Lwt2DRoutePlan>& schedule) {
+        uint64_t elements = 0;
+        for (const Lwt2DRoutePlan& route : schedule) {
+            elements += route.output.area();
+        }
+        return elements;
+    };
+    const auto final_work_elements = [](const AxisConePlan& y, const AxisConePlan& x) {
+        return static_cast<uint64_t>(y.final_even.length() + y.final_odd.length()) *
+               static_cast<uint64_t>(x.final_even.length() + x.final_odd.length());
+    };
+    const uint64_t exact_route_elements = route_elements(exact_routes);
+    const uint64_t internal_route_elements = route_elements(routes);
 
     return Lwt2DChunkPlan{
         .final_band_rect = final_band_rect,
@@ -570,6 +624,12 @@ inline void append_axis_routes(
         .final_band_sources = final_band_sources,
         .resources = resources,
         .dependency_overhead = dependency_overhead,
+        .exact_initial_elements = exact_initial.total_area(),
+        .internal_initial_elements = initial.total_area(),
+        .exact_route_elements = exact_route_elements,
+        .internal_route_elements = internal_route_elements,
+        .exact_final_elements = final_work_elements(exact_y_cone, exact_x_cone),
+        .internal_final_elements = final_work_elements(y_cone, x_cone),
     };
 }
 
@@ -579,7 +639,8 @@ inline void append_axis_routes(
     const uint32_t chunk_tiles_y,
     const uint32_t chunk_tiles_x,
     const uint64_t l1_budget_bytes,
-    const bool fuse_terminal_scale) {
+    const bool fuse_terminal_scale,
+    const Lwt2DRouteDomainPolicy route_domain) {
     TT_FATAL(chunk_tiles_y > 0 && chunk_tiles_x > 0, "2D LWT chunk tile dimensions must be positive");
     const size_t chunk_height = static_cast<size_t>(chunk_tiles_y) * kTileHeight;
     const size_t chunk_width = static_cast<size_t>(chunk_tiles_x) * kTileWidth;
@@ -599,7 +660,8 @@ inline void append_axis_routes(
                     .x = IndexInterval{.begin = x, .end = x_end},
                 },
                 l1_budget_bytes,
-                fuse_terminal_scale));
+                fuse_terminal_scale,
+                route_domain));
             x = x_end;
         }
         y = y_end;
@@ -655,7 +717,10 @@ enum class AlignmentCostClass : uint8_t {
     switch (tile_class) {
         case AlignmentCostClass::kExact: return 900;
         case AlignmentCostClass::kOneAxisShifted: return 7'000;
-        case AlignmentCostClass::kGeneric: return 70'000;
+        // The bounded assembler zero-initializes by one same-core tile read
+        // and copies only the valid face-row segments. It is no longer the
+        // 1024-element scalar fallback represented by the old 70k weight.
+        case AlignmentCostClass::kGeneric: return 9'000;
     }
     return 70'000;
 }
@@ -810,7 +875,8 @@ enum class AlignmentCostClass : uint8_t {
     const uint32_t core_limit,
     const uint64_t l1_budget_bytes,
     const bool fuse_terminal_scale = false,
-    const bool latency_oriented_planner = false) {
+    const bool latency_oriented_planner = false,
+    const Lwt2DRouteDomainPolicy route_domain = Lwt2DRouteDomainPolicy::kExact) {
     TT_FATAL(core_limit > 0, "2D LWT requires at least one worker core");
     TT_FATAL(y_plan.preprocess_layout.input.length > 0, "2D LWT input height must be positive");
     TT_FATAL(x_plan.preprocess_layout.input.length > 0, "2D LWT input width must be positive");
@@ -840,7 +906,8 @@ enum class AlignmentCostClass : uint8_t {
     for (uint32_t tiles_y = 1; tiles_y <= band_tiles_y; ++tiles_y) {
         for (uint32_t tiles_x = 1; tiles_x <= band_tiles_x; ++tiles_x) {
             std::vector<Lwt2DChunkPlan> chunks =
-                plan_2d_detail::build_chunks(y_plan, x_plan, tiles_y, tiles_x, l1_budget_bytes, fuse_terminal_scale);
+                plan_2d_detail::build_chunks(
+                    y_plan, x_plan, tiles_y, tiles_x, l1_budget_bytes, fuse_terminal_scale, route_domain);
             uint64_t max_l1_bytes = 0;
             double max_dependency_overhead = 0.0;
             bool fits = true;
@@ -927,6 +994,20 @@ enum class AlignmentCostClass : uint8_t {
         best.chunks.front().routes.begin(), best.chunks.front().routes.end(), [](const Lwt2DRoutePlan& route) {
             return is_scale_step(route.type) && route.output.empty();
         }));
+    uint64_t exact_initial_elements = 0;
+    uint64_t internal_initial_elements = 0;
+    uint64_t exact_route_elements = 0;
+    uint64_t internal_route_elements = 0;
+    uint64_t exact_final_elements = 0;
+    uint64_t internal_final_elements = 0;
+    for (const Lwt2DChunkPlan& chunk : best.chunks) {
+        exact_initial_elements += chunk.exact_initial_elements;
+        internal_initial_elements += chunk.internal_initial_elements;
+        exact_route_elements += chunk.exact_route_elements;
+        internal_route_elements += chunk.internal_route_elements;
+        exact_final_elements += chunk.exact_final_elements;
+        internal_final_elements += chunk.internal_final_elements;
+    }
     return Lwt2DExecutionPlan{
         .y_plan = std::move(y_plan),
         .x_plan = std::move(x_plan),
@@ -941,6 +1022,7 @@ enum class AlignmentCostClass : uint8_t {
         .executable_route_count = executable_route_count,
         .scale_routes_removed = scale_routes_removed,
         .latency_oriented_planner = latency_oriented_planner,
+        .route_domain = route_domain,
         .estimated_latency_cycles = best.estimated_latency_cycles,
         .chunks = std::move(best.chunks),
         .max_dependency_overhead = best.max_dependency_overhead,
@@ -950,6 +1032,12 @@ enum class AlignmentCostClass : uint8_t {
         .allocated_plane_slot_bytes = allocated_plane_bytes,
         .allocated_workspace_bytes = allocated_workspace_bytes,
         .allocated_l1_bytes = allocated_l1_bytes,
+        .exact_initial_elements = exact_initial_elements,
+        .internal_initial_elements = internal_initial_elements,
+        .exact_route_elements = exact_route_elements,
+        .internal_route_elements = internal_route_elements,
+        .exact_final_elements = exact_final_elements,
+        .internal_final_elements = internal_final_elements,
     };
 }
 
@@ -961,7 +1049,8 @@ template <typename Scheme>
     const uint64_t l1_budget_bytes,
     const BoundaryMode boundary_mode = BoundaryMode::kSymmetric,
     const bool fuse_terminal_scale = false,
-    const bool latency_oriented_planner = false) {
+    const bool latency_oriented_planner = false,
+    const Lwt2DRouteDomainPolicy route_domain = Lwt2DRouteDomainPolicy::kExact) {
     TT_FATAL(input_height > 0 && input_width > 0, "2D LWT input dimensions must be positive");
     const SignalBuffer y_input{
         .length = input_height,
@@ -979,7 +1068,8 @@ template <typename Scheme>
         core_limit,
         l1_budget_bytes,
         fuse_terminal_scale,
-        latency_oriented_planner);
+        latency_oriented_planner,
+        route_domain);
 }
 
 namespace plan_2d_detail {

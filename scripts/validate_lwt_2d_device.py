@@ -145,6 +145,16 @@ def parse_args() -> argparse.Namespace:
         default="local-noc",
     )
     parser.add_argument(
+        "--route-domain",
+        choices=("exact", "tile-closed"),
+        default="exact",
+    )
+    parser.add_argument(
+        "--validate-route-domain-ab",
+        action="store_true",
+        help="Require exact and tile-closed route domains to produce bit-identical bands.",
+    )
+    parser.add_argument(
         "--fp32-arithmetic",
         choices=("wormhole-sfpu", "blackhole-sfpu"),
         default="wormhole-sfpu",
@@ -325,6 +335,7 @@ def run_device(
     scale_policy: str,
     route_config: str,
     exact_transfer: str,
+    route_domain: str,
 ) -> dict[str, np.ndarray]:
     run(
         [
@@ -347,6 +358,8 @@ def run_device(
             route_config,
             "--exact-transfer",
             exact_transfer,
+            "--route-domain",
+            route_domain,
             scheme,
             str(height),
             str(width),
@@ -390,6 +403,7 @@ def validate_case(
         args.scale_policy,
         args.route_config,
         args.exact_transfer,
+        args.route_domain,
     )
     multi = None
     if not args.skip_multi_core:
@@ -407,6 +421,7 @@ def validate_case(
             args.scale_policy,
             args.route_config,
             args.exact_transfer,
+            args.route_domain,
         )
     fragmented = None
     if args.validate_terminal_ab:
@@ -428,6 +443,25 @@ def validate_case(
             args.scale_policy,
             args.route_config,
             args.exact_transfer,
+            args.route_domain,
+        )
+    alternate_domain = None
+    if args.validate_route_domain_ab:
+        alternate_domain = run_device(
+            scheme,
+            height,
+            width,
+            input_path,
+            directory / "alternate-domain",
+            args.multi_core_limit,
+            args.timeout_seconds,
+            args.route_staging,
+            args.route_persistence,
+            args.terminal_writes,
+            args.scale_policy,
+            args.route_config,
+            args.exact_transfer,
+            "tile-closed" if args.route_domain == "exact" else "exact",
         )
 
     band_results: dict[str, dict[str, object]] = {}
@@ -456,10 +490,17 @@ def validate_case(
             terminal_identical = (
                 selected[band].tobytes() == fragmented[band].tobytes()
             )
+        route_domain_identical: bool | None = None
+        if alternate_domain is not None:
+            selected = multi if multi is not None else single
+            route_domain_identical = (
+                selected[band].tobytes() == alternate_domain[band].tobytes()
+            )
         band_passed = (
             max_abs <= args.tolerance
             and multi_identical is not False
             and terminal_identical is not False
+            and route_domain_identical is not False
         )
         passed = passed and band_passed
         reached_target = reached_target and max_abs <= args.target_tolerance
@@ -467,6 +508,7 @@ def validate_case(
             "max_abs_error": max_abs,
             "multi_core_bit_identical": multi_identical,
             "fragmented_tiled_bit_identical": terminal_identical,
+            "route_domain_bit_identical": route_domain_identical,
             "passed": band_passed,
         }
     return {

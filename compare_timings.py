@@ -255,6 +255,12 @@ def parse_args() -> argparse.Namespace:
         help="Number of timing runs for PyWavelets (default: %(default)s).",
     )
     parser.add_argument(
+        "--pywt-warmup-runs",
+        type=int,
+        default=1,
+        help="PyWavelets warmup runs discarded before timing (default: %(default)s).",
+    )
+    parser.add_argument(
         "--tt-repeats",
         type=int,
         default=1,
@@ -310,6 +316,12 @@ def parse_args() -> argparse.Namespace:
         choices=("per-route", "preloaded"),
         default="preloaded",
         help="2D route descriptor loading policy (default: %(default)s).",
+    )
+    parser.add_argument(
+        "--tt-route-domain",
+        choices=("exact", "tile-closed"),
+        default="exact",
+        help="2D internal dependency-domain policy (default: %(default)s).",
     )
     parser.add_argument(
         "--tt-exact-transfer",
@@ -560,10 +572,12 @@ def run_tt_wavelet(
 
 
 def time_repeats(
-    run_once: Callable[[], None], repeats: int
+    run_once: Callable[[], None], repeats: int, warmup_runs: int = 0
 ) -> tuple[float | None, float | None]:
     if repeats <= 0:
         return None, None
+    for _ in range(warmup_runs):
+        run_once()
     times: list[float] = []
     for _ in range(repeats):
         start = time.perf_counter()
@@ -795,6 +809,7 @@ def run_tt_wavelet_2d_benchmark(
         f"--scale-policy {args.tt_scale_policy} "
         f"--planner {args.tt_planner} "
         f"--route-config {args.tt_route_config} "
+        f"--route-domain {args.tt_route_domain} "
         f"--exact-transfer {args.tt_exact_transfer} "
         f"{alignment_option}"
         f"{'--transport-metrics ' if args.tt_transport_metrics else ''}"
@@ -880,6 +895,8 @@ def run_2d_benchmarks(args: argparse.Namespace) -> int:
     shapes = parse_2d_shapes(args.shapes)
     if args.pywt_repeats < 0:
         raise ValueError("--pywt-repeats cannot be negative")
+    if args.pywt_warmup_runs < 0:
+        raise ValueError("--pywt-warmup-runs cannot be negative")
     if args.tt_repeats <= 0:
         raise ValueError("--tt-repeats must be positive")
     if args.tt_warmup_runs < 0:
@@ -984,7 +1001,7 @@ def run_2d_benchmarks(args: argparse.Namespace) -> int:
             if needs_reference or needs_tt:
                 write_signal_file(signal_file, signal_list)
             matrix = (
-                np.asarray(signal_list, dtype=np.float64).reshape(height, width)
+                np.asarray(signal_list, dtype=np.float32).reshape(height, width)
                 if needs_pywt
                 else None
             )
@@ -1026,7 +1043,9 @@ def run_2d_benchmarks(args: argparse.Namespace) -> int:
                         pywt_run = lambda: pywt.dwt2(
                             matrix, wavelet, mode=args.pywt_mode
                         )
-                        pywt_mean, pywt_min = time_repeats(pywt_run, args.pywt_repeats)
+                        pywt_mean, pywt_min = time_repeats(
+                            pywt_run, args.pywt_repeats, args.pywt_warmup_runs
+                        )
                         row["pywt_mean_s"] = pywt_mean if pywt_mean is not None else ""
                         row["pywt_min_s"] = pywt_min if pywt_min is not None else ""
                         row["pywt_runs"] = args.pywt_repeats
@@ -1155,6 +1174,8 @@ def main() -> int:
         raise ValueError("--tt-warmup-runs cannot be negative.")
     if args.pywt_repeats < 0:
         raise ValueError("--pywt-repeats cannot be negative.")
+    if args.pywt_warmup_runs < 0:
+        raise ValueError("--pywt-warmup-runs cannot be negative.")
 
     transforms = ["lwt", "ilwt"] if args.transform == "both" else [args.transform]
     if args.wavelets:
@@ -1304,6 +1325,7 @@ def main() -> int:
                             pywt_mean, pywt_min = time_repeats(
                                 pywt_run,
                                 args.pywt_repeats,
+                                args.pywt_warmup_runs,
                             )
                             row["pywt_mean_s"] = (
                                 pywt_mean if pywt_mean is not None else ""

@@ -71,6 +71,10 @@ struct Lwt2DTransportPolicy {
     Lwt2DPlannerPolicy planner{Lwt2DPlannerPolicy::kLatency};
     Lwt2DRouteConfigImplementation route_config{Lwt2DRouteConfigImplementation::kPreloaded};
     Lwt2DExactTransferImplementation exact_transfer{Lwt2DExactTransferImplementation::kLocalNoc};
+    Lwt2DRouteDomainPolicy route_domain{Lwt2DRouteDomainPolicy::kExact};
+    // Benchmark-only: feed persistent-zero tiles directly to the real
+    // unpack/SFPU/pack route kernel, bypassing workspace plane assembly.
+    bool compute_only_benchmark{false};
     // Validation-only: compare every optimized fast-path CB page against the
     // scalar gather before publishing it to the compute kernel.
     bool validate_route_staging{false};
@@ -90,6 +94,7 @@ struct Lwt2DSchedulerTelemetry {
     uint32_t executable_route_count{0};
     uint32_t scale_routes_removed{0};
     bool latency_oriented_planner{false};
+    Lwt2DRouteDomainPolicy route_domain{Lwt2DRouteDomainPolicy::kExact};
     uint64_t estimated_latency_cycles{0};
     double max_dependency_overhead{0.0};
     uint64_t l1_workspace_bytes{0};
@@ -99,6 +104,12 @@ struct Lwt2DSchedulerTelemetry {
     uint64_t l1_total_bytes{0};
     uint64_t l1_capacity_bytes{0};
     uint64_t l1_headroom_bytes{0};
+    uint64_t exact_initial_elements{0};
+    uint64_t internal_initial_elements{0};
+    uint64_t exact_route_elements{0};
+    uint64_t internal_route_elements{0};
+    uint64_t exact_final_elements{0};
+    uint64_t internal_final_elements{0};
 };
 
 struct Lwt2DSplitMetricsSummary {
@@ -153,6 +164,11 @@ struct Lwt2DTransportMetricsSummary {
     uint64_t fragmented_terminal_tiles{0};
     uint64_t validated_staging_tiles{0};
     uint64_t staging_validation_mismatches{0};
+    uint64_t validation_exact_mismatches{0};
+    uint64_t validation_shifted_mismatches{0};
+    uint64_t validation_two_axis_mismatches{0};
+    uint64_t validation_partial_mismatches{0};
+    uint64_t validation_empty_mismatches{0};
     uint64_t validated_persistence_tiles{0};
     uint64_t persistence_validation_mismatches{0};
     uint64_t max_terminal_write_cycles{0};
@@ -224,7 +240,13 @@ template <typename Scheme>
     const Lwt2DTransportPolicy transport_policy = {},
     const bool capture_transport_metrics = false) {
     TT_FATAL(logical_height > 0 && logical_width > 0, "2D LWT input shape must be positive");
-    constexpr uint64_t initial_l1_budget_bytes = 768 * 1024;
+    // Preserve the benchmarked production search space for the exact domain.
+    // The deliberately larger tile-closed A/B domain must instead be judged
+    // against the architecture's actual per-core L1 capacity.
+    const uint64_t initial_l1_budget_bytes =
+        transport_policy.route_domain == Lwt2DRouteDomainPolicy::kTileClosed
+            ? mesh_device.l1_size_per_core()
+            : 768 * 1024;
     Lwt2DExecutionPlan plan = make_lwt_2d_execution_plan<Scheme>(
         logical_height,
         logical_width,
@@ -232,7 +254,8 @@ template <typename Scheme>
         initial_l1_budget_bytes,
         BoundaryMode::kSymmetric,
         transport_policy.scale == Lwt2DScalePolicy::kFused,
-        transport_policy.planner == Lwt2DPlannerPolicy::kLatency);
+        transport_policy.planner == Lwt2DPlannerPolicy::kLatency,
+        transport_policy.route_domain);
     TT_FATAL(
         input_buffer.size() >= checked_shape_area_2d(plan.tiling.input.storage, "2D input storage") * sizeof(float),
         "2D input buffer is smaller than its padded tile shape");

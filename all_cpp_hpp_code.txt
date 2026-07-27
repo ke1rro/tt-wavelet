@@ -12,6 +12,7 @@ CODE:
 #include "compute_kernel_api/tile_move_copy.h"
 #include "tt_metal/fabric/hw/inc/edm_fabric/compile_time_arg_tmp.hpp"
 
+#include "../../tt_wavelet/include/device_protocol/lwt_2d_config.hpp"
 #include "../../tt_wavelet/include/lifting/static_scheme.hpp"
 #include "../sfpi/horizontal_stencil_sfpi.h"
 #include "../sfpi/scale_sfpi.h"
@@ -30,19 +31,60 @@ namespace {
 
 using Scheme = TTWV_LWT_2D_SCHEME_TYPE;
 
-template <size_t End, size_t Index = 0>
-constexpr uint32_t coefficient_offset() {
-    if constexpr (Index >= End) {
+template <uint32_t Index = 0>
+constexpr uint32_t last_predict_update_step_index() noexcept {
+    if constexpr (Index >= Scheme::num_steps) {
+        return Scheme::num_steps;
+    } else {
+        constexpr uint32_t later = last_predict_update_step_index<Index + 1>();
+        using Step = ttwv::SchemeStep<Scheme, Index>;
+        if constexpr (later < Scheme::num_steps) {
+            return later;
+        } else if constexpr (ttwv::is_predict_update_step(Step::type)) {
+            return Index;
+        } else {
+            return Scheme::num_steps;
+        }
+    }
+}
+
+template <uint32_t Index>
+constexpr uint32_t swap_count_from() noexcept {
+    if constexpr (Index >= Scheme::num_steps) {
         return 0;
     } else {
         using Step = ttwv::SchemeStep<Scheme, Index>;
-        return Step::k + coefficient_offset<End, Index + 1>();
+        return (Step::type == ttwv::StepType::kSwap ? 1U : 0U) + swap_count_from<Index + 1>();
+    }
+}
+
+constexpr ttwv::StepType inline_terminal_scale_type() noexcept {
+    constexpr uint32_t last_step = last_predict_update_step_index();
+    static_assert(last_step < Scheme::num_steps, "2D terminal scale fusion requires a predict/update step");
+    using LastStep = ttwv::SchemeStep<Scheme, last_step>;
+    constexpr bool target_even = LastStep::type == ttwv::StepType::kUpdate;
+    constexpr bool swapped = (swap_count_from<last_step + 1>() & 1U) != 0;
+    constexpr bool final_even = target_even != swapped;
+    return final_even ? ttwv::StepType::kScaleEven : ttwv::StepType::kScaleOdd;
+}
+
+template <ttwv::StepType ScaleType, uint32_t Index = 0>
+constexpr uint32_t terminal_scale_bits() noexcept {
+    if constexpr (Index >= Scheme::num_steps) {
+        return 0;
+    } else {
+        using Step = ttwv::SchemeStep<Scheme, Index>;
+        if constexpr (Step::type == ScaleType) {
+            static_assert(Step::k == 1, "2D terminal scale must contain one coefficient");
+            return Step::coeff_bits[0];
+        } else {
+            return terminal_scale_bits<ScaleType, Index + 1>();
+        }
     }
 }
 
 __attribute__((noinline)) void run_scale(
-    const uint32_t tile_count, const uint32_t cb_source0, const uint32_t cb_output, const uint32_t coefficient_arg) {
-    const uint32_t coefficient = get_arg_val<uint32_t>(coefficient_arg);
+    const uint32_t tile_count, const uint32_t cb_source0, const uint32_t cb_output, const uint32_t coefficient) {
     for (uint32_t tile = 0; tile < tile_count; ++tile) {
         tile_regs_acquire();
         cb_wait_front(cb_source0, 1);
@@ -59,18 +101,14 @@ __attribute__((noinline)) void run_scale(
     }
 }
 
-template <uint8_t K, bool Vertical>
+template <uint8_t K, bool Vertical, bool InlineTerminalScale>
 __attribute__((noinline)) void run_stencil(
     const uint32_t tile_count,
     const uint32_t cb_source0,
     const uint32_t cb_source1,
     const uint32_t cb_base,
     const uint32_t cb_output,
-    const uint32_t coefficient_arg_base) {
-    std::array<uint32_t, K> coefficients{};
-    for (uint32_t coefficient = 0; coefficient < K; ++coefficient) {
-        coefficients[coefficient] = get_arg_val<uint32_t>(coefficient_arg_base + coefficient);
-    }
+    const std::array<uint32_t, K> coefficients) {
     for (uint32_t tile = 0; tile < tile_count; ++tile) {
         tile_regs_acquire();
         cb_wait_front(cb_source0, 1);
@@ -95,6 +133,12 @@ __attribute__((noinline)) void run_stencil(
             hstencil_init();
             hstencil_dense_tile<K>(coefficients, 0, 1, 2, 3);
         }
+        if constexpr (InlineTerminalScale) {
+            constexpr ttwv::StepType scale_type = inline_terminal_scale_type();
+            constexpr uint32_t scale_bits = terminal_scale_bits<scale_type>();
+            static_assert(scale_bits != 0, "2D terminal scale fusion could not find its scale coefficient");
+            scale_tile(3, scale_bits);
+        }
         tile_regs_commit();
         tile_regs_wait();
         cb_reserve_back(cb_output, 1);
@@ -104,20 +148,26 @@ __attribute__((noinline)) void run_stencil(
     }
 }
 
-template <typename Step, bool Vertical>
+template <typename Step, bool Vertical, bool InlineTerminalScale>
 inline void run_step(
     const uint32_t tile_count,
     const uint32_t cb_source0,
     const uint32_t cb_source1,
     const uint32_t cb_base,
-    const uint32_t cb_output,
-    const uint32_t coefficient_arg_base) {
+    const uint32_t cb_output) {
     if constexpr (Step::type == ttwv::StepType::kSwap) {
         return;
     } else if constexpr (ttwv::is_scale_step(Step::type)) {
-        run_scale(tile_count, cb_source0, cb_output, coefficient_arg_base);
+#if defined(TTWV_LWT_2D_FUSE_TERMINAL_SCALE) && TTWV_LWT_2D_FUSE_TERMINAL_SCALE
+        if constexpr (Step::type == inline_terminal_scale_type()) {
+            return;
+        }
+#endif
+        static_assert(Step::k == 1, "2D scale route must contain exactly one coefficient");
+        run_scale(tile_count, cb_source0, cb_output, Step::coeff_bits[0]);
     } else {
-        run_stencil<Step::k, Vertical>(tile_count, cb_source0, cb_source1, cb_base, cb_output, coefficient_arg_base);
+        run_stencil<Step::k, Vertical, InlineTerminalScale>(
+            tile_count, cb_source0, cb_source1, cb_base, cb_output, Step::coeff_bits);
     }
 }
 
@@ -125,23 +175,23 @@ template <bool Vertical, size_t StepIndex = 0>
 __attribute__((noinline)) void run_axis(
     const uint32_t runtime_arg_base,
     const uint32_t route_offset,
-    const uint32_t coefficient_arg_base,
     const uint32_t cb_source0,
     const uint32_t cb_source1,
     const uint32_t cb_base,
     const uint32_t cb_output) {
     if constexpr (StepIndex < Scheme::num_steps) {
         using Step = ttwv::SchemeStep<Scheme, StepIndex>;
-        const uint32_t tile_count = get_arg_val<uint32_t>(runtime_arg_base + route_offset + StepIndex);
-        run_step<Step, Vertical>(
-            tile_count,
-            cb_source0,
-            cb_source1,
-            cb_base,
-            cb_output,
-            coefficient_arg_base + coefficient_offset<StepIndex>());
-        run_axis<Vertical, StepIndex + 1>(
-            runtime_arg_base, route_offset, coefficient_arg_base, cb_source0, cb_source1, cb_base, cb_output);
+        const uint32_t route_index = route_offset + StepIndex;
+        const uint32_t packed_counts = get_arg_val<uint32_t>(runtime_arg_base + route_index / 4);
+        const uint32_t tile_count = (packed_counts >> (8 * (route_index % 4))) & 0xFFU;
+        constexpr bool inline_terminal_scale =
+#if defined(TTWV_LWT_2D_FUSE_TERMINAL_SCALE) && TTWV_LWT_2D_FUSE_TERMINAL_SCALE
+            StepIndex == last_predict_update_step_index();
+#else
+            false;
+#endif
+        run_step<Step, Vertical, inline_terminal_scale>(tile_count, cb_source0, cb_source1, cb_base, cb_output);
+        run_axis<Vertical, StepIndex + 1>(runtime_arg_base, route_offset, cb_source0, cb_source1, cb_base, cb_output);
     }
 }
 
@@ -155,18 +205,15 @@ void kernel_main() {
     const uint32_t chunk_count = get_arg_val<uint32_t>(0);
     constexpr uint32_t routes_per_axis = Scheme::num_steps;
     constexpr uint32_t routes_per_chunk = 4 * routes_per_axis;
-    const uint32_t coefficient_arg_base = 1 + chunk_count * routes_per_chunk;
+    constexpr uint32_t packed_words_per_chunk = (routes_per_chunk + 3) / 4;
 
     ckernel::init_sfpu(cb_base, cb_output);
     for (uint32_t chunk = 0; chunk < chunk_count; ++chunk) {
-        const uint32_t runtime_arg_base = 1 + chunk * routes_per_chunk;
-        run_axis<true>(runtime_arg_base, 0, coefficient_arg_base, cb_source0, cb_source1, cb_base, cb_output);
-        run_axis<true>(
-            runtime_arg_base, routes_per_axis, coefficient_arg_base, cb_source0, cb_source1, cb_base, cb_output);
-        run_axis<false>(
-            runtime_arg_base, 2 * routes_per_axis, coefficient_arg_base, cb_source0, cb_source1, cb_base, cb_output);
-        run_axis<false>(
-            runtime_arg_base, 3 * routes_per_axis, coefficient_arg_base, cb_source0, cb_source1, cb_base, cb_output);
+        const uint32_t runtime_arg_base = 1 + chunk * packed_words_per_chunk;
+        run_axis<true>(runtime_arg_base, 0, cb_source0, cb_source1, cb_base, cb_output);
+        run_axis<true>(runtime_arg_base, routes_per_axis, cb_source0, cb_source1, cb_base, cb_output);
+        run_axis<false>(runtime_arg_base, 2 * routes_per_axis, cb_source0, cb_source1, cb_base, cb_output);
+        run_axis<false>(runtime_arg_base, 3 * routes_per_axis, cb_source0, cb_source1, cb_base, cb_output);
     }
 }
 
@@ -575,6 +622,15 @@ void lwt_compute() {
 void kernel_main() { ttwv::kernels::lwt_compute<TTWV_LWT_SCHEME_TYPE>(); }
 
 
+===== FILENAME: tt-wavelet/kernels/dataflow/lwt_2d_empty.cpp =====
+CODE:
+// SPDX-FileCopyrightText: © 2026 Tenstorrent USA, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
+void kernel_main() {}
+
+
 ===== FILENAME: tt-wavelet/kernels/dataflow/lwt_2d_reader.cpp =====
 CODE:
 // SPDX-FileCopyrightText: © 2026 Tenstorrent USA, Inc.
@@ -613,6 +669,34 @@ struct SplitMetrics {
     uint32_t boundary_macro_tiles;
 };
 
+#ifdef TTWV_CAPTURE_TRANSPORT_METRICS
+#define TTWV_TRANSPORT_METRIC(statement) statement
+#else
+#define TTWV_TRANSPORT_METRIC(statement) \
+    do {                                 \
+    } while (false)
+#endif
+
+struct RouteStagingMetrics {
+    uint32_t exact_source_tiles{0};
+    uint32_t shifted_source_tiles{0};
+    uint32_t generic_source_tiles{0};
+    uint32_t exact_base_tiles{0};
+    uint32_t shifted_base_tiles{0};
+    uint32_t generic_base_tiles{0};
+};
+
+#ifdef TTWV_VALIDATE_ROUTE_STAGING
+struct StagingValidationMetrics {
+    uint32_t validated_tiles{0};
+    uint32_t mismatched_words{0};
+};
+#define TTWV_STAGING_VALIDATION_PARAMETER , StagingValidationMetrics& validation_metrics
+#define TTWV_STAGING_VALIDATION_ARGUMENT , staging_validation_metrics
+#else
+#define TTWV_STAGING_VALIDATION_PARAMETER
+#define TTWV_STAGING_VALIDATION_ARGUMENT
+#endif
 #ifdef TTWV_CAPTURE_SPLIT_METRICS
 #define TTWV_SPLIT_METRIC(statement) statement
 #else
@@ -660,6 +744,21 @@ ALWI void load_config_page(
         words[word] = loaded[word];
     }
     cb_pop_front(cb, 1);
+}
+
+template <typename Accessor>
+ALWI void preload_config_pages(
+    const Accessor& accessor,
+    const uint32_t address,
+    const uint32_t page_bytes,
+    const uint32_t page_begin,
+    const uint32_t page_count,
+    const uint32_t destination_addr) {
+    const auto pages = TensorAccessor(accessor, address, page_bytes);
+    for (uint32_t page = 0; page < page_count; ++page) {
+        noc_async_read(pages.get_noc_addr(page_begin + page), destination_addr + page * page_bytes, page_bytes);
+    }
+    noc_async_read_barrier();
 }
 
 [[nodiscard]] ALWI int32_t symmetric_index(const int32_t index, const uint32_t length) {
@@ -1103,11 +1202,228 @@ ALWI void snapshot_initial_planes(
     return source[tiled_element_offset(local_y, local_x, plane_tile_columns)];
 }
 
+#ifdef TTWV_VALIDATE_ROUTE_STAGING
+[[nodiscard]] ALWI uint32_t read_plane_bits(
+    const uint32_t plane_addr,
+    const uint32_t plane_tile_columns,
+    const Rect& stored,
+    const int32_t y,
+    const int32_t x) {
+    if (!contains(stored, y, x)) {
+        return 0;
+    }
+    const uint32_t local_y = static_cast<uint32_t>(y) - aligned_begin(stored.y_begin);
+    const uint32_t local_x = static_cast<uint32_t>(x) - aligned_begin(stored.x_begin);
+    const auto* source = reinterpret_cast<const volatile tt_l1_ptr uint32_t*>(plane_addr);
+    return source[tiled_element_offset(local_y, local_x, plane_tile_columns)];
+}
+
+ALWI void validate_staged_tile(
+    const uint32_t destination_addr,
+    const uint32_t plane_addr,
+    const uint32_t plane_tile_columns,
+    const Rect& stored,
+    const int32_t requested_y,
+    const int32_t requested_x,
+    StagingValidationMetrics& metrics) {
+    const auto* staged = reinterpret_cast<const volatile tt_l1_ptr uint32_t*>(destination_addr);
+    ++metrics.validated_tiles;
+    for (uint32_t row = 0; row < kTileSide; ++row) {
+        for (uint32_t column = 0; column < kTileSide; ++column) {
+            const uint32_t expected = read_plane_bits(
+                plane_addr,
+                plane_tile_columns,
+                stored,
+                requested_y + static_cast<int32_t>(row),
+                requested_x + static_cast<int32_t>(column));
+            metrics.mismatched_words += staged[tile_element_offset(row, column)] != expected ? 1U : 0U;
+        }
+    }
+}
+#define TTWV_VALIDATE_STAGED_TILE(...) validate_staged_tile(__VA_ARGS__)
+#else
+#define TTWV_VALIDATE_STAGED_TILE(...) \
+    do {                               \
+    } while (false)
+#endif
+
 ALWI void reserve_tile(const uint32_t cb) {
     cb_reserve_back(cb, 1);
     auto* tile = reinterpret_cast<volatile tt_l1_ptr float*>(get_write_ptr(cb));
     for (uint32_t element = 0; element < kTileElements; ++element) {
         tile[element] = 0.0F;
+    }
+}
+
+enum class RouteTileClass : uint32_t {
+    kExact,
+    kOneAxisShifted,
+    kGeneric,
+};
+
+enum class StageTileResult : uint32_t {
+    kExactPending,
+    kCompleted,
+    kFallback,
+};
+
+[[nodiscard]] ALWI bool requested_tile_inside(
+    const Rect& stored, const int32_t requested_y, const int32_t requested_x) {
+    return requested_y >= static_cast<int32_t>(stored.y_begin) && requested_x >= static_cast<int32_t>(stored.x_begin) &&
+           requested_y + static_cast<int32_t>(kTileSide) <= static_cast<int32_t>(stored.y_begin + stored.y_length) &&
+           requested_x + static_cast<int32_t>(kTileSide) <= static_cast<int32_t>(stored.x_begin + stored.x_length);
+}
+
+[[nodiscard]] ALWI RouteTileClass
+classify_route_tile(const Rect& stored, const int32_t requested_y, const int32_t requested_x) {
+    if (!requested_tile_inside(stored, requested_y, requested_x)) {
+        return RouteTileClass::kGeneric;
+    }
+    const bool y_aligned = requested_y % static_cast<int32_t>(kTileSide) == 0;
+    const bool x_aligned = requested_x % static_cast<int32_t>(kTileSide) == 0;
+    if (y_aligned && x_aligned) {
+        return RouteTileClass::kExact;
+    }
+    if (y_aligned != x_aligned) {
+        return RouteTileClass::kOneAxisShifted;
+    }
+    return RouteTileClass::kGeneric;
+}
+
+[[nodiscard]] ALWI uint32_t route_plane_tile_addr(
+    const uint32_t plane_addr,
+    const uint32_t plane_tile_columns,
+    const Rect& stored,
+    const int32_t requested_y,
+    const int32_t requested_x) {
+    const uint32_t local_y = static_cast<uint32_t>(requested_y) - aligned_begin(stored.y_begin);
+    const uint32_t local_x = static_cast<uint32_t>(requested_x) - aligned_begin(stored.x_begin);
+    const uint32_t tile_index = (local_y / kTileSide) * plane_tile_columns + local_x / kTileSide;
+    return plane_addr + tile_index * kTileBytes;
+}
+
+ALWI void copy_contiguous_words(
+    volatile tt_l1_ptr uint32_t* destination, const volatile tt_l1_ptr uint32_t* source, const uint32_t word_count) {
+    for (uint32_t word = 0; word < word_count; ++word) {
+        destination[word] = source[word];
+    }
+}
+
+ALWI void assemble_one_axis_shifted_tile(
+    const uint32_t destination_addr,
+    const uint32_t plane_addr,
+    const uint32_t plane_tile_columns,
+    const Rect& stored,
+    const int32_t requested_y,
+    const int32_t requested_x) {
+    auto* destination = reinterpret_cast<volatile tt_l1_ptr uint32_t*>(destination_addr);
+    const auto* source = reinterpret_cast<const volatile tt_l1_ptr uint32_t*>(plane_addr);
+    const uint32_t stored_y_origin = aligned_begin(stored.y_begin);
+    const uint32_t stored_x_origin = aligned_begin(stored.x_begin);
+    for (uint32_t row = 0; row < kTileSide; ++row) {
+        uint32_t column = 0;
+        while (column < kTileSide) {
+            const uint32_t source_y = static_cast<uint32_t>(requested_y) + row - stored_y_origin;
+            const uint32_t source_x = static_cast<uint32_t>(requested_x) + column - stored_x_origin;
+            const uint32_t count = std::min(
+                kTileSide - column, std::min(kFaceSide - source_x % kFaceSide, kFaceSide - column % kFaceSide));
+            const uint32_t source_offset = tiled_element_offset(source_y, source_x, plane_tile_columns);
+            const uint32_t destination_offset = tile_element_offset(row, column);
+            copy_contiguous_words(destination + destination_offset, source + source_offset, count);
+            column += count;
+        }
+    }
+}
+
+ALWI void count_route_tile(RouteStagingMetrics& metrics, const RouteTileClass tile_class, const bool base_tile) {
+    if (base_tile) {
+        if (tile_class == RouteTileClass::kExact) {
+            TTWV_TRANSPORT_METRIC(++metrics.exact_base_tiles);
+        } else if (tile_class == RouteTileClass::kOneAxisShifted) {
+            TTWV_TRANSPORT_METRIC(++metrics.shifted_base_tiles);
+        } else {
+            TTWV_TRANSPORT_METRIC(++metrics.generic_base_tiles);
+        }
+    } else {
+        if (tile_class == RouteTileClass::kExact) {
+            TTWV_TRANSPORT_METRIC(++metrics.exact_source_tiles);
+        } else if (tile_class == RouteTileClass::kOneAxisShifted) {
+            TTWV_TRANSPORT_METRIC(++metrics.shifted_source_tiles);
+        } else {
+            TTWV_TRANSPORT_METRIC(++metrics.generic_source_tiles);
+        }
+    }
+}
+
+[[nodiscard]] ALWI StageTileResult stage_optimized_tile(
+    const uint32_t cb,
+    const uint32_t plane_addr,
+    const uint32_t plane_tile_columns,
+    const Rect& stored,
+    const int32_t requested_y,
+    const int32_t requested_x,
+    const bool base_tile,
+    RouteStagingMetrics& metrics TTWV_STAGING_VALIDATION_PARAMETER) {
+    const RouteTileClass tile_class = classify_route_tile(stored, requested_y, requested_x);
+    count_route_tile(metrics, tile_class, base_tile);
+    if (tile_class == RouteTileClass::kGeneric) {
+        return StageTileResult::kFallback;
+    }
+
+    cb_reserve_back(cb, 1);
+    const uint32_t destination_addr = get_write_ptr(cb);
+    if (tile_class == RouteTileClass::kExact) {
+        const uint32_t source_addr =
+            route_plane_tile_addr(plane_addr, plane_tile_columns, stored, requested_y, requested_x);
+#ifdef TTWV_LWT_2D_EXACT_L1_COPY
+        copy_contiguous_words(
+            reinterpret_cast<volatile tt_l1_ptr uint32_t*>(destination_addr),
+            reinterpret_cast<const volatile tt_l1_ptr uint32_t*>(source_addr),
+            kTileBytes / sizeof(uint32_t));
+        TTWV_VALIDATE_STAGED_TILE(
+            destination_addr, plane_addr, plane_tile_columns, stored, requested_y, requested_x, validation_metrics);
+        cb_push_back(cb, 1);
+        return StageTileResult::kCompleted;
+#else
+        noc_async_read(get_noc_addr(source_addr), destination_addr, kTileBytes);
+        return StageTileResult::kExactPending;
+#endif
+    }
+
+    assemble_one_axis_shifted_tile(destination_addr, plane_addr, plane_tile_columns, stored, requested_y, requested_x);
+    TTWV_VALIDATE_STAGED_TILE(
+        destination_addr, plane_addr, plane_tile_columns, stored, requested_y, requested_x, validation_metrics);
+    cb_push_back(cb, 1);
+    return StageTileResult::kCompleted;
+}
+
+[[nodiscard]] ALWI int32_t base_requested_y(const Rect& source, const Rect& output, const uint32_t output_tile_y) {
+    const int32_t output_y_origin = static_cast<int32_t>(aligned_begin(output.y_begin) + output_tile_y * kTileSide);
+    return static_cast<int32_t>(source.y_begin) + output_y_origin - static_cast<int32_t>(output.y_begin);
+}
+
+[[nodiscard]] ALWI int32_t base_requested_x(const Rect& source, const Rect& output, const uint32_t output_tile_x) {
+    const int32_t output_x_origin = static_cast<int32_t>(aligned_begin(output.x_begin) + output_tile_x * kTileSide);
+    return static_cast<int32_t>(source.x_begin) + output_x_origin - static_cast<int32_t>(output.x_begin);
+}
+
+ALWI void stencil_requested_origin(
+    const bool vertical,
+    const uint32_t source_tile_index,
+    const uint32_t coefficient_count,
+    const Rect& source,
+    const Rect& output,
+    const uint32_t output_tile_y,
+    const uint32_t output_tile_x,
+    int32_t& requested_y,
+    int32_t& requested_x) {
+    requested_y = base_requested_y(source, output, output_tile_y);
+    requested_x = base_requested_x(source, output, output_tile_x);
+    if (vertical) {
+        requested_y += static_cast<int32_t>(source_tile_index * kTileSide);
+    } else {
+        requested_x +=
+            static_cast<int32_t>(source_tile_index * kTileSide) - static_cast<int32_t>(17 - coefficient_count);
     }
 }
 
@@ -1180,6 +1496,79 @@ ALWI void fill_stencil_source_tile(
     cb_push_back(cb, 1);
 }
 
+#ifdef TTWV_CAPTURE_TRANSPORT_METRICS
+template <typename MetricAccessor>
+ALWI void write_transport_reader_half(
+    const MetricAccessor& metric_args,
+    const uint32_t metrics_addr,
+    const uint32_t metric_pages_per_chunk,
+    const uint32_t global_chunk,
+    const uint32_t page_in_chunk,
+    const uint32_t scratch_addr,
+    const uint64_t config_cycles,
+    const uint64_t staging_cycles,
+    const uint64_t sync_wait_cycles,
+    const uint32_t output_tiles,
+    const uint32_t axis,
+    const uint32_t step_type,
+    const uint32_t coefficient_count,
+    const RouteStagingMetrics& staging_metrics) {
+    auto* words = reinterpret_cast<volatile tt_l1_ptr uint32_t*>(scratch_addr);
+    for (uint32_t word = 0; word < ttwv::device_protocol::kLwt2DTransportMetricWordCount / 2; ++word) {
+        words[word] = 0;
+    }
+    words[ttwv::device_protocol::kLwt2DTransportMetricReaderConfigCyclesLow] = static_cast<uint32_t>(config_cycles);
+    words[ttwv::device_protocol::kLwt2DTransportMetricReaderConfigCyclesHigh] =
+        static_cast<uint32_t>(config_cycles >> 32);
+    words[ttwv::device_protocol::kLwt2DTransportMetricStagingCyclesLow] = static_cast<uint32_t>(staging_cycles);
+    words[ttwv::device_protocol::kLwt2DTransportMetricStagingCyclesHigh] = static_cast<uint32_t>(staging_cycles >> 32);
+    words[ttwv::device_protocol::kLwt2DTransportMetricSyncWaitCyclesLow] = static_cast<uint32_t>(sync_wait_cycles);
+    words[ttwv::device_protocol::kLwt2DTransportMetricSyncWaitCyclesHigh] =
+        static_cast<uint32_t>(sync_wait_cycles >> 32);
+    words[ttwv::device_protocol::kLwt2DTransportMetricOutputTiles] = output_tiles;
+    words[ttwv::device_protocol::kLwt2DTransportMetricAxis] = axis;
+    words[ttwv::device_protocol::kLwt2DTransportMetricStepType] = step_type;
+    words[ttwv::device_protocol::kLwt2DTransportMetricCoefficientCount] = coefficient_count;
+    words[ttwv::device_protocol::kLwt2DTransportMetricExactSourceTiles] = staging_metrics.exact_source_tiles;
+    words[ttwv::device_protocol::kLwt2DTransportMetricShiftedSourceTiles] = staging_metrics.shifted_source_tiles;
+    words[ttwv::device_protocol::kLwt2DTransportMetricGenericSourceTiles] = staging_metrics.generic_source_tiles;
+    words[ttwv::device_protocol::kLwt2DTransportMetricExactBaseTiles] = staging_metrics.exact_base_tiles;
+    words[ttwv::device_protocol::kLwt2DTransportMetricShiftedBaseTiles] = staging_metrics.shifted_base_tiles;
+    words[ttwv::device_protocol::kLwt2DTransportMetricGenericBaseTiles] = staging_metrics.generic_base_tiles;
+    const auto metrics =
+        TensorAccessor(metric_args, metrics_addr, ttwv::device_protocol::kLwt2DTransportMetricPageBytes);
+    const uint32_t page = global_chunk * metric_pages_per_chunk + page_in_chunk;
+    noc_async_write(
+        scratch_addr, metrics.get_noc_addr(page), ttwv::device_protocol::kLwt2DTransportMetricHalfPageBytes);
+    noc_async_write_barrier();
+}
+#endif
+
+#ifdef TTWV_VALIDATE_ROUTE_STAGING
+template <typename MetricAccessor>
+ALWI void write_staging_validation_summary(
+    const MetricAccessor& metric_args,
+    const uint32_t metrics_addr,
+    const uint32_t metric_pages_per_chunk,
+    const uint32_t global_chunk,
+    const uint32_t page_in_chunk,
+    const uint32_t scratch_addr,
+    const StagingValidationMetrics& validation) {
+    auto* words = reinterpret_cast<volatile tt_l1_ptr uint32_t*>(scratch_addr);
+    for (uint32_t word = 0; word < ttwv::device_protocol::kLwt2DTransportMetricWordCount / 2; ++word) {
+        words[word] = 0;
+    }
+    words[ttwv::device_protocol::kLwt2DTransportMetricValidatedStagingTiles] = validation.validated_tiles;
+    words[ttwv::device_protocol::kLwt2DTransportMetricStagingValidationMismatches] = validation.mismatched_words;
+    const auto metrics =
+        TensorAccessor(metric_args, metrics_addr, ttwv::device_protocol::kLwt2DTransportMetricPageBytes);
+    const uint32_t page = global_chunk * metric_pages_per_chunk + page_in_chunk;
+    noc_async_write(
+        scratch_addr, metrics.get_noc_addr(page), ttwv::device_protocol::kLwt2DTransportMetricHalfPageBytes);
+    noc_async_write_barrier();
+}
+#endif
+
 }  // namespace
 
 void kernel_main() {
@@ -1209,6 +1598,10 @@ void kernel_main() {
     const uint32_t split_snapshot_addr = get_arg_val<uint32_t>(13 + plane_arg_count);
     const uint32_t split_snapshot_tiles_per_plane = get_arg_val<uint32_t>(14 + plane_arg_count);
 #endif
+#if defined(TTWV_CAPTURE_TRANSPORT_METRICS) || defined(TTWV_VALIDATE_ROUTE_STAGING)
+    const uint32_t transport_metrics_addr = get_arg_val<uint32_t>(15 + plane_arg_count);
+    const uint32_t transport_metric_pages_per_chunk = get_arg_val<uint32_t>(16 + plane_arg_count);
+#endif
 
     constexpr uint32_t cb_source0 = get_compile_time_arg_val(0);
     constexpr uint32_t cb_source1 = get_compile_time_arg_val(1);
@@ -1221,9 +1614,8 @@ void kernel_main() {
     constexpr auto chunk_args = TensorAccessorArgs<input_args.next_compile_time_args_offset()>();
     constexpr auto route_args = TensorAccessorArgs<chunk_args.next_compile_time_args_offset()>();
     constexpr auto metric_args = TensorAccessorArgs<route_args.next_compile_time_args_offset()>();
-#ifdef TTWV_CAPTURE_SPLIT_SNAPSHOTS
     constexpr auto snapshot_args = TensorAccessorArgs<metric_args.next_compile_time_args_offset()>();
-#endif
+    constexpr auto transport_metric_args = TensorAccessorArgs<snapshot_args.next_compile_time_args_offset()>();
     const auto input = TensorAccessor(input_args, input_addr, kTileBytes);
     const uint32_t noc_scratch_raw = get_write_ptr(cb_noc_scratch);
 #ifdef TTWV_LWT_2D_TILED_SPLIT
@@ -1231,9 +1623,25 @@ void kernel_main() {
 #else
     const uint32_t noc_scratch_addr = (noc_scratch_raw + 63U) & ~63U;
 #endif
+#ifdef TTWV_LWT_2D_PRELOAD_ROUTE_CONFIG
+    constexpr uint32_t reader_config_capacity =
+        ttwv::device_protocol::kLwt2DSplitScratchBytes / 2 - ttwv::device_protocol::kLwt2DTransportMetricPageBytes;
+    const uint32_t reader_config_addr = noc_scratch_addr;
+#endif
+#if defined(TTWV_CAPTURE_TRANSPORT_METRICS) || defined(TTWV_VALIDATE_ROUTE_STAGING)
+    const uint32_t reader_metric_scratch_addr = noc_scratch_addr + ttwv::device_protocol::kLwt2DSplitScratchBytes / 2 -
+                                                ttwv::device_protocol::kLwt2DTransportMetricPageBytes;
+#endif
 
     for (uint32_t local_chunk = 0; local_chunk < chunk_count; ++local_chunk) {
         const uint32_t global_chunk = chunk_begin + local_chunk;
+#ifdef TTWV_CAPTURE_TRANSPORT_METRICS
+        const uint64_t chunk_start = get_timestamp();
+        uint64_t preload_config_cycles = 0;
+#endif
+#ifdef TTWV_VALIDATE_ROUTE_STAGING
+        StagingValidationMetrics staging_validation_metrics{};
+#endif
         uint32_t chunk_words[ttwv::device_protocol::kLwt2DChunkConfigWordCount];
         load_config_page(
             chunk_args,
@@ -1363,8 +1771,34 @@ void kernel_main() {
             plane_addrs,
             plane_tile_columns);
 #endif
+#ifdef TTWV_LWT_2D_PRELOAD_ROUTE_CONFIG
+        ASSERT(route_count * ttwv::device_protocol::kLwt2DRouteConfigPageBytes <= reader_config_capacity);
+#ifdef TTWV_CAPTURE_TRANSPORT_METRICS
+        const uint64_t preload_config_start = get_timestamp();
+#endif
+        preload_config_pages(
+            route_args,
+            route_config_addr,
+            ttwv::device_protocol::kLwt2DRouteConfigPageBytes,
+            global_chunk * route_count,
+            route_count,
+            reader_config_addr);
+#ifdef TTWV_CAPTURE_TRANSPORT_METRICS
+        preload_config_cycles = get_timestamp() - preload_config_start;
+#endif
+#endif
         for (uint32_t route_index = 0; route_index < route_count; ++route_index) {
+#ifdef TTWV_LWT_2D_PRELOAD_ROUTE_CONFIG
+            const auto* route_words = reinterpret_cast<const uint32_t*>(
+                reader_config_addr + route_index * ttwv::device_protocol::kLwt2DRouteConfigPageBytes);
+#ifdef TTWV_CAPTURE_TRANSPORT_METRICS
+            constexpr uint64_t config_cycles = 0;
+#endif
+#else
             uint32_t route_words[ttwv::device_protocol::kLwt2DRouteConfigWordCount];
+#ifdef TTWV_CAPTURE_TRANSPORT_METRICS
+            const uint64_t config_start = get_timestamp();
+#endif
             load_config_page(
                 route_args,
                 route_config_addr,
@@ -1373,6 +1807,10 @@ void kernel_main() {
                 cb_route_config,
                 route_words,
                 ttwv::device_protocol::kLwt2DRouteConfigWordCount);
+#ifdef TTWV_CAPTURE_TRANSPORT_METRICS
+            const uint64_t config_cycles = get_timestamp() - config_start;
+#endif
+#endif
             const uint32_t flags = route_words[ttwv::device_protocol::kLwt2DRouteFlags];
             if ((flags & ttwv::device_protocol::kLwt2DRouteFlagMetadataOnly) != 0) {
                 continue;
@@ -1391,10 +1829,190 @@ void kernel_main() {
             const bool scale = (flags & ttwv::device_protocol::kLwt2DRouteFlagScale) != 0;
             const uint32_t coefficient_count =
                 scale ? 1 : (vertical ? source.y_length - output.y_length + 1 : source.x_length - output.x_length + 1);
+            const uint32_t output_tile_count = output_tile_rows * output_tile_columns;
+            RouteStagingMetrics route_staging_metrics{};
+#ifdef TTWV_CAPTURE_TRANSPORT_METRICS
+            const uint64_t staging_start = get_timestamp();
+#endif
 
             for (uint32_t tile_y = 0; tile_y < output_tile_rows; ++tile_y) {
                 for (uint32_t tile_x = 0; tile_x < output_tile_columns; ++tile_x) {
+#ifdef TTWV_LWT_2D_OPTIMIZED_ROUTE_STAGING
+                    bool source0_pending = false;
+                    bool source1_pending = false;
+                    bool base_pending = false;
+#ifdef TTWV_VALIDATE_ROUTE_STAGING
+                    int32_t source0_requested_y = 0;
+                    int32_t source0_requested_x = 0;
+                    int32_t source1_requested_y = 0;
+                    int32_t source1_requested_x = 0;
+                    int32_t base_requested_tile_y = 0;
+                    int32_t base_requested_tile_x = 0;
+#endif
                     if (scale) {
+                        const int32_t requested_y = base_requested_y(source, output, tile_y);
+                        const int32_t requested_x = base_requested_x(source, output, tile_x);
+#ifdef TTWV_VALIDATE_ROUTE_STAGING
+                        source0_requested_y = requested_y;
+                        source0_requested_x = requested_x;
+#endif
+                        const StageTileResult result = stage_optimized_tile(
+                            cb_source0,
+                            plane_addrs[source_slot],
+                            plane_tile_columns[source_slot],
+                            stored[source_slot],
+                            requested_y,
+                            requested_x,
+                            true,
+                            route_staging_metrics TTWV_STAGING_VALIDATION_ARGUMENT);
+                        source0_pending = result == StageTileResult::kExactPending;
+                        if (result == StageTileResult::kFallback) {
+                            fill_base_or_scale_tile(
+                                cb_source0,
+                                plane_addrs[source_slot],
+                                plane_tile_columns[source_slot],
+                                stored[source_slot],
+                                source,
+                                output,
+                                tile_y,
+                                tile_x);
+                        }
+                    } else {
+                        int32_t requested_y = 0;
+                        int32_t requested_x = 0;
+                        stencil_requested_origin(
+                            vertical, 0, coefficient_count, source, output, tile_y, tile_x, requested_y, requested_x);
+#ifdef TTWV_VALIDATE_ROUTE_STAGING
+                        source0_requested_y = requested_y;
+                        source0_requested_x = requested_x;
+#endif
+                        StageTileResult result = stage_optimized_tile(
+                            cb_source0,
+                            plane_addrs[source_slot],
+                            plane_tile_columns[source_slot],
+                            stored[source_slot],
+                            requested_y,
+                            requested_x,
+                            false,
+                            route_staging_metrics TTWV_STAGING_VALIDATION_ARGUMENT);
+                        source0_pending = result == StageTileResult::kExactPending;
+                        if (result == StageTileResult::kFallback) {
+                            fill_stencil_source_tile(
+                                cb_source0,
+                                vertical,
+                                0,
+                                coefficient_count,
+                                plane_addrs[source_slot],
+                                plane_tile_columns[source_slot],
+                                stored[source_slot],
+                                source,
+                                output,
+                                tile_y,
+                                tile_x);
+                        }
+                        stencil_requested_origin(
+                            vertical, 1, coefficient_count, source, output, tile_y, tile_x, requested_y, requested_x);
+#ifdef TTWV_VALIDATE_ROUTE_STAGING
+                        source1_requested_y = requested_y;
+                        source1_requested_x = requested_x;
+#endif
+                        result = stage_optimized_tile(
+                            cb_source1,
+                            plane_addrs[source_slot],
+                            plane_tile_columns[source_slot],
+                            stored[source_slot],
+                            requested_y,
+                            requested_x,
+                            false,
+                            route_staging_metrics TTWV_STAGING_VALIDATION_ARGUMENT);
+                        source1_pending = result == StageTileResult::kExactPending;
+                        if (result == StageTileResult::kFallback) {
+                            fill_stencil_source_tile(
+                                cb_source1,
+                                vertical,
+                                1,
+                                coefficient_count,
+                                plane_addrs[source_slot],
+                                plane_tile_columns[source_slot],
+                                stored[source_slot],
+                                source,
+                                output,
+                                tile_y,
+                                tile_x);
+                        }
+                        requested_y = base_requested_y(base, output, tile_y);
+                        requested_x = base_requested_x(base, output, tile_x);
+#ifdef TTWV_VALIDATE_ROUTE_STAGING
+                        base_requested_tile_y = requested_y;
+                        base_requested_tile_x = requested_x;
+#endif
+                        result = stage_optimized_tile(
+                            cb_base,
+                            plane_addrs[base_slot],
+                            plane_tile_columns[base_slot],
+                            stored[base_slot],
+                            requested_y,
+                            requested_x,
+                            true,
+                            route_staging_metrics TTWV_STAGING_VALIDATION_ARGUMENT);
+                        base_pending = result == StageTileResult::kExactPending;
+                        if (result == StageTileResult::kFallback) {
+                            fill_base_or_scale_tile(
+                                cb_base,
+                                plane_addrs[base_slot],
+                                plane_tile_columns[base_slot],
+                                stored[base_slot],
+                                base,
+                                output,
+                                tile_y,
+                                tile_x);
+                        }
+                    }
+                    if (source0_pending || source1_pending || base_pending) {
+                        noc_async_read_barrier();
+                    }
+                    if (source0_pending) {
+                        TTWV_VALIDATE_STAGED_TILE(
+                            get_write_ptr(cb_source0),
+                            plane_addrs[source_slot],
+                            plane_tile_columns[source_slot],
+                            stored[source_slot],
+                            source0_requested_y,
+                            source0_requested_x,
+                            staging_validation_metrics);
+                        cb_push_back(cb_source0, 1);
+                    }
+                    if (source1_pending) {
+                        TTWV_VALIDATE_STAGED_TILE(
+                            get_write_ptr(cb_source1),
+                            plane_addrs[source_slot],
+                            plane_tile_columns[source_slot],
+                            stored[source_slot],
+                            source1_requested_y,
+                            source1_requested_x,
+                            staging_validation_metrics);
+                        cb_push_back(cb_source1, 1);
+                    }
+                    if (base_pending) {
+                        TTWV_VALIDATE_STAGED_TILE(
+                            get_write_ptr(cb_base),
+                            plane_addrs[base_slot],
+                            plane_tile_columns[base_slot],
+                            stored[base_slot],
+                            base_requested_tile_y,
+                            base_requested_tile_x,
+                            staging_validation_metrics);
+                        cb_push_back(cb_base, 1);
+                    }
+#else
+                    if (scale) {
+                        count_route_tile(
+                            route_staging_metrics,
+                            classify_route_tile(
+                                stored[source_slot],
+                                base_requested_y(source, output, tile_y),
+                                base_requested_x(source, output, tile_x)),
+                            true);
                         fill_base_or_scale_tile(
                             cb_source0,
                             plane_addrs[source_slot],
@@ -1405,6 +2023,31 @@ void kernel_main() {
                             tile_y,
                             tile_x);
                     } else {
+                        int32_t requested_y = 0;
+                        int32_t requested_x = 0;
+                        for (uint32_t source_tile = 0; source_tile < 2; ++source_tile) {
+                            stencil_requested_origin(
+                                vertical,
+                                source_tile,
+                                coefficient_count,
+                                source,
+                                output,
+                                tile_y,
+                                tile_x,
+                                requested_y,
+                                requested_x);
+                            count_route_tile(
+                                route_staging_metrics,
+                                classify_route_tile(stored[source_slot], requested_y, requested_x),
+                                false);
+                        }
+                        count_route_tile(
+                            route_staging_metrics,
+                            classify_route_tile(
+                                stored[base_slot],
+                                base_requested_y(base, output, tile_y),
+                                base_requested_x(base, output, tile_x)),
+                            true);
                         fill_stencil_source_tile(
                             cb_source0,
                             vertical,
@@ -1439,10 +2082,33 @@ void kernel_main() {
                             tile_y,
                             tile_x);
                     }
+#endif
                 }
             }
+#ifdef TTWV_CAPTURE_TRANSPORT_METRICS
+            const uint64_t staging_cycles = get_timestamp() - staging_start;
+            const uint64_t sync_start = get_timestamp();
+#endif
             cb_wait_front(cb_sync, 1);
             cb_pop_front(cb_sync, 1);
+#ifdef TTWV_CAPTURE_TRANSPORT_METRICS
+            const uint64_t sync_wait_cycles = get_timestamp() - sync_start;
+            write_transport_reader_half(
+                transport_metric_args,
+                transport_metrics_addr,
+                transport_metric_pages_per_chunk,
+                global_chunk,
+                route_index,
+                reader_metric_scratch_addr,
+                config_cycles,
+                staging_cycles,
+                sync_wait_cycles,
+                output_tile_count,
+                route_words[ttwv::device_protocol::kLwt2DRouteAxis],
+                route_words[ttwv::device_protocol::kLwt2DRouteType],
+                coefficient_count,
+                route_staging_metrics);
+#endif
             stored[output_slot] = output;
         }
         // The final route handshake only guarantees that its result has been
@@ -1451,6 +2117,33 @@ void kernel_main() {
         // the next chunk until those DRAM writes have completed.
         cb_wait_front(cb_sync, 1);
         cb_pop_front(cb_sync, 1);
+#ifdef TTWV_CAPTURE_TRANSPORT_METRICS
+        const uint64_t chunk_cycles = get_timestamp() - chunk_start;
+        write_transport_reader_half(
+            transport_metric_args,
+            transport_metrics_addr,
+            transport_metric_pages_per_chunk,
+            global_chunk,
+            route_count,
+            reader_metric_scratch_addr,
+            preload_config_cycles,
+            chunk_cycles,
+            0,
+            0,
+            0,
+            0,
+            0,
+            RouteStagingMetrics{});
+#elif defined(TTWV_VALIDATE_ROUTE_STAGING)
+        write_staging_validation_summary(
+            transport_metric_args,
+            transport_metrics_addr,
+            transport_metric_pages_per_chunk,
+            global_chunk,
+            route_count,
+            reader_metric_scratch_addr,
+            staging_validation_metrics);
+#endif
     }
 }
 
@@ -1520,6 +2213,50 @@ ALWI void load_config_page(
     cb_pop_front(cb, 1);
 }
 
+template <typename Accessor>
+ALWI void preload_config_pages(
+    const Accessor& accessor,
+    const uint32_t address,
+    const uint32_t page_bytes,
+    const uint32_t page_begin,
+    const uint32_t page_count,
+    const uint32_t destination_addr) {
+    const auto pages = TensorAccessor(accessor, address, page_bytes);
+    for (uint32_t page = 0; page < page_count; ++page) {
+        noc_async_read(pages.get_noc_addr(page_begin + page), destination_addr + page * page_bytes, page_bytes);
+    }
+    noc_async_read_barrier();
+}
+
+#ifdef TTWV_VALIDATE_ROUTE_PERSISTENCE
+struct PersistenceValidationMetrics {
+    uint32_t validated_tiles{0};
+    uint32_t mismatched_words{0};
+};
+#define TTWV_PERSISTENCE_VALIDATION_PARAMETER , PersistenceValidationMetrics& validation_metrics
+#define TTWV_PERSISTENCE_VALIDATION_ARGUMENT , persistence_validation_metrics
+#else
+#define TTWV_PERSISTENCE_VALIDATION_PARAMETER
+#define TTWV_PERSISTENCE_VALIDATION_ARGUMENT
+#endif
+
+#ifdef TTWV_VALIDATE_ROUTE_PERSISTENCE
+ALWI void validate_persisted_tile(
+    const uint32_t destination_addr, const uint32_t source_addr, PersistenceValidationMetrics& metrics) {
+    const auto* destination = reinterpret_cast<const volatile tt_l1_ptr uint32_t*>(destination_addr);
+    const auto* source = reinterpret_cast<const volatile tt_l1_ptr uint32_t*>(source_addr);
+    ++metrics.validated_tiles;
+    for (uint32_t word = 0; word < kTileBytes / sizeof(uint32_t); ++word) {
+        metrics.mismatched_words += destination[word] != source[word] ? 1U : 0U;
+    }
+}
+#define TTWV_VALIDATE_PERSISTED_TILE(...) validate_persisted_tile(__VA_ARGS__)
+#else
+#define TTWV_VALIDATE_PERSISTED_TILE(...) \
+    do {                                  \
+    } while (false)
+#endif
+
 template <typename SnapshotAccessor>
 ALWI void write_local_output(
     const uint32_t cb_output,
@@ -1529,22 +2266,81 @@ ALWI void write_local_output(
     const SnapshotAccessor& snapshot_args,
     const bool capture_snapshot,
     const uint32_t snapshot_addr,
-    const uint32_t snapshot_page_base) {
+    const uint32_t snapshot_page_base,
+    uint64_t& compute_wait_cycles,
+    uint64_t& persistence_cycles TTWV_PERSISTENCE_VALIDATION_PARAMETER) {
     const auto snapshots = TensorAccessor(snapshot_args, snapshot_addr, kTileBytes);
     const uint32_t tile_rows =
         (aligned_end(output.y_begin, output.y_length) - aligned_begin(output.y_begin)) / kTileSide;
     const uint32_t tile_columns =
         (aligned_end(output.x_begin, output.x_length) - aligned_begin(output.x_begin)) / kTileSide;
+#ifdef TTWV_LWT_2D_FULL_TILE_PERSISTENCE
+    if (!capture_snapshot) {
+        const uint32_t tile_count = tile_rows * tile_columns;
+        for (uint32_t first_tile = 0; first_tile < tile_count;) {
+            const uint32_t read_ptr = get_read_ptr(cb_output);
+            const uint32_t fifo_limit = get_local_cb_interface(cb_output).fifo_limit;
+            const uint32_t batch = first_tile + 1 < tile_count && read_ptr + 2 * kTileBytes <= fifo_limit ? 2U : 1U;
+#ifdef TTWV_CAPTURE_TRANSPORT_METRICS
+            const uint64_t wait_start = get_timestamp();
+#endif
+            cb_wait_front(cb_output, batch);
+#ifdef TTWV_CAPTURE_TRANSPORT_METRICS
+            compute_wait_cycles += get_timestamp() - wait_start;
+            const uint64_t persistence_start = get_timestamp();
+#endif
+            for (uint32_t tile_in_batch = 0; tile_in_batch < batch; ++tile_in_batch) {
+                const uint32_t flat_tile = first_tile + tile_in_batch;
+                const uint32_t tile_y = flat_tile / tile_columns;
+                const uint32_t tile_x = flat_tile % tile_columns;
+                const uint32_t destination_addr = plane_addr + (tile_y * plane_tile_columns + tile_x) * kTileBytes;
+                noc_async_write(read_ptr + tile_in_batch * kTileBytes, get_noc_addr(destination_addr), kTileBytes);
+            }
+            noc_async_write_barrier();
+            for (uint32_t tile_in_batch = 0; tile_in_batch < batch; ++tile_in_batch) {
+                const uint32_t flat_tile = first_tile + tile_in_batch;
+                const uint32_t tile_y = flat_tile / tile_columns;
+                const uint32_t tile_x = flat_tile % tile_columns;
+                const uint32_t destination_addr = plane_addr + (tile_y * plane_tile_columns + tile_x) * kTileBytes;
+                TTWV_VALIDATE_PERSISTED_TILE(
+                    destination_addr, read_ptr + tile_in_batch * kTileBytes, validation_metrics);
+            }
+            cb_pop_front(cb_output, batch);
+#ifdef TTWV_CAPTURE_TRANSPORT_METRICS
+            persistence_cycles += get_timestamp() - persistence_start;
+#endif
+            first_tile += batch;
+        }
+        return;
+    }
+#endif
     for (uint32_t tile_y = 0; tile_y < tile_rows; ++tile_y) {
         for (uint32_t tile_x = 0; tile_x < tile_columns; ++tile_x) {
+#ifdef TTWV_CAPTURE_TRANSPORT_METRICS
+            const uint64_t wait_start = get_timestamp();
+#endif
             cb_wait_front(cb_output, 1);
+#ifdef TTWV_CAPTURE_TRANSPORT_METRICS
+            compute_wait_cycles += get_timestamp() - wait_start;
+            const uint64_t persistence_start = get_timestamp();
+#endif
+#ifdef TTWV_LWT_2D_FULL_TILE_PERSISTENCE
+            const uint32_t destination_addr = plane_addr + (tile_y * plane_tile_columns + tile_x) * kTileBytes;
+            noc_async_write(get_read_ptr(cb_output), get_noc_addr(destination_addr), kTileBytes);
+            noc_async_write_barrier();
+            TTWV_VALIDATE_PERSISTED_TILE(destination_addr, get_read_ptr(cb_output), validation_metrics);
+#else
             auto* destination = reinterpret_cast<volatile tt_l1_ptr uint32_t*>(
                 plane_addr + (tile_y * plane_tile_columns + tile_x) * kTileBytes);
             const auto* source = reinterpret_cast<volatile tt_l1_ptr uint32_t*>(get_read_ptr(cb_output));
             for (uint32_t word = 0; word < kTileBytes / sizeof(uint32_t); ++word) {
                 destination[word] = source[word];
             }
+#endif
             cb_pop_front(cb_output, 1);
+#ifdef TTWV_CAPTURE_TRANSPORT_METRICS
+            persistence_cycles += get_timestamp() - persistence_start;
+#endif
             if (capture_snapshot) {
                 const uint32_t snapshot_page = snapshot_page_base + tile_y * tile_columns + tile_x;
                 noc_async_write(
@@ -1557,8 +2353,13 @@ ALWI void write_local_output(
     }
 }
 
+struct TerminalWriteMetrics {
+    uint32_t exact_tiles{0};
+    uint32_t fragmented_tiles{0};
+};
+
 template <typename OutputAccessor>
-ALWI void write_band(
+ALWI void write_band_fragmented(
     const OutputAccessor& output_args,
     const uint32_t output_addr,
     const uint32_t output_tile_columns,
@@ -1602,6 +2403,185 @@ ALWI void write_band(
     }
 }
 
+#ifdef TTWV_LWT_2D_TILED_TERMINAL_WRITES
+template <typename OutputAccessor>
+[[nodiscard]] ALWI bool write_band_full_tiles(
+    const OutputAccessor& output_args,
+    const uint32_t output_addr,
+    const uint32_t output_tile_columns,
+    const uint32_t plane_addr,
+    const uint32_t plane_tile_columns,
+    const Rect& source,
+    const uint32_t final_y_begin,
+    const uint32_t final_y_length,
+    const uint32_t final_x_begin,
+    const uint32_t final_x_length,
+    TerminalWriteMetrics& metrics) {
+    const bool exact = final_y_begin % kTileSide == 0 && final_x_begin % kTileSide == 0 &&
+                       final_y_length % kTileSide == 0 && final_x_length % kTileSide == 0 &&
+                       source.y_begin % kTileSide == 0 && source.x_begin % kTileSide == 0 &&
+                       source.y_length == final_y_length && source.x_length == final_x_length;
+    if (!exact) {
+        return false;
+    }
+
+    constexpr uint32_t kWriteBatchTiles = 16;
+    const auto output = TensorAccessor(output_args, output_addr, kTileBytes);
+    const uint32_t tile_rows = final_y_length / kTileSide;
+    const uint32_t tile_columns = final_x_length / kTileSide;
+    uint32_t outstanding = 0;
+    for (uint32_t tile_y = 0; tile_y < tile_rows; ++tile_y) {
+        for (uint32_t tile_x = 0; tile_x < tile_columns; ++tile_x) {
+            const uint32_t source_tile = tile_y * plane_tile_columns + tile_x;
+            const uint32_t destination_tile =
+                (final_y_begin / kTileSide + tile_y) * output_tile_columns + final_x_begin / kTileSide + tile_x;
+            noc_async_write(plane_addr + source_tile * kTileBytes, output.get_noc_addr(destination_tile), kTileBytes);
+            ++metrics.exact_tiles;
+            if (++outstanding == kWriteBatchTiles) {
+                noc_async_write_barrier();
+                outstanding = 0;
+            }
+        }
+    }
+    if (outstanding != 0) {
+        noc_async_write_barrier();
+    }
+    return true;
+}
+#endif
+
+template <typename OutputAccessor>
+ALWI void write_band(
+    const OutputAccessor& output_args,
+    const uint32_t output_addr,
+    const uint32_t output_tile_columns,
+    const uint32_t plane_addr,
+    const uint32_t plane_tile_columns,
+    const Rect& source,
+    const uint32_t final_y_begin,
+    const uint32_t final_y_length,
+    const uint32_t final_x_begin,
+    const uint32_t final_x_length,
+    const uint32_t noc_scratch_addr,
+    TerminalWriteMetrics& metrics) {
+#ifdef TTWV_LWT_2D_TILED_TERMINAL_WRITES
+    if (write_band_full_tiles(
+            output_args,
+            output_addr,
+            output_tile_columns,
+            plane_addr,
+            plane_tile_columns,
+            source,
+            final_y_begin,
+            final_y_length,
+            final_x_begin,
+            final_x_length,
+            metrics)) {
+        return;
+    }
+#endif
+    const uint32_t destination_tile_rows =
+        (aligned_end(final_y_begin, final_y_length) - aligned_begin(final_y_begin)) / kTileSide;
+    const uint32_t destination_tile_columns =
+        (aligned_end(final_x_begin, final_x_length) - aligned_begin(final_x_begin)) / kTileSide;
+    metrics.fragmented_tiles += destination_tile_rows * destination_tile_columns;
+    write_band_fragmented(
+        output_args,
+        output_addr,
+        output_tile_columns,
+        plane_addr,
+        plane_tile_columns,
+        source,
+        final_y_begin,
+        final_y_length,
+        final_x_begin,
+        final_x_length,
+        noc_scratch_addr);
+}
+
+#ifdef TTWV_CAPTURE_TRANSPORT_METRICS
+template <typename MetricAccessor>
+ALWI void write_transport_writer_half(
+    const MetricAccessor& metric_args,
+    const uint32_t metrics_addr,
+    const uint32_t metric_pages_per_chunk,
+    const uint32_t global_chunk,
+    const uint32_t page_in_chunk,
+    const uint32_t scratch_addr,
+    const uint64_t config_cycles,
+    const uint64_t persistence_cycles,
+    const uint64_t compute_cycles,
+    const uint32_t persistence_tiles,
+    const TerminalWriteMetrics terminal_metrics,
+    const uint64_t terminal_cycles,
+    const uint64_t kernel_cycles) {
+    constexpr uint32_t base = ttwv::device_protocol::kLwt2DTransportMetricWriterConfigCyclesLow;
+    auto* words = reinterpret_cast<volatile tt_l1_ptr uint32_t*>(scratch_addr);
+    for (uint32_t word = 0; word < ttwv::device_protocol::kLwt2DTransportMetricWordCount / 2; ++word) {
+        words[word] = 0;
+    }
+    words[ttwv::device_protocol::kLwt2DTransportMetricWriterConfigCyclesLow - base] =
+        static_cast<uint32_t>(config_cycles);
+    words[ttwv::device_protocol::kLwt2DTransportMetricWriterConfigCyclesHigh - base] =
+        static_cast<uint32_t>(config_cycles >> 32);
+    words[ttwv::device_protocol::kLwt2DTransportMetricPersistenceCyclesLow - base] =
+        static_cast<uint32_t>(persistence_cycles);
+    words[ttwv::device_protocol::kLwt2DTransportMetricPersistenceCyclesHigh - base] =
+        static_cast<uint32_t>(persistence_cycles >> 32);
+    words[ttwv::device_protocol::kLwt2DTransportMetricComputeCyclesLow - base] = static_cast<uint32_t>(compute_cycles);
+    words[ttwv::device_protocol::kLwt2DTransportMetricComputeCyclesHigh - base] =
+        static_cast<uint32_t>(compute_cycles >> 32);
+    words[ttwv::device_protocol::kLwt2DTransportMetricPersistenceTiles - base] = persistence_tiles;
+    words[ttwv::device_protocol::kLwt2DTransportMetricExactTerminalTiles - base] = terminal_metrics.exact_tiles;
+    words[ttwv::device_protocol::kLwt2DTransportMetricFragmentedTerminalTiles - base] =
+        terminal_metrics.fragmented_tiles;
+    words[ttwv::device_protocol::kLwt2DTransportMetricTerminalWriteCyclesLow - base] =
+        static_cast<uint32_t>(terminal_cycles);
+    words[ttwv::device_protocol::kLwt2DTransportMetricTerminalWriteCyclesHigh - base] =
+        static_cast<uint32_t>(terminal_cycles >> 32);
+    words[ttwv::device_protocol::kLwt2DTransportMetricKernelCyclesLow - base] = static_cast<uint32_t>(kernel_cycles);
+    words[ttwv::device_protocol::kLwt2DTransportMetricKernelCyclesHigh - base] =
+        static_cast<uint32_t>(kernel_cycles >> 32);
+    const auto metrics =
+        TensorAccessor(metric_args, metrics_addr, ttwv::device_protocol::kLwt2DTransportMetricPageBytes);
+    const uint32_t page = global_chunk * metric_pages_per_chunk + page_in_chunk;
+    noc_async_write(
+        scratch_addr,
+        metrics.get_noc_addr(page) + ttwv::device_protocol::kLwt2DTransportMetricHalfPageBytes,
+        ttwv::device_protocol::kLwt2DTransportMetricHalfPageBytes);
+    noc_async_write_barrier();
+}
+#endif
+
+#ifdef TTWV_VALIDATE_ROUTE_PERSISTENCE
+template <typename MetricAccessor>
+ALWI void write_persistence_validation_summary(
+    const MetricAccessor& metric_args,
+    const uint32_t metrics_addr,
+    const uint32_t metric_pages_per_chunk,
+    const uint32_t global_chunk,
+    const uint32_t page_in_chunk,
+    const uint32_t scratch_addr,
+    const PersistenceValidationMetrics& validation) {
+    constexpr uint32_t base = ttwv::device_protocol::kLwt2DTransportMetricWriterConfigCyclesLow;
+    auto* words = reinterpret_cast<volatile tt_l1_ptr uint32_t*>(scratch_addr);
+    for (uint32_t word = 0; word < ttwv::device_protocol::kLwt2DTransportMetricWordCount / 2; ++word) {
+        words[word] = 0;
+    }
+    words[ttwv::device_protocol::kLwt2DTransportMetricValidatedPersistenceTiles - base] = validation.validated_tiles;
+    words[ttwv::device_protocol::kLwt2DTransportMetricPersistenceValidationMismatches - base] =
+        validation.mismatched_words;
+    const auto metrics =
+        TensorAccessor(metric_args, metrics_addr, ttwv::device_protocol::kLwt2DTransportMetricPageBytes);
+    const uint32_t page = global_chunk * metric_pages_per_chunk + page_in_chunk;
+    noc_async_write(
+        scratch_addr,
+        metrics.get_noc_addr(page) + ttwv::device_protocol::kLwt2DTransportMetricHalfPageBytes,
+        ttwv::device_protocol::kLwt2DTransportMetricHalfPageBytes);
+    noc_async_write_barrier();
+}
+#endif
+
 }  // namespace
 
 void kernel_main() {
@@ -1625,6 +2605,10 @@ void kernel_main() {
     const bool capture_snapshots = get_arg_val<uint32_t>(plane_arg_count + 10) != 0;
     const uint32_t snapshot_addr = get_arg_val<uint32_t>(plane_arg_count + 11);
     const uint32_t snapshot_tiles_per_route = get_arg_val<uint32_t>(plane_arg_count + 12);
+#if defined(TTWV_CAPTURE_TRANSPORT_METRICS) || defined(TTWV_VALIDATE_ROUTE_PERSISTENCE)
+    const uint32_t transport_metrics_addr = get_arg_val<uint32_t>(plane_arg_count + 13);
+    const uint32_t transport_metric_pages_per_chunk = get_arg_val<uint32_t>(plane_arg_count + 14);
+#endif
 
     constexpr uint32_t cb_output = get_compile_time_arg_val(0);
     constexpr uint32_t cb_sync = get_compile_time_arg_val(1);
@@ -1634,13 +2618,63 @@ void kernel_main() {
     constexpr auto route_args = TensorAccessorArgs<5>();
     constexpr auto band_args = TensorAccessorArgs<route_args.next_compile_time_args_offset()>();
     constexpr auto output_args = TensorAccessorArgs<band_args.next_compile_time_args_offset()>();
+    constexpr auto transport_metric_args = TensorAccessorArgs<output_args.next_compile_time_args_offset()>();
     const uint32_t noc_scratch_raw = get_write_ptr(cb_noc_scratch);
     const uint32_t noc_scratch_addr = (noc_scratch_raw + 63U) & ~63U;
+#if defined(TTWV_CAPTURE_TRANSPORT_METRICS) || defined(TTWV_VALIDATE_ROUTE_PERSISTENCE)
+    // Reader and writer execute concurrently and share cb_noc_scratch's L1
+    // allocation.  Keep their metric assembly cache lines disjoint so one
+    // RISC cannot overwrite the other's in-flight NoC source buffer.
+    const uint32_t writer_metric_scratch_addr = noc_scratch_addr + ttwv::device_protocol::kLwt2DSplitScratchBytes -
+                                                ttwv::device_protocol::kLwt2DTransportMetricHalfPageBytes;
+#endif
+#ifdef TTWV_LWT_2D_PRELOAD_ROUTE_CONFIG
+    constexpr uint32_t writer_config_capacity =
+        ttwv::device_protocol::kLwt2DSplitScratchBytes / 2 - ttwv::device_protocol::kLwt2DTransportMetricPageBytes;
+    const uint32_t writer_config_addr = noc_scratch_addr + ttwv::device_protocol::kLwt2DSplitScratchBytes / 2;
+#endif
 
     for (uint32_t local_chunk = 0; local_chunk < chunk_count; ++local_chunk) {
         const uint32_t global_chunk = chunk_begin + local_chunk;
+#ifdef TTWV_VALIDATE_ROUTE_PERSISTENCE
+        PersistenceValidationMetrics persistence_validation_metrics{};
+#endif
+#ifdef TTWV_CAPTURE_TRANSPORT_METRICS
+        const uint64_t chunk_start = get_timestamp();
+        uint64_t preload_config_cycles = 0;
+#endif
+#ifdef TTWV_LWT_2D_PRELOAD_ROUTE_CONFIG
+        // The first packed output proves that split and reader preloading no
+        // longer use the shared split scratch. Leave the page in the CB for
+        // write_local_output() to consume after descriptor preloading.
+        cb_wait_front(cb_output, 1);
+        ASSERT(route_count * ttwv::device_protocol::kLwt2DRouteConfigPageBytes <= writer_config_capacity);
+#ifdef TTWV_CAPTURE_TRANSPORT_METRICS
+        const uint64_t preload_config_start = get_timestamp();
+#endif
+        preload_config_pages(
+            route_args,
+            route_config_addr,
+            ttwv::device_protocol::kLwt2DRouteConfigPageBytes,
+            global_chunk * route_count,
+            route_count,
+            writer_config_addr);
+#ifdef TTWV_CAPTURE_TRANSPORT_METRICS
+        preload_config_cycles = get_timestamp() - preload_config_start;
+#endif
+#endif
         for (uint32_t route_index = 0; route_index < route_count; ++route_index) {
+#ifdef TTWV_LWT_2D_PRELOAD_ROUTE_CONFIG
+            const auto* route_words = reinterpret_cast<const uint32_t*>(
+                writer_config_addr + route_index * ttwv::device_protocol::kLwt2DRouteConfigPageBytes);
+#ifdef TTWV_CAPTURE_TRANSPORT_METRICS
+            constexpr uint64_t config_cycles = 0;
+#endif
+#else
             uint32_t route_words[ttwv::device_protocol::kLwt2DRouteConfigWordCount];
+#ifdef TTWV_CAPTURE_TRANSPORT_METRICS
+            const uint64_t config_start = get_timestamp();
+#endif
             load_config_page(
                 route_args,
                 route_config_addr,
@@ -1649,12 +2683,23 @@ void kernel_main() {
                 cb_route_config,
                 route_words,
                 ttwv::device_protocol::kLwt2DRouteConfigWordCount);
+#ifdef TTWV_CAPTURE_TRANSPORT_METRICS
+            const uint64_t config_cycles = get_timestamp() - config_start;
+#endif
+#endif
             const uint32_t flags = route_words[ttwv::device_protocol::kLwt2DRouteFlags];
             if ((flags & ttwv::device_protocol::kLwt2DRouteFlagMetadataOnly) != 0) {
                 continue;
             }
             const uint32_t output_slot = route_words[ttwv::device_protocol::kLwt2DRouteOutputSlot];
             const Rect output = load_rect(route_words, ttwv::device_protocol::kLwt2DRouteOutputRect);
+#ifdef TTWV_CAPTURE_TRANSPORT_METRICS
+            uint64_t persistence_cycles = 0;
+            uint64_t compute_cycles = 0;
+#else
+            uint64_t unused_wait_cycles = 0;
+            uint64_t unused_persistence_cycles = 0;
+#endif
             write_local_output(
                 cb_output,
                 plane_addrs[output_slot],
@@ -1663,11 +2708,41 @@ void kernel_main() {
                 output_args,
                 capture_snapshots,
                 snapshot_addr,
-                (global_chunk * route_count + route_index) * snapshot_tiles_per_route);
+                (global_chunk * route_count + route_index) * snapshot_tiles_per_route,
+#ifdef TTWV_CAPTURE_TRANSPORT_METRICS
+                compute_cycles,
+                persistence_cycles TTWV_PERSISTENCE_VALIDATION_ARGUMENT);
+#else
+                unused_wait_cycles,
+                unused_persistence_cycles TTWV_PERSISTENCE_VALIDATION_ARGUMENT);
+#endif
             cb_reserve_back(cb_sync, 1);
             cb_push_back(cb_sync, 1);
+#ifdef TTWV_CAPTURE_TRANSPORT_METRICS
+            const uint32_t tile_rows =
+                (aligned_end(output.y_begin, output.y_length) - aligned_begin(output.y_begin)) / kTileSide;
+            const uint32_t tile_columns =
+                (aligned_end(output.x_begin, output.x_length) - aligned_begin(output.x_begin)) / kTileSide;
+            write_transport_writer_half(
+                transport_metric_args,
+                transport_metrics_addr,
+                transport_metric_pages_per_chunk,
+                global_chunk,
+                route_index,
+                writer_metric_scratch_addr,
+                config_cycles,
+                persistence_cycles,
+                compute_cycles,
+                tile_rows * tile_columns,
+                TerminalWriteMetrics{},
+                0,
+                0);
+#endif
         }
 
+#ifdef TTWV_CAPTURE_TRANSPORT_METRICS
+        const uint64_t terminal_start = get_timestamp();
+#endif
         uint32_t band_words[ttwv::device_protocol::kLwt2DBandConfigWordCount];
         load_config_page(
             band_args,
@@ -1687,6 +2762,7 @@ void kernel_main() {
             ttwv::device_protocol::kLwt2DBandHl,
             ttwv::device_protocol::kLwt2DBandHh,
         };
+        TerminalWriteMetrics terminal_metrics{};
         for (uint32_t band = 0; band < 4; ++band) {
             const uint32_t band_offset = band_offsets[band];
             const uint32_t source_slot = band_words[band_offset + ttwv::device_protocol::kLwt2DBandSourceSlot];
@@ -1702,12 +2778,42 @@ void kernel_main() {
                 final_y_length,
                 final_x_begin,
                 final_x_length,
-                noc_scratch_addr);
+                noc_scratch_addr,
+                terminal_metrics);
         }
+#ifdef TTWV_CAPTURE_TRANSPORT_METRICS
+        const uint64_t terminal_cycles = get_timestamp() - terminal_start;
+#endif
         // Release the reader only after every final band has stopped reading
         // this chunk's workspace.
         cb_reserve_back(cb_sync, 1);
         cb_push_back(cb_sync, 1);
+#ifdef TTWV_CAPTURE_TRANSPORT_METRICS
+        const uint64_t kernel_cycles = get_timestamp() - chunk_start;
+        write_transport_writer_half(
+            transport_metric_args,
+            transport_metrics_addr,
+            transport_metric_pages_per_chunk,
+            global_chunk,
+            route_count,
+            writer_metric_scratch_addr,
+            preload_config_cycles,
+            0,
+            0,
+            0,
+            terminal_metrics,
+            terminal_cycles,
+            kernel_cycles);
+#elif defined(TTWV_VALIDATE_ROUTE_PERSISTENCE)
+        write_persistence_validation_summary(
+            transport_metric_args,
+            transport_metrics_addr,
+            transport_metric_pages_per_chunk,
+            global_chunk,
+            route_count,
+            writer_metric_scratch_addr,
+            persistence_validation_metrics);
+#endif
     }
 }
 
@@ -3931,6 +5037,7 @@ CODE:
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -3966,10 +5073,13 @@ struct Options {
     bool binary_input{false};
     bool quiet{false};
     bool split_metrics{false};
+    bool transport_metrics{false};
+    std::string microbenchmark_mode{"full"};
     size_t repeats{1};
     size_t warmup_runs{1};
     uint32_t core_limit{1};
     ttwv::Lwt2DSplitImplementation split_implementation{ttwv::Lwt2DSplitImplementation::kTiled};
+    ttwv::Lwt2DTransportPolicy transport_policy{};
     std::string wavelet;
     size_t height{0};
     size_t width{0};
@@ -3977,6 +5087,8 @@ struct Options {
     std::optional<std::filesystem::path> output_prefix;
     std::optional<std::filesystem::path> split_snapshot_prefix;
     std::optional<std::filesystem::path> route_snapshot_prefix;
+    std::optional<std::filesystem::path> alignment_csv;
+    std::optional<std::filesystem::path> transport_metrics_csv;
 };
 
 struct DeviceInput {
@@ -3993,6 +5105,13 @@ struct DeviceOutput {
     return "Usage: lwt_2d [--boundary-mode symmetric] [--binary-input] "
            "[--cores N] "
            "[--output-prefix PATH] [--quiet] [--split-implementation scalar|tiled] [--split-metrics] "
+           "[--route-staging scalar|optimized] [--route-persistence scalar|full-tile] "
+           "[--terminal-writes fragmented|tiled] [--scale-policy explicit|fused] "
+           "[--planner max-cores|latency] [--route-config per-route|preloaded] "
+           "[--exact-transfer local-noc|l1-copy] "
+           "[--transport-metrics [--transport-metrics-csv PATH]] [--validate-route-staging] "
+           "[--alignment-csv PATH] "
+           "[--microbenchmark empty|split|staging|compute|persistence|terminal|full] "
            "[--split-snapshot-prefix PATH] [--route-snapshot-prefix PATH] [--benchmark [--repeats N] "
            "[--warmup-runs N]] WAVELET HEIGHT WIDTH INPUT_FILE";
 }
@@ -4038,6 +5157,39 @@ struct DeviceOutput {
             options.quiet = true;
         } else if (argument == "--split-metrics") {
             options.split_metrics = true;
+        } else if (argument == "--transport-metrics") {
+            options.transport_metrics = true;
+        } else if (argument == "--transport-metrics-csv") {
+            if (++index >= argc || std::string_view{argv[index]}.empty()) {
+                throw std::runtime_error("--transport-metrics-csv requires a path");
+            }
+            options.transport_metrics = true;
+            options.transport_metrics_csv = std::filesystem::path{argv[index]};
+        } else if (argument == "--validate-route-staging") {
+            options.transport_metrics = true;
+            options.transport_policy.validate_route_staging = true;
+        } else if (argument == "--microbenchmark") {
+            if (++index >= argc) {
+                throw std::runtime_error("--microbenchmark requires a phase");
+            }
+            options.microbenchmark_mode = argv[index];
+            const std::array<std::string_view, 7> modes = {
+                "empty", "split", "staging", "compute", "persistence", "terminal", "full"};
+            if (std::find(modes.begin(), modes.end(), options.microbenchmark_mode) == modes.end()) {
+                throw std::runtime_error(
+                    "--microbenchmark requires empty, split, staging, compute, persistence, terminal, or full");
+            }
+            options.benchmark = true;
+            if (options.microbenchmark_mode == "split") {
+                options.split_metrics = true;
+            } else if (options.microbenchmark_mode != "empty" && options.microbenchmark_mode != "full") {
+                options.transport_metrics = true;
+            }
+        } else if (argument == "--alignment-csv") {
+            if (++index >= argc || std::string_view{argv[index]}.empty()) {
+                throw std::runtime_error("--alignment-csv requires a path");
+            }
+            options.alignment_csv = std::filesystem::path{argv[index]};
         } else if (argument == "--cores") {
             if (++index >= argc) {
                 throw std::runtime_error("--cores requires a value");
@@ -4058,6 +5210,90 @@ struct DeviceOutput {
                 options.split_implementation = ttwv::Lwt2DSplitImplementation::kTiled;
             } else {
                 throw std::runtime_error("--split-implementation requires scalar or tiled");
+            }
+        } else if (argument == "--route-staging") {
+            if (++index >= argc) {
+                throw std::runtime_error("--route-staging requires scalar or optimized");
+            }
+            const std::string_view implementation = argv[index];
+            if (implementation == "scalar") {
+                options.transport_policy.route_staging = ttwv::Lwt2DRouteStagingImplementation::kScalar;
+            } else if (implementation == "optimized") {
+                options.transport_policy.route_staging = ttwv::Lwt2DRouteStagingImplementation::kOptimized;
+            } else {
+                throw std::runtime_error("--route-staging requires scalar or optimized");
+            }
+        } else if (argument == "--route-persistence") {
+            if (++index >= argc) {
+                throw std::runtime_error("--route-persistence requires scalar or full-tile");
+            }
+            const std::string_view implementation = argv[index];
+            if (implementation == "scalar") {
+                options.transport_policy.route_persistence = ttwv::Lwt2DRoutePersistenceImplementation::kScalar;
+            } else if (implementation == "full-tile") {
+                options.transport_policy.route_persistence = ttwv::Lwt2DRoutePersistenceImplementation::kFullTile;
+            } else {
+                throw std::runtime_error("--route-persistence requires scalar or full-tile");
+            }
+        } else if (argument == "--terminal-writes") {
+            if (++index >= argc) {
+                throw std::runtime_error("--terminal-writes requires fragmented or tiled");
+            }
+            const std::string_view implementation = argv[index];
+            if (implementation == "fragmented") {
+                options.transport_policy.terminal_writes = ttwv::Lwt2DTerminalWriteImplementation::kFragmented;
+            } else if (implementation == "tiled") {
+                options.transport_policy.terminal_writes = ttwv::Lwt2DTerminalWriteImplementation::kTiled;
+            } else {
+                throw std::runtime_error("--terminal-writes requires fragmented or tiled");
+            }
+        } else if (argument == "--scale-policy") {
+            if (++index >= argc) {
+                throw std::runtime_error("--scale-policy requires explicit or fused");
+            }
+            const std::string_view policy = argv[index];
+            if (policy == "explicit") {
+                options.transport_policy.scale = ttwv::Lwt2DScalePolicy::kExplicit;
+            } else if (policy == "fused") {
+                options.transport_policy.scale = ttwv::Lwt2DScalePolicy::kFused;
+            } else {
+                throw std::runtime_error("--scale-policy requires explicit or fused");
+            }
+        } else if (argument == "--planner") {
+            if (++index >= argc) {
+                throw std::runtime_error("--planner requires max-cores or latency");
+            }
+            const std::string_view policy = argv[index];
+            if (policy == "max-cores") {
+                options.transport_policy.planner = ttwv::Lwt2DPlannerPolicy::kMaxCores;
+            } else if (policy == "latency") {
+                options.transport_policy.planner = ttwv::Lwt2DPlannerPolicy::kLatency;
+            } else {
+                throw std::runtime_error("--planner requires max-cores or latency");
+            }
+        } else if (argument == "--route-config") {
+            if (++index >= argc) {
+                throw std::runtime_error("--route-config requires per-route or preloaded");
+            }
+            const std::string_view policy = argv[index];
+            if (policy == "per-route") {
+                options.transport_policy.route_config = ttwv::Lwt2DRouteConfigImplementation::kPerRoute;
+            } else if (policy == "preloaded") {
+                options.transport_policy.route_config = ttwv::Lwt2DRouteConfigImplementation::kPreloaded;
+            } else {
+                throw std::runtime_error("--route-config requires per-route or preloaded");
+            }
+        } else if (argument == "--exact-transfer") {
+            if (++index >= argc) {
+                throw std::runtime_error("--exact-transfer requires local-noc or l1-copy");
+            }
+            const std::string_view policy = argv[index];
+            if (policy == "local-noc") {
+                options.transport_policy.exact_transfer = ttwv::Lwt2DExactTransferImplementation::kLocalNoc;
+            } else if (policy == "l1-copy") {
+                options.transport_policy.exact_transfer = ttwv::Lwt2DExactTransferImplementation::kL1Copy;
+            } else {
+                throw std::runtime_error("--exact-transfer requires local-noc or l1-copy");
             }
         } else if (argument == "--route-snapshot-prefix") {
             if (++index >= argc || std::string_view{argv[index]}.empty()) {
@@ -4114,6 +5350,13 @@ struct DeviceOutput {
     }
     if (options.split_metrics && !options.benchmark) {
         throw std::runtime_error("--split-metrics requires --benchmark");
+    }
+    if (options.transport_metrics && !options.benchmark) {
+        throw std::runtime_error("--transport-metrics requires --benchmark");
+    }
+    if (options.transport_policy.validate_route_staging &&
+        options.transport_policy.route_staging != ttwv::Lwt2DRouteStagingImplementation::kOptimized) {
+        throw std::runtime_error("--validate-route-staging requires --route-staging optimized");
     }
     if (options.quiet && !options.output_prefix && !options.split_snapshot_prefix && !options.route_snapshot_prefix &&
         !options.benchmark) {
@@ -4424,7 +5667,8 @@ template <typename Scheme>
     const bool read_outputs,
     const std::optional<std::filesystem::path>& split_snapshot_prefix,
     const std::optional<std::filesystem::path>& snapshot_prefix,
-    const ttwv::Lwt2DSplitImplementation split_implementation) {
+    const ttwv::Lwt2DSplitImplementation split_implementation,
+    const ttwv::Lwt2DTransportPolicy transport_policy) {
     ttwv::Lwt2DExecutable executable = ttwv::create_lwt_2d_executable<Scheme>(
         TT_WAVELET_SOURCE_DIR,
         mesh_device,
@@ -4435,7 +5679,9 @@ template <typename Scheme>
         snapshot_prefix.has_value(),
         split_implementation,
         false,
-        split_snapshot_prefix.has_value());
+        split_snapshot_prefix.has_value(),
+        transport_policy,
+        false);
     ttwv::prepare_lwt_2d(command_queue, executable);
     const auto start = std::chrono::steady_clock::now();
     ttwv::execute_lwt_2d(mesh_device, command_queue, executable);
@@ -4519,6 +5765,11 @@ void print_telemetry(const ttwv::Lwt2DSchedulerTelemetry& telemetry) {
     std::cerr << "lwt_2d_active_core_count: " << telemetry.active_core_count << '\n'
               << "lwt_2d_chunk_count: " << telemetry.chunk_count << '\n'
               << "lwt_2d_chunk_tiles: " << telemetry.chunk_tiles_y << 'x' << telemetry.chunk_tiles_x << '\n'
+              << "lwt_2d_route_count: " << telemetry.route_count << '\n'
+              << "lwt_2d_executable_route_count: " << telemetry.executable_route_count << '\n'
+              << "lwt_2d_scale_routes_removed: " << telemetry.scale_routes_removed << '\n'
+              << "lwt_2d_planner: " << (telemetry.latency_oriented_planner ? "latency" : "max-cores") << '\n'
+              << "lwt_2d_estimated_latency_cycles: " << telemetry.estimated_latency_cycles << '\n'
               << "lwt_2d_l1_total_bytes: " << telemetry.l1_total_bytes << '\n'
               << "lwt_2d_l1_headroom_bytes: " << telemetry.l1_headroom_bytes << '\n';
 }
@@ -4543,6 +5794,259 @@ void print_split_metrics(
               << "lwt_2d_split_interior_macro_tiles: " << metrics.interior_macro_tiles << '\n'
               << "lwt_2d_split_boundary_macro_tiles: " << metrics.boundary_macro_tiles << '\n'
               << "lwt_2d_split_max_macro_tiles_per_core: " << metrics.max_core_macro_tiles << '\n';
+}
+
+void print_transport_metrics(const ttwv::Lwt2DTransportMetricsSummary& metrics) {
+    std::cerr << "lwt_2d_transport_route_records: " << metrics.routes.size() << '\n'
+              << "lwt_2d_transport_total_route_tiles: " << metrics.total_route_tiles << '\n'
+              << "lwt_2d_transport_exact_source_tiles: " << metrics.exact_source_tiles << '\n'
+              << "lwt_2d_transport_shifted_source_tiles: " << metrics.shifted_source_tiles << '\n'
+              << "lwt_2d_transport_generic_source_tiles: " << metrics.generic_source_tiles << '\n'
+              << "lwt_2d_transport_exact_base_tiles: " << metrics.exact_base_tiles << '\n'
+              << "lwt_2d_transport_shifted_base_tiles: " << metrics.shifted_base_tiles << '\n'
+              << "lwt_2d_transport_generic_base_tiles: " << metrics.generic_base_tiles << '\n'
+              << "lwt_2d_transport_exact_terminal_tiles: " << metrics.exact_terminal_tiles << '\n'
+              << "lwt_2d_transport_fragmented_terminal_tiles: " << metrics.fragmented_terminal_tiles << '\n'
+              << "lwt_2d_transport_validated_staging_tiles: " << metrics.validated_staging_tiles << '\n'
+              << "lwt_2d_transport_staging_validation_mismatches: " << metrics.staging_validation_mismatches << '\n'
+              << "lwt_2d_transport_validated_persistence_tiles: " << metrics.validated_persistence_tiles << '\n'
+              << "lwt_2d_transport_persistence_validation_mismatches: " << metrics.persistence_validation_mismatches
+              << '\n'
+              << "lwt_2d_transport_max_route_staging_cycles: " << metrics.max_route_staging_cycles << '\n'
+              << "lwt_2d_transport_max_route_compute_cycles: " << metrics.max_route_compute_cycles << '\n'
+              << "lwt_2d_transport_max_route_persistence_cycles: " << metrics.max_route_persistence_cycles << '\n'
+              << "lwt_2d_transport_max_route_sync_wait_cycles: " << metrics.max_route_synchronization_wait_cycles
+              << '\n'
+              << "lwt_2d_transport_max_terminal_write_cycles: " << metrics.max_terminal_write_cycles << '\n'
+              << "lwt_2d_transport_max_reader_kernel_cycles: " << metrics.max_reader_kernel_cycles << '\n'
+              << "lwt_2d_transport_max_writer_kernel_cycles: " << metrics.max_writer_kernel_cycles << '\n'
+              << "lwt_2d_transport_max_core_cycles: " << metrics.max_core_cycles << '\n'
+              << "lwt_2d_transport_mean_active_core_cycles: " << metrics.mean_active_core_cycles << '\n'
+              << "lwt_2d_transport_max_route_tiles_per_core: " << metrics.max_core_route_tiles << '\n'
+              << "lwt_2d_transport_max_core_config_cycles: " << metrics.max_core_config_cycles << '\n'
+              << "lwt_2d_transport_max_core_staging_cycles: " << metrics.max_core_staging_cycles << '\n'
+              << "lwt_2d_transport_max_core_compute_pipeline_cycles: " << metrics.max_core_compute_pipeline_cycles
+              << '\n'
+              << "lwt_2d_transport_max_core_persistence_cycles: " << metrics.max_core_persistence_cycles << '\n'
+              << "lwt_2d_transport_max_core_sync_wait_cycles: " << metrics.max_core_synchronization_wait_cycles << '\n'
+              << "lwt_2d_transport_max_core_terminal_write_cycles: " << metrics.max_core_terminal_write_cycles << '\n'
+              << "lwt_2d_transport_mean_active_core_config_cycles: " << metrics.mean_active_core_config_cycles << '\n'
+              << "lwt_2d_transport_mean_active_core_staging_cycles: " << metrics.mean_active_core_staging_cycles << '\n'
+              << "lwt_2d_transport_mean_active_core_compute_pipeline_cycles: "
+              << metrics.mean_active_core_compute_pipeline_cycles << '\n'
+              << "lwt_2d_transport_mean_active_core_persistence_cycles: " << metrics.mean_active_core_persistence_cycles
+              << '\n'
+              << "lwt_2d_transport_mean_active_core_sync_wait_cycles: "
+              << metrics.mean_active_core_synchronization_wait_cycles << '\n'
+              << "lwt_2d_transport_mean_active_core_terminal_write_cycles: "
+              << metrics.mean_active_core_terminal_write_cycles << '\n';
+}
+
+void write_transport_metrics_csv(const std::filesystem::path& path, const ttwv::Lwt2DTransportMetricsSummary& metrics) {
+    if (!path.parent_path().empty()) {
+        std::filesystem::create_directories(path.parent_path());
+    }
+    std::ofstream output(path);
+    if (!output.good()) {
+        throw std::runtime_error("Failed to create transport-metrics CSV: " + path.string());
+    }
+    output << "chunk,route,axis,step,coefficient_count,output_tiles,reader_config_cycles,staging_cycles,"
+              "compute_pipeline_cycles,persistence_cycles,synchronization_wait_cycles,writer_config_cycles,"
+              "exact_source_tiles,shifted_source_tiles,generic_source_tiles,exact_base_tiles,"
+              "shifted_base_tiles,generic_base_tiles,persistence_tiles\n";
+    for (const ttwv::Lwt2DRouteTransportMetric& metric : metrics.routes) {
+        output << metric.chunk_index << ',' << metric.route_index << ',' << metric.axis << ',' << metric.step_type
+               << ',' << metric.coefficient_count << ',' << metric.output_tiles << ',' << metric.reader_config_cycles
+               << ',' << metric.staging_cycles << ',' << metric.compute_cycles << ',' << metric.persistence_cycles
+               << ',' << metric.synchronization_wait_cycles << ',' << metric.writer_config_cycles << ','
+               << metric.exact_source_tiles << ',' << metric.shifted_source_tiles << ',' << metric.generic_source_tiles
+               << ',' << metric.exact_base_tiles << ',' << metric.shifted_base_tiles << ',' << metric.generic_base_tiles
+               << ',' << metric.persistence_tiles << '\n';
+    }
+}
+
+int run_empty_prepared_benchmark(
+    tt::tt_metal::distributed::MeshDevice& mesh_device,
+    tt::tt_metal::distributed::MeshCommandQueue& command_queue,
+    const size_t repeats,
+    const size_t warmup_runs) {
+    tt::tt_metal::Program program = tt::tt_metal::CreateProgram();
+    const tt::tt_metal::CoreCoord core{0, 0};
+    static_cast<void>(tt::tt_metal::CreateKernel(
+        program,
+        std::filesystem::path{TT_WAVELET_SOURCE_DIR} / "kernels/dataflow/lwt_2d_empty.cpp",
+        core,
+        tt::tt_metal::ReaderDataMovementConfig{}));
+    tt::tt_metal::distributed::MeshWorkload workload;
+    workload.add_program(tt::tt_metal::distributed::MeshCoordinateRange(mesh_device.shape()), std::move(program));
+    const auto execute = [&]() {
+        const auto start = std::chrono::steady_clock::now();
+        tt::tt_metal::distributed::EnqueueMeshWorkload(command_queue, workload, false);
+        tt::tt_metal::distributed::Finish(command_queue);
+        const auto stop = std::chrono::steady_clock::now();
+        return std::chrono::duration<double, std::milli>(stop - start).count();
+    };
+    for (size_t warmup = 0; warmup < warmup_runs; ++warmup) {
+        static_cast<void>(execute());
+    }
+    std::vector<double> times;
+    times.reserve(repeats);
+    for (size_t repeat = 0; repeat < repeats; ++repeat) {
+        times.push_back(execute());
+    }
+    const double mean = std::accumulate(times.begin(), times.end(), 0.0) / static_cast<double>(times.size());
+    std::cerr << std::fixed << std::setprecision(6) << "lwt_2d_microbenchmark_mode: empty\n"
+              << "lwt_2d_execution_time_ms: " << mean << '\n'
+              << "lwt_2d_min_execution_time_ms: " << *std::min_element(times.begin(), times.end()) << '\n';
+    return EXIT_SUCCESS;
+}
+
+[[nodiscard]] int64_t modulo_tile(const int64_t value) {
+    const int64_t remainder = value % static_cast<int64_t>(ttwv::kTileHeight2D);
+    return remainder < 0 ? remainder + static_cast<int64_t>(ttwv::kTileHeight2D) : remainder;
+}
+
+void write_alignment_csv(
+    const std::filesystem::path& path, const std::string& wavelet, const ttwv::Lwt2DExecutionPlan& plan) {
+    if (!path.parent_path().empty()) {
+        std::filesystem::create_directories(path.parent_path());
+    }
+    std::ofstream output(path);
+    if (!output.good()) {
+        throw std::runtime_error("Failed to create route-alignment CSV: " + path.string());
+    }
+    output << "wavelet,height,width,chunk,route,axis,step,coefficient_count,role,"
+              "requested_y_mod32,requested_x_mod32,stored_y_begin_mod32,stored_x_begin_mod32,"
+              "translation_y_mod32,translation_x_mod32,full_logical_coverage,zero_fill_required,"
+              "physical_plane_tiles_intersected,classification\n";
+
+    constexpr int64_t tile_side = static_cast<int64_t>(ttwv::kTileHeight2D);
+    const auto rectangle_contains = [](const ttwv::IndexRectangle& rectangle, const int64_t y, const int64_t x) {
+        return y >= static_cast<int64_t>(rectangle.y.begin) && x >= static_cast<int64_t>(rectangle.x.begin) &&
+               y + tile_side <= static_cast<int64_t>(rectangle.y.end) &&
+               x + tile_side <= static_cast<int64_t>(rectangle.x.end);
+    };
+    const auto rectangle_intersects = [](const ttwv::IndexRectangle& rectangle, const int64_t y, const int64_t x) {
+        return y < static_cast<int64_t>(rectangle.y.end) && y + tile_side > static_cast<int64_t>(rectangle.y.begin) &&
+               x < static_cast<int64_t>(rectangle.x.end) && x + tile_side > static_cast<int64_t>(rectangle.x.begin);
+    };
+
+    for (size_t chunk_index = 0; chunk_index < plan.chunks.size(); ++chunk_index) {
+        const ttwv::Lwt2DChunkPlan& chunk = plan.chunks[chunk_index];
+        std::array<ttwv::IndexRectangle, ttwv::device_protocol::kLwt2DPlaneCount> stored = {
+            chunk.initial.ee,
+            chunk.initial.eo,
+            chunk.initial.oe,
+            chunk.initial.oo,
+            ttwv::IndexRectangle{},
+        };
+        for (size_t route_index = 0; route_index < chunk.routes.size(); ++route_index) {
+            const ttwv::Lwt2DRoutePlan& route = chunk.routes[route_index];
+            const ttwv::LiftingStepRoute& axis_route = route.axis == ttwv::Lwt2DAxis::kVertical
+                                                           ? plan.y_plan.routes[route.axis_route_index]
+                                                           : plan.x_plan.routes[route.axis_route_index];
+            const uint32_t coefficient_count = ttwv::is_predict_update_step(route.type)
+                                                   ? ttwv::execution_detail::coefficient_count(axis_route)
+                                                   : (ttwv::is_scale_step(route.type) ? 1U : 0U);
+            if (route.output.empty()) {
+                continue;
+            }
+            const int64_t output_y_origin =
+                static_cast<int64_t>((route.output.y.begin / ttwv::kTileHeight2D) * ttwv::kTileHeight2D);
+            const int64_t output_x_origin =
+                static_cast<int64_t>((route.output.x.begin / ttwv::kTileWidth2D) * ttwv::kTileWidth2D);
+            const size_t tile_rows = ttwv::round_up(route.output.y.end, ttwv::kTileHeight2D) / ttwv::kTileHeight2D -
+                                     route.output.y.begin / ttwv::kTileHeight2D;
+            const size_t tile_columns = ttwv::round_up(route.output.x.end, ttwv::kTileWidth2D) / ttwv::kTileWidth2D -
+                                        route.output.x.begin / ttwv::kTileWidth2D;
+
+            const auto write_record = [&](const char* role,
+                                          const ttwv::IndexRectangle& stored_rectangle,
+                                          const int64_t requested_y,
+                                          const int64_t requested_x,
+                                          const int64_t output_tile_y,
+                                          const int64_t output_tile_x) {
+                const bool full = rectangle_contains(stored_rectangle, requested_y, requested_x);
+                const bool intersects = rectangle_intersects(stored_rectangle, requested_y, requested_x);
+                const bool y_aligned = modulo_tile(requested_y) == 0;
+                const bool x_aligned = modulo_tile(requested_x) == 0;
+                const char* classification = nullptr;
+                if (!full) {
+                    classification = intersects ? "partial_logical_edge" : "out_of_stored_range_zero_fill";
+                } else if (y_aligned && x_aligned) {
+                    classification = "exact_full_tile";
+                } else if (y_aligned != x_aligned) {
+                    classification = "one_axis_shifted";
+                } else {
+                    classification = "two_axis_shifted";
+                }
+                const uint32_t physical_tiles = static_cast<uint32_t>((y_aligned ? 1 : 2) * (x_aligned ? 1 : 2));
+                output << wavelet << ',' << plan.input_height << ',' << plan.input_width << ',' << chunk_index << ','
+                       << route_index << ',' << (route.axis == ttwv::Lwt2DAxis::kVertical ? "vertical" : "horizontal")
+                       << ',' << step_name(route.type) << ',' << coefficient_count << ',' << role << ','
+                       << modulo_tile(requested_y) << ',' << modulo_tile(requested_x) << ','
+                       << stored_rectangle.y.begin % ttwv::kTileHeight2D << ','
+                       << stored_rectangle.x.begin % ttwv::kTileWidth2D << ','
+                       << modulo_tile(requested_y - output_tile_y) << ',' << modulo_tile(requested_x - output_tile_x)
+                       << ',' << (full ? 1 : 0) << ',' << (full ? 0 : 1) << ',' << physical_tiles << ','
+                       << classification << '\n';
+            };
+
+            for (size_t tile_y = 0; tile_y < tile_rows; ++tile_y) {
+                for (size_t tile_x = 0; tile_x < tile_columns; ++tile_x) {
+                    const int64_t output_tile_y = output_y_origin + static_cast<int64_t>(tile_y) * tile_side;
+                    const int64_t output_tile_x = output_x_origin + static_cast<int64_t>(tile_x) * tile_side;
+                    const auto requested_origin = [&](const ttwv::IndexRectangle& source) {
+                        return std::pair{
+                            static_cast<int64_t>(source.y.begin) + output_tile_y -
+                                static_cast<int64_t>(route.output.y.begin),
+                            static_cast<int64_t>(source.x.begin) + output_tile_x -
+                                static_cast<int64_t>(route.output.x.begin),
+                        };
+                    };
+                    if (ttwv::is_predict_update_step(route.type)) {
+                        const auto [base_y, base_x] = requested_origin(route.base);
+                        write_record(
+                            "base",
+                            stored[static_cast<size_t>(route.base_slot)],
+                            base_y,
+                            base_x,
+                            output_tile_y,
+                            output_tile_x);
+                        const auto [source_y, source_x] = requested_origin(route.source);
+                        for (uint32_t source_tile = 0; source_tile < 2; ++source_tile) {
+                            const int64_t requested_y = source_y + (route.axis == ttwv::Lwt2DAxis::kVertical
+                                                                        ? static_cast<int64_t>(source_tile) * tile_side
+                                                                        : 0);
+                            const int64_t requested_x =
+                                source_x + (route.axis == ttwv::Lwt2DAxis::kHorizontal
+                                                ? static_cast<int64_t>(source_tile) * tile_side -
+                                                      static_cast<int64_t>(17 - coefficient_count)
+                                                : 0);
+                            write_record(
+                                source_tile == 0 ? "source0" : "source1",
+                                stored[static_cast<size_t>(route.source_slot)],
+                                requested_y,
+                                requested_x,
+                                output_tile_y,
+                                output_tile_x);
+                        }
+                    } else {
+                        const auto [source_y, source_x] = requested_origin(route.source);
+                        write_record(
+                            "scale_source",
+                            stored[static_cast<size_t>(route.source_slot)],
+                            source_y,
+                            source_x,
+                            output_tile_y,
+                            output_tile_x);
+                    }
+                    write_record("output", route.output, output_tile_y, output_tile_x, output_tile_y, output_tile_x);
+                }
+            }
+            stored[static_cast<size_t>(route.output_slot)] = route.output;
+        }
+    }
 }
 
 }  // namespace
@@ -4570,6 +6074,9 @@ int main(int argc, char** argv) {
         DeviceInput input = create_input(*mesh_device, input_shape.storage);
         tt::tt_metal::distributed::EnqueueWriteMeshBuffer(command_queue, input.buffer, tiled, false);
         tt::tt_metal::distributed::Finish(command_queue);
+        if (options.microbenchmark_mode == "empty") {
+            return run_empty_prepared_benchmark(*mesh_device, command_queue, options.repeats, options.warmup_runs);
+        }
 
         const auto run = [&]<typename Scheme>() {
             if (options.benchmark) {
@@ -4583,7 +6090,12 @@ int main(int argc, char** argv) {
                     false,
                     options.split_implementation,
                     options.split_metrics,
-                    false);
+                    false,
+                    options.transport_policy,
+                    options.transport_metrics);
+                if (options.alignment_csv) {
+                    write_alignment_csv(*options.alignment_csv, options.wavelet, executable.plan);
+                }
                 ttwv::prepare_lwt_2d(command_queue, executable);
                 const auto execute_prepared = [&]() {
                     const auto start = std::chrono::steady_clock::now();
@@ -4600,15 +6112,56 @@ int main(int argc, char** argv) {
                     times.push_back(execute_prepared());
                 }
                 const double total = std::accumulate(times.begin(), times.end(), 0.0);
+                std::vector<double> sorted_times = times;
+                std::sort(sorted_times.begin(), sorted_times.end());
+                const auto percentile = [&sorted_times](const double probability) {
+                    const double position = probability * static_cast<double>(sorted_times.size() - 1);
+                    const size_t lower = static_cast<size_t>(position);
+                    const size_t upper = std::min(lower + 1, sorted_times.size() - 1);
+                    const double fraction = position - static_cast<double>(lower);
+                    return sorted_times[lower] + fraction * (sorted_times[upper] - sorted_times[lower]);
+                };
+                const double mean = total / static_cast<double>(times.size());
+                const double squared_error =
+                    std::accumulate(times.begin(), times.end(), 0.0, [mean](const double sum, const double value) {
+                        const double difference = value - mean;
+                        return sum + difference * difference;
+                    });
                 std::cerr << std::fixed << std::setprecision(6)
-                          << "lwt_2d_execution_time_ms: " << total / static_cast<double>(times.size()) << '\n'
-                          << "lwt_2d_min_execution_time_ms: " << *std::min_element(times.begin(), times.end()) << '\n';
+                          << "lwt_2d_microbenchmark_mode: " << options.microbenchmark_mode << '\n'
+                          << "lwt_2d_execution_time_ms: " << mean << '\n'
+                          << "lwt_2d_min_execution_time_ms: " << sorted_times.front() << '\n'
+                          << "lwt_2d_median_time_ms: " << percentile(0.5) << '\n'
+                          << "lwt_2d_p10_time_ms: " << percentile(0.1) << '\n'
+                          << "lwt_2d_p90_time_ms: " << percentile(0.9) << '\n'
+                          << "lwt_2d_stddev_time_ms: " << std::sqrt(squared_error / static_cast<double>(times.size()))
+                          << '\n';
                 print_telemetry(executable.buffers.scheduler);
                 if (options.split_metrics) {
                     print_split_metrics(
                         ttwv::read_lwt_2d_split_metrics(command_queue, executable),
                         options.height * options.width,
                         executable.buffers.scheduler.active_core_count);
+                }
+                if (options.transport_metrics) {
+                    const ttwv::Lwt2DTransportMetricsSummary metrics =
+                        ttwv::read_lwt_2d_transport_metrics(command_queue, executable);
+                    print_transport_metrics(metrics);
+                    if (options.transport_policy.validate_route_staging) {
+                        if (metrics.staging_validation_mismatches != 0) {
+                            throw std::runtime_error(
+                                "Direct route-staging validation found " +
+                                std::to_string(metrics.staging_validation_mismatches) + " mismatched FP32 words");
+                        }
+                        if (metrics.persistence_validation_mismatches != 0) {
+                            throw std::runtime_error(
+                                "Direct route-persistence validation found " +
+                                std::to_string(metrics.persistence_validation_mismatches) + " mismatched FP32 words");
+                        }
+                    }
+                    if (options.transport_metrics_csv) {
+                        write_transport_metrics_csv(*options.transport_metrics_csv, metrics);
+                    }
                 }
                 return EXIT_SUCCESS;
             }
@@ -4623,7 +6176,8 @@ int main(int argc, char** argv) {
                 true,
                 options.split_snapshot_prefix,
                 options.route_snapshot_prefix,
-                options.split_implementation);
+                options.split_implementation,
+                options.transport_policy);
             if (options.output_prefix) {
                 write_output_bands(*options.output_prefix, output.values);
             }
@@ -6737,6 +8291,54 @@ inline constexpr uint32_t kLwt2DSplitMetricBoundaryMacroTiles = 7;
 inline constexpr uint32_t kLwt2DSplitMetricWordCount = 16;
 inline constexpr uint32_t kLwt2DSplitMetricPageBytes = kLwt2DSplitMetricWordCount * sizeof(uint32_t);
 
+// Transport profiling is compiled out of production variants.  One page is
+// emitted per executable route and one summary page per chunk.  The reader
+// owns the first cache line and the writer owns the second, so both data-
+// movement kernels can report asynchronously without a read/modify/write race.
+inline constexpr uint32_t kLwt2DTransportMetricReaderConfigCyclesLow = 0;
+inline constexpr uint32_t kLwt2DTransportMetricReaderConfigCyclesHigh = 1;
+inline constexpr uint32_t kLwt2DTransportMetricStagingCyclesLow = 2;
+inline constexpr uint32_t kLwt2DTransportMetricStagingCyclesHigh = 3;
+inline constexpr uint32_t kLwt2DTransportMetricSyncWaitCyclesLow = 4;
+inline constexpr uint32_t kLwt2DTransportMetricSyncWaitCyclesHigh = 5;
+inline constexpr uint32_t kLwt2DTransportMetricOutputTiles = 6;
+inline constexpr uint32_t kLwt2DTransportMetricAxis = 7;
+inline constexpr uint32_t kLwt2DTransportMetricStepType = 8;
+inline constexpr uint32_t kLwt2DTransportMetricCoefficientCount = 9;
+inline constexpr uint32_t kLwt2DTransportMetricExactSourceTiles = 10;
+inline constexpr uint32_t kLwt2DTransportMetricShiftedSourceTiles = 11;
+inline constexpr uint32_t kLwt2DTransportMetricGenericSourceTiles = 12;
+inline constexpr uint32_t kLwt2DTransportMetricExactBaseTiles = 13;
+inline constexpr uint32_t kLwt2DTransportMetricShiftedBaseTiles = 14;
+inline constexpr uint32_t kLwt2DTransportMetricGenericBaseTiles = 15;
+// The per-chunk summary page has no route payload.  Validation-only reader
+// variants reuse two otherwise-zero reader fields to report direct CB staging
+// checks without growing the normal metrics page.
+inline constexpr uint32_t kLwt2DTransportMetricValidatedStagingTiles = kLwt2DTransportMetricOutputTiles;
+inline constexpr uint32_t kLwt2DTransportMetricStagingValidationMismatches = kLwt2DTransportMetricAxis;
+
+inline constexpr uint32_t kLwt2DTransportMetricWriterConfigCyclesLow = 16;
+inline constexpr uint32_t kLwt2DTransportMetricWriterConfigCyclesHigh = 17;
+inline constexpr uint32_t kLwt2DTransportMetricPersistenceCyclesLow = 18;
+inline constexpr uint32_t kLwt2DTransportMetricPersistenceCyclesHigh = 19;
+inline constexpr uint32_t kLwt2DTransportMetricComputeCyclesLow = 20;
+inline constexpr uint32_t kLwt2DTransportMetricComputeCyclesHigh = 21;
+inline constexpr uint32_t kLwt2DTransportMetricPersistenceTiles = 22;
+inline constexpr uint32_t kLwt2DTransportMetricExactTerminalTiles = 23;
+inline constexpr uint32_t kLwt2DTransportMetricFragmentedTerminalTiles = 24;
+inline constexpr uint32_t kLwt2DTransportMetricTerminalWriteCyclesLow = 25;
+inline constexpr uint32_t kLwt2DTransportMetricTerminalWriteCyclesHigh = 26;
+inline constexpr uint32_t kLwt2DTransportMetricKernelCyclesLow = 27;
+inline constexpr uint32_t kLwt2DTransportMetricKernelCyclesHigh = 28;
+inline constexpr uint32_t kLwt2DTransportMetricReserved0 = 29;
+inline constexpr uint32_t kLwt2DTransportMetricReserved1 = 30;
+inline constexpr uint32_t kLwt2DTransportMetricReserved2 = 31;
+inline constexpr uint32_t kLwt2DTransportMetricValidatedPersistenceTiles = kLwt2DTransportMetricReserved0;
+inline constexpr uint32_t kLwt2DTransportMetricPersistenceValidationMismatches = kLwt2DTransportMetricReserved1;
+inline constexpr uint32_t kLwt2DTransportMetricWordCount = 32;
+inline constexpr uint32_t kLwt2DTransportMetricPageBytes = kLwt2DTransportMetricWordCount * sizeof(uint32_t);
+inline constexpr uint32_t kLwt2DTransportMetricHalfPageBytes = kLwt2DTransportMetricPageBytes / 2;
+
 // One chunk page describes both the exact logical dependency cone and the
 // padded tile region owned by the worker.
 inline constexpr uint32_t kLwt2DFinalYBegin = 0;
@@ -6778,6 +8380,7 @@ inline constexpr uint32_t kLwt2DRouteConfigPageBytes = kLwt2DRouteConfigWordCoun
 
 inline constexpr uint32_t kLwt2DRouteFlagMetadataOnly = 1U << 0;
 inline constexpr uint32_t kLwt2DRouteFlagScale = 1U << 1;
+inline constexpr uint32_t kLwt2DRouteFlagInlineTerminalScale = 1U << 2;
 
 inline constexpr uint32_t kLwt2DBandFinalYBegin = 0;
 inline constexpr uint32_t kLwt2DBandFinalYLength = 1;
@@ -6796,6 +8399,8 @@ static_assert(kLwt2DChunkConfigPageBytes == 96);
 static_assert(kLwt2DRouteConfigPageBytes == 96);
 static_assert(kLwt2DBandConfigPageBytes == 96);
 static_assert(kLwt2DSplitMetricPageBytes == 64);
+static_assert(kLwt2DTransportMetricPageBytes == 128);
+static_assert(kLwt2DTransportMetricHalfPageBytes == 64);
 static_assert(kLwt2DChunkConfigPageBytes % 32 == 0);
 static_assert(kLwt2DRouteConfigPageBytes % 32 == 0);
 static_assert(kLwt2DBandConfigPageBytes % 32 == 0);
@@ -7083,6 +8688,54 @@ enum class Lwt2DSplitImplementation : uint8_t {
     kTiled,
 };
 
+enum class Lwt2DRouteStagingImplementation : uint8_t {
+    kScalar,
+    kOptimized,
+};
+
+enum class Lwt2DRoutePersistenceImplementation : uint8_t {
+    kScalar,
+    kFullTile,
+};
+
+enum class Lwt2DTerminalWriteImplementation : uint8_t {
+    kFragmented,
+    kTiled,
+};
+
+enum class Lwt2DScalePolicy : uint8_t {
+    kExplicit,
+    kFused,
+};
+
+enum class Lwt2DPlannerPolicy : uint8_t {
+    kMaxCores,
+    kLatency,
+};
+
+enum class Lwt2DRouteConfigImplementation : uint8_t {
+    kPerRoute,
+    kPreloaded,
+};
+
+enum class Lwt2DExactTransferImplementation : uint8_t {
+    kLocalNoc,
+    kL1Copy,
+};
+
+struct Lwt2DTransportPolicy {
+    Lwt2DRouteStagingImplementation route_staging{Lwt2DRouteStagingImplementation::kOptimized};
+    Lwt2DRoutePersistenceImplementation route_persistence{Lwt2DRoutePersistenceImplementation::kFullTile};
+    Lwt2DTerminalWriteImplementation terminal_writes{Lwt2DTerminalWriteImplementation::kTiled};
+    Lwt2DScalePolicy scale{Lwt2DScalePolicy::kFused};
+    Lwt2DPlannerPolicy planner{Lwt2DPlannerPolicy::kLatency};
+    Lwt2DRouteConfigImplementation route_config{Lwt2DRouteConfigImplementation::kPreloaded};
+    Lwt2DExactTransferImplementation exact_transfer{Lwt2DExactTransferImplementation::kLocalNoc};
+    // Validation-only: compare every optimized fast-path CB page against the
+    // scalar gather before publishing it to the compute kernel.
+    bool validate_route_staging{false};
+};
+
 struct Lwt2DSchedulerTelemetry {
     tt::ARCH architecture{tt::ARCH::Invalid};
     Shape2D logical_input{};
@@ -7093,6 +8746,11 @@ struct Lwt2DSchedulerTelemetry {
     uint32_t chunk_count{0};
     uint32_t chunk_tiles_y{0};
     uint32_t chunk_tiles_x{0};
+    uint32_t route_count{0};
+    uint32_t executable_route_count{0};
+    uint32_t scale_routes_removed{0};
+    bool latency_oriented_planner{false};
+    uint64_t estimated_latency_cycles{0};
     double max_dependency_overhead{0.0};
     uint64_t l1_workspace_bytes{0};
     uint64_t l1_circular_buffer_bytes{0};
@@ -7114,6 +8772,67 @@ struct Lwt2DSplitMetricsSummary {
     uint64_t max_core_macro_tiles{0};
 };
 
+struct Lwt2DRouteTransportMetric {
+    uint32_t chunk_index{0};
+    uint32_t route_index{0};
+    uint32_t axis{0};
+    uint32_t step_type{0};
+    uint32_t coefficient_count{0};
+    uint32_t output_tiles{0};
+    uint64_t reader_config_cycles{0};
+    uint64_t staging_cycles{0};
+    uint64_t compute_cycles{0};
+    uint64_t persistence_cycles{0};
+    uint64_t synchronization_wait_cycles{0};
+    uint64_t writer_config_cycles{0};
+    uint64_t exact_source_tiles{0};
+    uint64_t shifted_source_tiles{0};
+    uint64_t generic_source_tiles{0};
+    uint64_t exact_base_tiles{0};
+    uint64_t shifted_base_tiles{0};
+    uint64_t generic_base_tiles{0};
+    uint64_t persistence_tiles{0};
+};
+
+struct Lwt2DTransportMetricsSummary {
+    std::vector<Lwt2DRouteTransportMetric> routes;
+    uint64_t max_reader_kernel_cycles{0};
+    uint64_t max_writer_kernel_cycles{0};
+    uint64_t max_route_staging_cycles{0};
+    uint64_t max_route_compute_cycles{0};
+    uint64_t max_route_persistence_cycles{0};
+    uint64_t max_route_synchronization_wait_cycles{0};
+    uint64_t total_route_tiles{0};
+    uint64_t exact_source_tiles{0};
+    uint64_t shifted_source_tiles{0};
+    uint64_t generic_source_tiles{0};
+    uint64_t exact_base_tiles{0};
+    uint64_t shifted_base_tiles{0};
+    uint64_t generic_base_tiles{0};
+    uint64_t exact_terminal_tiles{0};
+    uint64_t fragmented_terminal_tiles{0};
+    uint64_t validated_staging_tiles{0};
+    uint64_t staging_validation_mismatches{0};
+    uint64_t validated_persistence_tiles{0};
+    uint64_t persistence_validation_mismatches{0};
+    uint64_t max_terminal_write_cycles{0};
+    uint64_t max_core_cycles{0};
+    double mean_active_core_cycles{0.0};
+    uint64_t max_core_route_tiles{0};
+    uint64_t max_core_config_cycles{0};
+    uint64_t max_core_staging_cycles{0};
+    uint64_t max_core_compute_pipeline_cycles{0};
+    uint64_t max_core_persistence_cycles{0};
+    uint64_t max_core_synchronization_wait_cycles{0};
+    uint64_t max_core_terminal_write_cycles{0};
+    double mean_active_core_config_cycles{0.0};
+    double mean_active_core_staging_cycles{0.0};
+    double mean_active_core_compute_pipeline_cycles{0.0};
+    double mean_active_core_persistence_cycles{0.0};
+    double mean_active_core_synchronization_wait_cycles{0.0};
+    double mean_active_core_terminal_write_cycles{0.0};
+};
+
 struct Lwt2DWorkingBuffers {
     std::array<std::shared_ptr<tt::tt_metal::distributed::MeshBuffer>, device_protocol::kLwt2DPlaneCount> planes{};
     std::array<std::shared_ptr<tt::tt_metal::distributed::MeshBuffer>, device_protocol::kLwt2DBandCount> outputs{};
@@ -7121,6 +8840,7 @@ struct Lwt2DWorkingBuffers {
     std::shared_ptr<tt::tt_metal::distributed::MeshBuffer> route_config{};
     std::shared_ptr<tt::tt_metal::distributed::MeshBuffer> band_config{};
     std::shared_ptr<tt::tt_metal::distributed::MeshBuffer> split_metrics{};
+    std::shared_ptr<tt::tt_metal::distributed::MeshBuffer> transport_metrics{};
     std::shared_ptr<tt::tt_metal::distributed::MeshBuffer> split_snapshots{};
     uint32_t split_snapshot_tiles_per_plane{0};
     std::shared_ptr<tt::tt_metal::distributed::MeshBuffer> route_snapshots{};
@@ -7142,20 +8862,12 @@ struct Lwt2DExecutable {
     Lwt2DExecutionPlan plan,
     const char* compute_scheme_header,
     const char* compute_scheme_type,
-    std::vector<uint32_t> compute_coefficients,
     bool capture_route_snapshots,
     Lwt2DSplitImplementation split_implementation,
     bool capture_split_metrics,
-    bool capture_split_snapshots);
-
-template <typename Scheme, size_t Index = 0>
-void append_lwt_2d_compute_coefficients(std::vector<uint32_t>& coefficients) {
-    if constexpr (Index < Scheme::num_steps) {
-        using Step = SchemeStep<Scheme, Index>;
-        coefficients.insert(coefficients.end(), Step::coeff_bits.begin(), Step::coeff_bits.end());
-        append_lwt_2d_compute_coefficients<Scheme, Index + 1>(coefficients);
-    }
-}
+    bool capture_split_snapshots,
+    Lwt2DTransportPolicy transport_policy,
+    bool capture_transport_metrics);
 
 template <typename Scheme>
 [[nodiscard]] Lwt2DExecutable create_lwt_2d_executable(
@@ -7168,16 +8880,22 @@ template <typename Scheme>
     const bool capture_route_snapshots = false,
     const Lwt2DSplitImplementation split_implementation = Lwt2DSplitImplementation::kTiled,
     const bool capture_split_metrics = false,
-    const bool capture_split_snapshots = false) {
+    const bool capture_split_snapshots = false,
+    const Lwt2DTransportPolicy transport_policy = {},
+    const bool capture_transport_metrics = false) {
     TT_FATAL(logical_height > 0 && logical_width > 0, "2D LWT input shape must be positive");
     constexpr uint64_t initial_l1_budget_bytes = 768 * 1024;
     Lwt2DExecutionPlan plan = make_lwt_2d_execution_plan<Scheme>(
-        logical_height, logical_width, core_limit, initial_l1_budget_bytes, BoundaryMode::kSymmetric);
+        logical_height,
+        logical_width,
+        core_limit,
+        initial_l1_budget_bytes,
+        BoundaryMode::kSymmetric,
+        transport_policy.scale == Lwt2DScalePolicy::kFused,
+        transport_policy.planner == Lwt2DPlannerPolicy::kLatency);
     TT_FATAL(
         input_buffer.size() >= checked_shape_area_2d(plan.tiling.input.storage, "2D input storage") * sizeof(float),
         "2D input buffer is smaller than its padded tile shape");
-    std::vector<uint32_t> compute_coefficients;
-    append_lwt_2d_compute_coefficients<Scheme>(compute_coefficients);
     return create_lwt_2d_executable_impl(
         kernel_root,
         mesh_device,
@@ -7185,11 +8903,12 @@ template <typename Scheme>
         std::move(plan),
         Scheme::compute_scheme_header,
         Scheme::compute_scheme_type,
-        std::move(compute_coefficients),
         capture_route_snapshots,
         split_implementation,
         capture_split_metrics,
-        capture_split_snapshots);
+        capture_split_snapshots,
+        transport_policy,
+        capture_transport_metrics);
 }
 
 void prepare_lwt_2d(tt::tt_metal::distributed::MeshCommandQueue& command_queue, Lwt2DExecutable& executable);
@@ -7200,6 +8919,9 @@ void execute_lwt_2d(
     Lwt2DExecutable& executable);
 
 [[nodiscard]] Lwt2DSplitMetricsSummary read_lwt_2d_split_metrics(
+    tt::tt_metal::distributed::MeshCommandQueue& command_queue, Lwt2DExecutable& executable);
+
+[[nodiscard]] Lwt2DTransportMetricsSummary read_lwt_2d_transport_metrics(
     tt::tt_metal::distributed::MeshCommandQueue& command_queue, Lwt2DExecutable& executable);
 
 }  // namespace ttwv
@@ -8780,6 +10502,7 @@ struct Lwt2DRoutePlan {
     IndexRectangle base{};
     IndexRectangle output{};
     bool in_place{false};
+    bool inline_terminal_scale{false};
 };
 
 struct Lwt2DBandSlots {
@@ -8838,6 +10561,10 @@ struct Lwt2DExecutionPlan {
     uint32_t chunk_tiles_y{0};
     uint32_t chunk_tiles_x{0};
     uint32_t active_core_count{0};
+    uint32_t executable_route_count{0};
+    uint32_t scale_routes_removed{0};
+    bool latency_oriented_planner{false};
+    uint64_t estimated_latency_cycles{0};
     std::vector<Lwt2DChunkPlan> chunks;
     double max_dependency_overhead{0.0};
     uint64_t max_l1_bytes{0};
@@ -8849,6 +10576,8 @@ struct Lwt2DExecutionPlan {
 };
 
 namespace plan_2d_detail {
+
+using execution_detail::TerminalScaleInline;
 
 constexpr uint32_t kTileHeight = static_cast<uint32_t>(kTileHeight2D);
 constexpr uint32_t kTileWidth = static_cast<uint32_t>(kTileWidth2D);
@@ -9029,6 +10758,7 @@ inline void append_axis_routes(
     const Lwt2DAxis axis,
     const IndexInterval transverse,
     const Lwt2DWorkspacePolicy workspace_policy,
+    const TerminalScaleInline* terminal_scale,
     AxisPairSlots& slots,
     std::vector<Lwt2DRoutePlan>& routes) {
     const bool aligned_in_place = workspace_policy == Lwt2DWorkspacePolicy::kFourPlaneAligned;
@@ -9056,6 +10786,11 @@ inline void append_axis_routes(
         const bool scale_even = requirement.type == StepType::kScaleEven;
         const bool scale_odd = requirement.type == StepType::kScaleOdd;
         TT_FATAL(predict || update || scale_even || scale_odd, "Unsupported 2D LWT route type");
+        const bool fused_scale_route = terminal_scale != nullptr &&
+                                       route_index != terminal_scale->predict_update_route_index &&
+                                       requirement.type == terminal_scale->scale_type;
+        const bool inline_terminal_scale =
+            terminal_scale != nullptr && route_index == terminal_scale->predict_update_route_index;
 
         const Lwt2DPlaneSlot source_slot = predict      ? slots.even
                                            : update     ? slots.odd
@@ -9073,8 +10808,9 @@ inline void append_axis_routes(
             .output_slot = output_slot,
             .source = axis_rectangle(axis, requirement.source, transverse),
             .base = axis_rectangle(axis, requirement.base, transverse),
-            .output = axis_rectangle(axis, requirement.output, transverse),
+            .output = fused_scale_route ? IndexRectangle{} : axis_rectangle(axis, requirement.output, transverse),
             .in_place = output_slot == base_slot,
+            .inline_terminal_scale = inline_terminal_scale,
         });
 
         if (!predict && !update) {
@@ -9094,7 +10830,11 @@ inline void append_axis_routes(
 }
 
 [[nodiscard]] inline std::pair<std::vector<Lwt2DRoutePlan>, Lwt2DBandSlots> build_route_schedule(
-    const AxisConePlan& y_cone, const AxisConePlan& x_cone, const Lwt2DWorkspacePolicy workspace_policy) {
+    const AxisConePlan& y_cone,
+    const AxisConePlan& x_cone,
+    const Lwt2DWorkspacePolicy workspace_policy,
+    const TerminalScaleInline* y_terminal_scale,
+    const TerminalScaleInline* x_terminal_scale) {
     std::vector<Lwt2DRoutePlan> routes;
     routes.reserve(2 * y_cone.routes.size() + 2 * x_cone.routes.size());
 
@@ -9103,28 +10843,44 @@ inline void append_axis_routes(
         .odd = Lwt2DPlaneSlot::kP2,
         .free = Lwt2DPlaneSlot::kScratch,
     };
-    append_axis_routes(y_cone, Lwt2DAxis::kVertical, x_cone.initial_even, workspace_policy, x_even_pair, routes);
+    append_axis_routes(
+        y_cone, Lwt2DAxis::kVertical, x_cone.initial_even, workspace_policy, y_terminal_scale, x_even_pair, routes);
 
     AxisPairSlots x_odd_pair{
         .even = Lwt2DPlaneSlot::kP1,
         .odd = Lwt2DPlaneSlot::kP3,
         .free = x_even_pair.free,
     };
-    append_axis_routes(y_cone, Lwt2DAxis::kVertical, x_cone.initial_odd, workspace_policy, x_odd_pair, routes);
+    append_axis_routes(
+        y_cone, Lwt2DAxis::kVertical, x_cone.initial_odd, workspace_policy, y_terminal_scale, x_odd_pair, routes);
 
     AxisPairSlots vertical_low_pair{
         .even = x_even_pair.even,
         .odd = x_odd_pair.even,
         .free = x_odd_pair.free,
     };
-    append_axis_routes(x_cone, Lwt2DAxis::kHorizontal, y_cone.final_even, workspace_policy, vertical_low_pair, routes);
+    append_axis_routes(
+        x_cone,
+        Lwt2DAxis::kHorizontal,
+        y_cone.final_even,
+        workspace_policy,
+        x_terminal_scale,
+        vertical_low_pair,
+        routes);
 
     AxisPairSlots vertical_high_pair{
         .even = x_even_pair.odd,
         .odd = x_odd_pair.odd,
         .free = vertical_low_pair.free,
     };
-    append_axis_routes(x_cone, Lwt2DAxis::kHorizontal, y_cone.final_odd, workspace_policy, vertical_high_pair, routes);
+    append_axis_routes(
+        x_cone,
+        Lwt2DAxis::kHorizontal,
+        y_cone.final_odd,
+        workspace_policy,
+        x_terminal_scale,
+        vertical_high_pair,
+        routes);
 
     const Lwt2DBandSlots bands{
         .ll = vertical_low_pair.even,
@@ -9157,7 +10913,8 @@ inline void append_axis_routes(
     const LiftingForwardPlan& y_plan,
     const LiftingForwardPlan& x_plan,
     const IndexRectangle final_band_rect,
-    const uint64_t l1_budget_bytes) {
+    const uint64_t l1_budget_bytes,
+    const bool fuse_terminal_scale) {
     const size_t y_tap_size = static_cast<size_t>(y_plan.preprocess_layout.pad_config.left) + 1;
     const size_t x_tap_size = static_cast<size_t>(x_plan.preprocess_layout.pad_config.left) + 1;
     const IndexInterval final_y_even = canonical_to_stream_interval(
@@ -9181,7 +10938,14 @@ inline void append_axis_routes(
     // The correctness-first production path always uses a separate scratch
     // plane. Four-plane route aliasing remains a future optimization.
     constexpr Lwt2DWorkspacePolicy workspace_policy = Lwt2DWorkspacePolicy::kFivePlaneGeneric;
-    auto [routes, final_bands] = build_route_schedule(y_cone, x_cone, workspace_policy);
+    const TerminalScaleInline y_terminal_scale = execution_detail::terminal_scale_inline(y_plan);
+    const TerminalScaleInline x_terminal_scale = execution_detail::terminal_scale_inline(x_plan);
+    auto [routes, final_bands] = build_route_schedule(
+        y_cone,
+        x_cone,
+        workspace_policy,
+        fuse_terminal_scale ? &y_terminal_scale : nullptr,
+        fuse_terminal_scale ? &x_terminal_scale : nullptr);
     const Lwt2DResourceModel resources = make_resource_model(initial, routes, workspace_policy, l1_budget_bytes);
     const Lwt2DBandSourceRectangles final_band_sources{
         .ll = interval_product(y_cone.final_even, x_cone.final_even),
@@ -9238,7 +11002,8 @@ inline void append_axis_routes(
     const LiftingForwardPlan& x_plan,
     const uint32_t chunk_tiles_y,
     const uint32_t chunk_tiles_x,
-    const uint64_t l1_budget_bytes) {
+    const uint64_t l1_budget_bytes,
+    const bool fuse_terminal_scale) {
     TT_FATAL(chunk_tiles_y > 0 && chunk_tiles_x > 0, "2D LWT chunk tile dimensions must be positive");
     const size_t chunk_height = static_cast<size_t>(chunk_tiles_y) * kTileHeight;
     const size_t chunk_width = static_cast<size_t>(chunk_tiles_x) * kTileWidth;
@@ -9257,7 +11022,8 @@ inline void append_axis_routes(
                     .y = IndexInterval{.begin = y, .end = y_end},
                     .x = IndexInterval{.begin = x, .end = x_end},
                 },
-                l1_budget_bytes));
+                l1_budget_bytes,
+                fuse_terminal_scale));
             x = x_end;
         }
         y = y_end;
@@ -9271,10 +11037,176 @@ struct Candidate {
     uint32_t active_core_count{0};
     uint64_t max_l1_bytes{0};
     double max_dependency_overhead{0.0};
+    uint64_t estimated_latency_cycles{0};
     std::vector<Lwt2DChunkPlan> chunks;
 };
 
-[[nodiscard]] inline bool is_better_candidate(const Candidate& candidate, const Candidate& best) noexcept {
+enum class AlignmentCostClass : uint8_t {
+    kExact,
+    kOneAxisShifted,
+    kGeneric,
+};
+
+[[nodiscard]] inline int64_t signed_tile_modulo(const int64_t value) noexcept {
+    const int64_t remainder = value % static_cast<int64_t>(kTileHeight);
+    return remainder < 0 ? remainder + static_cast<int64_t>(kTileHeight) : remainder;
+}
+
+[[nodiscard]] inline AlignmentCostClass alignment_cost_class(
+    const IndexRectangle stored, const int64_t requested_y, const int64_t requested_x) noexcept {
+    const bool inside = requested_y >= static_cast<int64_t>(stored.y.begin) &&
+                        requested_x >= static_cast<int64_t>(stored.x.begin) &&
+                        requested_y + static_cast<int64_t>(kTileHeight) <= static_cast<int64_t>(stored.y.end) &&
+                        requested_x + static_cast<int64_t>(kTileWidth) <= static_cast<int64_t>(stored.x.end);
+    if (!inside) {
+        return AlignmentCostClass::kGeneric;
+    }
+    const bool y_aligned = signed_tile_modulo(requested_y) == 0;
+    const bool x_aligned = signed_tile_modulo(requested_x) == 0;
+    if (y_aligned && x_aligned) {
+        return AlignmentCostClass::kExact;
+    }
+    if (y_aligned != x_aligned) {
+        return AlignmentCostClass::kOneAxisShifted;
+    }
+    return AlignmentCostClass::kGeneric;
+}
+
+[[nodiscard]] constexpr uint64_t staging_class_cycles(const AlignmentCostClass tile_class) noexcept {
+    // Calibrated to the Wormhole N150 transport metrics.  These are planner
+    // weights rather than hardware guarantees: only their relative magnitude
+    // is used to compare candidate chunk geometries.
+    switch (tile_class) {
+        case AlignmentCostClass::kExact: return 900;
+        case AlignmentCostClass::kOneAxisShifted: return 7'000;
+        case AlignmentCostClass::kGeneric: return 70'000;
+    }
+    return 70'000;
+}
+
+[[nodiscard]] inline uint64_t estimate_chunk_latency_cycles(
+    const Lwt2DChunkPlan& chunk, const LiftingForwardPlan& y_plan, const LiftingForwardPlan& x_plan) {
+    constexpr uint64_t route_config_and_sync_cycles = 3'700;
+    constexpr uint64_t full_tile_persistence_cycles = 1'200;
+    constexpr uint64_t fragmented_terminal_tile_cycles = 80'000;
+    constexpr uint64_t tiled_terminal_tile_cycles = 1'200;
+    uint64_t cycles = chunk.initial.total_area() * 12;
+    std::array<IndexRectangle, 5> stored = {
+        chunk.initial.ee,
+        chunk.initial.eo,
+        chunk.initial.oe,
+        chunk.initial.oo,
+        IndexRectangle{},
+    };
+    for (const Lwt2DRoutePlan& route : chunk.routes) {
+        cycles += route_config_and_sync_cycles;
+        if (route.output.empty()) {
+            continue;
+        }
+        const LiftingStepRoute& axis_route = route.axis == Lwt2DAxis::kVertical ? y_plan.routes[route.axis_route_index]
+                                                                                : x_plan.routes[route.axis_route_index];
+        const uint32_t k = is_predict_update_step(route.type) ? execution_detail::coefficient_count(axis_route) : 1U;
+        const int64_t output_y_origin = static_cast<int64_t>((route.output.y.begin / kTileHeight) * kTileHeight);
+        const int64_t output_x_origin = static_cast<int64_t>((route.output.x.begin / kTileWidth) * kTileWidth);
+        const size_t tile_rows = round_up(route.output.y.end, static_cast<size_t>(kTileHeight)) / kTileHeight -
+                                 route.output.y.begin / kTileHeight;
+        const size_t tile_columns = round_up(route.output.x.end, static_cast<size_t>(kTileWidth)) / kTileWidth -
+                                    route.output.x.begin / kTileWidth;
+        for (size_t tile_y = 0; tile_y < tile_rows; ++tile_y) {
+            for (size_t tile_x = 0; tile_x < tile_columns; ++tile_x) {
+                const int64_t output_tile_y = output_y_origin + static_cast<int64_t>(tile_y * kTileHeight);
+                const int64_t output_tile_x = output_x_origin + static_cast<int64_t>(tile_x * kTileWidth);
+                const auto requested_origin = [&](const IndexRectangle rectangle) {
+                    return std::pair{
+                        static_cast<int64_t>(rectangle.y.begin) + output_tile_y -
+                            static_cast<int64_t>(route.output.y.begin),
+                        static_cast<int64_t>(rectangle.x.begin) + output_tile_x -
+                            static_cast<int64_t>(route.output.x.begin),
+                    };
+                };
+                if (is_predict_update_step(route.type)) {
+                    const auto [base_y, base_x] = requested_origin(route.base);
+                    cycles +=
+                        staging_class_cycles(alignment_cost_class(stored[slot_index(route.base_slot)], base_y, base_x));
+                    const auto [source_y, source_x] = requested_origin(route.source);
+                    for (uint32_t source_tile = 0; source_tile < 2; ++source_tile) {
+                        const int64_t requested_y =
+                            source_y +
+                            (route.axis == Lwt2DAxis::kVertical ? static_cast<int64_t>(source_tile * kTileHeight) : 0);
+                        const int64_t requested_x = source_x + (route.axis == Lwt2DAxis::kHorizontal
+                                                                    ? static_cast<int64_t>(source_tile * kTileWidth) -
+                                                                          static_cast<int64_t>(17 - k)
+                                                                    : 0);
+                        cycles += staging_class_cycles(
+                            alignment_cost_class(stored[slot_index(route.source_slot)], requested_y, requested_x));
+                    }
+                    cycles += route.axis == Lwt2DAxis::kVertical ? 16'000 + 2'500 * k : 12'000 + 1'800 * k;
+                } else {
+                    const auto [source_y, source_x] = requested_origin(route.source);
+                    cycles += staging_class_cycles(
+                        alignment_cost_class(stored[slot_index(route.source_slot)], source_y, source_x));
+                    cycles += 8'000;
+                }
+                cycles += full_tile_persistence_cycles;
+            }
+        }
+        stored[slot_index(route.output_slot)] = route.output;
+    }
+
+    const bool full_terminal_tiles =
+        chunk.final_band_rect.y.begin % kTileHeight == 0 && chunk.final_band_rect.x.begin % kTileWidth == 0 &&
+        chunk.final_band_rect.height() % kTileHeight == 0 && chunk.final_band_rect.width() % kTileWidth == 0;
+    const uint64_t terminal_tiles =
+        static_cast<uint64_t>(ceil_div(chunk.final_band_rect.height(), static_cast<size_t>(kTileHeight))) *
+        ceil_div(chunk.final_band_rect.width(), static_cast<size_t>(kTileWidth)) * 4;
+    cycles += terminal_tiles * (full_terminal_tiles ? tiled_terminal_tile_cycles : fragmented_terminal_tile_cycles);
+    return cycles;
+}
+
+[[nodiscard]] inline uint64_t estimate_candidate_latency_cycles(
+    const std::vector<Lwt2DChunkPlan>& chunks,
+    const uint32_t active_core_count,
+    const LiftingForwardPlan& y_plan,
+    const LiftingForwardPlan& x_plan) {
+    std::vector<uint64_t> chunk_costs;
+    chunk_costs.reserve(chunks.size());
+    for (const Lwt2DChunkPlan& chunk : chunks) {
+        chunk_costs.push_back(estimate_chunk_latency_cycles(chunk, y_plan, x_plan));
+    }
+    const size_t base = chunks.size() / active_core_count;
+    const size_t extra = chunks.size() % active_core_count;
+    size_t begin = 0;
+    uint64_t maximum = 0;
+    for (uint32_t core = 0; core < active_core_count; ++core) {
+        const size_t count = base + (core < extra ? 1U : 0U);
+        uint64_t core_cycles = 30'000;
+        for (size_t index = 0; index < count; ++index) {
+            core_cycles += chunk_costs[begin + index];
+        }
+        maximum = std::max(maximum, core_cycles);
+        begin += count;
+    }
+    return maximum;
+}
+
+[[nodiscard]] inline bool is_better_candidate(
+    const Candidate& candidate, const Candidate& best, const bool latency_oriented) noexcept {
+    if (latency_oriented && candidate.estimated_latency_cycles != best.estimated_latency_cycles) {
+        if (candidate.active_core_count < best.active_core_count) {
+            // The calibrated model is intentionally conservative around an
+            // occupancy transition: N150 measurements show that a predicted
+            // low-single-digit win can be erased by reduced reader/compute/
+            // writer overlap.  Require a material modeled gain before
+            // deactivating workers.
+            return static_cast<long double>(candidate.estimated_latency_cycles) <
+                   0.90L * static_cast<long double>(best.estimated_latency_cycles);
+        }
+        if (candidate.active_core_count > best.active_core_count) {
+            return static_cast<long double>(candidate.estimated_latency_cycles) <=
+                   1.10L * static_cast<long double>(best.estimated_latency_cycles);
+        }
+        return candidate.estimated_latency_cycles < best.estimated_latency_cycles;
+    }
     if (candidate.active_core_count != best.active_core_count) {
         return candidate.active_core_count > best.active_core_count;
     }
@@ -9297,7 +11229,12 @@ struct Candidate {
 }  // namespace plan_2d_detail
 
 [[nodiscard]] inline Lwt2DExecutionPlan make_lwt_2d_execution_plan(
-    LiftingForwardPlan y_plan, LiftingForwardPlan x_plan, const uint32_t core_limit, const uint64_t l1_budget_bytes) {
+    LiftingForwardPlan y_plan,
+    LiftingForwardPlan x_plan,
+    const uint32_t core_limit,
+    const uint64_t l1_budget_bytes,
+    const bool fuse_terminal_scale = false,
+    const bool latency_oriented_planner = false) {
     TT_FATAL(core_limit > 0, "2D LWT requires at least one worker core");
     TT_FATAL(y_plan.preprocess_layout.input.length > 0, "2D LWT input height must be positive");
     TT_FATAL(x_plan.preprocess_layout.input.length > 0, "2D LWT input width must be positive");
@@ -9327,7 +11264,7 @@ struct Candidate {
     for (uint32_t tiles_y = 1; tiles_y <= band_tiles_y; ++tiles_y) {
         for (uint32_t tiles_x = 1; tiles_x <= band_tiles_x; ++tiles_x) {
             std::vector<Lwt2DChunkPlan> chunks =
-                plan_2d_detail::build_chunks(y_plan, x_plan, tiles_y, tiles_x, l1_budget_bytes);
+                plan_2d_detail::build_chunks(y_plan, x_plan, tiles_y, tiles_x, l1_budget_bytes, fuse_terminal_scale);
             uint64_t max_l1_bytes = 0;
             double max_dependency_overhead = 0.0;
             bool fits = true;
@@ -9346,9 +11283,14 @@ struct Candidate {
                 .active_core_count = static_cast<uint32_t>(std::min(chunks.size(), static_cast<size_t>(core_limit))),
                 .max_l1_bytes = max_l1_bytes,
                 .max_dependency_overhead = max_dependency_overhead,
+                .estimated_latency_cycles = plan_2d_detail::estimate_candidate_latency_cycles(
+                    chunks,
+                    static_cast<uint32_t>(std::min(chunks.size(), static_cast<size_t>(core_limit))),
+                    y_plan,
+                    x_plan),
                 .chunks = std::move(chunks),
             };
-            if (!found || plan_2d_detail::is_better_candidate(candidate, best)) {
+            if (!found || plan_2d_detail::is_better_candidate(candidate, best, latency_oriented_planner)) {
                 best = std::move(candidate);
                 found = true;
             }
@@ -9401,6 +11343,14 @@ struct Candidate {
         "2D uniform workspace allocation requires {} bytes per core, exceeding the {}-byte L1 budget",
         allocated_l1_bytes,
         l1_budget_bytes);
+    const uint32_t executable_route_count = static_cast<uint32_t>(std::count_if(
+        best.chunks.front().routes.begin(), best.chunks.front().routes.end(), [](const Lwt2DRoutePlan& route) {
+            return !route.output.empty();
+        }));
+    const uint32_t scale_routes_removed = static_cast<uint32_t>(std::count_if(
+        best.chunks.front().routes.begin(), best.chunks.front().routes.end(), [](const Lwt2DRoutePlan& route) {
+            return is_scale_step(route.type) && route.output.empty();
+        }));
     return Lwt2DExecutionPlan{
         .y_plan = std::move(y_plan),
         .x_plan = std::move(x_plan),
@@ -9412,6 +11362,10 @@ struct Candidate {
         .chunk_tiles_y = best.chunk_tiles_y,
         .chunk_tiles_x = best.chunk_tiles_x,
         .active_core_count = best.active_core_count,
+        .executable_route_count = executable_route_count,
+        .scale_routes_removed = scale_routes_removed,
+        .latency_oriented_planner = latency_oriented_planner,
+        .estimated_latency_cycles = best.estimated_latency_cycles,
         .chunks = std::move(best.chunks),
         .max_dependency_overhead = best.max_dependency_overhead,
         .max_l1_bytes = best.max_l1_bytes,
@@ -9429,7 +11383,9 @@ template <typename Scheme>
     const size_t input_width,
     const uint32_t core_limit,
     const uint64_t l1_budget_bytes,
-    const BoundaryMode boundary_mode = BoundaryMode::kSymmetric) {
+    const BoundaryMode boundary_mode = BoundaryMode::kSymmetric,
+    const bool fuse_terminal_scale = false,
+    const bool latency_oriented_planner = false) {
     TT_FATAL(input_height > 0 && input_width > 0, "2D LWT input dimensions must be positive");
     const SignalBuffer y_input{
         .length = input_height,
@@ -9445,7 +11401,9 @@ template <typename Scheme>
         make_forward_lifting_plan<Scheme>(y_input, 0, 0, boundary_mode),
         make_forward_lifting_plan<Scheme>(x_input, 0, 0, boundary_mode),
         core_limit,
-        l1_budget_bytes);
+        l1_budget_bytes,
+        fuse_terminal_scale,
+        latency_oriented_planner);
 }
 
 namespace plan_2d_detail {
@@ -9515,11 +11473,14 @@ inline void write_protocol_rectangle(
             plan_2d_detail::write_protocol_rectangle(
                 words, offset + device_protocol::kLwt2DRouteOutputRect, route.output);
             uint32_t flags = 0;
-            if (route.type == StepType::kSwap) {
+            if (route.output.empty()) {
                 flags |= device_protocol::kLwt2DRouteFlagMetadataOnly;
             }
             if (is_scale_step(route.type)) {
                 flags |= device_protocol::kLwt2DRouteFlagScale;
+            }
+            if (route.inline_terminal_scale) {
+                flags |= device_protocol::kLwt2DRouteFlagInlineTerminalScale;
             }
             words[offset + device_protocol::kLwt2DRouteFlags] = flags;
             words[offset + device_protocol::kLwt2DRouteAxisStepIndex] =
@@ -11366,6 +13327,10 @@ void replace_plane_tile_counts_with_widths(std::vector<uint32_t>& args, const Lw
     args.push_back(
         buffers.split_snapshots ? static_cast<uint32_t>(buffers.split_snapshots->get_backing_buffer()->address()) : 0U);
     args.push_back(buffers.split_snapshot_tiles_per_plane);
+    args.push_back(
+        buffers.transport_metrics ? static_cast<uint32_t>(buffers.transport_metrics->get_backing_buffer()->address())
+                                  : 0U);
+    args.push_back(checked_u32(plan.chunks.front().routes.size() + 1, "2D transport metric pages per chunk"));
     return args;
 }
 
@@ -11386,22 +13351,33 @@ void replace_plane_tile_counts_with_widths(std::vector<uint32_t>& args, const Lw
     args.push_back(
         buffers.route_snapshots ? static_cast<uint32_t>(buffers.route_snapshots->get_backing_buffer()->address()) : 0U);
     args.push_back(buffers.snapshot_tiles_per_route);
+    args.push_back(
+        buffers.transport_metrics ? static_cast<uint32_t>(buffers.transport_metrics->get_backing_buffer()->address())
+                                  : 0U);
+    args.push_back(checked_u32(plan.chunks.front().routes.size() + 1, "2D transport metric pages per chunk"));
     return args;
 }
 
-[[nodiscard]] std::vector<uint32_t> compute_args(
-    const Lwt2DExecutionPlan& plan, const CoreChunkWork& work, const std::vector<uint32_t>& coefficients) {
+[[nodiscard]] std::vector<uint32_t> compute_args(const Lwt2DExecutionPlan& plan, const CoreChunkWork& work) {
     const size_t route_count = plan.chunks.front().routes.size();
+    const size_t packed_words_per_chunk = ceil_div(route_count, static_cast<size_t>(4));
     std::vector<uint32_t> args;
-    args.reserve(1 + static_cast<size_t>(work.chunk_count) * route_count);
+    args.reserve(1 + static_cast<size_t>(work.chunk_count) * packed_words_per_chunk);
     args.push_back(work.chunk_count);
     for (uint32_t local_chunk = 0; local_chunk < work.chunk_count; ++local_chunk) {
         const Lwt2DChunkPlan& chunk = plan.chunks[work.chunk_begin + local_chunk];
-        for (const Lwt2DRoutePlan& route : chunk.routes) {
-            args.push_back(route_tile_count(route));
+        for (size_t route_begin = 0; route_begin < route_count; route_begin += 4) {
+            uint32_t packed_counts = 0;
+            const size_t route_end = std::min(route_begin + 4, route_count);
+            for (size_t route_index = route_begin; route_index < route_end; ++route_index) {
+                const uint32_t count = route_tile_count(chunk.routes[route_index]);
+                TT_FATAL(
+                    count <= std::numeric_limits<uint8_t>::max(), "2D route tile count {} exceeds packed uint8", count);
+                packed_counts |= count << (8 * (route_index - route_begin));
+            }
+            args.push_back(packed_counts);
         }
     }
-    args.insert(args.end(), coefficients.begin(), coefficients.end());
     return args;
 }
 
@@ -11412,7 +13388,8 @@ void replace_plane_tile_counts_with_widths(std::vector<uint32_t>& args, const Lw
     const Lwt2DWorkingBuffers& buffers,
     const char* compute_scheme_header,
     const char* compute_scheme_type,
-    const Lwt2DSplitImplementation split_implementation) {
+    const Lwt2DSplitImplementation split_implementation,
+    const Lwt2DTransportPolicy transport_policy) {
     tt::tt_metal::Program program = tt::tt_metal::CreateProgram();
     create_cb(program, cores, kSource0Cb, kTileBuffering, kTileBytes, true);
     create_cb(program, cores, kSource1Cb, kTileBuffering, kTileBytes, true);
@@ -11447,6 +13424,12 @@ void replace_plane_tile_counts_with_widths(std::vector<uint32_t>& args, const Lw
     } else {
         tt::tt_metal::TensorAccessorArgs(*buffers.chunk_config->get_backing_buffer()).append_to(reader_compile_args);
     }
+    if (buffers.transport_metrics) {
+        tt::tt_metal::TensorAccessorArgs(*buffers.transport_metrics->get_backing_buffer())
+            .append_to(reader_compile_args);
+    } else {
+        tt::tt_metal::TensorAccessorArgs(*buffers.chunk_config->get_backing_buffer()).append_to(reader_compile_args);
+    }
     std::map<std::string, std::string> reader_defines;
     if (split_implementation == Lwt2DSplitImplementation::kTiled) {
         reader_defines.emplace("TTWV_LWT_2D_TILED_SPLIT", "1");
@@ -11456,6 +13439,21 @@ void replace_plane_tile_counts_with_widths(std::vector<uint32_t>& args, const Lw
     }
     if (buffers.split_snapshots) {
         reader_defines.emplace("TTWV_CAPTURE_SPLIT_SNAPSHOTS", "1");
+    }
+    if (transport_policy.route_staging == Lwt2DRouteStagingImplementation::kOptimized) {
+        reader_defines.emplace("TTWV_LWT_2D_OPTIMIZED_ROUTE_STAGING", "1");
+    }
+    if (transport_policy.route_config == Lwt2DRouteConfigImplementation::kPreloaded) {
+        reader_defines.emplace("TTWV_LWT_2D_PRELOAD_ROUTE_CONFIG", "1");
+    }
+    if (transport_policy.exact_transfer == Lwt2DExactTransferImplementation::kL1Copy) {
+        reader_defines.emplace("TTWV_LWT_2D_EXACT_L1_COPY", "1");
+    }
+    if (transport_policy.validate_route_staging) {
+        reader_defines.emplace("TTWV_VALIDATE_ROUTE_STAGING", "1");
+    }
+    if (buffers.transport_metrics && !transport_policy.validate_route_staging) {
+        reader_defines.emplace("TTWV_CAPTURE_TRANSPORT_METRICS", "1");
     }
     const auto reader = tt::tt_metal::CreateKernel(
         program,
@@ -11473,11 +13471,33 @@ void replace_plane_tile_counts_with_widths(std::vector<uint32_t>& args, const Lw
     tt::tt_metal::TensorAccessorArgs(*buffers.route_config->get_backing_buffer()).append_to(writer_compile_args);
     tt::tt_metal::TensorAccessorArgs(*buffers.band_config->get_backing_buffer()).append_to(writer_compile_args);
     tt::tt_metal::TensorAccessorArgs(*buffers.outputs.front()->get_backing_buffer()).append_to(writer_compile_args);
+    if (buffers.transport_metrics) {
+        tt::tt_metal::TensorAccessorArgs(*buffers.transport_metrics->get_backing_buffer())
+            .append_to(writer_compile_args);
+    } else {
+        tt::tt_metal::TensorAccessorArgs(*buffers.band_config->get_backing_buffer()).append_to(writer_compile_args);
+    }
+    std::map<std::string, std::string> writer_defines;
+    if (transport_policy.route_persistence == Lwt2DRoutePersistenceImplementation::kFullTile) {
+        writer_defines.emplace("TTWV_LWT_2D_FULL_TILE_PERSISTENCE", "1");
+    }
+    if (transport_policy.terminal_writes == Lwt2DTerminalWriteImplementation::kTiled) {
+        writer_defines.emplace("TTWV_LWT_2D_TILED_TERMINAL_WRITES", "1");
+    }
+    if (transport_policy.route_config == Lwt2DRouteConfigImplementation::kPreloaded) {
+        writer_defines.emplace("TTWV_LWT_2D_PRELOAD_ROUTE_CONFIG", "1");
+    }
+    if (transport_policy.validate_route_staging) {
+        writer_defines.emplace("TTWV_VALIDATE_ROUTE_PERSISTENCE", "1");
+    }
+    if (buffers.transport_metrics && !transport_policy.validate_route_staging) {
+        writer_defines.emplace("TTWV_CAPTURE_TRANSPORT_METRICS", "1");
+    }
     const auto writer = tt::tt_metal::CreateKernel(
         program,
         kernel_path(kernel_root, kWriterKernel),
         cores,
-        tt::tt_metal::WriterDataMovementConfig(writer_compile_args));
+        tt::tt_metal::WriterDataMovementConfig(writer_compile_args, writer_defines));
 
     std::vector<UnpackToDestMode> unpack_modes(NUM_CIRCULAR_BUFFERS, UnpackToDestMode::Default);
     unpack_modes[kSource0Cb] = UnpackToDestMode::UnpackToDestFp32;
@@ -11496,6 +13516,7 @@ void replace_plane_tile_counts_with_widths(std::vector<uint32_t>& args, const Lw
                 {
                     {"TTWV_LWT_2D_SCHEME_HEADER", compute_scheme_header},
                     {"TTWV_LWT_2D_SCHEME_TYPE", compute_scheme_type},
+                    {"TTWV_LWT_2D_FUSE_TERMINAL_SCALE", transport_policy.scale == Lwt2DScalePolicy::kFused ? "1" : "0"},
                 },
         });
     return Lwt2DProgram{
@@ -11515,11 +13536,12 @@ Lwt2DExecutable create_lwt_2d_executable_impl(
     Lwt2DExecutionPlan plan,
     const char* compute_scheme_header,
     const char* compute_scheme_type,
-    std::vector<uint32_t> compute_coefficients,
     const bool capture_route_snapshots,
     const Lwt2DSplitImplementation split_implementation,
     const bool capture_split_metrics,
-    const bool capture_split_snapshots) {
+    const bool capture_split_snapshots,
+    const Lwt2DTransportPolicy transport_policy,
+    const bool capture_transport_metrics) {
     validate_lwt_2d_tiling_contract(plan.tiling);
     TT_FATAL(
         plan.input_height <= static_cast<size_t>(std::numeric_limits<int32_t>::max() / 2) &&
@@ -11541,6 +13563,16 @@ Lwt2DExecutable create_lwt_2d_executable_impl(
         output = create_dram_pages(mesh_device, band_tiles, kTileBytes);
     }
     const size_t route_count = plan.chunks.front().routes.size();
+    if (transport_policy.route_config == Lwt2DRouteConfigImplementation::kPreloaded) {
+        constexpr size_t config_capacity =
+            device_protocol::kLwt2DSplitScratchBytes / 2 - device_protocol::kLwt2DTransportMetricPageBytes;
+        TT_FATAL(
+            route_count * device_protocol::kLwt2DRouteConfigPageBytes <= config_capacity,
+            "2D LWT {} route descriptors require {} bytes, exceeding the {}-byte per-RISC preload region",
+            route_count,
+            route_count * device_protocol::kLwt2DRouteConfigPageBytes,
+            config_capacity);
+    }
     auto chunk_config = create_dram_pages(mesh_device, plan.chunks.size(), device_protocol::kLwt2DChunkConfigPageBytes);
     auto route_config =
         create_dram_pages(mesh_device, plan.chunks.size() * route_count, device_protocol::kLwt2DRouteConfigPageBytes);
@@ -11548,6 +13580,12 @@ Lwt2DExecutable create_lwt_2d_executable_impl(
     std::shared_ptr<tt::tt_metal::distributed::MeshBuffer> split_metrics;
     if (capture_split_metrics) {
         split_metrics = create_dram_pages(mesh_device, plan.chunks.size(), device_protocol::kLwt2DSplitMetricPageBytes);
+    }
+    std::shared_ptr<tt::tt_metal::distributed::MeshBuffer> transport_metrics;
+    if (capture_transport_metrics) {
+        const size_t metric_pages_per_chunk = route_count + 1;
+        transport_metrics = create_dram_pages(
+            mesh_device, plan.chunks.size() * metric_pages_per_chunk, device_protocol::kLwt2DTransportMetricPageBytes);
     }
     uint32_t split_snapshot_tiles_per_plane = 0;
     std::shared_ptr<tt::tt_metal::distributed::MeshBuffer> split_snapshots;
@@ -11594,6 +13632,7 @@ Lwt2DExecutable create_lwt_2d_executable_impl(
         .route_config = std::move(route_config),
         .band_config = std::move(band_config),
         .split_metrics = std::move(split_metrics),
+        .transport_metrics = std::move(transport_metrics),
         .split_snapshots = std::move(split_snapshots),
         .split_snapshot_tiles_per_plane = split_snapshot_tiles_per_plane,
         .route_snapshots = std::move(route_snapshots),
@@ -11610,6 +13649,11 @@ Lwt2DExecutable create_lwt_2d_executable_impl(
                 .chunk_count = checked_u32(plan.chunks.size(), "2D chunk count"),
                 .chunk_tiles_y = plan.chunk_tiles_y,
                 .chunk_tiles_x = plan.chunk_tiles_x,
+                .route_count = checked_u32(plan.chunks.front().routes.size(), "2D route count"),
+                .executable_route_count = plan.executable_route_count,
+                .scale_routes_removed = plan.scale_routes_removed,
+                .latency_oriented_planner = plan.latency_oriented_planner,
+                .estimated_latency_cycles = plan.estimated_latency_cycles,
                 .max_dependency_overhead = plan.max_dependency_overhead,
                 .l1_workspace_bytes = plan.allocated_workspace_bytes,
                 .l1_circular_buffer_bytes = plan_2d_detail::kCircularBufferBytes,
@@ -11629,12 +13673,12 @@ Lwt2DExecutable create_lwt_2d_executable_impl(
         buffers,
         compute_scheme_header,
         compute_scheme_type,
-        split_implementation);
+        split_implementation,
+        transport_policy);
     for (const CoreChunkWork& core_work : work) {
         tt::tt_metal::SetRuntimeArgs(
             program.program, program.reader, core_work.core, reader_args(input_buffer, plan, buffers, core_work));
-        tt::tt_metal::SetRuntimeArgs(
-            program.program, program.compute, core_work.core, compute_args(plan, core_work, compute_coefficients));
+        tt::tt_metal::SetRuntimeArgs(program.program, program.compute, core_work.core, compute_args(plan, core_work));
         tt::tt_metal::SetRuntimeArgs(
             program.program, program.writer, core_work.core, writer_args(plan, buffers, core_work));
     }
@@ -11674,6 +13718,13 @@ void prepare_lwt_2d(tt::tt_metal::distributed::MeshCommandQueue& command_queue, 
             executable.plan.chunks.size() * device_protocol::kLwt2DSplitMetricWordCount, 0);
         tt::tt_metal::distributed::EnqueueWriteMeshBuffer(
             command_queue, executable.buffers.split_metrics, metric_zeros, false);
+    }
+    if (executable.buffers.transport_metrics) {
+        const size_t pages_per_chunk = executable.plan.chunks.front().routes.size() + 1;
+        const std::vector<uint32_t> metric_zeros(
+            executable.plan.chunks.size() * pages_per_chunk * device_protocol::kLwt2DTransportMetricWordCount, 0);
+        tt::tt_metal::distributed::EnqueueWriteMeshBuffer(
+            command_queue, executable.buffers.transport_metrics, metric_zeros, false);
     }
     if (executable.buffers.split_snapshots) {
         const size_t snapshot_elements = executable.plan.chunks.size() * 4 *
@@ -11732,6 +13783,181 @@ Lwt2DSplitMetricsSummary read_lwt_2d_split_metrics(
         chunk_begin += core_chunks;
     }
     TT_FATAL(chunk_begin == chunk_count, "2D split metric chunk partition is incomplete");
+    return summary;
+}
+
+namespace {
+
+[[nodiscard]] uint64_t metric_u64(const std::vector<uint32_t>& words, const size_t offset) {
+    return static_cast<uint64_t>(words[offset]) | (static_cast<uint64_t>(words[offset + 1]) << 32);
+}
+
+}  // namespace
+
+Lwt2DTransportMetricsSummary read_lwt_2d_transport_metrics(
+    tt::tt_metal::distributed::MeshCommandQueue& command_queue, Lwt2DExecutable& executable) {
+    TT_FATAL(executable.buffers.transport_metrics, "2D transport metrics were not enabled for this executable");
+    std::vector<uint32_t> words;
+    tt::tt_metal::distributed::EnqueueReadMeshBuffer(command_queue, words, executable.buffers.transport_metrics, true);
+    const size_t route_count = executable.plan.chunks.front().routes.size();
+    const size_t pages_per_chunk = route_count + 1;
+    TT_FATAL(
+        words.size() ==
+            executable.plan.chunks.size() * pages_per_chunk * device_protocol::kLwt2DTransportMetricWordCount,
+        "2D transport metric buffer has an unexpected size");
+
+    Lwt2DTransportMetricsSummary summary{};
+    summary.routes.reserve(executable.plan.chunks.size() * route_count);
+    struct ChunkPhases {
+        uint64_t reader_kernel{0};
+        uint64_t writer_kernel{0};
+        uint64_t route_tiles{0};
+        uint64_t config{0};
+        uint64_t staging{0};
+        uint64_t compute_pipeline{0};
+        uint64_t persistence{0};
+        uint64_t synchronization_wait{0};
+        uint64_t terminal_write{0};
+    };
+    std::vector<ChunkPhases> chunk_phases(executable.plan.chunks.size());
+    for (size_t chunk = 0; chunk < executable.plan.chunks.size(); ++chunk) {
+        for (size_t route = 0; route < route_count; ++route) {
+            const size_t offset = (chunk * pages_per_chunk + route) * device_protocol::kLwt2DTransportMetricWordCount;
+            Lwt2DRouteTransportMetric metric{
+                .chunk_index = checked_u32(chunk, "2D transport metric chunk index"),
+                .route_index = checked_u32(route, "2D transport metric route index"),
+                .axis = words[offset + device_protocol::kLwt2DTransportMetricAxis],
+                .step_type = words[offset + device_protocol::kLwt2DTransportMetricStepType],
+                .coefficient_count = words[offset + device_protocol::kLwt2DTransportMetricCoefficientCount],
+                .output_tiles = words[offset + device_protocol::kLwt2DTransportMetricOutputTiles],
+                .reader_config_cycles =
+                    metric_u64(words, offset + device_protocol::kLwt2DTransportMetricReaderConfigCyclesLow),
+                .staging_cycles = metric_u64(words, offset + device_protocol::kLwt2DTransportMetricStagingCyclesLow),
+                .compute_cycles = metric_u64(words, offset + device_protocol::kLwt2DTransportMetricComputeCyclesLow),
+                .persistence_cycles =
+                    metric_u64(words, offset + device_protocol::kLwt2DTransportMetricPersistenceCyclesLow),
+                .synchronization_wait_cycles =
+                    metric_u64(words, offset + device_protocol::kLwt2DTransportMetricSyncWaitCyclesLow),
+                .writer_config_cycles =
+                    metric_u64(words, offset + device_protocol::kLwt2DTransportMetricWriterConfigCyclesLow),
+                .exact_source_tiles = words[offset + device_protocol::kLwt2DTransportMetricExactSourceTiles],
+                .shifted_source_tiles = words[offset + device_protocol::kLwt2DTransportMetricShiftedSourceTiles],
+                .generic_source_tiles = words[offset + device_protocol::kLwt2DTransportMetricGenericSourceTiles],
+                .exact_base_tiles = words[offset + device_protocol::kLwt2DTransportMetricExactBaseTiles],
+                .shifted_base_tiles = words[offset + device_protocol::kLwt2DTransportMetricShiftedBaseTiles],
+                .generic_base_tiles = words[offset + device_protocol::kLwt2DTransportMetricGenericBaseTiles],
+                .persistence_tiles = words[offset + device_protocol::kLwt2DTransportMetricPersistenceTiles],
+            };
+            if (metric.output_tiles == 0) {
+                continue;
+            }
+            summary.max_route_staging_cycles = std::max(summary.max_route_staging_cycles, metric.staging_cycles);
+            summary.max_route_compute_cycles = std::max(summary.max_route_compute_cycles, metric.compute_cycles);
+            summary.max_route_persistence_cycles =
+                std::max(summary.max_route_persistence_cycles, metric.persistence_cycles);
+            summary.max_route_synchronization_wait_cycles =
+                std::max(summary.max_route_synchronization_wait_cycles, metric.synchronization_wait_cycles);
+            summary.total_route_tiles += metric.output_tiles;
+            summary.exact_source_tiles += metric.exact_source_tiles;
+            summary.shifted_source_tiles += metric.shifted_source_tiles;
+            summary.generic_source_tiles += metric.generic_source_tiles;
+            summary.exact_base_tiles += metric.exact_base_tiles;
+            summary.shifted_base_tiles += metric.shifted_base_tiles;
+            summary.generic_base_tiles += metric.generic_base_tiles;
+            chunk_phases[chunk].route_tiles += metric.output_tiles;
+            chunk_phases[chunk].config += metric.reader_config_cycles + metric.writer_config_cycles;
+            chunk_phases[chunk].staging += metric.staging_cycles;
+            chunk_phases[chunk].compute_pipeline += metric.compute_cycles;
+            chunk_phases[chunk].persistence += metric.persistence_cycles;
+            chunk_phases[chunk].synchronization_wait += metric.synchronization_wait_cycles;
+            summary.routes.push_back(metric);
+        }
+        const size_t summary_offset =
+            (chunk * pages_per_chunk + route_count) * device_protocol::kLwt2DTransportMetricWordCount;
+        chunk_phases[chunk].reader_kernel =
+            metric_u64(words, summary_offset + device_protocol::kLwt2DTransportMetricStagingCyclesLow);
+        chunk_phases[chunk].writer_kernel =
+            metric_u64(words, summary_offset + device_protocol::kLwt2DTransportMetricKernelCyclesLow);
+        chunk_phases[chunk].terminal_write =
+            metric_u64(words, summary_offset + device_protocol::kLwt2DTransportMetricTerminalWriteCyclesLow);
+        chunk_phases[chunk].config +=
+            metric_u64(words, summary_offset + device_protocol::kLwt2DTransportMetricReaderConfigCyclesLow) +
+            metric_u64(words, summary_offset + device_protocol::kLwt2DTransportMetricWriterConfigCyclesLow);
+        summary.max_reader_kernel_cycles =
+            std::max(summary.max_reader_kernel_cycles, chunk_phases[chunk].reader_kernel);
+        summary.max_writer_kernel_cycles =
+            std::max(summary.max_writer_kernel_cycles, chunk_phases[chunk].writer_kernel);
+        summary.exact_terminal_tiles +=
+            words[summary_offset + device_protocol::kLwt2DTransportMetricExactTerminalTiles];
+        summary.fragmented_terminal_tiles +=
+            words[summary_offset + device_protocol::kLwt2DTransportMetricFragmentedTerminalTiles];
+        summary.validated_staging_tiles +=
+            words[summary_offset + device_protocol::kLwt2DTransportMetricValidatedStagingTiles];
+        summary.staging_validation_mismatches +=
+            words[summary_offset + device_protocol::kLwt2DTransportMetricStagingValidationMismatches];
+        summary.validated_persistence_tiles +=
+            words[summary_offset + device_protocol::kLwt2DTransportMetricValidatedPersistenceTiles];
+        summary.persistence_validation_mismatches +=
+            words[summary_offset + device_protocol::kLwt2DTransportMetricPersistenceValidationMismatches];
+        summary.max_terminal_write_cycles =
+            std::max(summary.max_terminal_write_cycles, chunk_phases[chunk].terminal_write);
+    }
+
+    const uint32_t core_count = executable.buffers.scheduler.active_core_count;
+    const size_t chunks_per_core = chunk_phases.size() / core_count;
+    const size_t extra_chunks = chunk_phases.size() % core_count;
+    size_t chunk_begin = 0;
+    long double total_core_cycles = 0;
+    long double total_config = 0;
+    long double total_staging = 0;
+    long double total_compute_pipeline = 0;
+    long double total_persistence = 0;
+    long double total_sync = 0;
+    long double total_terminal = 0;
+    for (uint32_t core = 0; core < core_count; ++core) {
+        const size_t core_chunks = chunks_per_core + (core < extra_chunks ? 1U : 0U);
+        ChunkPhases core_phases{};
+        for (size_t local_chunk = 0; local_chunk < core_chunks; ++local_chunk) {
+            const ChunkPhases& chunk = chunk_phases[chunk_begin + local_chunk];
+            core_phases.reader_kernel += chunk.reader_kernel;
+            core_phases.writer_kernel += chunk.writer_kernel;
+            core_phases.route_tiles += chunk.route_tiles;
+            core_phases.config += chunk.config;
+            core_phases.staging += chunk.staging;
+            core_phases.compute_pipeline += chunk.compute_pipeline;
+            core_phases.persistence += chunk.persistence;
+            core_phases.synchronization_wait += chunk.synchronization_wait;
+            core_phases.terminal_write += chunk.terminal_write;
+        }
+        const uint64_t core_cycles = std::max(core_phases.reader_kernel, core_phases.writer_kernel);
+        summary.max_core_cycles = std::max(summary.max_core_cycles, core_cycles);
+        summary.max_core_route_tiles = std::max(summary.max_core_route_tiles, core_phases.route_tiles);
+        summary.max_core_config_cycles = std::max(summary.max_core_config_cycles, core_phases.config);
+        summary.max_core_staging_cycles = std::max(summary.max_core_staging_cycles, core_phases.staging);
+        summary.max_core_compute_pipeline_cycles =
+            std::max(summary.max_core_compute_pipeline_cycles, core_phases.compute_pipeline);
+        summary.max_core_persistence_cycles = std::max(summary.max_core_persistence_cycles, core_phases.persistence);
+        summary.max_core_synchronization_wait_cycles =
+            std::max(summary.max_core_synchronization_wait_cycles, core_phases.synchronization_wait);
+        summary.max_core_terminal_write_cycles =
+            std::max(summary.max_core_terminal_write_cycles, core_phases.terminal_write);
+        total_core_cycles += core_cycles;
+        total_config += core_phases.config;
+        total_staging += core_phases.staging;
+        total_compute_pipeline += core_phases.compute_pipeline;
+        total_persistence += core_phases.persistence;
+        total_sync += core_phases.synchronization_wait;
+        total_terminal += core_phases.terminal_write;
+        chunk_begin += core_chunks;
+    }
+    TT_FATAL(chunk_begin == chunk_phases.size(), "2D transport metric chunk partition is incomplete");
+    summary.mean_active_core_cycles = static_cast<double>(total_core_cycles / core_count);
+    summary.mean_active_core_config_cycles = static_cast<double>(total_config / core_count);
+    summary.mean_active_core_staging_cycles = static_cast<double>(total_staging / core_count);
+    summary.mean_active_core_compute_pipeline_cycles = static_cast<double>(total_compute_pipeline / core_count);
+    summary.mean_active_core_persistence_cycles = static_cast<double>(total_persistence / core_count);
+    summary.mean_active_core_synchronization_wait_cycles = static_cast<double>(total_sync / core_count);
+    summary.mean_active_core_terminal_write_cycles = static_cast<double>(total_terminal / core_count);
     return summary;
 }
 

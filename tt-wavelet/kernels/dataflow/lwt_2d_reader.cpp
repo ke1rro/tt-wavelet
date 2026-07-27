@@ -55,6 +55,7 @@ struct RouteStagingMetrics {
 struct StagingValidationMetrics {
     uint32_t validated_tiles{0};
     uint32_t mismatched_words{0};
+    uint32_t class_mismatched_words[5]{};
 };
 #define TTWV_STAGING_VALIDATION_PARAMETER , StagingValidationMetrics& validation_metrics
 #define TTWV_STAGING_VALIDATION_ARGUMENT , staging_validation_metrics
@@ -567,6 +568,14 @@ ALWI void snapshot_initial_planes(
     return source[tiled_element_offset(local_y, local_x, plane_tile_columns)];
 }
 
+enum class RouteTileClass : uint32_t {
+    kExact,
+    kOneAxisShifted,
+    kTwoAxisShifted,
+    kPartial,
+    kEmpty,
+};
+
 #ifdef TTWV_VALIDATE_ROUTE_STAGING
 [[nodiscard]] ALWI uint32_t read_plane_bits(
     const uint32_t plane_addr,
@@ -590,6 +599,7 @@ ALWI void validate_staged_tile(
     const Rect& stored,
     const int32_t requested_y,
     const int32_t requested_x,
+    const RouteTileClass tile_class,
     StagingValidationMetrics& metrics) {
     const auto* staged = reinterpret_cast<const volatile tt_l1_ptr uint32_t*>(destination_addr);
     ++metrics.validated_tiles;
@@ -601,7 +611,9 @@ ALWI void validate_staged_tile(
                 stored,
                 requested_y + static_cast<int32_t>(row),
                 requested_x + static_cast<int32_t>(column));
-            metrics.mismatched_words += staged[tile_element_offset(row, column)] != expected ? 1U : 0U;
+            const bool mismatch = staged[tile_element_offset(row, column)] != expected;
+            metrics.mismatched_words += mismatch ? 1U : 0U;
+            metrics.class_mismatched_words[static_cast<uint32_t>(tile_class)] += mismatch ? 1U : 0U;
         }
     }
 }
@@ -620,17 +632,20 @@ ALWI void reserve_tile(const uint32_t cb) {
     }
 }
 
-enum class RouteTileClass : uint32_t {
-    kExact,
-    kOneAxisShifted,
-    kGeneric,
-};
-
 enum class StageTileResult : uint32_t {
     kExactPending,
+    kBoundedPending,
     kCompleted,
-    kFallback,
 };
+
+#ifdef TTWV_LWT_2D_COMPUTE_ONLY_BENCHMARK
+[[nodiscard]] __attribute__((noinline)) StageTileResult
+stage_compute_benchmark_tile(const uint32_t cb, const uint32_t zero_tile_addr) {
+    cb_reserve_back(cb, 1);
+    noc_async_read(get_noc_addr(zero_tile_addr), get_write_ptr(cb), kTileBytes);
+    return StageTileResult::kExactPending;
+}
+#endif
 
 [[nodiscard]] ALWI bool requested_tile_inside(
     const Rect& stored, const int32_t requested_y, const int32_t requested_x) {
@@ -642,17 +657,25 @@ enum class StageTileResult : uint32_t {
 [[nodiscard]] ALWI RouteTileClass
 classify_route_tile(const Rect& stored, const int32_t requested_y, const int32_t requested_x) {
     if (!requested_tile_inside(stored, requested_y, requested_x)) {
-        return RouteTileClass::kGeneric;
+        const int32_t requested_y_end = requested_y + static_cast<int32_t>(kTileSide);
+        const int32_t requested_x_end = requested_x + static_cast<int32_t>(kTileSide);
+        const int32_t stored_y_end = static_cast<int32_t>(stored.y_begin + stored.y_length);
+        const int32_t stored_x_end = static_cast<int32_t>(stored.x_begin + stored.x_length);
+        const bool intersects = requested_y < stored_y_end && requested_y_end > static_cast<int32_t>(stored.y_begin) &&
+                                requested_x < stored_x_end && requested_x_end > static_cast<int32_t>(stored.x_begin);
+        return intersects ? RouteTileClass::kPartial : RouteTileClass::kEmpty;
     }
-    const bool y_aligned = requested_y % static_cast<int32_t>(kTileSide) == 0;
-    const bool x_aligned = requested_x % static_cast<int32_t>(kTileSide) == 0;
+    const bool y_aligned =
+        (requested_y - static_cast<int32_t>(aligned_begin(stored.y_begin))) % static_cast<int32_t>(kTileSide) == 0;
+    const bool x_aligned =
+        (requested_x - static_cast<int32_t>(aligned_begin(stored.x_begin))) % static_cast<int32_t>(kTileSide) == 0;
     if (y_aligned && x_aligned) {
         return RouteTileClass::kExact;
     }
     if (y_aligned != x_aligned) {
         return RouteTileClass::kOneAxisShifted;
     }
-    return RouteTileClass::kGeneric;
+    return RouteTileClass::kTwoAxisShifted;
 }
 
 [[nodiscard]] ALWI uint32_t route_plane_tile_addr(
@@ -700,6 +723,56 @@ ALWI void assemble_one_axis_shifted_tile(
     }
 }
 
+__attribute__((noinline)) void assemble_bounded_tile(
+    const uint32_t destination_addr,
+    const uint32_t plane_addr,
+    const uint32_t plane_tile_columns,
+    const Rect& stored,
+    const int32_t requested_y,
+    const int32_t requested_x) {
+    const int32_t valid_y_begin = std::max(requested_y, static_cast<int32_t>(stored.y_begin));
+    const int32_t valid_y_end = std::min(
+        requested_y + static_cast<int32_t>(kTileSide),
+        static_cast<int32_t>(stored.y_begin + stored.y_length));
+    const int32_t valid_x_begin = std::max(requested_x, static_cast<int32_t>(stored.x_begin));
+    const int32_t valid_x_end = std::min(
+        requested_x + static_cast<int32_t>(kTileSide),
+        static_cast<int32_t>(stored.x_begin + stored.x_length));
+    if (valid_y_begin >= valid_y_end || valid_x_begin >= valid_x_end) {
+        return;
+    }
+
+    auto* destination = reinterpret_cast<volatile tt_l1_ptr uint32_t*>(destination_addr);
+    const auto* source = reinterpret_cast<const volatile tt_l1_ptr uint32_t*>(plane_addr);
+    const uint32_t stored_y_origin = aligned_begin(stored.y_begin);
+    const uint32_t stored_x_origin = aligned_begin(stored.x_begin);
+    const uint32_t destination_row_begin = static_cast<uint32_t>(valid_y_begin - requested_y);
+    const uint32_t destination_column_begin = static_cast<uint32_t>(valid_x_begin - requested_x);
+    const uint32_t valid_width = static_cast<uint32_t>(valid_x_end - valid_x_begin);
+
+    for (uint32_t destination_row = destination_row_begin;
+         destination_row < destination_row_begin + static_cast<uint32_t>(valid_y_end - valid_y_begin);
+         ++destination_row) {
+        const uint32_t source_y =
+            static_cast<uint32_t>(valid_y_begin - static_cast<int32_t>(stored_y_origin)) +
+            destination_row - destination_row_begin;
+        uint32_t copied = 0;
+        while (copied < valid_width) {
+            const uint32_t destination_column = destination_column_begin + copied;
+            const uint32_t source_x =
+                static_cast<uint32_t>(valid_x_begin - static_cast<int32_t>(stored_x_origin)) + copied;
+            const uint32_t count = std::min(
+                valid_width - copied,
+                std::min(kFaceSide - source_x % kFaceSide, kFaceSide - destination_column % kFaceSide));
+            copy_contiguous_words(
+                destination + tile_element_offset(destination_row, destination_column),
+                source + tiled_element_offset(source_y, source_x, plane_tile_columns),
+                count);
+            copied += count;
+        }
+    }
+}
+
 ALWI void count_route_tile(RouteStagingMetrics& metrics, const RouteTileClass tile_class, const bool base_tile) {
     if (base_tile) {
         if (tile_class == RouteTileClass::kExact) {
@@ -720,8 +793,9 @@ ALWI void count_route_tile(RouteStagingMetrics& metrics, const RouteTileClass ti
     }
 }
 
-[[nodiscard]] ALWI StageTileResult stage_optimized_tile(
+[[nodiscard]] __attribute__((noinline)) StageTileResult stage_optimized_tile(
     const uint32_t cb,
+    const uint32_t zero_tile_addr,
     const uint32_t plane_addr,
     const uint32_t plane_tile_columns,
     const Rect& stored,
@@ -731,10 +805,6 @@ ALWI void count_route_tile(RouteStagingMetrics& metrics, const RouteTileClass ti
     RouteStagingMetrics& metrics TTWV_STAGING_VALIDATION_PARAMETER) {
     const RouteTileClass tile_class = classify_route_tile(stored, requested_y, requested_x);
     count_route_tile(metrics, tile_class, base_tile);
-    if (tile_class == RouteTileClass::kGeneric) {
-        return StageTileResult::kFallback;
-    }
-
     cb_reserve_back(cb, 1);
     const uint32_t destination_addr = get_write_ptr(cb);
     if (tile_class == RouteTileClass::kExact) {
@@ -746,7 +816,14 @@ ALWI void count_route_tile(RouteStagingMetrics& metrics, const RouteTileClass ti
             reinterpret_cast<const volatile tt_l1_ptr uint32_t*>(source_addr),
             kTileBytes / sizeof(uint32_t));
         TTWV_VALIDATE_STAGED_TILE(
-            destination_addr, plane_addr, plane_tile_columns, stored, requested_y, requested_x, validation_metrics);
+            destination_addr,
+            plane_addr,
+            plane_tile_columns,
+            stored,
+            requested_y,
+            requested_x,
+            tile_class,
+            validation_metrics);
         cb_push_back(cb, 1);
         return StageTileResult::kCompleted;
 #else
@@ -755,11 +832,55 @@ ALWI void count_route_tile(RouteStagingMetrics& metrics, const RouteTileClass ti
 #endif
     }
 
-    assemble_one_axis_shifted_tile(destination_addr, plane_addr, plane_tile_columns, stored, requested_y, requested_x);
+    if (tile_class == RouteTileClass::kPartial || tile_class == RouteTileClass::kEmpty) {
+        noc_async_read(get_noc_addr(zero_tile_addr), destination_addr, kTileBytes);
+        return StageTileResult::kBoundedPending;
+    }
+
+    if (tile_class == RouteTileClass::kOneAxisShifted) {
+        assemble_one_axis_shifted_tile(
+            destination_addr, plane_addr, plane_tile_columns, stored, requested_y, requested_x);
+    } else {
+        assemble_bounded_tile(destination_addr, plane_addr, plane_tile_columns, stored, requested_y, requested_x);
+    }
     TTWV_VALIDATE_STAGED_TILE(
-        destination_addr, plane_addr, plane_tile_columns, stored, requested_y, requested_x, validation_metrics);
+        destination_addr,
+        plane_addr,
+        plane_tile_columns,
+        stored,
+        requested_y,
+        requested_x,
+        tile_class,
+        validation_metrics);
     cb_push_back(cb, 1);
     return StageTileResult::kCompleted;
+}
+
+__attribute__((noinline)) void finish_pending_tile(
+    const StageTileResult result,
+    const uint32_t cb,
+    const uint32_t plane_addr,
+    const uint32_t plane_tile_columns,
+    const Rect& stored,
+    const int32_t requested_y,
+    const int32_t requested_x TTWV_STAGING_VALIDATION_PARAMETER) {
+    if (result == StageTileResult::kCompleted) {
+        return;
+    }
+    const uint32_t destination_addr = get_write_ptr(cb);
+    if (result == StageTileResult::kBoundedPending) {
+        assemble_bounded_tile(destination_addr, plane_addr, plane_tile_columns, stored, requested_y, requested_x);
+    }
+    TTWV_VALIDATE_STAGED_TILE(
+        destination_addr,
+        plane_addr,
+        plane_tile_columns,
+        stored,
+        requested_y,
+        requested_x,
+        classify_route_tile(stored, requested_y, requested_x),
+        validation_metrics);
+    cb_push_back(cb, 1);
 }
 
 [[nodiscard]] ALWI int32_t base_requested_y(const Rect& source, const Rect& output, const uint32_t output_tile_y) {
@@ -925,6 +1046,16 @@ ALWI void write_staging_validation_summary(
     }
     words[ttwv::device_protocol::kLwt2DTransportMetricValidatedStagingTiles] = validation.validated_tiles;
     words[ttwv::device_protocol::kLwt2DTransportMetricStagingValidationMismatches] = validation.mismatched_words;
+    words[ttwv::device_protocol::kLwt2DTransportMetricValidationExactMismatches] =
+        validation.class_mismatched_words[static_cast<uint32_t>(RouteTileClass::kExact)];
+    words[ttwv::device_protocol::kLwt2DTransportMetricValidationShiftedMismatches] =
+        validation.class_mismatched_words[static_cast<uint32_t>(RouteTileClass::kOneAxisShifted)];
+    words[ttwv::device_protocol::kLwt2DTransportMetricValidationTwoAxisMismatches] =
+        validation.class_mismatched_words[static_cast<uint32_t>(RouteTileClass::kTwoAxisShifted)];
+    words[ttwv::device_protocol::kLwt2DTransportMetricValidationPartialMismatches] =
+        validation.class_mismatched_words[static_cast<uint32_t>(RouteTileClass::kPartial)];
+    words[ttwv::device_protocol::kLwt2DTransportMetricValidationEmptyMismatches] =
+        validation.class_mismatched_words[static_cast<uint32_t>(RouteTileClass::kEmpty)];
     const auto metrics =
         TensorAccessor(metric_args, metrics_addr, ttwv::device_protocol::kLwt2DTransportMetricPageBytes);
     const uint32_t page = global_chunk * metric_pages_per_chunk + page_in_chunk;
@@ -975,13 +1106,21 @@ void kernel_main() {
     constexpr uint32_t cb_chunk_config = get_compile_time_arg_val(4);
     constexpr uint32_t cb_route_config = get_compile_time_arg_val(5);
     constexpr uint32_t cb_noc_scratch = get_compile_time_arg_val(6);
-    constexpr auto input_args = TensorAccessorArgs<7>();
+    constexpr uint32_t cb_route_zero = get_compile_time_arg_val(7);
+    constexpr auto input_args = TensorAccessorArgs<8>();
     constexpr auto chunk_args = TensorAccessorArgs<input_args.next_compile_time_args_offset()>();
     constexpr auto route_args = TensorAccessorArgs<chunk_args.next_compile_time_args_offset()>();
     constexpr auto metric_args = TensorAccessorArgs<route_args.next_compile_time_args_offset()>();
     constexpr auto snapshot_args = TensorAccessorArgs<metric_args.next_compile_time_args_offset()>();
     constexpr auto transport_metric_args = TensorAccessorArgs<snapshot_args.next_compile_time_args_offset()>();
     const auto input = TensorAccessor(input_args, input_addr, kTileBytes);
+    cb_reserve_back(cb_route_zero, 1);
+    const uint32_t zero_tile_addr = get_write_ptr(cb_route_zero);
+    auto* zero_tile = reinterpret_cast<volatile tt_l1_ptr uint32_t*>(zero_tile_addr);
+    for (uint32_t word = 0; word < kTileElements; ++word) {
+        zero_tile[word] = 0;
+    }
+    cb_push_back(cb_route_zero, 1);
     const uint32_t noc_scratch_raw = get_write_ptr(cb_noc_scratch);
 #ifdef TTWV_LWT_2D_TILED_SPLIT
     const uint32_t noc_scratch_addr = noc_scratch_raw;
@@ -1099,6 +1238,13 @@ void kernel_main() {
             noc_scratch_addr,
             split_metrics);
 #endif
+        // The route-zero page is intentionally persistent, but a worker may
+        // execute multiple chunks while the split stage reuses nearby L1
+        // scratch. Refresh it once per chunk so bounded empty/partial pages
+        // never inherit stale words from an earlier chunk.
+        for (uint32_t word = 0; word < kTileElements; ++word) {
+            zero_tile[word] = 0;
+        }
 #ifdef TTWV_CAPTURE_SPLIT_METRICS
         const uint64_t split_cycles = get_timestamp() - split_start;
         if (capture_split_metrics) {
@@ -1203,26 +1349,30 @@ void kernel_main() {
             for (uint32_t tile_y = 0; tile_y < output_tile_rows; ++tile_y) {
                 for (uint32_t tile_x = 0; tile_x < output_tile_columns; ++tile_x) {
 #ifdef TTWV_LWT_2D_OPTIMIZED_ROUTE_STAGING
-                    bool source0_pending = false;
-                    bool source1_pending = false;
-                    bool base_pending = false;
-#ifdef TTWV_VALIDATE_ROUTE_STAGING
                     int32_t source0_requested_y = 0;
                     int32_t source0_requested_x = 0;
                     int32_t source1_requested_y = 0;
                     int32_t source1_requested_x = 0;
                     int32_t base_requested_tile_y = 0;
                     int32_t base_requested_tile_x = 0;
-#endif
+                    StageTileResult source0_result = StageTileResult::kCompleted;
+                    StageTileResult source1_result = StageTileResult::kCompleted;
+                    StageTileResult base_result = StageTileResult::kCompleted;
+#ifdef TTWV_LWT_2D_COMPUTE_ONLY_BENCHMARK
+                    source0_result = stage_compute_benchmark_tile(cb_source0, zero_tile_addr);
+                    if (!scale) {
+                        source1_result = stage_compute_benchmark_tile(cb_source1, zero_tile_addr);
+                        base_result = stage_compute_benchmark_tile(cb_base, zero_tile_addr);
+                    }
+#else
                     if (scale) {
                         const int32_t requested_y = base_requested_y(source, output, tile_y);
                         const int32_t requested_x = base_requested_x(source, output, tile_x);
-#ifdef TTWV_VALIDATE_ROUTE_STAGING
                         source0_requested_y = requested_y;
                         source0_requested_x = requested_x;
-#endif
-                        const StageTileResult result = stage_optimized_tile(
+                        source0_result = stage_optimized_tile(
                             cb_source0,
+                            zero_tile_addr,
                             plane_addrs[source_slot],
                             plane_tile_columns[source_slot],
                             stored[source_slot],
@@ -1230,29 +1380,16 @@ void kernel_main() {
                             requested_x,
                             true,
                             route_staging_metrics TTWV_STAGING_VALIDATION_ARGUMENT);
-                        source0_pending = result == StageTileResult::kExactPending;
-                        if (result == StageTileResult::kFallback) {
-                            fill_base_or_scale_tile(
-                                cb_source0,
-                                plane_addrs[source_slot],
-                                plane_tile_columns[source_slot],
-                                stored[source_slot],
-                                source,
-                                output,
-                                tile_y,
-                                tile_x);
-                        }
                     } else {
                         int32_t requested_y = 0;
                         int32_t requested_x = 0;
                         stencil_requested_origin(
                             vertical, 0, coefficient_count, source, output, tile_y, tile_x, requested_y, requested_x);
-#ifdef TTWV_VALIDATE_ROUTE_STAGING
                         source0_requested_y = requested_y;
                         source0_requested_x = requested_x;
-#endif
-                        StageTileResult result = stage_optimized_tile(
+                        source0_result = stage_optimized_tile(
                             cb_source0,
+                            zero_tile_addr,
                             plane_addrs[source_slot],
                             plane_tile_columns[source_slot],
                             stored[source_slot],
@@ -1260,29 +1397,13 @@ void kernel_main() {
                             requested_x,
                             false,
                             route_staging_metrics TTWV_STAGING_VALIDATION_ARGUMENT);
-                        source0_pending = result == StageTileResult::kExactPending;
-                        if (result == StageTileResult::kFallback) {
-                            fill_stencil_source_tile(
-                                cb_source0,
-                                vertical,
-                                0,
-                                coefficient_count,
-                                plane_addrs[source_slot],
-                                plane_tile_columns[source_slot],
-                                stored[source_slot],
-                                source,
-                                output,
-                                tile_y,
-                                tile_x);
-                        }
                         stencil_requested_origin(
                             vertical, 1, coefficient_count, source, output, tile_y, tile_x, requested_y, requested_x);
-#ifdef TTWV_VALIDATE_ROUTE_STAGING
                         source1_requested_y = requested_y;
                         source1_requested_x = requested_x;
-#endif
-                        result = stage_optimized_tile(
+                        source1_result = stage_optimized_tile(
                             cb_source1,
+                            zero_tile_addr,
                             plane_addrs[source_slot],
                             plane_tile_columns[source_slot],
                             stored[source_slot],
@@ -1290,29 +1411,13 @@ void kernel_main() {
                             requested_x,
                             false,
                             route_staging_metrics TTWV_STAGING_VALIDATION_ARGUMENT);
-                        source1_pending = result == StageTileResult::kExactPending;
-                        if (result == StageTileResult::kFallback) {
-                            fill_stencil_source_tile(
-                                cb_source1,
-                                vertical,
-                                1,
-                                coefficient_count,
-                                plane_addrs[source_slot],
-                                plane_tile_columns[source_slot],
-                                stored[source_slot],
-                                source,
-                                output,
-                                tile_y,
-                                tile_x);
-                        }
                         requested_y = base_requested_y(base, output, tile_y);
                         requested_x = base_requested_x(base, output, tile_x);
-#ifdef TTWV_VALIDATE_ROUTE_STAGING
                         base_requested_tile_y = requested_y;
                         base_requested_tile_x = requested_x;
-#endif
-                        result = stage_optimized_tile(
+                        base_result = stage_optimized_tile(
                             cb_base,
+                            zero_tile_addr,
                             plane_addrs[base_slot],
                             plane_tile_columns[base_slot],
                             stored[base_slot],
@@ -1320,55 +1425,36 @@ void kernel_main() {
                             requested_x,
                             true,
                             route_staging_metrics TTWV_STAGING_VALIDATION_ARGUMENT);
-                        base_pending = result == StageTileResult::kExactPending;
-                        if (result == StageTileResult::kFallback) {
-                            fill_base_or_scale_tile(
-                                cb_base,
-                                plane_addrs[base_slot],
-                                plane_tile_columns[base_slot],
-                                stored[base_slot],
-                                base,
-                                output,
-                                tile_y,
-                                tile_x);
-                        }
                     }
-                    if (source0_pending || source1_pending || base_pending) {
+#endif
+                    if (source0_result != StageTileResult::kCompleted ||
+                        source1_result != StageTileResult::kCompleted || base_result != StageTileResult::kCompleted) {
                         noc_async_read_barrier();
                     }
-                    if (source0_pending) {
-                        TTWV_VALIDATE_STAGED_TILE(
-                            get_write_ptr(cb_source0),
-                            plane_addrs[source_slot],
-                            plane_tile_columns[source_slot],
-                            stored[source_slot],
-                            source0_requested_y,
-                            source0_requested_x,
-                            staging_validation_metrics);
-                        cb_push_back(cb_source0, 1);
-                    }
-                    if (source1_pending) {
-                        TTWV_VALIDATE_STAGED_TILE(
-                            get_write_ptr(cb_source1),
-                            plane_addrs[source_slot],
-                            plane_tile_columns[source_slot],
-                            stored[source_slot],
-                            source1_requested_y,
-                            source1_requested_x,
-                            staging_validation_metrics);
-                        cb_push_back(cb_source1, 1);
-                    }
-                    if (base_pending) {
-                        TTWV_VALIDATE_STAGED_TILE(
-                            get_write_ptr(cb_base),
-                            plane_addrs[base_slot],
-                            plane_tile_columns[base_slot],
-                            stored[base_slot],
-                            base_requested_tile_y,
-                            base_requested_tile_x,
-                            staging_validation_metrics);
-                        cb_push_back(cb_base, 1);
-                    }
+                    finish_pending_tile(
+                        source0_result,
+                        cb_source0,
+                        plane_addrs[source_slot],
+                        plane_tile_columns[source_slot],
+                        stored[source_slot],
+                        source0_requested_y,
+                        source0_requested_x TTWV_STAGING_VALIDATION_ARGUMENT);
+                    finish_pending_tile(
+                        source1_result,
+                        cb_source1,
+                        plane_addrs[source_slot],
+                        plane_tile_columns[source_slot],
+                        stored[source_slot],
+                        source1_requested_y,
+                        source1_requested_x TTWV_STAGING_VALIDATION_ARGUMENT);
+                    finish_pending_tile(
+                        base_result,
+                        cb_base,
+                        plane_addrs[base_slot],
+                        plane_tile_columns[base_slot],
+                        stored[base_slot],
+                        base_requested_tile_y,
+                        base_requested_tile_x TTWV_STAGING_VALIDATION_ARGUMENT);
 #else
                     if (scale) {
                         count_route_tile(

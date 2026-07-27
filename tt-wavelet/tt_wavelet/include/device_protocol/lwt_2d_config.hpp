@@ -59,6 +59,15 @@ inline constexpr uint32_t kLwt2DTransportMetricGenericBaseTiles = 15;
 // checks without growing the normal metrics page.
 inline constexpr uint32_t kLwt2DTransportMetricValidatedStagingTiles = kLwt2DTransportMetricOutputTiles;
 inline constexpr uint32_t kLwt2DTransportMetricStagingValidationMismatches = kLwt2DTransportMetricAxis;
+inline constexpr uint32_t kLwt2DTransportMetricValidationExactMismatches = kLwt2DTransportMetricStepType;
+inline constexpr uint32_t kLwt2DTransportMetricValidationShiftedMismatches =
+    kLwt2DTransportMetricCoefficientCount;
+inline constexpr uint32_t kLwt2DTransportMetricValidationTwoAxisMismatches =
+    kLwt2DTransportMetricExactSourceTiles;
+inline constexpr uint32_t kLwt2DTransportMetricValidationPartialMismatches =
+    kLwt2DTransportMetricShiftedSourceTiles;
+inline constexpr uint32_t kLwt2DTransportMetricValidationEmptyMismatches =
+    kLwt2DTransportMetricGenericSourceTiles;
 
 inline constexpr uint32_t kLwt2DTransportMetricWriterConfigCyclesLow = 16;
 inline constexpr uint32_t kLwt2DTransportMetricWriterConfigCyclesHigh = 17;

@@ -40,6 +40,7 @@ constexpr uint32_t kReaderRouteConfigCb = tt::CBIndex::c_5;
 constexpr uint32_t kWriterRouteConfigCb = tt::CBIndex::c_6;
 constexpr uint32_t kWriterBandConfigCb = tt::CBIndex::c_7;
 constexpr uint32_t kNocScratchCb = tt::CBIndex::c_8;
+constexpr uint32_t kRouteZeroCb = tt::CBIndex::c_9;
 constexpr uint32_t kOutputCb = tt::CBIndex::c_16;
 constexpr uint32_t kTileBuffering = 2;
 
@@ -311,6 +312,7 @@ void replace_plane_tile_counts_with_widths(std::vector<uint32_t>& args, const Lw
     create_cb(program, cores, kWriterRouteConfigCb, 1, device_protocol::kLwt2DRouteConfigPageBytes, false);
     create_cb(program, cores, kWriterBandConfigCb, 1, device_protocol::kLwt2DBandConfigPageBytes, false);
     create_cb(program, cores, kNocScratchCb, device_protocol::kLwt2DSplitScratchTileCount, kTileBytes, true);
+    create_cb(program, cores, kRouteZeroCb, 1, kTileBytes, true);
 
     std::vector<uint32_t> reader_compile_args = {
         kSource0Cb,
@@ -320,6 +322,7 @@ void replace_plane_tile_counts_with_widths(std::vector<uint32_t>& args, const Lw
         kReaderChunkConfigCb,
         kReaderRouteConfigCb,
         kNocScratchCb,
+        kRouteZeroCb,
     };
     tt::tt_metal::TensorAccessorArgs(input).append_to(reader_compile_args);
     tt::tt_metal::TensorAccessorArgs(*buffers.chunk_config->get_backing_buffer()).append_to(reader_compile_args);
@@ -361,6 +364,9 @@ void replace_plane_tile_counts_with_widths(std::vector<uint32_t>& args, const Lw
     }
     if (transport_policy.validate_route_staging) {
         reader_defines.emplace("TTWV_VALIDATE_ROUTE_STAGING", "1");
+    }
+    if (transport_policy.compute_only_benchmark) {
+        reader_defines.emplace("TTWV_LWT_2D_COMPUTE_ONLY_BENCHMARK", "1");
     }
     if (buffers.transport_metrics && !transport_policy.validate_route_staging) {
         reader_defines.emplace("TTWV_CAPTURE_TRANSPORT_METRICS", "1");
@@ -563,6 +569,7 @@ Lwt2DExecutable create_lwt_2d_executable_impl(
                 .executable_route_count = plan.executable_route_count,
                 .scale_routes_removed = plan.scale_routes_removed,
                 .latency_oriented_planner = plan.latency_oriented_planner,
+                .route_domain = plan.route_domain,
                 .estimated_latency_cycles = plan.estimated_latency_cycles,
                 .max_dependency_overhead = plan.max_dependency_overhead,
                 .l1_workspace_bytes = plan.allocated_workspace_bytes,
@@ -572,6 +579,12 @@ Lwt2DExecutable create_lwt_2d_executable_impl(
                 .l1_total_bytes = plan.allocated_l1_bytes,
                 .l1_capacity_bytes = l1_capacity,
                 .l1_headroom_bytes = l1_capacity - plan.allocated_l1_bytes,
+                .exact_initial_elements = plan.exact_initial_elements,
+                .internal_initial_elements = plan.internal_initial_elements,
+                .exact_route_elements = plan.exact_route_elements,
+                .internal_route_elements = plan.internal_route_elements,
+                .exact_final_elements = plan.exact_final_elements,
+                .internal_final_elements = plan.internal_final_elements,
             },
     };
     const std::vector<CoreChunkWork> work =
@@ -805,6 +818,16 @@ Lwt2DTransportMetricsSummary read_lwt_2d_transport_metrics(
             words[summary_offset + device_protocol::kLwt2DTransportMetricValidatedStagingTiles];
         summary.staging_validation_mismatches +=
             words[summary_offset + device_protocol::kLwt2DTransportMetricStagingValidationMismatches];
+        summary.validation_exact_mismatches +=
+            words[summary_offset + device_protocol::kLwt2DTransportMetricValidationExactMismatches];
+        summary.validation_shifted_mismatches +=
+            words[summary_offset + device_protocol::kLwt2DTransportMetricValidationShiftedMismatches];
+        summary.validation_two_axis_mismatches +=
+            words[summary_offset + device_protocol::kLwt2DTransportMetricValidationTwoAxisMismatches];
+        summary.validation_partial_mismatches +=
+            words[summary_offset + device_protocol::kLwt2DTransportMetricValidationPartialMismatches];
+        summary.validation_empty_mismatches +=
+            words[summary_offset + device_protocol::kLwt2DTransportMetricValidationEmptyMismatches];
         summary.validated_persistence_tiles +=
             words[summary_offset + device_protocol::kLwt2DTransportMetricValidatedPersistenceTiles];
         summary.persistence_validation_mismatches +=

@@ -38,6 +38,7 @@ namespace {
 
 struct Options {
     bool benchmark{false};
+    bool include_transfers{false};
     bool binary_input{false};
     bool quiet{false};
     bool split_metrics{false};
@@ -77,10 +78,12 @@ struct DeviceOutput {
            "[--terminal-writes fragmented|tiled] [--scale-policy explicit|fused] "
            "[--planner max-cores|latency] [--route-config per-route|preloaded] "
            "[--exact-transfer local-noc|l1-copy] "
+           "[--route-domain exact|tile-closed] "
            "[--transport-metrics [--transport-metrics-csv PATH]] [--validate-route-staging] "
            "[--alignment-csv PATH] "
            "[--microbenchmark empty|split|staging|compute|persistence|terminal|full] "
-           "[--split-snapshot-prefix PATH] [--route-snapshot-prefix PATH] [--benchmark [--repeats N] "
+           "[--split-snapshot-prefix PATH] [--route-snapshot-prefix PATH] "
+           "[--benchmark [--include-transfers] [--repeats N] "
            "[--warmup-runs N]] WAVELET HEIGHT WIDTH INPUT_FILE";
 }
 
@@ -119,6 +122,8 @@ struct DeviceOutput {
             }
         } else if (argument == "--benchmark") {
             options.benchmark = true;
+        } else if (argument == "--include-transfers") {
+            options.include_transfers = true;
         } else if (argument == "--binary-input") {
             options.binary_input = true;
         } else if (argument == "--quiet") {
@@ -150,6 +155,9 @@ struct DeviceOutput {
             options.benchmark = true;
             if (options.microbenchmark_mode == "split") {
                 options.split_metrics = true;
+            } else if (options.microbenchmark_mode == "compute") {
+                options.transport_metrics = true;
+                options.transport_policy.compute_only_benchmark = true;
             } else if (options.microbenchmark_mode != "empty" && options.microbenchmark_mode != "full") {
                 options.transport_metrics = true;
             }
@@ -263,6 +271,18 @@ struct DeviceOutput {
             } else {
                 throw std::runtime_error("--exact-transfer requires local-noc or l1-copy");
             }
+        } else if (argument == "--route-domain") {
+            if (++index >= argc) {
+                throw std::runtime_error("--route-domain requires exact or tile-closed");
+            }
+            const std::string_view policy = argv[index];
+            if (policy == "exact") {
+                options.transport_policy.route_domain = ttwv::Lwt2DRouteDomainPolicy::kExact;
+            } else if (policy == "tile-closed") {
+                options.transport_policy.route_domain = ttwv::Lwt2DRouteDomainPolicy::kTileClosed;
+            } else {
+                throw std::runtime_error("--route-domain requires exact or tile-closed");
+            }
         } else if (argument == "--route-snapshot-prefix") {
             if (++index >= argc || std::string_view{argv[index]}.empty()) {
                 throw std::runtime_error("--route-snapshot-prefix requires a path");
@@ -307,6 +327,9 @@ struct DeviceOutput {
     if (!options.benchmark && (options.repeats != 1 || options.warmup_runs != 1)) {
         throw std::runtime_error("--repeats and --warmup-runs require --benchmark");
     }
+    if (options.include_transfers && !options.benchmark) {
+        throw std::runtime_error("--include-transfers requires --benchmark");
+    }
     if (options.benchmark && options.route_snapshot_prefix) {
         throw std::runtime_error("--route-snapshot-prefix cannot be used with --benchmark");
     }
@@ -325,6 +348,13 @@ struct DeviceOutput {
     if (options.transport_policy.validate_route_staging &&
         options.transport_policy.route_staging != ttwv::Lwt2DRouteStagingImplementation::kOptimized) {
         throw std::runtime_error("--validate-route-staging requires --route-staging optimized");
+    }
+    if (options.transport_policy.compute_only_benchmark &&
+        options.transport_policy.route_staging != ttwv::Lwt2DRouteStagingImplementation::kOptimized) {
+        throw std::runtime_error("--microbenchmark compute requires --route-staging optimized");
+    }
+    if (options.transport_policy.compute_only_benchmark && options.transport_policy.validate_route_staging) {
+        throw std::runtime_error("--microbenchmark compute cannot be combined with --validate-route-staging");
     }
     if (options.quiet && !options.output_prefix && !options.split_snapshot_prefix && !options.route_snapshot_prefix &&
         !options.benchmark) {
@@ -730,6 +760,9 @@ void write_output_bands(const std::filesystem::path& prefix, const ttwv::Lwt2DRe
 }
 
 void print_telemetry(const ttwv::Lwt2DSchedulerTelemetry& telemetry) {
+    const auto ratio = [](const uint64_t internal, const uint64_t exact) {
+        return exact == 0 ? 1.0 : static_cast<double>(internal) / static_cast<double>(exact);
+    };
     std::cerr << "lwt_2d_active_core_count: " << telemetry.active_core_count << '\n'
               << "lwt_2d_chunk_count: " << telemetry.chunk_count << '\n'
               << "lwt_2d_chunk_tiles: " << telemetry.chunk_tiles_y << 'x' << telemetry.chunk_tiles_x << '\n'
@@ -737,9 +770,24 @@ void print_telemetry(const ttwv::Lwt2DSchedulerTelemetry& telemetry) {
               << "lwt_2d_executable_route_count: " << telemetry.executable_route_count << '\n'
               << "lwt_2d_scale_routes_removed: " << telemetry.scale_routes_removed << '\n'
               << "lwt_2d_planner: " << (telemetry.latency_oriented_planner ? "latency" : "max-cores") << '\n'
+              << "lwt_2d_route_domain: "
+              << (telemetry.route_domain == ttwv::Lwt2DRouteDomainPolicy::kTileClosed ? "tile-closed" : "exact")
+              << '\n'
               << "lwt_2d_estimated_latency_cycles: " << telemetry.estimated_latency_cycles << '\n'
               << "lwt_2d_l1_total_bytes: " << telemetry.l1_total_bytes << '\n'
-              << "lwt_2d_l1_headroom_bytes: " << telemetry.l1_headroom_bytes << '\n';
+              << "lwt_2d_l1_headroom_bytes: " << telemetry.l1_headroom_bytes << '\n'
+              << "lwt_2d_exact_initial_elements: " << telemetry.exact_initial_elements << '\n'
+              << "lwt_2d_internal_initial_elements: " << telemetry.internal_initial_elements << '\n'
+              << "lwt_2d_initial_overcompute_ratio: "
+              << ratio(telemetry.internal_initial_elements, telemetry.exact_initial_elements) << '\n'
+              << "lwt_2d_exact_route_elements: " << telemetry.exact_route_elements << '\n'
+              << "lwt_2d_internal_route_elements: " << telemetry.internal_route_elements << '\n'
+              << "lwt_2d_route_overcompute_ratio: "
+              << ratio(telemetry.internal_route_elements, telemetry.exact_route_elements) << '\n'
+              << "lwt_2d_exact_final_elements: " << telemetry.exact_final_elements << '\n'
+              << "lwt_2d_internal_final_elements: " << telemetry.internal_final_elements << '\n'
+              << "lwt_2d_final_overcompute_ratio: "
+              << ratio(telemetry.internal_final_elements, telemetry.exact_final_elements) << '\n';
 }
 
 void print_split_metrics(
@@ -777,6 +825,11 @@ void print_transport_metrics(const ttwv::Lwt2DTransportMetricsSummary& metrics) 
               << "lwt_2d_transport_fragmented_terminal_tiles: " << metrics.fragmented_terminal_tiles << '\n'
               << "lwt_2d_transport_validated_staging_tiles: " << metrics.validated_staging_tiles << '\n'
               << "lwt_2d_transport_staging_validation_mismatches: " << metrics.staging_validation_mismatches << '\n'
+              << "lwt_2d_transport_validation_exact_mismatches: " << metrics.validation_exact_mismatches << '\n'
+              << "lwt_2d_transport_validation_shifted_mismatches: " << metrics.validation_shifted_mismatches << '\n'
+              << "lwt_2d_transport_validation_two_axis_mismatches: " << metrics.validation_two_axis_mismatches << '\n'
+              << "lwt_2d_transport_validation_partial_mismatches: " << metrics.validation_partial_mismatches << '\n'
+              << "lwt_2d_transport_validation_empty_mismatches: " << metrics.validation_empty_mismatches << '\n'
               << "lwt_2d_transport_validated_persistence_tiles: " << metrics.validated_persistence_tiles << '\n'
               << "lwt_2d_transport_persistence_validation_mismatches: " << metrics.persistence_validation_mismatches
               << '\n'
@@ -884,9 +937,11 @@ void write_alignment_csv(
         throw std::runtime_error("Failed to create route-alignment CSV: " + path.string());
     }
     output << "wavelet,height,width,chunk,route,axis,step,coefficient_count,role,"
+              "requested_y,requested_x,stored_y_begin,stored_y_end,stored_x_begin,stored_x_end,"
+              "route_output_y_begin,route_output_y_end,route_output_x_begin,route_output_x_end,"
               "requested_y_mod32,requested_x_mod32,stored_y_begin_mod32,stored_x_begin_mod32,"
               "translation_y_mod32,translation_x_mod32,full_logical_coverage,zero_fill_required,"
-              "physical_plane_tiles_intersected,classification\n";
+              "valid_height,valid_width,valid_area,valid_fraction,physical_plane_tiles_intersected,classification\n";
 
     constexpr int64_t tile_side = static_cast<int64_t>(ttwv::kTileHeight2D);
     const auto rectangle_contains = [](const ttwv::IndexRectangle& rectangle, const int64_t y, const int64_t x) {
@@ -936,6 +991,17 @@ void write_alignment_csv(
                                           const int64_t output_tile_x) {
                 const bool full = rectangle_contains(stored_rectangle, requested_y, requested_x);
                 const bool intersects = rectangle_intersects(stored_rectangle, requested_y, requested_x);
+                const int64_t valid_y_begin = std::max(requested_y, static_cast<int64_t>(stored_rectangle.y.begin));
+                const int64_t valid_y_end =
+                    std::min(requested_y + tile_side, static_cast<int64_t>(stored_rectangle.y.end));
+                const int64_t valid_x_begin = std::max(requested_x, static_cast<int64_t>(stored_rectangle.x.begin));
+                const int64_t valid_x_end =
+                    std::min(requested_x + tile_side, static_cast<int64_t>(stored_rectangle.x.end));
+                const uint32_t valid_height =
+                    intersects ? static_cast<uint32_t>(std::max<int64_t>(0, valid_y_end - valid_y_begin)) : 0U;
+                const uint32_t valid_width =
+                    intersects ? static_cast<uint32_t>(std::max<int64_t>(0, valid_x_end - valid_x_begin)) : 0U;
+                const uint32_t valid_area = valid_height * valid_width;
                 const bool y_aligned = modulo_tile(requested_y) == 0;
                 const bool x_aligned = modulo_tile(requested_x) == 0;
                 const char* classification = nullptr;
@@ -952,12 +1018,18 @@ void write_alignment_csv(
                 output << wavelet << ',' << plan.input_height << ',' << plan.input_width << ',' << chunk_index << ','
                        << route_index << ',' << (route.axis == ttwv::Lwt2DAxis::kVertical ? "vertical" : "horizontal")
                        << ',' << step_name(route.type) << ',' << coefficient_count << ',' << role << ','
+                       << requested_y << ',' << requested_x << ',' << stored_rectangle.y.begin << ','
+                       << stored_rectangle.y.end << ',' << stored_rectangle.x.begin << ','
+                       << stored_rectangle.x.end << ',' << route.output.y.begin << ',' << route.output.y.end << ','
+                       << route.output.x.begin << ',' << route.output.x.end << ','
                        << modulo_tile(requested_y) << ',' << modulo_tile(requested_x) << ','
                        << stored_rectangle.y.begin % ttwv::kTileHeight2D << ','
                        << stored_rectangle.x.begin % ttwv::kTileWidth2D << ','
                        << modulo_tile(requested_y - output_tile_y) << ',' << modulo_tile(requested_x - output_tile_x)
-                       << ',' << (full ? 1 : 0) << ',' << (full ? 0 : 1) << ',' << physical_tiles << ','
-                       << classification << '\n';
+                       << ',' << (full ? 1 : 0) << ',' << (full ? 0 : 1) << ',' << valid_height << ','
+                       << valid_width << ',' << valid_area << ','
+                       << static_cast<double>(valid_area) / static_cast<double>(ttwv::kTileHeight2D * ttwv::kTileWidth2D)
+                       << ',' << physical_tiles << ',' << classification << '\n';
             };
 
             for (size_t tile_y = 0; tile_y < tile_rows; ++tile_y) {
@@ -1104,6 +1176,35 @@ int main(int argc, char** argv) {
                           << "lwt_2d_p90_time_ms: " << percentile(0.9) << '\n'
                           << "lwt_2d_stddev_time_ms: " << std::sqrt(squared_error / static_cast<double>(times.size()))
                           << '\n';
+                if (options.include_transfers) {
+                    std::array<std::vector<float>, ttwv::device_protocol::kLwt2DBandCount> transfer_outputs;
+                    const auto execute_end_to_end = [&]() {
+                        const auto start = std::chrono::steady_clock::now();
+                        tt::tt_metal::distributed::EnqueueWriteMeshBuffer(
+                            command_queue, input.buffer, tiled, false);
+                        ttwv::execute_lwt_2d(*mesh_device, command_queue, executable);
+                        for (size_t band = 0; band < transfer_outputs.size(); ++band) {
+                            tt::tt_metal::distributed::EnqueueReadMeshBuffer(
+                                command_queue, transfer_outputs[band], executable.buffers.outputs[band], true);
+                        }
+                        const auto stop = std::chrono::steady_clock::now();
+                        return std::chrono::duration<double, std::milli>(stop - start).count();
+                    };
+                    for (size_t warmup = 0; warmup < options.warmup_runs; ++warmup) {
+                        static_cast<void>(execute_end_to_end());
+                    }
+                    std::vector<double> end_to_end_times;
+                    end_to_end_times.reserve(options.repeats);
+                    for (size_t repeat = 0; repeat < options.repeats; ++repeat) {
+                        end_to_end_times.push_back(execute_end_to_end());
+                    }
+                    const double end_to_end_total =
+                        std::accumulate(end_to_end_times.begin(), end_to_end_times.end(), 0.0);
+                    std::sort(end_to_end_times.begin(), end_to_end_times.end());
+                    std::cerr << "lwt_2d_end_to_end_time_ms: "
+                              << end_to_end_total / static_cast<double>(end_to_end_times.size()) << '\n'
+                              << "lwt_2d_min_end_to_end_time_ms: " << end_to_end_times.front() << '\n';
+                }
                 print_telemetry(executable.buffers.scheduler);
                 if (options.split_metrics) {
                     print_split_metrics(
