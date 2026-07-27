@@ -18,6 +18,7 @@
 #include "tt-metalium/host_api.hpp"
 #include "tt-metalium/mesh_buffer.hpp"
 #include "tt-metalium/mesh_device.hpp"
+#include "tt_wavelet/include/lifting/inverse_plan_2d.hpp"
 #include "tt_wavelet/include/lifting/plan_2d.hpp"
 #include "tt_wavelet/include/lifting/static_scheme.hpp"
 
@@ -211,6 +212,12 @@ struct Lwt2DExecutable {
     tt::tt_metal::distributed::MeshWorkload workload{};
 };
 
+struct Ilwt2DExecutable {
+    Ilwt2DExecutionPlan plan{};
+    Lwt2DWorkingBuffers buffers{};
+    tt::tt_metal::distributed::MeshWorkload workload{};
+};
+
 [[nodiscard]] Lwt2DExecutable create_lwt_2d_executable_impl(
     const std::filesystem::path& kernel_root,
     tt::tt_metal::distributed::MeshDevice& mesh_device,
@@ -280,6 +287,51 @@ void execute_lwt_2d(
     tt::tt_metal::distributed::MeshDevice& mesh_device,
     tt::tt_metal::distributed::MeshCommandQueue& command_queue,
     Lwt2DExecutable& executable);
+
+[[nodiscard]] Ilwt2DExecutable create_ilwt_2d_executable_impl(
+    const std::filesystem::path& kernel_root,
+    tt::tt_metal::distributed::MeshDevice& mesh_device,
+    const std::array<const tt::tt_metal::Buffer*, device_protocol::kLwt2DBandCount>& band_buffers,
+    Ilwt2DExecutionPlan plan,
+    const char* inverse_compute_scheme_header,
+    const char* inverse_compute_scheme_type);
+
+template <typename Scheme>
+[[nodiscard]] Ilwt2DExecutable create_ilwt_2d_executable(
+    const std::filesystem::path& kernel_root,
+    tt::tt_metal::distributed::MeshDevice& mesh_device,
+    const tt::tt_metal::Buffer& ll,
+    const tt::tt_metal::Buffer& lh,
+    const tt::tt_metal::Buffer& hl,
+    const tt::tt_metal::Buffer& hh,
+    const size_t output_height,
+    const size_t output_width,
+    const uint32_t core_limit = 1) {
+    using InverseScheme = typename Scheme::inverse;
+    Ilwt2DExecutionPlan plan =
+        make_ilwt_2d_execution_plan<Scheme>(output_height, output_width, core_limit, 768 * 1024);
+    const size_t required_band_bytes =
+        checked_shape_area_2d(plan.tiling.band.storage, "2D ILWT band storage") * sizeof(float);
+    const std::array<const tt::tt_metal::Buffer*, device_protocol::kLwt2DBandCount> bands = {&ll, &lh, &hl, &hh};
+    for (const auto* band : bands) {
+        TT_FATAL(band->size() >= required_band_bytes, "2D ILWT input band is smaller than its tiled storage shape");
+    }
+    return create_ilwt_2d_executable_impl(
+        kernel_root,
+        mesh_device,
+        bands,
+        std::move(plan),
+        InverseScheme::compute_scheme_header,
+        InverseScheme::compute_scheme_type);
+}
+
+void prepare_ilwt_2d(
+    tt::tt_metal::distributed::MeshCommandQueue& command_queue, Ilwt2DExecutable& executable);
+
+void execute_ilwt_2d(
+    tt::tt_metal::distributed::MeshDevice& mesh_device,
+    tt::tt_metal::distributed::MeshCommandQueue& command_queue,
+    Ilwt2DExecutable& executable);
 
 [[nodiscard]] Lwt2DSplitMetricsSummary read_lwt_2d_split_metrics(
     tt::tt_metal::distributed::MeshCommandQueue& command_queue, Lwt2DExecutable& executable);

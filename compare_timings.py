@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 import argparse
+import array
 import csv
+import json
 import os
 import re
 import subprocess
@@ -13,6 +15,7 @@ from typing import Callable
 PROJECT_ROOT = Path(__file__).resolve().parent
 TT_WAVELET_BINARY = PROJECT_ROOT / "build" / "lwt"
 TT_WAVELET_2D_BINARY = PROJECT_ROOT / "build" / "lwt_2d"
+TT_WAVELET_ILWT_2D_BINARY = PROJECT_ROOT / "build" / "ilwt_2d"
 TT_WAVELET_2D_REFERENCE_BINARY = PROJECT_ROOT / "build" / "lwt_2d_reference"
 TT_WAVELET_ENV = PROJECT_ROOT / "scripts" / "set_env.sh"
 DEFAULT_SCHEMES_DIR = PROJECT_ROOT / "wavelets"
@@ -54,35 +57,36 @@ REFERENCE_2D_MEAN_TIME_PATTERN = re.compile(
 REFERENCE_2D_MIN_TIME_PATTERN = re.compile(
     r"lwt_2d_reference_min_time_ms:\s*([0-9eE+.\-]+)"
 )
+TT_2D_PREFIX = r"(?:lwt|ilwt)_2d"
 TT_2D_MEAN_TIME_PATTERN = re.compile(
-    r"lwt_2d_execution_time_ms:\s*([0-9eE+.\-]+)"
+    rf"{TT_2D_PREFIX}_execution_time_ms:\s*([0-9eE+.\-]+)"
 )
 TT_2D_MIN_TIME_PATTERN = re.compile(
-    r"lwt_2d_min_execution_time_ms:\s*([0-9eE+.\-]+)"
+    rf"{TT_2D_PREFIX}_min_execution_time_ms:\s*([0-9eE+.\-]+)"
 )
 TT_2D_MEDIAN_TIME_PATTERN = re.compile(
-    r"lwt_2d_median_time_ms:\s*([0-9eE+.\-]+)"
+    rf"{TT_2D_PREFIX}_median_time_ms:\s*([0-9eE+.\-]+)"
 )
 TT_2D_P10_TIME_PATTERN = re.compile(
-    r"lwt_2d_p10_time_ms:\s*([0-9eE+.\-]+)"
+    rf"{TT_2D_PREFIX}_p10_time_ms:\s*([0-9eE+.\-]+)"
 )
 TT_2D_P90_TIME_PATTERN = re.compile(
-    r"lwt_2d_p90_time_ms:\s*([0-9eE+.\-]+)"
+    rf"{TT_2D_PREFIX}_p90_time_ms:\s*([0-9eE+.\-]+)"
 )
 TT_2D_STDDEV_TIME_PATTERN = re.compile(
-    r"lwt_2d_stddev_time_ms:\s*([0-9eE+.\-]+)"
+    rf"{TT_2D_PREFIX}_stddev_time_ms:\s*([0-9eE+.\-]+)"
 )
 TT_2D_ACTIVE_CORE_PATTERN = re.compile(
-    r"lwt_2d_active_core_count:\s*(\d+)"
+    rf"{TT_2D_PREFIX}_active_core_count:\s*(\d+)"
 )
-TT_2D_CHUNK_COUNT_PATTERN = re.compile(r"lwt_2d_chunk_count:\s*(\d+)")
-TT_2D_CHUNK_TILES_PATTERN = re.compile(r"lwt_2d_chunk_tiles:\s*(\d+x\d+)")
-TT_2D_ROUTE_COUNT_PATTERN = re.compile(r"lwt_2d_route_count:\s*(\d+)")
+TT_2D_CHUNK_COUNT_PATTERN = re.compile(rf"{TT_2D_PREFIX}_chunk_count:\s*(\d+)")
+TT_2D_CHUNK_TILES_PATTERN = re.compile(rf"{TT_2D_PREFIX}_chunk_tiles:\s*(\d+x\d+)")
+TT_2D_ROUTE_COUNT_PATTERN = re.compile(rf"{TT_2D_PREFIX}_route_count:\s*(\d+)")
 TT_2D_EXECUTABLE_ROUTE_COUNT_PATTERN = re.compile(
-    r"lwt_2d_executable_route_count:\s*(\d+)"
+    rf"{TT_2D_PREFIX}_executable_route_count:\s*(\d+)"
 )
 TT_2D_SCALE_ROUTES_REMOVED_PATTERN = re.compile(
-    r"lwt_2d_scale_routes_removed:\s*(\d+)"
+    rf"{TT_2D_PREFIX}_scale_routes_removed:\s*(\d+)"
 )
 DEFAULT_LOG_CANDIDATES = [
     PROJECT_ROOT / "wavelets.log",
@@ -409,6 +413,37 @@ def generate_signal(length: int, start: float, step: float) -> list[float]:
 
 def write_signal_file(path: Path, signal: list[float]) -> None:
     path.write_text(" ".join(repr(value) for value in signal), encoding="utf-8")
+
+
+def write_ilwt_2d_band_files(
+    paths: list[Path],
+    band_height: int,
+    band_width: int,
+    start: float,
+    step: float,
+) -> None:
+    band_elements = band_height * band_width
+    for band_index, path in enumerate(paths):
+        values = array.array(
+            "f",
+            (
+                start + step * float((element + band_index * 17) % 4096)
+                for element in range(band_elements)
+            ),
+        )
+        with path.open("wb") as handle:
+            values.tofile(handle)
+
+
+def scheme_tap_size(schemes_dir: Path, wavelet: str) -> int:
+    if wavelet == "synthetic-k17":
+        return 34
+    scheme_path = schemes_dir / f"{wavelet}.json"
+    with scheme_path.open(encoding="utf-8") as handle:
+        tap_size = int(json.load(handle)["tap_size"])
+    if tap_size <= 0:
+        raise ValueError(f"Scheme {wavelet} has invalid tap_size {tap_size}")
+    return tap_size
 
 
 def sh_quote(value: str) -> str:
@@ -786,38 +821,53 @@ def run_fp32_reference_2d_benchmark(
 
 def run_tt_wavelet_2d_benchmark(
     args: argparse.Namespace,
+    transform: str,
     wavelet: str,
     height: int,
     width: int,
     signal_file: Path,
+    band_files: list[Path],
 ) -> tuple[float, float, float, float, float, float, int, int, str, int, int, int]:
-    alignment_option = ""
-    if args.tt_alignment_csv_dir is not None:
-        args.tt_alignment_csv_dir.mkdir(parents=True, exist_ok=True)
-        alignment_path = (
-            args.tt_alignment_csv_dir / f"{wavelet}_{height}x{width}.csv"
+    if transform == "ilwt":
+        output_path = signal_file.with_suffix(".ilwt-output.f32")
+        command = (
+            f"source {sh_quote(str(TT_WAVELET_ENV))} "
+            f"&& {sh_quote(str(TT_WAVELET_ILWT_2D_BINARY))} "
+            f"--cores {args.tt_cores} "
+            f"--repeats {args.tt_repeats} "
+            f"--warmup-runs {args.tt_warmup_runs} "
+            f"--output {sh_quote(str(output_path))} "
+            f"{sh_quote(wavelet)} {height} {width} "
+            + " ".join(sh_quote(str(path)) for path in band_files)
         )
-        alignment_option = f"--alignment-csv {sh_quote(str(alignment_path))} "
-    command = (
-        f"source {sh_quote(str(TT_WAVELET_ENV))} "
-        f"&& {sh_quote(str(TT_WAVELET_2D_BINARY))} "
-        f"--boundary-mode symmetric --benchmark --cores {args.tt_cores} "
-        f"--split-implementation {args.tt_split_implementation} "
-        f"--route-staging {args.tt_route_staging} "
-        f"--route-persistence {args.tt_route_persistence} "
-        f"--terminal-writes {args.tt_terminal_writes} "
-        f"--scale-policy {args.tt_scale_policy} "
-        f"--planner {args.tt_planner} "
-        f"--route-config {args.tt_route_config} "
-        f"--route-domain {args.tt_route_domain} "
-        f"--exact-transfer {args.tt_exact_transfer} "
-        f"{alignment_option}"
-        f"{'--transport-metrics ' if args.tt_transport_metrics else ''}"
-        f"--repeats {args.tt_repeats} "
-        f"--warmup-runs {args.tt_warmup_runs} "
-        f"{sh_quote(wavelet)} {height} {width} "
-        f"{sh_quote(str(signal_file))}"
-    )
+    else:
+        alignment_option = ""
+        if args.tt_alignment_csv_dir is not None:
+            args.tt_alignment_csv_dir.mkdir(parents=True, exist_ok=True)
+            alignment_path = (
+                args.tt_alignment_csv_dir / f"{wavelet}_{height}x{width}.csv"
+            )
+            alignment_option = f"--alignment-csv {sh_quote(str(alignment_path))} "
+        command = (
+            f"source {sh_quote(str(TT_WAVELET_ENV))} "
+            f"&& {sh_quote(str(TT_WAVELET_2D_BINARY))} "
+            f"--boundary-mode symmetric --benchmark --cores {args.tt_cores} "
+            f"--split-implementation {args.tt_split_implementation} "
+            f"--route-staging {args.tt_route_staging} "
+            f"--route-persistence {args.tt_route_persistence} "
+            f"--terminal-writes {args.tt_terminal_writes} "
+            f"--scale-policy {args.tt_scale_policy} "
+            f"--planner {args.tt_planner} "
+            f"--route-config {args.tt_route_config} "
+            f"--route-domain {args.tt_route_domain} "
+            f"--exact-transfer {args.tt_exact_transfer} "
+            f"{alignment_option}"
+            f"{'--transport-metrics ' if args.tt_transport_metrics else ''}"
+            f"--repeats {args.tt_repeats} "
+            f"--warmup-runs {args.tt_warmup_runs} "
+            f"{sh_quote(wavelet)} {height} {width} "
+            f"{sh_quote(str(signal_file))}"
+        )
     completed = subprocess.run(
         ["bash", "-lc", command],
         cwd=PROJECT_ROOT,
@@ -880,12 +930,12 @@ def run_tt_wavelet_2d_benchmark(
 
 
 def run_2d_benchmarks(args: argparse.Namespace) -> int:
-    if args.transform != "lwt":
-        raise ValueError("2D timing mode currently supports forward LWT only")
-
     needs_pywt = args.backend in {"both", "pywt"}
     needs_tt = args.backend in {"both", "tt-wavelet"}
     needs_reference = args.backend == "fp32-reference"
+    transforms = ["lwt", "ilwt"] if args.transform == "both" else [args.transform]
+    if needs_reference and "ilwt" in transforms:
+        raise ValueError("The 2D FP32 reference backend currently supports forward LWT only")
     ensure_runtime_packages(require_pywt=needs_pywt)
     if needs_pywt:
         import numpy as np
@@ -921,9 +971,15 @@ def run_2d_benchmarks(args: argparse.Namespace) -> int:
             "./update.sh Release lwt_2d_reference"
         )
     if needs_tt and not TT_WAVELET_2D_BINARY.exists():
+        if "lwt" in transforms:
+            raise FileNotFoundError(
+                f"Fused 2D TT-wavelet binary not found at {TT_WAVELET_2D_BINARY}. "
+                "Rebuild with ./update.sh Release lwt_2d"
+            )
+    if needs_tt and "ilwt" in transforms and not TT_WAVELET_ILWT_2D_BINARY.exists():
         raise FileNotFoundError(
-            f"Fused 2D TT-wavelet binary not found at {TT_WAVELET_2D_BINARY}. "
-            "Rebuild with ./update.sh Release lwt_2d"
+            f"Fused 2D TT-wavelet inverse binary not found at {TT_WAVELET_ILWT_2D_BINARY}. "
+            "Rebuild with ./update.sh Release ilwt_2d"
         )
 
     if args.wavelets:
@@ -977,6 +1033,7 @@ def run_2d_benchmarks(args: argparse.Namespace) -> int:
             for raw_row in csv.DictReader(handle):
                 try:
                     key = (
+                        raw_row.get("transform", "lwt2d"),
                         raw_row["wavelet"],
                         int(raw_row["signal_height"]),
                         int(raw_row["signal_width"]),
@@ -992,7 +1049,10 @@ def run_2d_benchmarks(args: argparse.Namespace) -> int:
                 rows[key] = {name: raw_row.get(name, "") for name in fieldnames}
 
     signal_file = csv_path.with_suffix(".signal.txt")
-    total_runs = len(shapes) * len(wavelets)
+    band_files = [
+        csv_path.with_suffix(f".ilwt-band-{band}.f32") for band in ("LL", "LH", "HL", "HH")
+    ]
+    total_runs = len(shapes) * len(wavelets) * len(transforms)
     with tqdm(total=total_runs, desc="Benchmarking 2D", unit="run") as progress:
         for height, width in shapes:
             signal_list = generate_signal(
@@ -1005,134 +1065,159 @@ def run_2d_benchmarks(args: argparse.Namespace) -> int:
                 if needs_pywt
                 else None
             )
-            for wavelet in wavelets:
-                key = (
-                    wavelet,
-                    height,
-                    width,
-                    args.signal_start,
-                    args.signal_step,
-                    args.pywt_mode,
-                    args.tt_boundary_mode,
-                )
-                if key not in rows:
-                    rows[key] = {name: "" for name in fieldnames}
-                    row_order.append(key)
-                row = rows[key]
-                row.update(
-                    {
-                        "transform": "lwt2d",
-                        "wavelet": wavelet,
-                        "signal_height": height,
-                        "signal_width": width,
-                        "signal_elements": height * width,
-                        "signal_start": args.signal_start,
-                        "signal_step": args.signal_step,
-                        "pywt_mode": args.pywt_mode,
-                        "tt_boundary_mode": args.tt_boundary_mode,
-                        "fp32_reference_boundary_mode": args.tt_boundary_mode,
-                        "status": "pending",
-                        "error": "",
-                    }
-                )
-
-                status = "ok"
-                error_message = ""
-                try:
-                    if needs_pywt:
-                        pywt_run = lambda: pywt.dwt2(
-                            matrix, wavelet, mode=args.pywt_mode
+            for transform in transforms:
+                for wavelet in wavelets:
+                    if needs_tt and transform == "ilwt":
+                        tap_size = scheme_tap_size(args.schemes_dir, wavelet)
+                        write_ilwt_2d_band_files(
+                            band_files,
+                            (height + tap_size - 1) // 2,
+                            (width + tap_size - 1) // 2,
+                            args.signal_start,
+                            args.signal_step,
                         )
-                        pywt_mean, pywt_min = time_repeats(
-                            pywt_run, args.pywt_repeats, args.pywt_warmup_runs
-                        )
-                        row["pywt_mean_s"] = pywt_mean if pywt_mean is not None else ""
-                        row["pywt_min_s"] = pywt_min if pywt_min is not None else ""
-                        row["pywt_runs"] = args.pywt_repeats
+                    key = (
+                        f"{transform}2d",
+                        wavelet,
+                        height,
+                        width,
+                        args.signal_start,
+                        args.signal_step,
+                        args.pywt_mode,
+                        args.tt_boundary_mode,
+                    )
+                    if key not in rows:
+                        rows[key] = {name: "" for name in fieldnames}
+                        row_order.append(key)
+                    row = rows[key]
+                    row.update(
+                        {
+                            "transform": f"{transform}2d",
+                            "wavelet": wavelet,
+                            "signal_height": height,
+                            "signal_width": width,
+                            "signal_elements": height * width,
+                            "signal_start": args.signal_start,
+                            "signal_step": args.signal_step,
+                            "pywt_mode": args.pywt_mode,
+                            "tt_boundary_mode": args.tt_boundary_mode,
+                            "fp32_reference_boundary_mode": args.tt_boundary_mode,
+                            "status": "pending",
+                            "error": "",
+                        }
+                    )
 
-                    if needs_reference:
-                        scheme_path = args.schemes_dir / f"{wavelet}.json"
-                        if not scheme_path.exists() and wavelet != "synthetic-k17":
-                            raise FileNotFoundError(f"Scheme not found: {scheme_path}")
-                        reference_mean, reference_min = run_fp32_reference_2d_benchmark(
-                            args, wavelet, height, width, signal_file
-                        )
-                        row["fp32_reference_mean_s"] = reference_mean
-                        row["fp32_reference_min_s"] = reference_min
-                        row["fp32_reference_runs"] = args.tt_repeats
-
-                    if needs_tt:
-                        scheme_path = args.schemes_dir / f"{wavelet}.json"
-                        if not scheme_path.exists() and wavelet != "synthetic-k17":
-                            raise FileNotFoundError(
-                                f"Scheme not found: {scheme_path}"
+                    status = "ok"
+                    error_message = ""
+                    try:
+                        if needs_pywt:
+                            if transform == "ilwt":
+                                coefficients = pywt.dwt2(
+                                    matrix, wavelet, mode=args.pywt_mode
+                                )
+                                pywt_run = lambda: pywt.idwt2(
+                                    coefficients, wavelet, mode=args.pywt_mode
+                                )
+                            else:
+                                pywt_run = lambda: pywt.dwt2(
+                                    matrix, wavelet, mode=args.pywt_mode
+                                )
+                            pywt_mean, pywt_min = time_repeats(
+                                pywt_run, args.pywt_repeats, args.pywt_warmup_runs
                             )
-                        (
-                            tt_mean,
-                            tt_min,
-                            tt_median,
-                            tt_p10,
-                            tt_p90,
-                            tt_stddev,
-                            active_cores,
-                            chunk_count,
-                            chunk_tiles,
-                            route_count,
-                            executable_route_count,
-                            scale_routes_removed,
-                        ) = run_tt_wavelet_2d_benchmark(
-                            args, wavelet, height, width, signal_file
-                        )
-                        row["tt_mean_s"] = tt_mean
-                        row["tt_min_s"] = tt_min
-                        row["tt_median_s"] = tt_median
-                        row["tt_p10_s"] = tt_p10
-                        row["tt_p90_s"] = tt_p90
-                        row["tt_stddev_s"] = tt_stddev
-                        row["tt_runs"] = args.tt_repeats
-                        row["tt_active_core_count"] = active_cores
-                        row["tt_chunk_count"] = chunk_count
-                        row["tt_chunk_tiles"] = chunk_tiles
-                        row["tt_route_count"] = route_count
-                        row["tt_executable_route_count"] = executable_route_count
-                        row["tt_scale_routes_removed"] = scale_routes_removed
+                            row["pywt_mean_s"] = pywt_mean if pywt_mean is not None else ""
+                            row["pywt_min_s"] = pywt_min if pywt_min is not None else ""
+                            row["pywt_runs"] = args.pywt_repeats
 
-                    pywt_mean = optional_float(row.get("pywt_mean_s"))
-                    reference_mean = optional_float(row.get("fp32_reference_mean_s"))
-                    tt_mean = optional_float(row.get("tt_mean_s"))
-                    row["speedup_pywt_over_fp32_reference"] = (
-                        pywt_mean / reference_mean
-                        if pywt_mean is not None
-                        and reference_mean is not None
-                        and reference_mean > 0
-                        else ""
-                    )
-                    row["speedup_pywt_over_tt"] = (
-                        pywt_mean / tt_mean
-                        if pywt_mean is not None
-                        and tt_mean is not None
-                        and tt_mean > 0
-                        else ""
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    status = "error"
-                    error_message = str(exc)
-                row["status"] = status
-                row["error"] = error_message
+                        if needs_reference:
+                            scheme_path = args.schemes_dir / f"{wavelet}.json"
+                            if not scheme_path.exists() and wavelet != "synthetic-k17":
+                                raise FileNotFoundError(f"Scheme not found: {scheme_path}")
+                            reference_mean, reference_min = run_fp32_reference_2d_benchmark(
+                                args, wavelet, height, width, signal_file
+                            )
+                            row["fp32_reference_mean_s"] = reference_mean
+                            row["fp32_reference_min_s"] = reference_min
+                            row["fp32_reference_runs"] = args.tt_repeats
 
-                tmp_path = csv_path.with_suffix(csv_path.suffix + ".tmp")
-                with tmp_path.open("w", newline="", encoding="utf-8") as handle:
-                    writer = csv.DictWriter(handle, fieldnames=fieldnames)
-                    writer.writeheader()
-                    for row_key_2d in row_order:
-                        writer.writerow(
-                            {
-                                name: rows[row_key_2d].get(name, "")
-                                for name in fieldnames
-                            }
+                        if needs_tt:
+                            scheme_path = args.schemes_dir / f"{wavelet}.json"
+                            if not scheme_path.exists() and wavelet != "synthetic-k17":
+                                raise FileNotFoundError(
+                                    f"Scheme not found: {scheme_path}"
+                                )
+                            (
+                                tt_mean,
+                                tt_min,
+                                tt_median,
+                                tt_p10,
+                                tt_p90,
+                                tt_stddev,
+                                active_cores,
+                                chunk_count,
+                                chunk_tiles,
+                                route_count,
+                                executable_route_count,
+                                scale_routes_removed,
+                            ) = run_tt_wavelet_2d_benchmark(
+                                args,
+                                transform,
+                                wavelet,
+                                height,
+                                width,
+                                signal_file,
+                                band_files,
+                            )
+                            row["tt_mean_s"] = tt_mean
+                            row["tt_min_s"] = tt_min
+                            row["tt_median_s"] = tt_median
+                            row["tt_p10_s"] = tt_p10
+                            row["tt_p90_s"] = tt_p90
+                            row["tt_stddev_s"] = tt_stddev
+                            row["tt_runs"] = args.tt_repeats
+                            row["tt_active_core_count"] = active_cores
+                            row["tt_chunk_count"] = chunk_count
+                            row["tt_chunk_tiles"] = chunk_tiles
+                            row["tt_route_count"] = route_count
+                            row["tt_executable_route_count"] = executable_route_count
+                            row["tt_scale_routes_removed"] = scale_routes_removed
+
+                        pywt_mean = optional_float(row.get("pywt_mean_s"))
+                        reference_mean = optional_float(row.get("fp32_reference_mean_s"))
+                        tt_mean = optional_float(row.get("tt_mean_s"))
+                        row["speedup_pywt_over_fp32_reference"] = (
+                            pywt_mean / reference_mean
+                            if pywt_mean is not None
+                            and reference_mean is not None
+                            and reference_mean > 0
+                            else ""
                         )
-                tmp_path.replace(csv_path)
-                progress.update(1)
+                        row["speedup_pywt_over_tt"] = (
+                            pywt_mean / tt_mean
+                            if pywt_mean is not None
+                            and tt_mean is not None
+                            and tt_mean > 0
+                            else ""
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        status = "error"
+                        error_message = str(exc)
+                    row["status"] = status
+                    row["error"] = error_message
+
+                    tmp_path = csv_path.with_suffix(csv_path.suffix + ".tmp")
+                    with tmp_path.open("w", newline="", encoding="utf-8") as handle:
+                        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+                        writer.writeheader()
+                        for row_key_2d in row_order:
+                            writer.writerow(
+                                {
+                                    name: rows[row_key_2d].get(name, "")
+                                    for name in fieldnames
+                                }
+                            )
+                    tmp_path.replace(csv_path)
+                    progress.update(1)
     return 0
 
 

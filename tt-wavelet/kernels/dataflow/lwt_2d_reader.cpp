@@ -519,6 +519,150 @@ ALWI void initialize_planes_tiled(
 }
 #endif
 
+#ifdef TTWV_ILWT_2D
+template <typename BandAccessor>
+ALWI void initialize_inverse_band_plane(
+    const BandAccessor& band_args,
+    const uint32_t band_addr,
+    const uint32_t band_height,
+    const uint32_t band_width,
+    const uint32_t band_tile_columns,
+    const int32_t y_internal_offset,
+    const int32_t x_internal_offset,
+    const Rect& rectangle,
+    const uint32_t plane_addr,
+    const uint32_t plane_tile_columns,
+    const uint32_t scratch_addr,
+    const uint32_t zero_tile_addr) {
+    const auto band = TensorAccessor(band_args, band_addr, kTileBytes);
+    const uint32_t y_origin = aligned_begin(rectangle.y_begin);
+    const uint32_t x_origin = aligned_begin(rectangle.x_begin);
+    const uint32_t y_end = aligned_end(rectangle.y_begin, rectangle.y_length);
+    const uint32_t x_end = aligned_end(rectangle.x_begin, rectangle.x_length);
+
+    for (uint32_t tile_y = y_origin; tile_y < y_end; tile_y += kTileSide) {
+        for (uint32_t tile_x = x_origin; tile_x < x_end; tile_x += kTileSide) {
+            const uint32_t destination_tile =
+                ((tile_y - y_origin) / kTileSide) * plane_tile_columns + (tile_x - x_origin) / kTileSide;
+            const uint32_t destination_addr = plane_addr + destination_tile * kTileBytes;
+            const int32_t full_canonical_y = static_cast<int32_t>(tile_y) - y_internal_offset;
+            const int32_t full_canonical_x = static_cast<int32_t>(tile_x) - x_internal_offset;
+            const bool exact_full_tile =
+                tile_y >= rectangle.y_begin && tile_y + kTileSide <= rectangle.y_begin + rectangle.y_length &&
+                tile_x >= rectangle.x_begin && tile_x + kTileSide <= rectangle.x_begin + rectangle.x_length &&
+                full_canonical_y >= 0 && full_canonical_x >= 0 &&
+                full_canonical_y % static_cast<int32_t>(kTileSide) == 0 &&
+                full_canonical_x % static_cast<int32_t>(kTileSide) == 0 &&
+                full_canonical_y + static_cast<int32_t>(kTileSide) <= static_cast<int32_t>(band_height) &&
+                full_canonical_x + static_cast<int32_t>(kTileSide) <= static_cast<int32_t>(band_width);
+            if (exact_full_tile) {
+                const uint32_t source_tile =
+                    (static_cast<uint32_t>(full_canonical_y) / kTileSide) * band_tile_columns +
+                    static_cast<uint32_t>(full_canonical_x) / kTileSide;
+                noc_async_read(band.get_noc_addr(source_tile), destination_addr, kTileBytes);
+                noc_async_read_barrier();
+                continue;
+            }
+            noc_async_read(get_noc_addr(zero_tile_addr), destination_addr, kTileBytes);
+            noc_async_read_barrier();
+
+            const uint32_t internal_y_begin = std::max(tile_y, rectangle.y_begin);
+            const uint32_t internal_y_end = std::min(tile_y + kTileSide, rectangle.y_begin + rectangle.y_length);
+            const uint32_t internal_x_begin = std::max(tile_x, rectangle.x_begin);
+            const uint32_t internal_x_end = std::min(tile_x + kTileSide, rectangle.x_begin + rectangle.x_length);
+            if (internal_y_begin == internal_y_end || internal_x_begin == internal_x_end) {
+                continue;
+            }
+
+            const int32_t canonical_y_begin = static_cast<int32_t>(internal_y_begin) - y_internal_offset;
+            const int32_t canonical_y_end = static_cast<int32_t>(internal_y_end) - y_internal_offset;
+            const int32_t canonical_x_begin = static_cast<int32_t>(internal_x_begin) - x_internal_offset;
+            const int32_t canonical_x_end = static_cast<int32_t>(internal_x_end) - x_internal_offset;
+            ASSERT(canonical_y_begin >= 0 && canonical_x_begin >= 0);
+            ASSERT(canonical_y_end <= static_cast<int32_t>(band_height));
+            ASSERT(canonical_x_end <= static_cast<int32_t>(band_width));
+
+            const uint32_t source_tile_y_begin = static_cast<uint32_t>(canonical_y_begin) / kTileSide;
+            const uint32_t source_tile_y_end =
+                (static_cast<uint32_t>(canonical_y_end - 1) / kTileSide) + 1;
+            const uint32_t source_tile_x_begin = static_cast<uint32_t>(canonical_x_begin) / kTileSide;
+            const uint32_t source_tile_x_end =
+                (static_cast<uint32_t>(canonical_x_end - 1) / kTileSide) + 1;
+            const uint32_t source_tile_rows = source_tile_y_end - source_tile_y_begin;
+            const uint32_t source_tile_columns = source_tile_x_end - source_tile_x_begin;
+            ASSERT(source_tile_rows <= ttwv::device_protocol::kLwt2DSplitScratchTileRows);
+            ASSERT(source_tile_columns <= ttwv::device_protocol::kLwt2DSplitScratchTileColumns);
+
+            for (uint32_t source_tile_y = 0; source_tile_y < source_tile_rows; ++source_tile_y) {
+                for (uint32_t source_tile_x = 0; source_tile_x < source_tile_columns; ++source_tile_x) {
+                    const uint32_t source_tile =
+                        (source_tile_y_begin + source_tile_y) * band_tile_columns +
+                        source_tile_x_begin + source_tile_x;
+                    const uint32_t scratch_tile = source_tile_y * source_tile_columns + source_tile_x;
+                    noc_async_read(
+                        band.get_noc_addr(source_tile),
+                        scratch_addr + scratch_tile * kTileBytes,
+                        kTileBytes);
+                }
+            }
+            noc_async_read_barrier();
+
+            auto* destination = reinterpret_cast<volatile tt_l1_ptr float*>(destination_addr);
+            for (uint32_t internal_y = internal_y_begin; internal_y < internal_y_end; ++internal_y) {
+                const uint32_t canonical_y =
+                    static_cast<uint32_t>(static_cast<int32_t>(internal_y) - y_internal_offset);
+                const uint32_t source_tile_y = canonical_y / kTileSide - source_tile_y_begin;
+                for (uint32_t internal_x = internal_x_begin; internal_x < internal_x_end; ++internal_x) {
+                    const uint32_t canonical_x =
+                        static_cast<uint32_t>(static_cast<int32_t>(internal_x) - x_internal_offset);
+                    const uint32_t source_tile_x = canonical_x / kTileSide - source_tile_x_begin;
+                    const uint32_t scratch_tile = source_tile_y * source_tile_columns + source_tile_x;
+                    const auto* source =
+                        reinterpret_cast<volatile tt_l1_ptr float*>(scratch_addr + scratch_tile * kTileBytes);
+                    destination[tile_element_offset(internal_y - tile_y, internal_x - tile_x)] =
+                        source[tile_element_offset(canonical_y % kTileSide, canonical_x % kTileSide)];
+                }
+            }
+        }
+    }
+}
+
+template <typename BandAccessor>
+ALWI void initialize_inverse_band_planes(
+    const BandAccessor& band_args,
+    const uint32_t* band_addrs,
+    const uint32_t band_height,
+    const uint32_t band_width,
+    const uint32_t band_tile_columns,
+    const int32_t* y_internal_offsets,
+    const int32_t* x_internal_offsets,
+    const Rect* rectangles,
+    const uint32_t* plane_addrs,
+    const uint32_t* plane_tile_columns,
+    const uint32_t scratch_addr,
+    const uint32_t zero_tile_addr) {
+    // LL, LH, HL, HH map to (low-y,low-x), (low-y,high-x),
+    // (high-y,low-x), and (high-y,high-x), respectively.
+    constexpr uint32_t y_stream[4] = {0, 0, 1, 1};
+    constexpr uint32_t x_stream[4] = {0, 1, 0, 1};
+    for (uint32_t plane = 0; plane < 4; ++plane) {
+        initialize_inverse_band_plane(
+            band_args,
+            band_addrs[plane],
+            band_height,
+            band_width,
+            band_tile_columns,
+            y_internal_offsets[y_stream[plane]],
+            x_internal_offsets[x_stream[plane]],
+            rectangles[plane],
+            plane_addrs[plane],
+            plane_tile_columns[plane],
+            scratch_addr,
+            zero_tile_addr);
+    }
+}
+#endif
+
 #ifdef TTWV_CAPTURE_SPLIT_SNAPSHOTS
 template <typename SnapshotAccessor>
 ALWI void snapshot_initial_planes(
@@ -1068,35 +1212,56 @@ ALWI void write_staging_validation_summary(
 }  // namespace
 
 void kernel_main() {
+#ifdef TTWV_ILWT_2D
+    uint32_t band_addrs[ttwv::device_protocol::kLwt2DBandCount];
+    for (uint32_t band = 0; band < ttwv::device_protocol::kLwt2DBandCount; ++band) {
+        band_addrs[band] = get_arg_val<uint32_t>(band);
+    }
+    const uint32_t input_height = get_arg_val<uint32_t>(4);
+    const uint32_t input_width = get_arg_val<uint32_t>(5);
+    const uint32_t input_tile_columns = get_arg_val<uint32_t>(6);
+    const int32_t y_internal_offsets[2] = {
+        static_cast<int32_t>(get_arg_val<uint32_t>(7)),
+        static_cast<int32_t>(get_arg_val<uint32_t>(8)),
+    };
+    const int32_t x_internal_offsets[2] = {
+        static_cast<int32_t>(get_arg_val<uint32_t>(9)),
+        static_cast<int32_t>(get_arg_val<uint32_t>(10)),
+    };
+    constexpr uint32_t plane_arg_base = 11;
+#else
     const uint32_t input_addr = get_arg_val<uint32_t>(0);
     const uint32_t input_height = get_arg_val<uint32_t>(1);
     const uint32_t input_width = get_arg_val<uint32_t>(2);
     const uint32_t input_tile_columns = get_arg_val<uint32_t>(3);
     const uint32_t pad_y = get_arg_val<uint32_t>(4);
     const uint32_t pad_x = get_arg_val<uint32_t>(5);
+    constexpr uint32_t plane_arg_base = 6;
+#endif
     uint32_t plane_addrs[ttwv::device_protocol::kLwt2DPlaneCount];
     uint32_t plane_tile_columns[ttwv::device_protocol::kLwt2DPlaneCount];
     for (uint32_t slot = 0; slot < ttwv::device_protocol::kLwt2DPlaneCount; ++slot) {
-        plane_addrs[slot] = get_arg_val<uint32_t>(6 + slot);
-        plane_tile_columns[slot] = get_arg_val<uint32_t>(6 + ttwv::device_protocol::kLwt2DPlaneCount + slot);
+        plane_addrs[slot] = get_arg_val<uint32_t>(plane_arg_base + slot);
+        plane_tile_columns[slot] =
+            get_arg_val<uint32_t>(plane_arg_base + ttwv::device_protocol::kLwt2DPlaneCount + slot);
     }
     constexpr uint32_t plane_arg_count = 2 * ttwv::device_protocol::kLwt2DPlaneCount;
-    const uint32_t chunk_config_addr = get_arg_val<uint32_t>(6 + plane_arg_count);
-    const uint32_t route_config_addr = get_arg_val<uint32_t>(7 + plane_arg_count);
-    const uint32_t chunk_begin = get_arg_val<uint32_t>(8 + plane_arg_count);
-    const uint32_t chunk_count = get_arg_val<uint32_t>(9 + plane_arg_count);
-    const uint32_t route_count = get_arg_val<uint32_t>(10 + plane_arg_count);
+    const uint32_t chunk_config_addr = get_arg_val<uint32_t>(plane_arg_base + plane_arg_count);
+    const uint32_t route_config_addr = get_arg_val<uint32_t>(plane_arg_base + plane_arg_count + 1);
+    const uint32_t chunk_begin = get_arg_val<uint32_t>(plane_arg_base + plane_arg_count + 2);
+    const uint32_t chunk_count = get_arg_val<uint32_t>(plane_arg_base + plane_arg_count + 3);
+    const uint32_t route_count = get_arg_val<uint32_t>(plane_arg_base + plane_arg_count + 4);
 #ifdef TTWV_CAPTURE_SPLIT_METRICS
-    const uint32_t split_metrics_addr = get_arg_val<uint32_t>(11 + plane_arg_count);
-    const bool capture_split_metrics = get_arg_val<uint32_t>(12 + plane_arg_count) != 0;
+    const uint32_t split_metrics_addr = get_arg_val<uint32_t>(plane_arg_base + plane_arg_count + 5);
+    const bool capture_split_metrics = get_arg_val<uint32_t>(plane_arg_base + plane_arg_count + 6) != 0;
 #endif
 #ifdef TTWV_CAPTURE_SPLIT_SNAPSHOTS
-    const uint32_t split_snapshot_addr = get_arg_val<uint32_t>(13 + plane_arg_count);
-    const uint32_t split_snapshot_tiles_per_plane = get_arg_val<uint32_t>(14 + plane_arg_count);
+    const uint32_t split_snapshot_addr = get_arg_val<uint32_t>(plane_arg_base + plane_arg_count + 7);
+    const uint32_t split_snapshot_tiles_per_plane = get_arg_val<uint32_t>(plane_arg_base + plane_arg_count + 8);
 #endif
 #if defined(TTWV_CAPTURE_TRANSPORT_METRICS) || defined(TTWV_VALIDATE_ROUTE_STAGING)
-    const uint32_t transport_metrics_addr = get_arg_val<uint32_t>(15 + plane_arg_count);
-    const uint32_t transport_metric_pages_per_chunk = get_arg_val<uint32_t>(16 + plane_arg_count);
+    const uint32_t transport_metrics_addr = get_arg_val<uint32_t>(plane_arg_base + plane_arg_count + 9);
+    const uint32_t transport_metric_pages_per_chunk = get_arg_val<uint32_t>(plane_arg_base + plane_arg_count + 10);
 #endif
 
     constexpr uint32_t cb_source0 = get_compile_time_arg_val(0);
@@ -1113,7 +1278,9 @@ void kernel_main() {
     constexpr auto metric_args = TensorAccessorArgs<route_args.next_compile_time_args_offset()>();
     constexpr auto snapshot_args = TensorAccessorArgs<metric_args.next_compile_time_args_offset()>();
     constexpr auto transport_metric_args = TensorAccessorArgs<snapshot_args.next_compile_time_args_offset()>();
+#ifndef TTWV_ILWT_2D
     const auto input = TensorAccessor(input_args, input_addr, kTileBytes);
+#endif
     cb_reserve_back(cb_route_zero, 1);
     const uint32_t zero_tile_addr = get_write_ptr(cb_route_zero);
     auto* zero_tile = reinterpret_cast<volatile tt_l1_ptr uint32_t*>(zero_tile_addr);
@@ -1122,7 +1289,7 @@ void kernel_main() {
     }
     cb_push_back(cb_route_zero, 1);
     const uint32_t noc_scratch_raw = get_write_ptr(cb_noc_scratch);
-#ifdef TTWV_LWT_2D_TILED_SPLIT
+#if defined(TTWV_LWT_2D_TILED_SPLIT) || defined(TTWV_ILWT_2D)
     const uint32_t noc_scratch_addr = noc_scratch_raw;
 #else
     const uint32_t noc_scratch_addr = (noc_scratch_raw + 63U) & ~63U;
@@ -1167,7 +1334,21 @@ void kernel_main() {
         const uint64_t split_start = get_timestamp();
 #endif
 
-#ifdef TTWV_LWT_2D_TILED_SPLIT
+#ifdef TTWV_ILWT_2D
+        initialize_inverse_band_planes(
+            input_args,
+            band_addrs,
+            input_height,
+            input_width,
+            input_tile_columns,
+            y_internal_offsets,
+            x_internal_offsets,
+            stored,
+            plane_addrs,
+            plane_tile_columns,
+            noc_scratch_addr,
+            zero_tile_addr);
+#elif defined(TTWV_LWT_2D_TILED_SPLIT)
         initialize_planes_tiled(
             input,
             input_height,

@@ -347,6 +347,103 @@ ALWI void write_band(
         noc_scratch_addr);
 }
 
+#ifdef TTWV_ILWT_2D
+[[nodiscard]] ALWI float read_plane_value(
+    const uint32_t plane_addr,
+    const uint32_t plane_tile_columns,
+    const Rect& stored,
+    const uint32_t y,
+    const uint32_t x) {
+    ASSERT(y >= stored.y_begin && y < stored.y_begin + stored.y_length);
+    ASSERT(x >= stored.x_begin && x < stored.x_begin + stored.x_length);
+    const uint32_t local_y = y - aligned_begin(stored.y_begin);
+    const uint32_t local_x = x - aligned_begin(stored.x_begin);
+    const auto* plane = reinterpret_cast<const volatile tt_l1_ptr float*>(plane_addr);
+    return plane[tiled_element_offset(local_y, local_x, plane_tile_columns)];
+}
+
+template <typename OutputAccessor>
+ALWI void write_interleaved_output(
+    const OutputAccessor& output_args,
+    const uint32_t output_addr,
+    const uint32_t output_tile_columns,
+    const uint32_t* plane_addrs,
+    const uint32_t* plane_tile_columns,
+    const uint32_t* parity_slots,
+    const Rect* parity_sources,
+    const uint32_t final_y_begin,
+    const uint32_t final_y_length,
+    const uint32_t final_x_begin,
+    const uint32_t final_x_length,
+    const uint32_t pad_y,
+    const uint32_t pad_x,
+    const uint32_t scratch_addr,
+    TerminalWriteMetrics& metrics) {
+    const auto output = TensorAccessor(output_args, output_addr, kTileBytes);
+    const uint32_t tile_y_begin = aligned_begin(final_y_begin);
+    const uint32_t tile_y_end = aligned_end(final_y_begin, final_y_length);
+    const uint32_t tile_x_begin = aligned_begin(final_x_begin);
+    const uint32_t tile_x_end = aligned_end(final_x_begin, final_x_length);
+    auto* tile = reinterpret_cast<volatile tt_l1_ptr float*>(scratch_addr);
+
+    for (uint32_t tile_y = tile_y_begin; tile_y < tile_y_end; tile_y += kTileSide) {
+        for (uint32_t tile_x = tile_x_begin; tile_x < tile_x_end; tile_x += kTileSide) {
+            for (uint32_t element = 0; element < kTileElements; ++element) {
+                tile[element] = 0.0F;
+            }
+            const uint32_t y_end = std::min(tile_y + kTileSide, final_y_begin + final_y_length);
+            const uint32_t x_end = std::min(tile_x + kTileSide, final_x_begin + final_x_length);
+            for (uint32_t y = std::max(tile_y, final_y_begin); y < y_end; ++y) {
+                const uint32_t padded_y = y + pad_y;
+                const uint32_t parity_y = padded_y & 1U;
+                const uint32_t polyphase_y = padded_y / 2;
+                for (uint32_t x = std::max(tile_x, final_x_begin); x < x_end; ++x) {
+                    const uint32_t padded_x = x + pad_x;
+                    const uint32_t parity_x = padded_x & 1U;
+                    const uint32_t polyphase_x = padded_x / 2;
+                    const uint32_t parity = 2 * parity_y + parity_x;
+                    const uint32_t slot = parity_slots[parity];
+                    tile[tile_element_offset(y - tile_y, x - tile_x)] = read_plane_value(
+                        plane_addrs[slot],
+                        plane_tile_columns[slot],
+                        parity_sources[parity],
+                        polyphase_y,
+                        polyphase_x);
+                }
+            }
+            const uint32_t destination_tile =
+                (tile_y / kTileSide) * output_tile_columns + tile_x / kTileSide;
+            const bool complete =
+                tile_y >= final_y_begin && tile_x >= final_x_begin &&
+                tile_y + kTileSide <= final_y_begin + final_y_length &&
+                tile_x + kTileSide <= final_x_begin + final_x_length;
+            if (complete) {
+                noc_async_write(scratch_addr, output.get_noc_addr(destination_tile), kTileBytes);
+                ++metrics.exact_tiles;
+            } else {
+                const uint32_t valid_y_begin = std::max(tile_y, final_y_begin);
+                const uint32_t valid_x_begin = std::max(tile_x, final_x_begin);
+                for (uint32_t y = valid_y_begin; y < y_end; ++y) {
+                    for (uint32_t x = valid_x_begin; x < x_end;) {
+                        const uint32_t local_x = x - tile_x;
+                        const uint32_t count = std::min(x_end - x, kFaceSide - local_x % kFaceSide);
+                        const uint32_t byte_offset =
+                            tile_element_offset(y - tile_y, local_x) * sizeof(float);
+                        noc_async_write(
+                            scratch_addr + byte_offset,
+                            output.get_noc_addr(destination_tile) + byte_offset,
+                            count * sizeof(float));
+                        x += count;
+                    }
+                }
+                ++metrics.fragmented_tiles;
+            }
+            noc_async_write_barrier();
+        }
+    }
+}
+#endif
+
 #ifdef TTWV_CAPTURE_TRANSPORT_METRICS
 template <typename MetricAccessor>
 ALWI void write_transport_writer_half(
@@ -456,6 +553,10 @@ void kernel_main() {
 #if defined(TTWV_CAPTURE_TRANSPORT_METRICS) || defined(TTWV_VALIDATE_ROUTE_PERSISTENCE)
     const uint32_t transport_metrics_addr = get_arg_val<uint32_t>(plane_arg_count + 13);
     const uint32_t transport_metric_pages_per_chunk = get_arg_val<uint32_t>(plane_arg_count + 14);
+#endif
+#ifdef TTWV_ILWT_2D
+    const uint32_t pad_y = get_arg_val<uint32_t>(plane_arg_count + 15);
+    const uint32_t pad_x = get_arg_val<uint32_t>(plane_arg_count + 16);
 #endif
 
     constexpr uint32_t cb_output = get_compile_time_arg_val(0);
@@ -611,6 +712,33 @@ void kernel_main() {
             ttwv::device_protocol::kLwt2DBandHh,
         };
         TerminalWriteMetrics terminal_metrics{};
+#ifdef TTWV_ILWT_2D
+        uint32_t parity_slots[4];
+        Rect parity_sources[4];
+        for (uint32_t parity = 0; parity < 4; ++parity) {
+            const uint32_t band_offset = band_offsets[parity];
+            parity_slots[parity] =
+                band_words[band_offset + ttwv::device_protocol::kLwt2DBandSourceSlot];
+            parity_sources[parity] =
+                load_rect(band_words, band_offset + ttwv::device_protocol::kLwt2DBandSourceRect);
+        }
+        write_interleaved_output(
+            output_args,
+            output_addrs[0],
+            output_tile_columns,
+            plane_addrs,
+            plane_tile_columns,
+            parity_slots,
+            parity_sources,
+            final_y_begin,
+            final_y_length,
+            final_x_begin,
+            final_x_length,
+            pad_y,
+            pad_x,
+            noc_scratch_addr,
+            terminal_metrics);
+#else
         for (uint32_t band = 0; band < 4; ++band) {
             const uint32_t band_offset = band_offsets[band];
             const uint32_t source_slot = band_words[band_offset + ttwv::device_protocol::kLwt2DBandSourceSlot];
@@ -629,6 +757,7 @@ void kernel_main() {
                 noc_scratch_addr,
                 terminal_metrics);
         }
+#endif
 #ifdef TTWV_CAPTURE_TRANSPORT_METRICS
         const uint64_t terminal_cycles = get_timestamp() - terminal_start;
 #endif

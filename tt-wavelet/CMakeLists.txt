@@ -40,6 +40,10 @@ if(BUILD_TT_WAVELET)
   add_dependencies(lwt_2d_planner_tests tt_wavelet_generate_static_schemes)
   tt_wavelet_configure_metal_target(lwt_2d_planner_tests)
 
+  add_executable(ilwt_2d_planner_tests tests/ilwt_2d_planner_tests.cpp)
+  add_dependencies(ilwt_2d_planner_tests tt_wavelet_generate_static_schemes)
+  tt_wavelet_configure_metal_target(ilwt_2d_planner_tests)
+
   add_executable(lwt_2d_reference reference_2d.cpp)
   add_dependencies(lwt_2d_reference tt_wavelet_generate_static_schemes)
   tt_wavelet_configure_metal_target(lwt_2d_reference)
@@ -47,6 +51,10 @@ if(BUILD_TT_WAVELET)
   add_executable(lwt_2d main_2d.cpp tt_wavelet/src/lifting/device_2d.cpp)
   add_dependencies(lwt_2d tt_wavelet_generate_static_schemes)
   tt_wavelet_configure_metal_target(lwt_2d)
+
+  add_executable(ilwt_2d main_ilwt_2d.cpp tt_wavelet/src/lifting/device_2d.cpp)
+  add_dependencies(ilwt_2d tt_wavelet_generate_static_schemes)
+  tt_wavelet_configure_metal_target(ilwt_2d)
 
   add_executable(vertical_stencil_k17_test
                  tests/vertical_stencil_k17_test.cpp)

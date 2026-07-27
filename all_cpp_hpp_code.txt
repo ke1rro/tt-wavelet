@@ -690,6 +690,7 @@ struct RouteStagingMetrics {
 struct StagingValidationMetrics {
     uint32_t validated_tiles{0};
     uint32_t mismatched_words{0};
+    uint32_t class_mismatched_words[5]{};
 };
 #define TTWV_STAGING_VALIDATION_PARAMETER , StagingValidationMetrics& validation_metrics
 #define TTWV_STAGING_VALIDATION_ARGUMENT , staging_validation_metrics
@@ -1202,6 +1203,14 @@ ALWI void snapshot_initial_planes(
     return source[tiled_element_offset(local_y, local_x, plane_tile_columns)];
 }
 
+enum class RouteTileClass : uint32_t {
+    kExact,
+    kOneAxisShifted,
+    kTwoAxisShifted,
+    kPartial,
+    kEmpty,
+};
+
 #ifdef TTWV_VALIDATE_ROUTE_STAGING
 [[nodiscard]] ALWI uint32_t read_plane_bits(
     const uint32_t plane_addr,
@@ -1225,6 +1234,7 @@ ALWI void validate_staged_tile(
     const Rect& stored,
     const int32_t requested_y,
     const int32_t requested_x,
+    const RouteTileClass tile_class,
     StagingValidationMetrics& metrics) {
     const auto* staged = reinterpret_cast<const volatile tt_l1_ptr uint32_t*>(destination_addr);
     ++metrics.validated_tiles;
@@ -1236,7 +1246,9 @@ ALWI void validate_staged_tile(
                 stored,
                 requested_y + static_cast<int32_t>(row),
                 requested_x + static_cast<int32_t>(column));
-            metrics.mismatched_words += staged[tile_element_offset(row, column)] != expected ? 1U : 0U;
+            const bool mismatch = staged[tile_element_offset(row, column)] != expected;
+            metrics.mismatched_words += mismatch ? 1U : 0U;
+            metrics.class_mismatched_words[static_cast<uint32_t>(tile_class)] += mismatch ? 1U : 0U;
         }
     }
 }
@@ -1255,17 +1267,20 @@ ALWI void reserve_tile(const uint32_t cb) {
     }
 }
 
-enum class RouteTileClass : uint32_t {
-    kExact,
-    kOneAxisShifted,
-    kGeneric,
-};
-
 enum class StageTileResult : uint32_t {
     kExactPending,
+    kBoundedPending,
     kCompleted,
-    kFallback,
 };
+
+#ifdef TTWV_LWT_2D_COMPUTE_ONLY_BENCHMARK
+[[nodiscard]] __attribute__((noinline)) StageTileResult
+stage_compute_benchmark_tile(const uint32_t cb, const uint32_t zero_tile_addr) {
+    cb_reserve_back(cb, 1);
+    noc_async_read(get_noc_addr(zero_tile_addr), get_write_ptr(cb), kTileBytes);
+    return StageTileResult::kExactPending;
+}
+#endif
 
 [[nodiscard]] ALWI bool requested_tile_inside(
     const Rect& stored, const int32_t requested_y, const int32_t requested_x) {
@@ -1277,17 +1292,25 @@ enum class StageTileResult : uint32_t {
 [[nodiscard]] ALWI RouteTileClass
 classify_route_tile(const Rect& stored, const int32_t requested_y, const int32_t requested_x) {
     if (!requested_tile_inside(stored, requested_y, requested_x)) {
-        return RouteTileClass::kGeneric;
+        const int32_t requested_y_end = requested_y + static_cast<int32_t>(kTileSide);
+        const int32_t requested_x_end = requested_x + static_cast<int32_t>(kTileSide);
+        const int32_t stored_y_end = static_cast<int32_t>(stored.y_begin + stored.y_length);
+        const int32_t stored_x_end = static_cast<int32_t>(stored.x_begin + stored.x_length);
+        const bool intersects = requested_y < stored_y_end && requested_y_end > static_cast<int32_t>(stored.y_begin) &&
+                                requested_x < stored_x_end && requested_x_end > static_cast<int32_t>(stored.x_begin);
+        return intersects ? RouteTileClass::kPartial : RouteTileClass::kEmpty;
     }
-    const bool y_aligned = requested_y % static_cast<int32_t>(kTileSide) == 0;
-    const bool x_aligned = requested_x % static_cast<int32_t>(kTileSide) == 0;
+    const bool y_aligned =
+        (requested_y - static_cast<int32_t>(aligned_begin(stored.y_begin))) % static_cast<int32_t>(kTileSide) == 0;
+    const bool x_aligned =
+        (requested_x - static_cast<int32_t>(aligned_begin(stored.x_begin))) % static_cast<int32_t>(kTileSide) == 0;
     if (y_aligned && x_aligned) {
         return RouteTileClass::kExact;
     }
     if (y_aligned != x_aligned) {
         return RouteTileClass::kOneAxisShifted;
     }
-    return RouteTileClass::kGeneric;
+    return RouteTileClass::kTwoAxisShifted;
 }
 
 [[nodiscard]] ALWI uint32_t route_plane_tile_addr(
@@ -1335,6 +1358,56 @@ ALWI void assemble_one_axis_shifted_tile(
     }
 }
 
+__attribute__((noinline)) void assemble_bounded_tile(
+    const uint32_t destination_addr,
+    const uint32_t plane_addr,
+    const uint32_t plane_tile_columns,
+    const Rect& stored,
+    const int32_t requested_y,
+    const int32_t requested_x) {
+    const int32_t valid_y_begin = std::max(requested_y, static_cast<int32_t>(stored.y_begin));
+    const int32_t valid_y_end = std::min(
+        requested_y + static_cast<int32_t>(kTileSide),
+        static_cast<int32_t>(stored.y_begin + stored.y_length));
+    const int32_t valid_x_begin = std::max(requested_x, static_cast<int32_t>(stored.x_begin));
+    const int32_t valid_x_end = std::min(
+        requested_x + static_cast<int32_t>(kTileSide),
+        static_cast<int32_t>(stored.x_begin + stored.x_length));
+    if (valid_y_begin >= valid_y_end || valid_x_begin >= valid_x_end) {
+        return;
+    }
+
+    auto* destination = reinterpret_cast<volatile tt_l1_ptr uint32_t*>(destination_addr);
+    const auto* source = reinterpret_cast<const volatile tt_l1_ptr uint32_t*>(plane_addr);
+    const uint32_t stored_y_origin = aligned_begin(stored.y_begin);
+    const uint32_t stored_x_origin = aligned_begin(stored.x_begin);
+    const uint32_t destination_row_begin = static_cast<uint32_t>(valid_y_begin - requested_y);
+    const uint32_t destination_column_begin = static_cast<uint32_t>(valid_x_begin - requested_x);
+    const uint32_t valid_width = static_cast<uint32_t>(valid_x_end - valid_x_begin);
+
+    for (uint32_t destination_row = destination_row_begin;
+         destination_row < destination_row_begin + static_cast<uint32_t>(valid_y_end - valid_y_begin);
+         ++destination_row) {
+        const uint32_t source_y =
+            static_cast<uint32_t>(valid_y_begin - static_cast<int32_t>(stored_y_origin)) +
+            destination_row - destination_row_begin;
+        uint32_t copied = 0;
+        while (copied < valid_width) {
+            const uint32_t destination_column = destination_column_begin + copied;
+            const uint32_t source_x =
+                static_cast<uint32_t>(valid_x_begin - static_cast<int32_t>(stored_x_origin)) + copied;
+            const uint32_t count = std::min(
+                valid_width - copied,
+                std::min(kFaceSide - source_x % kFaceSide, kFaceSide - destination_column % kFaceSide));
+            copy_contiguous_words(
+                destination + tile_element_offset(destination_row, destination_column),
+                source + tiled_element_offset(source_y, source_x, plane_tile_columns),
+                count);
+            copied += count;
+        }
+    }
+}
+
 ALWI void count_route_tile(RouteStagingMetrics& metrics, const RouteTileClass tile_class, const bool base_tile) {
     if (base_tile) {
         if (tile_class == RouteTileClass::kExact) {
@@ -1355,8 +1428,9 @@ ALWI void count_route_tile(RouteStagingMetrics& metrics, const RouteTileClass ti
     }
 }
 
-[[nodiscard]] ALWI StageTileResult stage_optimized_tile(
+[[nodiscard]] __attribute__((noinline)) StageTileResult stage_optimized_tile(
     const uint32_t cb,
+    const uint32_t zero_tile_addr,
     const uint32_t plane_addr,
     const uint32_t plane_tile_columns,
     const Rect& stored,
@@ -1366,10 +1440,6 @@ ALWI void count_route_tile(RouteStagingMetrics& metrics, const RouteTileClass ti
     RouteStagingMetrics& metrics TTWV_STAGING_VALIDATION_PARAMETER) {
     const RouteTileClass tile_class = classify_route_tile(stored, requested_y, requested_x);
     count_route_tile(metrics, tile_class, base_tile);
-    if (tile_class == RouteTileClass::kGeneric) {
-        return StageTileResult::kFallback;
-    }
-
     cb_reserve_back(cb, 1);
     const uint32_t destination_addr = get_write_ptr(cb);
     if (tile_class == RouteTileClass::kExact) {
@@ -1381,7 +1451,14 @@ ALWI void count_route_tile(RouteStagingMetrics& metrics, const RouteTileClass ti
             reinterpret_cast<const volatile tt_l1_ptr uint32_t*>(source_addr),
             kTileBytes / sizeof(uint32_t));
         TTWV_VALIDATE_STAGED_TILE(
-            destination_addr, plane_addr, plane_tile_columns, stored, requested_y, requested_x, validation_metrics);
+            destination_addr,
+            plane_addr,
+            plane_tile_columns,
+            stored,
+            requested_y,
+            requested_x,
+            tile_class,
+            validation_metrics);
         cb_push_back(cb, 1);
         return StageTileResult::kCompleted;
 #else
@@ -1390,11 +1467,55 @@ ALWI void count_route_tile(RouteStagingMetrics& metrics, const RouteTileClass ti
 #endif
     }
 
-    assemble_one_axis_shifted_tile(destination_addr, plane_addr, plane_tile_columns, stored, requested_y, requested_x);
+    if (tile_class == RouteTileClass::kPartial || tile_class == RouteTileClass::kEmpty) {
+        noc_async_read(get_noc_addr(zero_tile_addr), destination_addr, kTileBytes);
+        return StageTileResult::kBoundedPending;
+    }
+
+    if (tile_class == RouteTileClass::kOneAxisShifted) {
+        assemble_one_axis_shifted_tile(
+            destination_addr, plane_addr, plane_tile_columns, stored, requested_y, requested_x);
+    } else {
+        assemble_bounded_tile(destination_addr, plane_addr, plane_tile_columns, stored, requested_y, requested_x);
+    }
     TTWV_VALIDATE_STAGED_TILE(
-        destination_addr, plane_addr, plane_tile_columns, stored, requested_y, requested_x, validation_metrics);
+        destination_addr,
+        plane_addr,
+        plane_tile_columns,
+        stored,
+        requested_y,
+        requested_x,
+        tile_class,
+        validation_metrics);
     cb_push_back(cb, 1);
     return StageTileResult::kCompleted;
+}
+
+__attribute__((noinline)) void finish_pending_tile(
+    const StageTileResult result,
+    const uint32_t cb,
+    const uint32_t plane_addr,
+    const uint32_t plane_tile_columns,
+    const Rect& stored,
+    const int32_t requested_y,
+    const int32_t requested_x TTWV_STAGING_VALIDATION_PARAMETER) {
+    if (result == StageTileResult::kCompleted) {
+        return;
+    }
+    const uint32_t destination_addr = get_write_ptr(cb);
+    if (result == StageTileResult::kBoundedPending) {
+        assemble_bounded_tile(destination_addr, plane_addr, plane_tile_columns, stored, requested_y, requested_x);
+    }
+    TTWV_VALIDATE_STAGED_TILE(
+        destination_addr,
+        plane_addr,
+        plane_tile_columns,
+        stored,
+        requested_y,
+        requested_x,
+        classify_route_tile(stored, requested_y, requested_x),
+        validation_metrics);
+    cb_push_back(cb, 1);
 }
 
 [[nodiscard]] ALWI int32_t base_requested_y(const Rect& source, const Rect& output, const uint32_t output_tile_y) {
@@ -1560,6 +1681,16 @@ ALWI void write_staging_validation_summary(
     }
     words[ttwv::device_protocol::kLwt2DTransportMetricValidatedStagingTiles] = validation.validated_tiles;
     words[ttwv::device_protocol::kLwt2DTransportMetricStagingValidationMismatches] = validation.mismatched_words;
+    words[ttwv::device_protocol::kLwt2DTransportMetricValidationExactMismatches] =
+        validation.class_mismatched_words[static_cast<uint32_t>(RouteTileClass::kExact)];
+    words[ttwv::device_protocol::kLwt2DTransportMetricValidationShiftedMismatches] =
+        validation.class_mismatched_words[static_cast<uint32_t>(RouteTileClass::kOneAxisShifted)];
+    words[ttwv::device_protocol::kLwt2DTransportMetricValidationTwoAxisMismatches] =
+        validation.class_mismatched_words[static_cast<uint32_t>(RouteTileClass::kTwoAxisShifted)];
+    words[ttwv::device_protocol::kLwt2DTransportMetricValidationPartialMismatches] =
+        validation.class_mismatched_words[static_cast<uint32_t>(RouteTileClass::kPartial)];
+    words[ttwv::device_protocol::kLwt2DTransportMetricValidationEmptyMismatches] =
+        validation.class_mismatched_words[static_cast<uint32_t>(RouteTileClass::kEmpty)];
     const auto metrics =
         TensorAccessor(metric_args, metrics_addr, ttwv::device_protocol::kLwt2DTransportMetricPageBytes);
     const uint32_t page = global_chunk * metric_pages_per_chunk + page_in_chunk;
@@ -1610,13 +1741,21 @@ void kernel_main() {
     constexpr uint32_t cb_chunk_config = get_compile_time_arg_val(4);
     constexpr uint32_t cb_route_config = get_compile_time_arg_val(5);
     constexpr uint32_t cb_noc_scratch = get_compile_time_arg_val(6);
-    constexpr auto input_args = TensorAccessorArgs<7>();
+    constexpr uint32_t cb_route_zero = get_compile_time_arg_val(7);
+    constexpr auto input_args = TensorAccessorArgs<8>();
     constexpr auto chunk_args = TensorAccessorArgs<input_args.next_compile_time_args_offset()>();
     constexpr auto route_args = TensorAccessorArgs<chunk_args.next_compile_time_args_offset()>();
     constexpr auto metric_args = TensorAccessorArgs<route_args.next_compile_time_args_offset()>();
     constexpr auto snapshot_args = TensorAccessorArgs<metric_args.next_compile_time_args_offset()>();
     constexpr auto transport_metric_args = TensorAccessorArgs<snapshot_args.next_compile_time_args_offset()>();
     const auto input = TensorAccessor(input_args, input_addr, kTileBytes);
+    cb_reserve_back(cb_route_zero, 1);
+    const uint32_t zero_tile_addr = get_write_ptr(cb_route_zero);
+    auto* zero_tile = reinterpret_cast<volatile tt_l1_ptr uint32_t*>(zero_tile_addr);
+    for (uint32_t word = 0; word < kTileElements; ++word) {
+        zero_tile[word] = 0;
+    }
+    cb_push_back(cb_route_zero, 1);
     const uint32_t noc_scratch_raw = get_write_ptr(cb_noc_scratch);
 #ifdef TTWV_LWT_2D_TILED_SPLIT
     const uint32_t noc_scratch_addr = noc_scratch_raw;
@@ -1734,6 +1873,13 @@ void kernel_main() {
             noc_scratch_addr,
             split_metrics);
 #endif
+        // The route-zero page is intentionally persistent, but a worker may
+        // execute multiple chunks while the split stage reuses nearby L1
+        // scratch. Refresh it once per chunk so bounded empty/partial pages
+        // never inherit stale words from an earlier chunk.
+        for (uint32_t word = 0; word < kTileElements; ++word) {
+            zero_tile[word] = 0;
+        }
 #ifdef TTWV_CAPTURE_SPLIT_METRICS
         const uint64_t split_cycles = get_timestamp() - split_start;
         if (capture_split_metrics) {
@@ -1838,26 +1984,30 @@ void kernel_main() {
             for (uint32_t tile_y = 0; tile_y < output_tile_rows; ++tile_y) {
                 for (uint32_t tile_x = 0; tile_x < output_tile_columns; ++tile_x) {
 #ifdef TTWV_LWT_2D_OPTIMIZED_ROUTE_STAGING
-                    bool source0_pending = false;
-                    bool source1_pending = false;
-                    bool base_pending = false;
-#ifdef TTWV_VALIDATE_ROUTE_STAGING
                     int32_t source0_requested_y = 0;
                     int32_t source0_requested_x = 0;
                     int32_t source1_requested_y = 0;
                     int32_t source1_requested_x = 0;
                     int32_t base_requested_tile_y = 0;
                     int32_t base_requested_tile_x = 0;
-#endif
+                    StageTileResult source0_result = StageTileResult::kCompleted;
+                    StageTileResult source1_result = StageTileResult::kCompleted;
+                    StageTileResult base_result = StageTileResult::kCompleted;
+#ifdef TTWV_LWT_2D_COMPUTE_ONLY_BENCHMARK
+                    source0_result = stage_compute_benchmark_tile(cb_source0, zero_tile_addr);
+                    if (!scale) {
+                        source1_result = stage_compute_benchmark_tile(cb_source1, zero_tile_addr);
+                        base_result = stage_compute_benchmark_tile(cb_base, zero_tile_addr);
+                    }
+#else
                     if (scale) {
                         const int32_t requested_y = base_requested_y(source, output, tile_y);
                         const int32_t requested_x = base_requested_x(source, output, tile_x);
-#ifdef TTWV_VALIDATE_ROUTE_STAGING
                         source0_requested_y = requested_y;
                         source0_requested_x = requested_x;
-#endif
-                        const StageTileResult result = stage_optimized_tile(
+                        source0_result = stage_optimized_tile(
                             cb_source0,
+                            zero_tile_addr,
                             plane_addrs[source_slot],
                             plane_tile_columns[source_slot],
                             stored[source_slot],
@@ -1865,29 +2015,16 @@ void kernel_main() {
                             requested_x,
                             true,
                             route_staging_metrics TTWV_STAGING_VALIDATION_ARGUMENT);
-                        source0_pending = result == StageTileResult::kExactPending;
-                        if (result == StageTileResult::kFallback) {
-                            fill_base_or_scale_tile(
-                                cb_source0,
-                                plane_addrs[source_slot],
-                                plane_tile_columns[source_slot],
-                                stored[source_slot],
-                                source,
-                                output,
-                                tile_y,
-                                tile_x);
-                        }
                     } else {
                         int32_t requested_y = 0;
                         int32_t requested_x = 0;
                         stencil_requested_origin(
                             vertical, 0, coefficient_count, source, output, tile_y, tile_x, requested_y, requested_x);
-#ifdef TTWV_VALIDATE_ROUTE_STAGING
                         source0_requested_y = requested_y;
                         source0_requested_x = requested_x;
-#endif
-                        StageTileResult result = stage_optimized_tile(
+                        source0_result = stage_optimized_tile(
                             cb_source0,
+                            zero_tile_addr,
                             plane_addrs[source_slot],
                             plane_tile_columns[source_slot],
                             stored[source_slot],
@@ -1895,29 +2032,13 @@ void kernel_main() {
                             requested_x,
                             false,
                             route_staging_metrics TTWV_STAGING_VALIDATION_ARGUMENT);
-                        source0_pending = result == StageTileResult::kExactPending;
-                        if (result == StageTileResult::kFallback) {
-                            fill_stencil_source_tile(
-                                cb_source0,
-                                vertical,
-                                0,
-                                coefficient_count,
-                                plane_addrs[source_slot],
-                                plane_tile_columns[source_slot],
-                                stored[source_slot],
-                                source,
-                                output,
-                                tile_y,
-                                tile_x);
-                        }
                         stencil_requested_origin(
                             vertical, 1, coefficient_count, source, output, tile_y, tile_x, requested_y, requested_x);
-#ifdef TTWV_VALIDATE_ROUTE_STAGING
                         source1_requested_y = requested_y;
                         source1_requested_x = requested_x;
-#endif
-                        result = stage_optimized_tile(
+                        source1_result = stage_optimized_tile(
                             cb_source1,
+                            zero_tile_addr,
                             plane_addrs[source_slot],
                             plane_tile_columns[source_slot],
                             stored[source_slot],
@@ -1925,29 +2046,13 @@ void kernel_main() {
                             requested_x,
                             false,
                             route_staging_metrics TTWV_STAGING_VALIDATION_ARGUMENT);
-                        source1_pending = result == StageTileResult::kExactPending;
-                        if (result == StageTileResult::kFallback) {
-                            fill_stencil_source_tile(
-                                cb_source1,
-                                vertical,
-                                1,
-                                coefficient_count,
-                                plane_addrs[source_slot],
-                                plane_tile_columns[source_slot],
-                                stored[source_slot],
-                                source,
-                                output,
-                                tile_y,
-                                tile_x);
-                        }
                         requested_y = base_requested_y(base, output, tile_y);
                         requested_x = base_requested_x(base, output, tile_x);
-#ifdef TTWV_VALIDATE_ROUTE_STAGING
                         base_requested_tile_y = requested_y;
                         base_requested_tile_x = requested_x;
-#endif
-                        result = stage_optimized_tile(
+                        base_result = stage_optimized_tile(
                             cb_base,
+                            zero_tile_addr,
                             plane_addrs[base_slot],
                             plane_tile_columns[base_slot],
                             stored[base_slot],
@@ -1955,55 +2060,36 @@ void kernel_main() {
                             requested_x,
                             true,
                             route_staging_metrics TTWV_STAGING_VALIDATION_ARGUMENT);
-                        base_pending = result == StageTileResult::kExactPending;
-                        if (result == StageTileResult::kFallback) {
-                            fill_base_or_scale_tile(
-                                cb_base,
-                                plane_addrs[base_slot],
-                                plane_tile_columns[base_slot],
-                                stored[base_slot],
-                                base,
-                                output,
-                                tile_y,
-                                tile_x);
-                        }
                     }
-                    if (source0_pending || source1_pending || base_pending) {
+#endif
+                    if (source0_result != StageTileResult::kCompleted ||
+                        source1_result != StageTileResult::kCompleted || base_result != StageTileResult::kCompleted) {
                         noc_async_read_barrier();
                     }
-                    if (source0_pending) {
-                        TTWV_VALIDATE_STAGED_TILE(
-                            get_write_ptr(cb_source0),
-                            plane_addrs[source_slot],
-                            plane_tile_columns[source_slot],
-                            stored[source_slot],
-                            source0_requested_y,
-                            source0_requested_x,
-                            staging_validation_metrics);
-                        cb_push_back(cb_source0, 1);
-                    }
-                    if (source1_pending) {
-                        TTWV_VALIDATE_STAGED_TILE(
-                            get_write_ptr(cb_source1),
-                            plane_addrs[source_slot],
-                            plane_tile_columns[source_slot],
-                            stored[source_slot],
-                            source1_requested_y,
-                            source1_requested_x,
-                            staging_validation_metrics);
-                        cb_push_back(cb_source1, 1);
-                    }
-                    if (base_pending) {
-                        TTWV_VALIDATE_STAGED_TILE(
-                            get_write_ptr(cb_base),
-                            plane_addrs[base_slot],
-                            plane_tile_columns[base_slot],
-                            stored[base_slot],
-                            base_requested_tile_y,
-                            base_requested_tile_x,
-                            staging_validation_metrics);
-                        cb_push_back(cb_base, 1);
-                    }
+                    finish_pending_tile(
+                        source0_result,
+                        cb_source0,
+                        plane_addrs[source_slot],
+                        plane_tile_columns[source_slot],
+                        stored[source_slot],
+                        source0_requested_y,
+                        source0_requested_x TTWV_STAGING_VALIDATION_ARGUMENT);
+                    finish_pending_tile(
+                        source1_result,
+                        cb_source1,
+                        plane_addrs[source_slot],
+                        plane_tile_columns[source_slot],
+                        stored[source_slot],
+                        source1_requested_y,
+                        source1_requested_x TTWV_STAGING_VALIDATION_ARGUMENT);
+                    finish_pending_tile(
+                        base_result,
+                        cb_base,
+                        plane_addrs[base_slot],
+                        plane_tile_columns[base_slot],
+                        stored[base_slot],
+                        base_requested_tile_y,
+                        base_requested_tile_x TTWV_STAGING_VALIDATION_ARGUMENT);
 #else
                     if (scale) {
                         count_route_tile(
@@ -5070,6 +5156,7 @@ namespace {
 
 struct Options {
     bool benchmark{false};
+    bool include_transfers{false};
     bool binary_input{false};
     bool quiet{false};
     bool split_metrics{false};
@@ -5109,10 +5196,12 @@ struct DeviceOutput {
            "[--terminal-writes fragmented|tiled] [--scale-policy explicit|fused] "
            "[--planner max-cores|latency] [--route-config per-route|preloaded] "
            "[--exact-transfer local-noc|l1-copy] "
+           "[--route-domain exact|tile-closed] "
            "[--transport-metrics [--transport-metrics-csv PATH]] [--validate-route-staging] "
            "[--alignment-csv PATH] "
            "[--microbenchmark empty|split|staging|compute|persistence|terminal|full] "
-           "[--split-snapshot-prefix PATH] [--route-snapshot-prefix PATH] [--benchmark [--repeats N] "
+           "[--split-snapshot-prefix PATH] [--route-snapshot-prefix PATH] "
+           "[--benchmark [--include-transfers] [--repeats N] "
            "[--warmup-runs N]] WAVELET HEIGHT WIDTH INPUT_FILE";
 }
 
@@ -5151,6 +5240,8 @@ struct DeviceOutput {
             }
         } else if (argument == "--benchmark") {
             options.benchmark = true;
+        } else if (argument == "--include-transfers") {
+            options.include_transfers = true;
         } else if (argument == "--binary-input") {
             options.binary_input = true;
         } else if (argument == "--quiet") {
@@ -5182,6 +5273,9 @@ struct DeviceOutput {
             options.benchmark = true;
             if (options.microbenchmark_mode == "split") {
                 options.split_metrics = true;
+            } else if (options.microbenchmark_mode == "compute") {
+                options.transport_metrics = true;
+                options.transport_policy.compute_only_benchmark = true;
             } else if (options.microbenchmark_mode != "empty" && options.microbenchmark_mode != "full") {
                 options.transport_metrics = true;
             }
@@ -5295,6 +5389,18 @@ struct DeviceOutput {
             } else {
                 throw std::runtime_error("--exact-transfer requires local-noc or l1-copy");
             }
+        } else if (argument == "--route-domain") {
+            if (++index >= argc) {
+                throw std::runtime_error("--route-domain requires exact or tile-closed");
+            }
+            const std::string_view policy = argv[index];
+            if (policy == "exact") {
+                options.transport_policy.route_domain = ttwv::Lwt2DRouteDomainPolicy::kExact;
+            } else if (policy == "tile-closed") {
+                options.transport_policy.route_domain = ttwv::Lwt2DRouteDomainPolicy::kTileClosed;
+            } else {
+                throw std::runtime_error("--route-domain requires exact or tile-closed");
+            }
         } else if (argument == "--route-snapshot-prefix") {
             if (++index >= argc || std::string_view{argv[index]}.empty()) {
                 throw std::runtime_error("--route-snapshot-prefix requires a path");
@@ -5339,6 +5445,9 @@ struct DeviceOutput {
     if (!options.benchmark && (options.repeats != 1 || options.warmup_runs != 1)) {
         throw std::runtime_error("--repeats and --warmup-runs require --benchmark");
     }
+    if (options.include_transfers && !options.benchmark) {
+        throw std::runtime_error("--include-transfers requires --benchmark");
+    }
     if (options.benchmark && options.route_snapshot_prefix) {
         throw std::runtime_error("--route-snapshot-prefix cannot be used with --benchmark");
     }
@@ -5357,6 +5466,13 @@ struct DeviceOutput {
     if (options.transport_policy.validate_route_staging &&
         options.transport_policy.route_staging != ttwv::Lwt2DRouteStagingImplementation::kOptimized) {
         throw std::runtime_error("--validate-route-staging requires --route-staging optimized");
+    }
+    if (options.transport_policy.compute_only_benchmark &&
+        options.transport_policy.route_staging != ttwv::Lwt2DRouteStagingImplementation::kOptimized) {
+        throw std::runtime_error("--microbenchmark compute requires --route-staging optimized");
+    }
+    if (options.transport_policy.compute_only_benchmark && options.transport_policy.validate_route_staging) {
+        throw std::runtime_error("--microbenchmark compute cannot be combined with --validate-route-staging");
     }
     if (options.quiet && !options.output_prefix && !options.split_snapshot_prefix && !options.route_snapshot_prefix &&
         !options.benchmark) {
@@ -5762,6 +5878,9 @@ void write_output_bands(const std::filesystem::path& prefix, const ttwv::Lwt2DRe
 }
 
 void print_telemetry(const ttwv::Lwt2DSchedulerTelemetry& telemetry) {
+    const auto ratio = [](const uint64_t internal, const uint64_t exact) {
+        return exact == 0 ? 1.0 : static_cast<double>(internal) / static_cast<double>(exact);
+    };
     std::cerr << "lwt_2d_active_core_count: " << telemetry.active_core_count << '\n'
               << "lwt_2d_chunk_count: " << telemetry.chunk_count << '\n'
               << "lwt_2d_chunk_tiles: " << telemetry.chunk_tiles_y << 'x' << telemetry.chunk_tiles_x << '\n'
@@ -5769,9 +5888,24 @@ void print_telemetry(const ttwv::Lwt2DSchedulerTelemetry& telemetry) {
               << "lwt_2d_executable_route_count: " << telemetry.executable_route_count << '\n'
               << "lwt_2d_scale_routes_removed: " << telemetry.scale_routes_removed << '\n'
               << "lwt_2d_planner: " << (telemetry.latency_oriented_planner ? "latency" : "max-cores") << '\n'
+              << "lwt_2d_route_domain: "
+              << (telemetry.route_domain == ttwv::Lwt2DRouteDomainPolicy::kTileClosed ? "tile-closed" : "exact")
+              << '\n'
               << "lwt_2d_estimated_latency_cycles: " << telemetry.estimated_latency_cycles << '\n'
               << "lwt_2d_l1_total_bytes: " << telemetry.l1_total_bytes << '\n'
-              << "lwt_2d_l1_headroom_bytes: " << telemetry.l1_headroom_bytes << '\n';
+              << "lwt_2d_l1_headroom_bytes: " << telemetry.l1_headroom_bytes << '\n'
+              << "lwt_2d_exact_initial_elements: " << telemetry.exact_initial_elements << '\n'
+              << "lwt_2d_internal_initial_elements: " << telemetry.internal_initial_elements << '\n'
+              << "lwt_2d_initial_overcompute_ratio: "
+              << ratio(telemetry.internal_initial_elements, telemetry.exact_initial_elements) << '\n'
+              << "lwt_2d_exact_route_elements: " << telemetry.exact_route_elements << '\n'
+              << "lwt_2d_internal_route_elements: " << telemetry.internal_route_elements << '\n'
+              << "lwt_2d_route_overcompute_ratio: "
+              << ratio(telemetry.internal_route_elements, telemetry.exact_route_elements) << '\n'
+              << "lwt_2d_exact_final_elements: " << telemetry.exact_final_elements << '\n'
+              << "lwt_2d_internal_final_elements: " << telemetry.internal_final_elements << '\n'
+              << "lwt_2d_final_overcompute_ratio: "
+              << ratio(telemetry.internal_final_elements, telemetry.exact_final_elements) << '\n';
 }
 
 void print_split_metrics(
@@ -5809,6 +5943,11 @@ void print_transport_metrics(const ttwv::Lwt2DTransportMetricsSummary& metrics) 
               << "lwt_2d_transport_fragmented_terminal_tiles: " << metrics.fragmented_terminal_tiles << '\n'
               << "lwt_2d_transport_validated_staging_tiles: " << metrics.validated_staging_tiles << '\n'
               << "lwt_2d_transport_staging_validation_mismatches: " << metrics.staging_validation_mismatches << '\n'
+              << "lwt_2d_transport_validation_exact_mismatches: " << metrics.validation_exact_mismatches << '\n'
+              << "lwt_2d_transport_validation_shifted_mismatches: " << metrics.validation_shifted_mismatches << '\n'
+              << "lwt_2d_transport_validation_two_axis_mismatches: " << metrics.validation_two_axis_mismatches << '\n'
+              << "lwt_2d_transport_validation_partial_mismatches: " << metrics.validation_partial_mismatches << '\n'
+              << "lwt_2d_transport_validation_empty_mismatches: " << metrics.validation_empty_mismatches << '\n'
               << "lwt_2d_transport_validated_persistence_tiles: " << metrics.validated_persistence_tiles << '\n'
               << "lwt_2d_transport_persistence_validation_mismatches: " << metrics.persistence_validation_mismatches
               << '\n'
@@ -5916,9 +6055,11 @@ void write_alignment_csv(
         throw std::runtime_error("Failed to create route-alignment CSV: " + path.string());
     }
     output << "wavelet,height,width,chunk,route,axis,step,coefficient_count,role,"
+              "requested_y,requested_x,stored_y_begin,stored_y_end,stored_x_begin,stored_x_end,"
+              "route_output_y_begin,route_output_y_end,route_output_x_begin,route_output_x_end,"
               "requested_y_mod32,requested_x_mod32,stored_y_begin_mod32,stored_x_begin_mod32,"
               "translation_y_mod32,translation_x_mod32,full_logical_coverage,zero_fill_required,"
-              "physical_plane_tiles_intersected,classification\n";
+              "valid_height,valid_width,valid_area,valid_fraction,physical_plane_tiles_intersected,classification\n";
 
     constexpr int64_t tile_side = static_cast<int64_t>(ttwv::kTileHeight2D);
     const auto rectangle_contains = [](const ttwv::IndexRectangle& rectangle, const int64_t y, const int64_t x) {
@@ -5968,6 +6109,17 @@ void write_alignment_csv(
                                           const int64_t output_tile_x) {
                 const bool full = rectangle_contains(stored_rectangle, requested_y, requested_x);
                 const bool intersects = rectangle_intersects(stored_rectangle, requested_y, requested_x);
+                const int64_t valid_y_begin = std::max(requested_y, static_cast<int64_t>(stored_rectangle.y.begin));
+                const int64_t valid_y_end =
+                    std::min(requested_y + tile_side, static_cast<int64_t>(stored_rectangle.y.end));
+                const int64_t valid_x_begin = std::max(requested_x, static_cast<int64_t>(stored_rectangle.x.begin));
+                const int64_t valid_x_end =
+                    std::min(requested_x + tile_side, static_cast<int64_t>(stored_rectangle.x.end));
+                const uint32_t valid_height =
+                    intersects ? static_cast<uint32_t>(std::max<int64_t>(0, valid_y_end - valid_y_begin)) : 0U;
+                const uint32_t valid_width =
+                    intersects ? static_cast<uint32_t>(std::max<int64_t>(0, valid_x_end - valid_x_begin)) : 0U;
+                const uint32_t valid_area = valid_height * valid_width;
                 const bool y_aligned = modulo_tile(requested_y) == 0;
                 const bool x_aligned = modulo_tile(requested_x) == 0;
                 const char* classification = nullptr;
@@ -5984,12 +6136,18 @@ void write_alignment_csv(
                 output << wavelet << ',' << plan.input_height << ',' << plan.input_width << ',' << chunk_index << ','
                        << route_index << ',' << (route.axis == ttwv::Lwt2DAxis::kVertical ? "vertical" : "horizontal")
                        << ',' << step_name(route.type) << ',' << coefficient_count << ',' << role << ','
+                       << requested_y << ',' << requested_x << ',' << stored_rectangle.y.begin << ','
+                       << stored_rectangle.y.end << ',' << stored_rectangle.x.begin << ','
+                       << stored_rectangle.x.end << ',' << route.output.y.begin << ',' << route.output.y.end << ','
+                       << route.output.x.begin << ',' << route.output.x.end << ','
                        << modulo_tile(requested_y) << ',' << modulo_tile(requested_x) << ','
                        << stored_rectangle.y.begin % ttwv::kTileHeight2D << ','
                        << stored_rectangle.x.begin % ttwv::kTileWidth2D << ','
                        << modulo_tile(requested_y - output_tile_y) << ',' << modulo_tile(requested_x - output_tile_x)
-                       << ',' << (full ? 1 : 0) << ',' << (full ? 0 : 1) << ',' << physical_tiles << ','
-                       << classification << '\n';
+                       << ',' << (full ? 1 : 0) << ',' << (full ? 0 : 1) << ',' << valid_height << ','
+                       << valid_width << ',' << valid_area << ','
+                       << static_cast<double>(valid_area) / static_cast<double>(ttwv::kTileHeight2D * ttwv::kTileWidth2D)
+                       << ',' << physical_tiles << ',' << classification << '\n';
             };
 
             for (size_t tile_y = 0; tile_y < tile_rows; ++tile_y) {
@@ -6136,6 +6294,35 @@ int main(int argc, char** argv) {
                           << "lwt_2d_p90_time_ms: " << percentile(0.9) << '\n'
                           << "lwt_2d_stddev_time_ms: " << std::sqrt(squared_error / static_cast<double>(times.size()))
                           << '\n';
+                if (options.include_transfers) {
+                    std::array<std::vector<float>, ttwv::device_protocol::kLwt2DBandCount> transfer_outputs;
+                    const auto execute_end_to_end = [&]() {
+                        const auto start = std::chrono::steady_clock::now();
+                        tt::tt_metal::distributed::EnqueueWriteMeshBuffer(
+                            command_queue, input.buffer, tiled, false);
+                        ttwv::execute_lwt_2d(*mesh_device, command_queue, executable);
+                        for (size_t band = 0; band < transfer_outputs.size(); ++band) {
+                            tt::tt_metal::distributed::EnqueueReadMeshBuffer(
+                                command_queue, transfer_outputs[band], executable.buffers.outputs[band], true);
+                        }
+                        const auto stop = std::chrono::steady_clock::now();
+                        return std::chrono::duration<double, std::milli>(stop - start).count();
+                    };
+                    for (size_t warmup = 0; warmup < options.warmup_runs; ++warmup) {
+                        static_cast<void>(execute_end_to_end());
+                    }
+                    std::vector<double> end_to_end_times;
+                    end_to_end_times.reserve(options.repeats);
+                    for (size_t repeat = 0; repeat < options.repeats; ++repeat) {
+                        end_to_end_times.push_back(execute_end_to_end());
+                    }
+                    const double end_to_end_total =
+                        std::accumulate(end_to_end_times.begin(), end_to_end_times.end(), 0.0);
+                    std::sort(end_to_end_times.begin(), end_to_end_times.end());
+                    std::cerr << "lwt_2d_end_to_end_time_ms: "
+                              << end_to_end_total / static_cast<double>(end_to_end_times.size()) << '\n'
+                              << "lwt_2d_min_end_to_end_time_ms: " << end_to_end_times.front() << '\n';
+                }
                 print_telemetry(executable.buffers.scheduler);
                 if (options.split_metrics) {
                     print_split_metrics(
@@ -8316,6 +8503,15 @@ inline constexpr uint32_t kLwt2DTransportMetricGenericBaseTiles = 15;
 // checks without growing the normal metrics page.
 inline constexpr uint32_t kLwt2DTransportMetricValidatedStagingTiles = kLwt2DTransportMetricOutputTiles;
 inline constexpr uint32_t kLwt2DTransportMetricStagingValidationMismatches = kLwt2DTransportMetricAxis;
+inline constexpr uint32_t kLwt2DTransportMetricValidationExactMismatches = kLwt2DTransportMetricStepType;
+inline constexpr uint32_t kLwt2DTransportMetricValidationShiftedMismatches =
+    kLwt2DTransportMetricCoefficientCount;
+inline constexpr uint32_t kLwt2DTransportMetricValidationTwoAxisMismatches =
+    kLwt2DTransportMetricExactSourceTiles;
+inline constexpr uint32_t kLwt2DTransportMetricValidationPartialMismatches =
+    kLwt2DTransportMetricShiftedSourceTiles;
+inline constexpr uint32_t kLwt2DTransportMetricValidationEmptyMismatches =
+    kLwt2DTransportMetricGenericSourceTiles;
 
 inline constexpr uint32_t kLwt2DTransportMetricWriterConfigCyclesLow = 16;
 inline constexpr uint32_t kLwt2DTransportMetricWriterConfigCyclesHigh = 17;
@@ -8723,6 +8919,13 @@ enum class Lwt2DExactTransferImplementation : uint8_t {
     kL1Copy,
 };
 
+enum class Lwt2DAdjacentStagingPolicy : uint8_t {
+    kIndependent,
+    kPaired,
+};
+
+inline constexpr uint64_t kLwt2DAdjacentPairBufferBytes = 5ULL * device_protocol::kLwt2DFullTileBytes;
+
 struct Lwt2DTransportPolicy {
     Lwt2DRouteStagingImplementation route_staging{Lwt2DRouteStagingImplementation::kOptimized};
     Lwt2DRoutePersistenceImplementation route_persistence{Lwt2DRoutePersistenceImplementation::kFullTile};
@@ -8731,6 +8934,11 @@ struct Lwt2DTransportPolicy {
     Lwt2DPlannerPolicy planner{Lwt2DPlannerPolicy::kLatency};
     Lwt2DRouteConfigImplementation route_config{Lwt2DRouteConfigImplementation::kPreloaded};
     Lwt2DExactTransferImplementation exact_transfer{Lwt2DExactTransferImplementation::kLocalNoc};
+    Lwt2DRouteDomainPolicy route_domain{Lwt2DRouteDomainPolicy::kExact};
+    Lwt2DAdjacentStagingPolicy adjacent_staging{Lwt2DAdjacentStagingPolicy::kPaired};
+    // Benchmark-only: feed persistent-zero tiles directly to the real
+    // unpack/SFPU/pack route kernel, bypassing workspace plane assembly.
+    bool compute_only_benchmark{false};
     // Validation-only: compare every optimized fast-path CB page against the
     // scalar gather before publishing it to the compute kernel.
     bool validate_route_staging{false};
@@ -8750,6 +8958,7 @@ struct Lwt2DSchedulerTelemetry {
     uint32_t executable_route_count{0};
     uint32_t scale_routes_removed{0};
     bool latency_oriented_planner{false};
+    Lwt2DRouteDomainPolicy route_domain{Lwt2DRouteDomainPolicy::kExact};
     uint64_t estimated_latency_cycles{0};
     double max_dependency_overhead{0.0};
     uint64_t l1_workspace_bytes{0};
@@ -8759,6 +8968,12 @@ struct Lwt2DSchedulerTelemetry {
     uint64_t l1_total_bytes{0};
     uint64_t l1_capacity_bytes{0};
     uint64_t l1_headroom_bytes{0};
+    uint64_t exact_initial_elements{0};
+    uint64_t internal_initial_elements{0};
+    uint64_t exact_route_elements{0};
+    uint64_t internal_route_elements{0};
+    uint64_t exact_final_elements{0};
+    uint64_t internal_final_elements{0};
 };
 
 struct Lwt2DSplitMetricsSummary {
@@ -8813,6 +9028,11 @@ struct Lwt2DTransportMetricsSummary {
     uint64_t fragmented_terminal_tiles{0};
     uint64_t validated_staging_tiles{0};
     uint64_t staging_validation_mismatches{0};
+    uint64_t validation_exact_mismatches{0};
+    uint64_t validation_shifted_mismatches{0};
+    uint64_t validation_two_axis_mismatches{0};
+    uint64_t validation_partial_mismatches{0};
+    uint64_t validation_empty_mismatches{0};
     uint64_t validated_persistence_tiles{0};
     uint64_t persistence_validation_mismatches{0};
     uint64_t max_terminal_write_cycles{0};
@@ -8884,7 +9104,22 @@ template <typename Scheme>
     const Lwt2DTransportPolicy transport_policy = {},
     const bool capture_transport_metrics = false) {
     TT_FATAL(logical_height > 0 && logical_width > 0, "2D LWT input shape must be positive");
-    constexpr uint64_t initial_l1_budget_bytes = 768 * 1024;
+    // Preserve the benchmarked production search space for the exact domain.
+    // The deliberately larger tile-closed A/B domain must instead be judged
+    // against the architecture's actual per-core L1 capacity.
+    const uint64_t hardware_or_search_budget =
+        transport_policy.route_domain == Lwt2DRouteDomainPolicy::kTileClosed
+            ? mesh_device.l1_size_per_core()
+            : 768 * 1024;
+    const uint64_t adjacent_buffer_bytes =
+        transport_policy.route_staging == Lwt2DRouteStagingImplementation::kOptimized &&
+                transport_policy.adjacent_staging == Lwt2DAdjacentStagingPolicy::kPaired
+            ? kLwt2DAdjacentPairBufferBytes
+            : 0;
+    TT_FATAL(
+        hardware_or_search_budget > adjacent_buffer_bytes,
+        "2D LWT adjacent staging buffers exceed the available planning budget");
+    const uint64_t initial_l1_budget_bytes = hardware_or_search_budget - adjacent_buffer_bytes;
     Lwt2DExecutionPlan plan = make_lwt_2d_execution_plan<Scheme>(
         logical_height,
         logical_width,
@@ -8892,7 +9127,8 @@ template <typename Scheme>
         initial_l1_budget_bytes,
         BoundaryMode::kSymmetric,
         transport_policy.scale == Lwt2DScalePolicy::kFused,
-        transport_policy.planner == Lwt2DPlannerPolicy::kLatency);
+        transport_policy.planner == Lwt2DPlannerPolicy::kLatency,
+        transport_policy.route_domain);
     TT_FATAL(
         input_buffer.size() >= checked_shape_area_2d(plan.tiling.input.storage, "2D input storage") * sizeof(float),
         "2D input buffer is smaller than its padded tile shape");
@@ -9130,14 +9366,31 @@ inline void validate_interval(const IndexInterval interval, const size_t stream_
 }
 
 [[nodiscard]] inline std::vector<RequiredStreams> backpropagate_requirements(
-    const LiftingForwardPlan& plan, const IndexInterval final_even, const IndexInterval final_odd) {
+    const LiftingForwardPlan& plan,
+    const IndexInterval final_even,
+    const IndexInterval final_odd,
+    const size_t closure_extent = 0) {
+    const auto close_interval = [closure_extent](const IndexInterval interval, const size_t stream_length) {
+        if (closure_extent == 0 || interval.empty()) {
+            return interval;
+        }
+        const size_t begin = (interval.begin / closure_extent) * closure_extent;
+        const size_t rounded_end =
+            interval.end > std::numeric_limits<size_t>::max() - (closure_extent - 1)
+                ? stream_length
+                : round_up(interval.end, closure_extent);
+        return IndexInterval{.begin = begin, .end = std::min(rounded_end, stream_length)};
+    };
     std::vector<RequiredStreams> required(plan.routes.size() + 1);
-    required.back() = RequiredStreams{.even = final_even, .odd = final_odd};
 
     size_t even_length = plan.final_even_length;
     size_t odd_length = plan.final_odd_length;
     validate_interval(final_even, even_length, "final even");
     validate_interval(final_odd, odd_length, "final odd");
+    required.back() = RequiredStreams{
+        .even = close_interval(final_even, even_length),
+        .odd = close_interval(final_odd, odd_length),
+    };
 
     for (size_t reverse_index = plan.routes.size(); reverse_index > 0; --reverse_index) {
         const size_t route_index = reverse_index - 1;
@@ -9193,6 +9446,8 @@ inline void validate_interval(const IndexInterval interval, const size_t stream_
                 break;
         }
 
+        before.even = close_interval(before.even, even_length);
+        before.odd = close_interval(before.odd, odd_length);
         validate_interval(before.even, even_length, "required even before route");
         validate_interval(before.odd, odd_length, "required odd before route");
         required[route_index] = before;
@@ -9381,9 +9636,12 @@ inline void validate_interval(const IndexInterval interval, const size_t stream_
  * changes only y.
  */
 [[nodiscard]] inline AxisConePlan build_axis_cone(
-    const LiftingForwardPlan& plan, const IndexInterval final_even, const IndexInterval final_odd) {
+    const LiftingForwardPlan& plan,
+    const IndexInterval final_even,
+    const IndexInterval final_odd,
+    const size_t closure_extent = 0) {
     const std::vector<AxisRequiredStreams> required =
-        execution_detail::backpropagate_requirements(plan, final_even, final_odd);
+        execution_detail::backpropagate_requirements(plan, final_even, final_odd, closure_extent);
 
     std::vector<AxisRouteRequirement> routes;
     routes.reserve(plan.routes.size());
@@ -9432,18 +9690,22 @@ inline void validate_interval(const IndexInterval interval, const size_t stream_
         routes.push_back(requirement);
     }
 
-    const LwtChunkPlan chunk = execution_detail::build_chunk(plan, final_even, final_odd);
+    size_t max_workspace_elements = 0;
+    for (const AxisRequiredStreams& streams : required) {
+        max_workspace_elements =
+            std::max(max_workspace_elements, std::max(streams.even.length(), streams.odd.length()));
+    }
     const bool base_transitions_aligned_32 =
-        std::all_of(chunk.routes.begin(), chunk.routes.end(), [](const LwtStepRoute& route) {
-            return !is_predict_update_step(route.type) || route.base_offset_elements % 32 == 0;
+        std::all_of(plan.routes.begin(), plan.routes.end(), [](const LiftingStepRoute& route) {
+            return !is_predict_update_step(route.type) || route.base_offset % 32 == 0;
         });
     return AxisConePlan{
-        .final_even = final_even,
-        .final_odd = final_odd,
+        .final_even = required.back().even,
+        .final_odd = required.back().odd,
         .initial_even = required.front().even,
         .initial_odd = required.front().odd,
         .routes = std::move(routes),
-        .max_workspace_elements = chunk.max_workspace_elements,
+        .max_workspace_elements = max_workspace_elements,
         .base_transitions_aligned_32 = base_transitions_aligned_32,
     };
 }
@@ -10478,6 +10740,11 @@ enum class Lwt2DWorkspacePolicy : uint8_t {
     kFourPlaneAligned,
 };
 
+enum class Lwt2DRouteDomainPolicy : uint8_t {
+    kExact,
+    kTileClosed,
+};
+
 enum class Lwt2DAxis : uint8_t {
     kVertical,
     kHorizontal,
@@ -10548,6 +10815,12 @@ struct Lwt2DChunkPlan {
     Lwt2DBandSourceRectangles final_band_sources{};
     Lwt2DResourceModel resources{};
     double dependency_overhead{0.0};
+    uint64_t exact_initial_elements{0};
+    uint64_t internal_initial_elements{0};
+    uint64_t exact_route_elements{0};
+    uint64_t internal_route_elements{0};
+    uint64_t exact_final_elements{0};
+    uint64_t internal_final_elements{0};
 };
 
 struct Lwt2DExecutionPlan {
@@ -10564,6 +10837,7 @@ struct Lwt2DExecutionPlan {
     uint32_t executable_route_count{0};
     uint32_t scale_routes_removed{0};
     bool latency_oriented_planner{false};
+    Lwt2DRouteDomainPolicy route_domain{Lwt2DRouteDomainPolicy::kExact};
     uint64_t estimated_latency_cycles{0};
     std::vector<Lwt2DChunkPlan> chunks;
     double max_dependency_overhead{0.0};
@@ -10573,6 +10847,12 @@ struct Lwt2DExecutionPlan {
     std::array<uint64_t, 5> allocated_plane_slot_bytes{};
     uint64_t allocated_workspace_bytes{0};
     uint64_t allocated_l1_bytes{0};
+    uint64_t exact_initial_elements{0};
+    uint64_t internal_initial_elements{0};
+    uint64_t exact_route_elements{0};
+    uint64_t internal_route_elements{0};
+    uint64_t exact_final_elements{0};
+    uint64_t internal_final_elements{0};
 };
 
 namespace plan_2d_detail {
@@ -10583,10 +10863,11 @@ constexpr uint32_t kTileHeight = static_cast<uint32_t>(kTileHeight2D);
 constexpr uint32_t kTileWidth = static_cast<uint32_t>(kTileWidth2D);
 constexpr uint64_t kFullFp32TileBytes = static_cast<uint64_t>(kTileHeight) * kTileWidth * sizeof(float);
 
-// Two source tiles, one base tile, and one output tile, double-buffered. The
-// writer may alias base/output later, but accounting the generic path keeps
-// the planner conservative.
-constexpr uint64_t kCircularBufferBytes = 8 * kFullFp32TileBytes;
+// Two source tiles, one base tile, and one output tile, double-buffered, plus
+// one persistent zero tile used by bounded route assembly. The writer may
+// alias base/output later, but accounting the generic path keeps the planner
+// conservative.
+constexpr uint64_t kCircularBufferBytes = 9 * kFullFp32TileBytes;
 // Reader chunk + route pages and independent writer route + band pages.
 constexpr uint64_t kMetadataBytes = device_protocol::kLwt2DChunkConfigPageBytes +
                                     2 * device_protocol::kLwt2DRouteConfigPageBytes +
@@ -10914,7 +11195,8 @@ inline void append_axis_routes(
     const LiftingForwardPlan& x_plan,
     const IndexRectangle final_band_rect,
     const uint64_t l1_budget_bytes,
-    const bool fuse_terminal_scale) {
+    const bool fuse_terminal_scale,
+    const Lwt2DRouteDomainPolicy route_domain) {
     const size_t y_tap_size = static_cast<size_t>(y_plan.preprocess_layout.pad_config.left) + 1;
     const size_t x_tap_size = static_cast<size_t>(x_plan.preprocess_layout.pad_config.left) + 1;
     const IndexInterval final_y_even = canonical_to_stream_interval(
@@ -10926,8 +11208,16 @@ inline void append_axis_routes(
     const IndexInterval final_x_odd = canonical_to_stream_interval(
         final_band_rect.x, x_plan.final_odd_shift, x_plan.final_odd_length, x_tap_size / 2, "horizontal odd");
 
-    AxisConePlan y_cone = build_axis_cone(y_plan, final_y_even, final_y_odd);
-    AxisConePlan x_cone = build_axis_cone(x_plan, final_x_even, final_x_odd);
+    const AxisConePlan exact_y_cone = build_axis_cone(y_plan, final_y_even, final_y_odd);
+    const AxisConePlan exact_x_cone = build_axis_cone(x_plan, final_x_even, final_x_odd);
+    AxisConePlan y_cone =
+        route_domain == Lwt2DRouteDomainPolicy::kTileClosed
+            ? build_axis_cone(y_plan, final_y_even, final_y_odd, kTileHeight)
+            : exact_y_cone;
+    AxisConePlan x_cone =
+        route_domain == Lwt2DRouteDomainPolicy::kTileClosed
+            ? build_axis_cone(x_plan, final_x_even, final_x_odd, kTileWidth)
+            : exact_x_cone;
     const PolyphaseDependencyRectangles initial{
         .ee = interval_product(y_cone.initial_even, x_cone.initial_even),
         .eo = interval_product(y_cone.initial_even, x_cone.initial_odd),
@@ -10946,12 +11236,19 @@ inline void append_axis_routes(
         workspace_policy,
         fuse_terminal_scale ? &y_terminal_scale : nullptr,
         fuse_terminal_scale ? &x_terminal_scale : nullptr);
+    auto [exact_routes, exact_final_bands] = build_route_schedule(
+        exact_y_cone,
+        exact_x_cone,
+        workspace_policy,
+        fuse_terminal_scale ? &y_terminal_scale : nullptr,
+        fuse_terminal_scale ? &x_terminal_scale : nullptr);
+    static_cast<void>(exact_final_bands);
     const Lwt2DResourceModel resources = make_resource_model(initial, routes, workspace_policy, l1_budget_bytes);
     const Lwt2DBandSourceRectangles final_band_sources{
-        .ll = interval_product(y_cone.final_even, x_cone.final_even),
-        .lh = interval_product(y_cone.final_even, x_cone.final_odd),
-        .hl = interval_product(y_cone.final_odd, x_cone.final_even),
-        .hh = interval_product(y_cone.final_odd, x_cone.final_odd),
+        .ll = interval_product(exact_y_cone.final_even, exact_x_cone.final_even),
+        .lh = interval_product(exact_y_cone.final_even, exact_x_cone.final_odd),
+        .hl = interval_product(exact_y_cone.final_odd, exact_x_cone.final_even),
+        .hh = interval_product(exact_y_cone.final_odd, exact_x_cone.final_odd),
     };
     const size_t final_area =
         checked_area(final_band_rect.height(), final_band_rect.width(), "2D LWT final band rectangle");
@@ -10969,6 +11266,25 @@ inline void append_axis_routes(
         final_elements == 0 ? 0.0
                             : static_cast<double>(dependency_elements - std::min(dependency_elements, final_elements)) /
                                   static_cast<double>(final_elements);
+    const PolyphaseDependencyRectangles exact_initial{
+        .ee = interval_product(exact_y_cone.initial_even, exact_x_cone.initial_even),
+        .eo = interval_product(exact_y_cone.initial_even, exact_x_cone.initial_odd),
+        .oe = interval_product(exact_y_cone.initial_odd, exact_x_cone.initial_even),
+        .oo = interval_product(exact_y_cone.initial_odd, exact_x_cone.initial_odd),
+    };
+    const auto route_elements = [](const std::vector<Lwt2DRoutePlan>& schedule) {
+        uint64_t elements = 0;
+        for (const Lwt2DRoutePlan& route : schedule) {
+            elements += route.output.area();
+        }
+        return elements;
+    };
+    const auto final_work_elements = [](const AxisConePlan& y, const AxisConePlan& x) {
+        return static_cast<uint64_t>(y.final_even.length() + y.final_odd.length()) *
+               static_cast<uint64_t>(x.final_even.length() + x.final_odd.length());
+    };
+    const uint64_t exact_route_elements = route_elements(exact_routes);
+    const uint64_t internal_route_elements = route_elements(routes);
 
     return Lwt2DChunkPlan{
         .final_band_rect = final_band_rect,
@@ -10994,6 +11310,12 @@ inline void append_axis_routes(
         .final_band_sources = final_band_sources,
         .resources = resources,
         .dependency_overhead = dependency_overhead,
+        .exact_initial_elements = exact_initial.total_area(),
+        .internal_initial_elements = initial.total_area(),
+        .exact_route_elements = exact_route_elements,
+        .internal_route_elements = internal_route_elements,
+        .exact_final_elements = final_work_elements(exact_y_cone, exact_x_cone),
+        .internal_final_elements = final_work_elements(y_cone, x_cone),
     };
 }
 
@@ -11003,7 +11325,8 @@ inline void append_axis_routes(
     const uint32_t chunk_tiles_y,
     const uint32_t chunk_tiles_x,
     const uint64_t l1_budget_bytes,
-    const bool fuse_terminal_scale) {
+    const bool fuse_terminal_scale,
+    const Lwt2DRouteDomainPolicy route_domain) {
     TT_FATAL(chunk_tiles_y > 0 && chunk_tiles_x > 0, "2D LWT chunk tile dimensions must be positive");
     const size_t chunk_height = static_cast<size_t>(chunk_tiles_y) * kTileHeight;
     const size_t chunk_width = static_cast<size_t>(chunk_tiles_x) * kTileWidth;
@@ -11023,7 +11346,8 @@ inline void append_axis_routes(
                     .x = IndexInterval{.begin = x, .end = x_end},
                 },
                 l1_budget_bytes,
-                fuse_terminal_scale));
+                fuse_terminal_scale,
+                route_domain));
             x = x_end;
         }
         y = y_end;
@@ -11079,7 +11403,10 @@ enum class AlignmentCostClass : uint8_t {
     switch (tile_class) {
         case AlignmentCostClass::kExact: return 900;
         case AlignmentCostClass::kOneAxisShifted: return 7'000;
-        case AlignmentCostClass::kGeneric: return 70'000;
+        // The bounded assembler zero-initializes by one same-core tile read
+        // and copies only the valid face-row segments. It is no longer the
+        // 1024-element scalar fallback represented by the old 70k weight.
+        case AlignmentCostClass::kGeneric: return 9'000;
     }
     return 70'000;
 }
@@ -11234,7 +11561,8 @@ enum class AlignmentCostClass : uint8_t {
     const uint32_t core_limit,
     const uint64_t l1_budget_bytes,
     const bool fuse_terminal_scale = false,
-    const bool latency_oriented_planner = false) {
+    const bool latency_oriented_planner = false,
+    const Lwt2DRouteDomainPolicy route_domain = Lwt2DRouteDomainPolicy::kExact) {
     TT_FATAL(core_limit > 0, "2D LWT requires at least one worker core");
     TT_FATAL(y_plan.preprocess_layout.input.length > 0, "2D LWT input height must be positive");
     TT_FATAL(x_plan.preprocess_layout.input.length > 0, "2D LWT input width must be positive");
@@ -11264,7 +11592,8 @@ enum class AlignmentCostClass : uint8_t {
     for (uint32_t tiles_y = 1; tiles_y <= band_tiles_y; ++tiles_y) {
         for (uint32_t tiles_x = 1; tiles_x <= band_tiles_x; ++tiles_x) {
             std::vector<Lwt2DChunkPlan> chunks =
-                plan_2d_detail::build_chunks(y_plan, x_plan, tiles_y, tiles_x, l1_budget_bytes, fuse_terminal_scale);
+                plan_2d_detail::build_chunks(
+                    y_plan, x_plan, tiles_y, tiles_x, l1_budget_bytes, fuse_terminal_scale, route_domain);
             uint64_t max_l1_bytes = 0;
             double max_dependency_overhead = 0.0;
             bool fits = true;
@@ -11351,6 +11680,20 @@ enum class AlignmentCostClass : uint8_t {
         best.chunks.front().routes.begin(), best.chunks.front().routes.end(), [](const Lwt2DRoutePlan& route) {
             return is_scale_step(route.type) && route.output.empty();
         }));
+    uint64_t exact_initial_elements = 0;
+    uint64_t internal_initial_elements = 0;
+    uint64_t exact_route_elements = 0;
+    uint64_t internal_route_elements = 0;
+    uint64_t exact_final_elements = 0;
+    uint64_t internal_final_elements = 0;
+    for (const Lwt2DChunkPlan& chunk : best.chunks) {
+        exact_initial_elements += chunk.exact_initial_elements;
+        internal_initial_elements += chunk.internal_initial_elements;
+        exact_route_elements += chunk.exact_route_elements;
+        internal_route_elements += chunk.internal_route_elements;
+        exact_final_elements += chunk.exact_final_elements;
+        internal_final_elements += chunk.internal_final_elements;
+    }
     return Lwt2DExecutionPlan{
         .y_plan = std::move(y_plan),
         .x_plan = std::move(x_plan),
@@ -11365,6 +11708,7 @@ enum class AlignmentCostClass : uint8_t {
         .executable_route_count = executable_route_count,
         .scale_routes_removed = scale_routes_removed,
         .latency_oriented_planner = latency_oriented_planner,
+        .route_domain = route_domain,
         .estimated_latency_cycles = best.estimated_latency_cycles,
         .chunks = std::move(best.chunks),
         .max_dependency_overhead = best.max_dependency_overhead,
@@ -11374,6 +11718,12 @@ enum class AlignmentCostClass : uint8_t {
         .allocated_plane_slot_bytes = allocated_plane_bytes,
         .allocated_workspace_bytes = allocated_workspace_bytes,
         .allocated_l1_bytes = allocated_l1_bytes,
+        .exact_initial_elements = exact_initial_elements,
+        .internal_initial_elements = internal_initial_elements,
+        .exact_route_elements = exact_route_elements,
+        .internal_route_elements = internal_route_elements,
+        .exact_final_elements = exact_final_elements,
+        .internal_final_elements = internal_final_elements,
     };
 }
 
@@ -11385,7 +11735,8 @@ template <typename Scheme>
     const uint64_t l1_budget_bytes,
     const BoundaryMode boundary_mode = BoundaryMode::kSymmetric,
     const bool fuse_terminal_scale = false,
-    const bool latency_oriented_planner = false) {
+    const bool latency_oriented_planner = false,
+    const Lwt2DRouteDomainPolicy route_domain = Lwt2DRouteDomainPolicy::kExact) {
     TT_FATAL(input_height > 0 && input_width > 0, "2D LWT input dimensions must be positive");
     const SignalBuffer y_input{
         .length = input_height,
@@ -11403,7 +11754,8 @@ template <typename Scheme>
         core_limit,
         l1_budget_bytes,
         fuse_terminal_scale,
-        latency_oriented_planner);
+        latency_oriented_planner,
+        route_domain);
 }
 
 namespace plan_2d_detail {
@@ -13130,6 +13482,9 @@ constexpr uint32_t kReaderRouteConfigCb = tt::CBIndex::c_5;
 constexpr uint32_t kWriterRouteConfigCb = tt::CBIndex::c_6;
 constexpr uint32_t kWriterBandConfigCb = tt::CBIndex::c_7;
 constexpr uint32_t kNocScratchCb = tt::CBIndex::c_8;
+constexpr uint32_t kRouteZeroCb = tt::CBIndex::c_9;
+constexpr uint32_t kAdjacentSourceCb = tt::CBIndex::c_10;
+constexpr uint32_t kAdjacentBaseCb = tt::CBIndex::c_11;
 constexpr uint32_t kOutputCb = tt::CBIndex::c_16;
 constexpr uint32_t kTileBuffering = 2;
 
@@ -13273,6 +13628,20 @@ void create_cb(
     return checked_u32((height / kTileHeight2D) * (width / kTileWidth2D), "2D route tile count");
 }
 
+[[nodiscard]] bool route_supports_adjacent_pair(const Lwt2DRoutePlan& route) {
+    if (!is_predict_update_step(route.type) || route.output.empty()) {
+        return false;
+    }
+    const size_t tile_rows =
+        plan_2d_detail::aligned_interval_span(route.output.y, kTileHeight2D, "2D route pair tile height") /
+        kTileHeight2D;
+    const size_t tile_columns =
+        plan_2d_detail::aligned_interval_span(route.output.x, kTileWidth2D, "2D route pair tile width") /
+        kTileWidth2D;
+    return route.axis == Lwt2DAxis::kVertical ? tile_columns == 1 && tile_rows >= 2
+                                              : tile_rows == 1 && tile_columns >= 2;
+}
+
 [[nodiscard]] uint32_t rectangle_tile_count(const IndexRectangle rectangle) {
     if (rectangle.empty()) {
         return 0;
@@ -13358,11 +13727,14 @@ void replace_plane_tile_counts_with_widths(std::vector<uint32_t>& args, const Lw
     return args;
 }
 
-[[nodiscard]] std::vector<uint32_t> compute_args(const Lwt2DExecutionPlan& plan, const CoreChunkWork& work) {
+[[nodiscard]] std::vector<uint32_t> compute_args(
+    const Lwt2DExecutionPlan& plan, const CoreChunkWork& work, const bool enable_adjacent_pairs) {
     const size_t route_count = plan.chunks.front().routes.size();
     const size_t packed_words_per_chunk = ceil_div(route_count, static_cast<size_t>(4));
+    const size_t pair_words_per_chunk = ceil_div(route_count, static_cast<size_t>(32));
+    const size_t words_per_chunk = packed_words_per_chunk + pair_words_per_chunk;
     std::vector<uint32_t> args;
-    args.reserve(1 + static_cast<size_t>(work.chunk_count) * packed_words_per_chunk);
+    args.reserve(1 + static_cast<size_t>(work.chunk_count) * words_per_chunk);
     args.push_back(work.chunk_count);
     for (uint32_t local_chunk = 0; local_chunk < work.chunk_count; ++local_chunk) {
         const Lwt2DChunkPlan& chunk = plan.chunks[work.chunk_begin + local_chunk];
@@ -13376,6 +13748,17 @@ void replace_plane_tile_counts_with_widths(std::vector<uint32_t>& args, const Lw
                 packed_counts |= count << (8 * (route_index - route_begin));
             }
             args.push_back(packed_counts);
+        }
+        for (size_t route_begin = 0; route_begin < route_count; route_begin += 32) {
+            uint32_t pair_mask = 0;
+            const size_t route_end = std::min(route_begin + 32, route_count);
+            if (enable_adjacent_pairs) {
+                for (size_t route_index = route_begin; route_index < route_end; ++route_index) {
+                    pair_mask |= static_cast<uint32_t>(route_supports_adjacent_pair(chunk.routes[route_index]))
+                                 << (route_index - route_begin);
+                }
+            }
+            args.push_back(pair_mask);
         }
     }
     return args;
@@ -13401,6 +13784,14 @@ void replace_plane_tile_counts_with_widths(std::vector<uint32_t>& args, const Lw
     create_cb(program, cores, kWriterRouteConfigCb, 1, device_protocol::kLwt2DRouteConfigPageBytes, false);
     create_cb(program, cores, kWriterBandConfigCb, 1, device_protocol::kLwt2DBandConfigPageBytes, false);
     create_cb(program, cores, kNocScratchCb, device_protocol::kLwt2DSplitScratchTileCount, kTileBytes, true);
+    create_cb(program, cores, kRouteZeroCb, 1, kTileBytes, true);
+    const bool enable_adjacent_pairs =
+        transport_policy.route_staging == Lwt2DRouteStagingImplementation::kOptimized &&
+        transport_policy.adjacent_staging == Lwt2DAdjacentStagingPolicy::kPaired;
+    if (enable_adjacent_pairs) {
+        create_cb(program, cores, kAdjacentSourceCb, 3, kTileBytes, true);
+        create_cb(program, cores, kAdjacentBaseCb, 2, kTileBytes, true);
+    }
 
     std::vector<uint32_t> reader_compile_args = {
         kSource0Cb,
@@ -13410,6 +13801,9 @@ void replace_plane_tile_counts_with_widths(std::vector<uint32_t>& args, const Lw
         kReaderChunkConfigCb,
         kReaderRouteConfigCb,
         kNocScratchCb,
+        kRouteZeroCb,
+        kAdjacentSourceCb,
+        kAdjacentBaseCb,
     };
     tt::tt_metal::TensorAccessorArgs(input).append_to(reader_compile_args);
     tt::tt_metal::TensorAccessorArgs(*buffers.chunk_config->get_backing_buffer()).append_to(reader_compile_args);
@@ -13451,6 +13845,12 @@ void replace_plane_tile_counts_with_widths(std::vector<uint32_t>& args, const Lw
     }
     if (transport_policy.validate_route_staging) {
         reader_defines.emplace("TTWV_VALIDATE_ROUTE_STAGING", "1");
+    }
+    if (transport_policy.compute_only_benchmark) {
+        reader_defines.emplace("TTWV_LWT_2D_COMPUTE_ONLY_BENCHMARK", "1");
+    }
+    if (enable_adjacent_pairs) {
+        reader_defines.emplace("TTWV_LWT_2D_ADJACENT_PAIRS", "1");
     }
     if (buffers.transport_metrics && !transport_policy.validate_route_staging) {
         reader_defines.emplace("TTWV_CAPTURE_TRANSPORT_METRICS", "1");
@@ -13511,12 +13911,13 @@ void replace_plane_tile_counts_with_widths(std::vector<uint32_t>& args, const Lw
             .math_fidelity = MathFidelity::HiFi4,
             .fp32_dest_acc_en = true,
             .unpack_to_dest_mode = unpack_modes,
-            .compile_args = {kSource0Cb, kSource1Cb, kBaseCb, kOutputCb},
+            .compile_args = {kSource0Cb, kSource1Cb, kBaseCb, kOutputCb, kAdjacentSourceCb, kAdjacentBaseCb},
             .defines =
                 {
                     {"TTWV_LWT_2D_SCHEME_HEADER", compute_scheme_header},
                     {"TTWV_LWT_2D_SCHEME_TYPE", compute_scheme_type},
                     {"TTWV_LWT_2D_FUSE_TERMINAL_SCALE", transport_policy.scale == Lwt2DScalePolicy::kFused ? "1" : "0"},
+                    {"TTWV_LWT_2D_ADJACENT_PAIRS", enable_adjacent_pairs ? "1" : "0"},
                 },
         });
     return Lwt2DProgram{
@@ -13653,6 +14054,7 @@ Lwt2DExecutable create_lwt_2d_executable_impl(
                 .executable_route_count = plan.executable_route_count,
                 .scale_routes_removed = plan.scale_routes_removed,
                 .latency_oriented_planner = plan.latency_oriented_planner,
+                .route_domain = plan.route_domain,
                 .estimated_latency_cycles = plan.estimated_latency_cycles,
                 .max_dependency_overhead = plan.max_dependency_overhead,
                 .l1_workspace_bytes = plan.allocated_workspace_bytes,
@@ -13662,6 +14064,12 @@ Lwt2DExecutable create_lwt_2d_executable_impl(
                 .l1_total_bytes = plan.allocated_l1_bytes,
                 .l1_capacity_bytes = l1_capacity,
                 .l1_headroom_bytes = l1_capacity - plan.allocated_l1_bytes,
+                .exact_initial_elements = plan.exact_initial_elements,
+                .internal_initial_elements = plan.internal_initial_elements,
+                .exact_route_elements = plan.exact_route_elements,
+                .internal_route_elements = plan.internal_route_elements,
+                .exact_final_elements = plan.exact_final_elements,
+                .internal_final_elements = plan.internal_final_elements,
             },
     };
     const std::vector<CoreChunkWork> work =
@@ -13895,6 +14303,16 @@ Lwt2DTransportMetricsSummary read_lwt_2d_transport_metrics(
             words[summary_offset + device_protocol::kLwt2DTransportMetricValidatedStagingTiles];
         summary.staging_validation_mismatches +=
             words[summary_offset + device_protocol::kLwt2DTransportMetricStagingValidationMismatches];
+        summary.validation_exact_mismatches +=
+            words[summary_offset + device_protocol::kLwt2DTransportMetricValidationExactMismatches];
+        summary.validation_shifted_mismatches +=
+            words[summary_offset + device_protocol::kLwt2DTransportMetricValidationShiftedMismatches];
+        summary.validation_two_axis_mismatches +=
+            words[summary_offset + device_protocol::kLwt2DTransportMetricValidationTwoAxisMismatches];
+        summary.validation_partial_mismatches +=
+            words[summary_offset + device_protocol::kLwt2DTransportMetricValidationPartialMismatches];
+        summary.validation_empty_mismatches +=
+            words[summary_offset + device_protocol::kLwt2DTransportMetricValidationEmptyMismatches];
         summary.validated_persistence_tiles +=
             words[summary_offset + device_protocol::kLwt2DTransportMetricValidatedPersistenceTiles];
         summary.persistence_validation_mismatches +=

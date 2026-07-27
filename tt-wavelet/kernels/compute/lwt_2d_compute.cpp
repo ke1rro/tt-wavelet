@@ -29,6 +29,36 @@ namespace {
 
 using Scheme = TTWV_LWT_2D_SCHEME_TYPE;
 
+#ifndef TTWV_INLINE_INVERSE_SCALE
+#define TTWV_INLINE_INVERSE_SCALE 0
+#endif
+
+constexpr bool kInlineInverseScale = TTWV_INLINE_INVERSE_SCALE != 0;
+
+template <uint32_t Index = 0>
+constexpr uint32_t first_predict_update_step_index() noexcept {
+    if constexpr (Index >= Scheme::num_steps) {
+        return Scheme::num_steps;
+    } else {
+        using Step = ttwv::SchemeStep<Scheme, Index>;
+        if constexpr (ttwv::is_predict_update_step(Step::type)) {
+            return Index;
+        } else {
+            return first_predict_update_step_index<Index + 1>();
+        }
+    }
+}
+
+template <uint32_t End, uint32_t Index = 0>
+constexpr uint32_t scale_count_before() noexcept {
+    if constexpr (Index >= End) {
+        return 0;
+    } else {
+        using Step = ttwv::SchemeStep<Scheme, Index>;
+        return (ttwv::is_scale_step(Step::type) ? 1U : 0U) + scale_count_before<End, Index + 1>();
+    }
+}
+
 template <uint32_t Index = 0>
 constexpr uint32_t last_predict_update_step_index() noexcept {
     if constexpr (Index >= Scheme::num_steps) {
@@ -81,6 +111,24 @@ constexpr uint32_t terminal_scale_bits() noexcept {
     }
 }
 
+template <ttwv::StepType ScaleType>
+constexpr uint32_t inverse_scale_bits() noexcept {
+    constexpr uint32_t first_step = first_predict_update_step_index();
+    static_assert(first_step < Scheme::num_steps, "2D inline inverse scaling requires a predict/update step");
+    static_assert(scale_count_before<first_step>() == 2, "2D inline inverse scaling requires two leading scales");
+    constexpr uint32_t bits = terminal_scale_bits<ScaleType>();
+    static_assert(bits != 0, "2D inline inverse scaling could not find a reciprocal scale");
+    return bits;
+}
+
+template <bool Enabled, ttwv::StepType ScaleType>
+constexpr uint32_t maybe_inverse_scale_bits() noexcept {
+    if constexpr (Enabled) {
+        return inverse_scale_bits<ScaleType>();
+    }
+    return 0U;
+}
+
 __attribute__((noinline)) void run_scale(
     const uint32_t tile_count, const uint32_t cb_source0, const uint32_t cb_output, const uint32_t coefficient) {
     for (uint32_t tile = 0; tile < tile_count; ++tile) {
@@ -99,7 +147,14 @@ __attribute__((noinline)) void run_scale(
     }
 }
 
-template <uint8_t K, bool Vertical, bool InlineTerminalScale>
+template <
+    uint8_t K,
+    bool Vertical,
+    bool InlineTerminalScale,
+    bool ScaleSource,
+    bool ScaleBase,
+    uint32_t SourceScaleBits,
+    uint32_t BaseScaleBits>
 __attribute__((noinline)) void run_stencil(
     const uint32_t tile_count,
     const uint32_t cb_source0,
@@ -124,6 +179,13 @@ __attribute__((noinline)) void run_stencil(
         copy_tile(cb_base, 0, 2);
         cb_pop_front(cb_base, 1);
 
+        if constexpr (ScaleSource) {
+            scale_tile(0, SourceScaleBits);
+            scale_tile(1, SourceScaleBits);
+        }
+        if constexpr (ScaleBase) {
+            scale_tile(2, BaseScaleBits);
+        }
         if constexpr (Vertical) {
             vstencil_init();
             vstencil_tile<K>(coefficients, 0, 1, 3, 2);
@@ -146,7 +208,14 @@ __attribute__((noinline)) void run_stencil(
     }
 }
 
-template <typename Step, bool Vertical, bool InlineTerminalScale>
+template <
+    typename Step,
+    bool Vertical,
+    bool InlineTerminalScale,
+    bool ScaleSource,
+    bool ScaleBase,
+    uint32_t SourceScaleBits,
+    uint32_t BaseScaleBits>
 inline void run_step(
     const uint32_t tile_count,
     const uint32_t cb_source0,
@@ -164,12 +233,25 @@ inline void run_step(
         static_assert(Step::k == 1, "2D scale route must contain exactly one coefficient");
         run_scale(tile_count, cb_source0, cb_output, Step::coeff_bits[0]);
     } else {
-        run_stencil<Step::k, Vertical, InlineTerminalScale>(
+        run_stencil<
+            Step::k,
+            Vertical,
+            InlineTerminalScale,
+            ScaleSource,
+            ScaleBase,
+            SourceScaleBits,
+            BaseScaleBits>(
             tile_count, cb_source0, cb_source1, cb_base, cb_output, Step::coeff_bits);
     }
 }
 
-template <bool Vertical, size_t StepIndex = 0>
+template <
+    bool Vertical,
+    bool EvenNeedsScale,
+    bool OddNeedsScale,
+    uint32_t EvenScaleBits,
+    uint32_t OddScaleBits,
+    size_t StepIndex = 0>
 __attribute__((noinline)) void run_axis(
     const uint32_t runtime_arg_base,
     const uint32_t route_offset,
@@ -182,14 +264,62 @@ __attribute__((noinline)) void run_axis(
         const uint32_t route_index = route_offset + StepIndex;
         const uint32_t packed_counts = get_arg_val<uint32_t>(runtime_arg_base + route_index / 4);
         const uint32_t tile_count = (packed_counts >> (8 * (route_index % 4))) & 0xFFU;
+        constexpr bool predict = Step::type == ttwv::StepType::kPredict;
+        constexpr bool scale_source =
+            kInlineInverseScale && ttwv::is_predict_update_step(Step::type) &&
+            (predict ? EvenNeedsScale : OddNeedsScale);
+        constexpr bool scale_base =
+            kInlineInverseScale && ttwv::is_predict_update_step(Step::type) &&
+            (predict ? OddNeedsScale : EvenNeedsScale);
+        constexpr uint32_t source_scale_bits = predict ? EvenScaleBits : OddScaleBits;
+        constexpr uint32_t base_scale_bits = predict ? OddScaleBits : EvenScaleBits;
         constexpr bool inline_terminal_scale =
 #if defined(TTWV_LWT_2D_FUSE_TERMINAL_SCALE) && TTWV_LWT_2D_FUSE_TERMINAL_SCALE
             StepIndex == last_predict_update_step_index();
 #else
             false;
 #endif
-        run_step<Step, Vertical, inline_terminal_scale>(tile_count, cb_source0, cb_source1, cb_base, cb_output);
-        run_axis<Vertical, StepIndex + 1>(runtime_arg_base, route_offset, cb_source0, cb_source1, cb_base, cb_output);
+        run_step<
+            Step,
+            Vertical,
+            inline_terminal_scale,
+            scale_source,
+            scale_base,
+            source_scale_bits,
+            base_scale_bits>(tile_count, cb_source0, cb_source1, cb_base, cb_output);
+        if constexpr (Step::type == ttwv::StepType::kSwap) {
+            run_axis<
+                Vertical,
+                OddNeedsScale,
+                EvenNeedsScale,
+                OddScaleBits,
+                EvenScaleBits,
+                StepIndex + 1>(
+                runtime_arg_base, route_offset, cb_source0, cb_source1, cb_base, cb_output);
+        } else if constexpr (ttwv::is_predict_update_step(Step::type)) {
+            run_axis<
+                Vertical,
+                predict ? EvenNeedsScale : false,
+                predict ? false : OddNeedsScale,
+                EvenScaleBits,
+                OddScaleBits,
+                StepIndex + 1>(
+                runtime_arg_base, route_offset, cb_source0, cb_source1, cb_base, cb_output);
+        } else {
+            run_axis<
+                Vertical,
+                EvenNeedsScale,
+                OddNeedsScale,
+                EvenScaleBits,
+                OddScaleBits,
+                StepIndex + 1>(
+                runtime_arg_base, route_offset, cb_source0, cb_source1, cb_base, cb_output);
+        }
+    } else {
+        static_assert(
+            !kInlineInverseScale || ((!EvenNeedsScale || EvenScaleBits == 0x3f800000U) &&
+                                    (!OddNeedsScale || OddScaleBits == 0x3f800000U)),
+            "2D inline inverse scaling left a final stream unscaled");
     }
 }
 
@@ -204,13 +334,31 @@ void kernel_main() {
     constexpr uint32_t routes_per_axis = Scheme::num_steps;
     constexpr uint32_t routes_per_chunk = 4 * routes_per_axis;
     constexpr uint32_t packed_words_per_chunk = (routes_per_chunk + 3) / 4;
+    constexpr uint32_t inverse_even_scale =
+        maybe_inverse_scale_bits<kInlineInverseScale, ttwv::StepType::kScaleEven>();
+    constexpr uint32_t inverse_odd_scale =
+        maybe_inverse_scale_bits<kInlineInverseScale, ttwv::StepType::kScaleOdd>();
 
     ckernel::init_sfpu(cb_base, cb_output);
     for (uint32_t chunk = 0; chunk < chunk_count; ++chunk) {
         const uint32_t runtime_arg_base = 1 + chunk * packed_words_per_chunk;
-        run_axis<true>(runtime_arg_base, 0, cb_source0, cb_source1, cb_base, cb_output);
-        run_axis<true>(runtime_arg_base, routes_per_axis, cb_source0, cb_source1, cb_base, cb_output);
-        run_axis<false>(runtime_arg_base, 2 * routes_per_axis, cb_source0, cb_source1, cb_base, cb_output);
-        run_axis<false>(runtime_arg_base, 3 * routes_per_axis, cb_source0, cb_source1, cb_base, cb_output);
+#if defined(TTWV_ILWT_2D) && TTWV_ILWT_2D
+        run_axis<false, true, true, inverse_even_scale, inverse_odd_scale>(
+            runtime_arg_base, 0, cb_source0, cb_source1, cb_base, cb_output);
+        run_axis<false, true, true, inverse_even_scale, inverse_odd_scale>(
+            runtime_arg_base, routes_per_axis, cb_source0, cb_source1, cb_base, cb_output);
+        run_axis<true, true, true, inverse_even_scale, inverse_odd_scale>(
+            runtime_arg_base, 2 * routes_per_axis, cb_source0, cb_source1, cb_base, cb_output);
+        run_axis<true, true, true, inverse_even_scale, inverse_odd_scale>(
+            runtime_arg_base, 3 * routes_per_axis, cb_source0, cb_source1, cb_base, cb_output);
+#else
+        run_axis<true, false, false, 0, 0>(runtime_arg_base, 0, cb_source0, cb_source1, cb_base, cb_output);
+        run_axis<true, false, false, 0, 0>(
+            runtime_arg_base, routes_per_axis, cb_source0, cb_source1, cb_base, cb_output);
+        run_axis<false, false, false, 0, 0>(
+            runtime_arg_base, 2 * routes_per_axis, cb_source0, cb_source1, cb_base, cb_output);
+        run_axis<false, false, false, 0, 0>(
+            runtime_arg_base, 3 * routes_per_axis, cb_source0, cb_source1, cb_base, cb_output);
+#endif
     }
 }
