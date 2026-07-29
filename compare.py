@@ -14,12 +14,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 LIFTING_USAGE_DIR = PROJECT_ROOT / "lifting-factorization" / "usage"
 TT_WAVELET_BINARY = PROJECT_ROOT / "build" / "lwt"
 TT_WAVELET_2D_BINARY = PROJECT_ROOT / "build" / "lwt_2d"
-TT_WAVELET_2D_REFERENCE_BINARY = PROJECT_ROOT / "build" / "lwt_2d_reference"
 TT_WAVELET_ENV = PROJECT_ROOT / "scripts" / "set_env.sh"
 VENV_PYTHON = PROJECT_ROOT / ".venv" / "bin" / "python3"
-STABLE_2D_MANIFEST = (
-    PROJECT_ROOT / "tests" / "reference" / "lwt_2d_symmetric_stable_schemes.json"
-)
 
 STEP_COEFF_CAPACITY = 17
 PU_STEP_TYPES = {"predict", "update"}
@@ -75,10 +71,7 @@ def parse_args() -> argparse.Namespace:
         nargs=2,
         type=int,
         metavar=("HEIGHT", "WIDTH"),
-        help=(
-            "Run the vertical-first 2D FP32 reference comparison for a flattened "
-            "row-major HEIGHT x WIDTH input."
-        ),
+        help="Compare a flattened row-major HEIGHT x WIDTH input.",
     )
     parser.add_argument(
         "--tolerance",
@@ -90,16 +83,7 @@ def parse_args() -> argparse.Namespace:
         "--device-tolerance",
         type=float,
         default=1e-4,
-        help="Hard 2D device-vs-FP32-oracle absolute tolerance (default: %(default)s).",
-    )
-    parser.add_argument(
-        "--fp32-arithmetic",
-        choices=("ieee", "wormhole-sfpu", "blackhole-sfpu"),
-        default="wormhole-sfpu",
-        help=(
-            "Arithmetic model used by the internal 2D lifting oracle "
-            "(default: %(default)s)."
-        ),
+        help="Hard 2D device-vs-PyWavelets absolute tolerance (default: %(default)s).",
     )
     parser.add_argument(
         "--tt-cores",
@@ -251,68 +235,6 @@ def run_tt_wavelet(
     }
 
 
-def run_fp32_reference_2d(
-    wavelet: str,
-    signal_file: Path,
-    boundary_mode: str,
-    height: int,
-    width: int,
-    fp32_arithmetic: str,
-) -> dict[str, list[float]]:
-    if not TT_WAVELET_2D_REFERENCE_BINARY.exists():
-        raise FileNotFoundError(
-            "TT-wavelet 2D FP32 reference binary not found at "
-            f"{TT_WAVELET_2D_REFERENCE_BINARY}. "
-            "Rebuild with ./update.sh Release lwt_2d_reference"
-        )
-
-    completed = subprocess.run(
-        [
-            str(TT_WAVELET_2D_REFERENCE_BINARY),
-            "--boundary-mode",
-            boundary_mode,
-            "--fp32-arithmetic",
-            fp32_arithmetic,
-            wavelet,
-            str(height),
-            str(width),
-            str(signal_file),
-        ],
-        cwd=PROJECT_ROOT,
-        capture_output=True,
-        text=True,
-        check=False,
-        env=os.environ.copy(),
-    )
-    output = completed.stdout + completed.stderr
-    if completed.returncode != 0:
-        raise RuntimeError(
-            "TT-wavelet 2D FP32 reference failed with exit code "
-            f"{completed.returncode}.\nCaptured output:\n{output}"
-        )
-
-    bands: dict[str, list[float]] = {}
-    for band in ("LL", "LH", "HL", "HH"):
-        pattern = re.compile(
-            rf"tt-wavelet fp32 reference {band} \((\d+)x(\d+)\): \[(.*?)\]"
-        )
-        match = pattern.search(output)
-        if match is None:
-            raise ValueError(f"Unable to find 2D FP32 reference band {band}")
-        band_height = int(match.group(1))
-        band_width = int(match.group(2))
-        values = [
-            float(value) for value in ast.literal_eval("[" + match.group(3) + "]")
-        ]
-        if len(values) != band_height * band_width:
-            raise ValueError(
-                f"2D FP32 reference {band} has {len(values)} values for "
-                f"shape {band_height}x{band_width}"
-            )
-        bands[band] = values
-    return bands
-
-
 def run_tt_wavelet_2d(
     wavelet: str,
     signal_file: Path,
@@ -371,17 +293,6 @@ def run_tt_wavelet_2d(
             raise ValueError(f"2D device {band} contains NaN or Inf")
         bands[band] = values
     return bands
-
-
-def load_stable_2d_schemes() -> set[str]:
-    with STABLE_2D_MANIFEST.open("r", encoding="utf-8") as handle:
-        manifest = json.load(handle)
-    stable = manifest.get("stable_schemes")
-    if not isinstance(stable, list):
-        raise ValueError(
-            f"Stable 2D manifest has no stable_schemes list: {STABLE_2D_MANIFEST}"
-        )
-    return {str(name) for name in stable}
 
 
 def extract_coeff_line(output: str, candidate_labels: Sequence[str]) -> list[float]:
@@ -654,14 +565,6 @@ def run_2d_comparison(args: argparse.Namespace, wavelet: str) -> bool:
         "HL": horizontal.ravel().tolist(),
         "HH": diagonal.ravel().tolist(),
     }
-    reference_bands = run_fp32_reference_2d(
-        wavelet,
-        args.signal_file,
-        args.boundary_mode,
-        height,
-        width,
-        args.fp32_arithmetic,
-    )
     device_bands = None
     if not args.skip_tt_wavelet:
         device_bands = run_tt_wavelet_2d(
@@ -672,73 +575,37 @@ def run_2d_comparison(args: argparse.Namespace, wavelet: str) -> bool:
             width,
             args.tt_cores,
         )
-    stable_schemes = (
-        load_stable_2d_schemes()
-        if args.boundary_mode == "symmetric"
-        else set()
-    )
-    pywt_is_acceptance_reference = wavelet in stable_schemes
 
     print(f"2D input shape: {height}x{width}")
     print(f"signal file: {args.signal_file}")
     print(f"boundary mode: {args.boundary_mode}")
-    print(f"FP32 oracle arithmetic: {args.fp32_arithmetic}")
     print("band convention: first letter is vertical " "(PyWavelets cV=LH, cH=HL)")
-    print(
-        "PyWavelets compatibility class: "
-        + (
-            "stable"
-            if pywt_is_acceptance_reference
-            else "known_fp32_difference"
-        )
-    )
     print()
 
     checks_ok = True
     for band in ("LL", "LH", "HL", "HH"):
         print(f"pywt {band}: {format_coeffs(pywt_bands[band])}")
-        print(
-            f"tt-wavelet FP32 reference {band}: {format_coeffs(reference_bands[band])}"
-        )
-        mismatches = print_pairwise_mismatches(
-            pywt_bands[band],
-            reference_bands[band],
-            f"{band} pywt vs TT-wavelet FP32 reference",
-            args.tolerance,
-        )
-        print_error_metrics(
-            pywt_bands[band],
-            reference_bands[band],
-            f"{band} pywt -> TT-wavelet FP32 reference",
-        )
         if device_bands is not None:
             print(
                 f"tt-wavelet device {band}: "
                 f"{format_coeffs(device_bands[band])}"
             )
             device_mismatches = print_pairwise_mismatches(
-                reference_bands[band],
+                pywt_bands[band],
                 device_bands[band],
-                f"{band} FP32 reference vs TT device",
+                f"{band} PyWavelets vs TT device",
                 args.device_tolerance,
             )
             print_error_metrics(
-                reference_bands[band],
+                pywt_bands[band],
                 device_bands[band],
-                f"{band} FP32 reference -> TT device",
+                f"{band} PyWavelets -> TT device",
             )
             checks_ok = checks_ok and device_mismatches == 0
         print()
-        if pywt_is_acceptance_reference:
-            checks_ok = checks_ok and mismatches == 0
 
     if device_bands is None:
         print("TT-wavelet fused 2D device run skipped.")
-    elif not pywt_is_acceptance_reference:
-        print(
-            "PyWavelets differences are informational for this scheme; "
-            "device acceptance is against the exact FP32 lifting oracle."
-        )
     return checks_ok
 
 

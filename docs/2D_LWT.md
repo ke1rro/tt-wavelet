@@ -4,10 +4,10 @@ This document specifies the vertical-first, separable 2D LWT architecture for
 Tenstorrent hardware. It assumes the reader already understands the
 [1D LWT](./LWT.md) implementation.
 
-The exact dependency-cone planner, mandatory tile-padding contract, FP32
-scalar oracle, dense full-tile horizontal stencil, `K=14..17` vertical
-stencil, and fused reader/compute/writer device program are implemented. The
-current device path is a correctness-first five-plane implementation:
+The exact dependency-cone planner, mandatory tile-padding contract, dense
+full-tile horizontal stencil, `K=14..17` vertical stencil, and fused
+reader/compute/writer device program are implemented. The current device path
+is a five-plane implementation:
 intermediate vertical and horizontal routes remain core-local, and only
 LL/LH/HL/HH are written to DRAM.
 
@@ -234,9 +234,7 @@ writer: persist every intermediate route in local L1 -> LL/LH/HL/HH in DRAM
 ```
 
 There is no device-program launch between the vertical and horizontal axes,
-and no intermediate band is looped through DRAM. Debug snapshot mode is the
-only exception: `--route-snapshot-prefix` explicitly copies each route result
-to diagnostic DRAM storage and writes a JSON manifest.
+and no intermediate band is looped through DRAM.
 
 The benchmark executable creates and prepares one device program per
 wavelet/shape case. Warmups and repeats enqueue that same `MeshWorkload`
@@ -245,30 +243,13 @@ prepared fused program, not four program constructions. Each launch is one
 complete reader/compute/writer transform. Benchmark mode also enables the
 program cache.
 
-## Performance status
+## Performance measurement
 
-The current split uses face-contiguous NoC bursts for interior rows and an
-alignment-safe scalar fallback only for reflected left/right edge segments.
-Final bands use face-contiguous burst writes for both interior and edge
-chunks. Indicative no-watcher N150 measurements for `db7`, 64-core limit,
-three repeats were:
-
-| Input | TT fused mean | PyWavelets mean | Active cores | Chunks |
-|---|---:|---:|---:|---:|
-| 512x512 | 32.1 ms | 13.8 ms | 64 | 81 |
-| 1000x1000 | 50.1 ms | 25.1 ms | 64 | 64 |
-
-These numbers show that correctness fusion is complete, but performance
-sign-off is not. The next changes with the largest expected effect are:
-
-1. replace BRISC face-burst parity gather with tile/block reads and local
-   SFPU parity deinterleave;
-2. add a whole-tile final-band fast path above the general face-burst writer;
-3. tune the 2D chunk cost model using measured halo duplication and core
-   utilization;
-4. add the four-plane aligned in-place route fast path;
-5. evaluate trace replay after tile-native split removes the remaining
-   reader-side staging.
+[`compare_2d_boundary_mode_timings.py`](../scripts/compare_2d_boundary_mode_timings.py)
+measures prepared-workload device latency against PyWavelets for all eight
+boundary modes and can also sweep the runtime-discovered worker-core count.
+Input upload, coefficient preparation, and result readback remain outside the
+device-only timed interval.
 
 ## FP32 contract
 
@@ -280,50 +261,22 @@ sign-off is not. The next changes with the largest expected effect are:
 - no algebraically equivalent long filter bank may replace the lifting route
   sequence.
 
-The scalar oracle supports `ieee`, `wormhole-sfpu`, and `blackhole-sfpu`
-arithmetic. Device validation defaults to the matching SFPU model. The
-checked-in PyWavelets compatibility manifest intentionally uses IEEE
-arithmetic because it classifies the generated lifting factorization against
-an external IEEE-oriented library, not device instruction behavior.
-
 Horizontal-first and vertical-first transforms are algebraically equivalent,
 but their FP32 results need not be bit-identical.
 
 ## Validation
 
-Build the implemented planner, reference, and vertical-kernel checks:
+Build the four production executables and run the Python validators:
 
 ```bash
-./update.sh Release lwt_2d_planner_tests
-./update.sh Release lwt_2d_reference
-./update.sh Release lwt_2d
-./update.sh Release vertical_stencil_k17_test
-./update.sh Release horizontal_dense_stencil_test
-```
-
-Run them with:
-
-```bash
-./build/lwt_2d_planner_tests
-./compare.py --wavelet db1 --shape 4 5 --signal-file signal.txt
-./compare_timings.py --backend tt-wavelet --wavelets db7 \
-  --shapes 256x256 512x512 --tt-repeats 5 --tt-cores 64
-.venv/bin/python scripts/validate_lwt_2d_device.py --schemes db1
 source scripts/set_env.sh
-./build/vertical_stencil_k17_test
-./build/horizontal_dense_stencil_test
+cmake --build build --target lwt ilwt lwt_2d ilwt_2d -j
+.venv/bin/python scripts/validate_lwt_2d_extension_modes.py \
+  --schemes db7 --shape 64x64
+.venv/bin/python scripts/validate_ilwt_2d_device.py
 ```
 
-The planner test covers all generated schemes and the required 23-shape
-corpus. `db1` passes that entire corpus, including 513x769 multi-chunk
-execution, with exact device/oracle output and bit-identical
-single-core/multi-core results. At 33x33, all 63 schemes in the
-empirical PyWavelets-stable manifest pass the device/oracle `1e-4` gate.
-A full single-core Wormhole-oracle sweep at 33x33 passes 63 of 106 schemes;
-43 long, ill-conditioned `db`/`coif` schemes exceed `1e-4`, and 50 schemes
-miss the preferred `1e-5` target. Architecture-exact primitive tests are
-bit-identical, so closing this route-chain numerical gap remains required.
-The exhaustive artifact explicitly records that its multi-core check was
-skipped; db1 and selected large-scheme runs cover multi-core identity
-separately. This internal gate is distinct from PyWavelets compatibility
-classification.
+The extension-mode validator is also the retained 106-scheme by eight-mode
+matrix driver. It compares production device output directly with
+PyWavelets and applies the configured FP32 tolerance without a C++ reference
+executable.

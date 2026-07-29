@@ -56,17 +56,10 @@ Never compile the Wormhole rotate for Blackhole.
 
 [`scale_sfpi.h`](../tt-wavelet/kernels/sfpi/scale_sfpi.h) owns FP32 scale primitives. For inline inverse scaling, source and/or base registers are multiplied before stencil accumulation. Forward terminal scaling multiplies the last updated output registers after accumulation. This keeps coefficient multiplication in SFPU and preserves operation order without materializing an avoidable local route.
 
-## Required validation
+## Validation
 
 Exercise `K=1`, `K=2`, shipped `K=9`, and synthetic `K=17`, including aligned and `+1 FP32` offsets, both layouts, odd/even lengths, and the 3,072-element chunk boundary. A successful host build is insufficient because SFPI is JIT compiled on first device use.
 
-The dense full-tile primitive has a dedicated Wormhole regression:
-
-```bash
-./update.sh Release horizontal_dense_stencil_test
-source scripts/set_env.sh
-./build/horizontal_dense_stencil_test
-```
-
-It covers `K=1,2,9,17` and compares all 1,024 results with an ordered FP32
-`std::fma` reference.
+Validate it through the production `lwt`, `ilwt`, `lwt_2d`, and `ilwt_2d`
+executables. The synthetic `K=17` scheme exercises the maximum stencil width;
+a device run is required to JIT-compile the SFPI kernel.

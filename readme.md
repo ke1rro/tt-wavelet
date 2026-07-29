@@ -2,15 +2,12 @@
 
 `tt-wavelet` implements one-level FP32 lifting wavelet transforms on Tenstorrent Wormhole B0 and Blackhole. Production LWT and ILWT use dependency-local three-slot L1 workspaces, native `32x16` compute pages, and direct terminal DRAM output. All 106 generated schemes are compiled through the local pinned TT-Metal/SFPI toolchain.
 
-The separable 2D path now has an exact product-cone planner, mandatory
-32x32-padding contract, vertical-first FP32 oracle, full-tile SFPU stencils,
-and one fused worker-local reader/compute/writer program with a five-plane L1
-workspace. It supports symmetric boundaries, separate LL/LH/HL/HH outputs,
-route snapshots, reusable benchmark launches, architecture-specific SFPU
-oracles, multi-core tile chunks, face-burst interior split reads, and
-face-burst final-band writes. Symmetric split edges retain a scalar fallback,
-and the all-106-scheme numerical gate has not yet closed, so 2D performance
-and precision work remain.
+The separable 2D path uses an exact product-cone planner, a mandatory
+`32x32` tile-padding contract, full-tile SFPU stencils, and one fused
+worker-local reader/compute/writer program with a five-plane L1 workspace.
+It supports all eight boundary modes, separate LL/LH/HL/HH outputs, reusable
+prepared launches, multi-core tile chunks, a fused tiled polyphase split, and
+full-tile final-band writes.
 
 ## Setup
 
@@ -77,13 +74,11 @@ python3 scripts/validate_ilwt_stability.py
 python3 scripts/validate_synthetic_k17.py
 python3 scripts/validate_ilwt_geometry.py
 python3 scripts/check_ncrisc_elf_size.py --architecture wormhole_b0
-./build/lwt_2d_planner_tests
 python3 compare.py --wavelet db1 --shape 4 5 --signal-file signal.txt
 python3 compare_timings.py --backend tt-wavelet --wavelets db7 \
   --shapes 256x256 512x512 --tt-cores 64
-.venv/bin/python scripts/validate_lwt_2d_device.py --schemes db1
-./build/vertical_stencil_k17_test
-./build/horizontal_dense_stencil_test
+.venv/bin/python scripts/validate_lwt_2d_extension_modes.py \
+  --schemes db1 --modes symmetric --shape 33x33 --input-type ramp
 ```
 
 ## Documentation

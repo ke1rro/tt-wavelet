@@ -5,8 +5,8 @@
 #include <cstdint>
 
 #include "../../tt_wavelet/include/device_protocol/lwt_2d_config.hpp"
+#include "../primitives/config_page.hpp"
 #include "../primitives/tile_2d_layout.hpp"
-#include "api/dataflow/dataflow_api.h"
 
 namespace {
 
@@ -14,6 +14,7 @@ using ttwv::kernels::primitives::kFaceSide;
 using ttwv::kernels::primitives::kTileBytes;
 using ttwv::kernels::primitives::kTileElements;
 using ttwv::kernels::primitives::kTileSide;
+using ttwv::kernels::primitives::load_config_page;
 using ttwv::kernels::primitives::tile_element_offset;
 using ttwv::kernels::primitives::tiled_element_offset;
 
@@ -40,28 +41,6 @@ struct Rect {
 }
 
 template <typename Accessor>
-ALWI void load_config_page(
-    const Accessor& accessor,
-    const uint32_t address,
-    const uint32_t page_bytes,
-    const uint32_t page_index,
-    const uint32_t cb,
-    uint32_t* words,
-    const uint32_t word_count) {
-    const auto pages = TensorAccessor(accessor, address, page_bytes);
-    cb_reserve_back(cb, 1);
-    noc_async_read(pages.get_noc_addr(page_index), get_write_ptr(cb), page_bytes);
-    noc_async_read_barrier();
-    cb_push_back(cb, 1);
-    cb_wait_front(cb, 1);
-    const auto* loaded = reinterpret_cast<const uint32_t*>(get_read_ptr(cb));
-    for (uint32_t word = 0; word < word_count; ++word) {
-        words[word] = loaded[word];
-    }
-    cb_pop_front(cb, 1);
-}
-
-template <typename Accessor>
 ALWI void preload_config_pages(
     const Accessor& accessor,
     const uint32_t address,
@@ -76,135 +55,33 @@ ALWI void preload_config_pages(
     noc_async_read_barrier();
 }
 
-#ifdef TTWV_VALIDATE_ROUTE_PERSISTENCE
-struct PersistenceValidationMetrics {
-    uint32_t validated_tiles{0};
-    uint32_t mismatched_words{0};
-};
-#define TTWV_PERSISTENCE_VALIDATION_PARAMETER , PersistenceValidationMetrics& validation_metrics
-#define TTWV_PERSISTENCE_VALIDATION_ARGUMENT , persistence_validation_metrics
-#else
-#define TTWV_PERSISTENCE_VALIDATION_PARAMETER
-#define TTWV_PERSISTENCE_VALIDATION_ARGUMENT
-#endif
-
-#ifdef TTWV_VALIDATE_ROUTE_PERSISTENCE
-ALWI void validate_persisted_tile(
-    const uint32_t destination_addr, const uint32_t source_addr, PersistenceValidationMetrics& metrics) {
-    const auto* destination = reinterpret_cast<const volatile tt_l1_ptr uint32_t*>(destination_addr);
-    const auto* source = reinterpret_cast<const volatile tt_l1_ptr uint32_t*>(source_addr);
-    ++metrics.validated_tiles;
-    for (uint32_t word = 0; word < kTileBytes / sizeof(uint32_t); ++word) {
-        metrics.mismatched_words += destination[word] != source[word] ? 1U : 0U;
-    }
-}
-#define TTWV_VALIDATE_PERSISTED_TILE(...) validate_persisted_tile(__VA_ARGS__)
-#else
-#define TTWV_VALIDATE_PERSISTED_TILE(...) \
-    do {                                  \
-    } while (false)
-#endif
-
-template <typename SnapshotAccessor>
 ALWI void write_local_output(
     const uint32_t cb_output,
     const uint32_t plane_addr,
     const uint32_t plane_tile_columns,
-    const Rect& output,
-    const SnapshotAccessor& snapshot_args,
-    const bool capture_snapshot,
-    const uint32_t snapshot_addr,
-    const uint32_t snapshot_page_base,
-    uint64_t& compute_wait_cycles,
-    uint64_t& persistence_cycles TTWV_PERSISTENCE_VALIDATION_PARAMETER) {
-    const auto snapshots = TensorAccessor(snapshot_args, snapshot_addr, kTileBytes);
+    const Rect& output) {
     const uint32_t tile_rows =
         (aligned_end(output.y_begin, output.y_length) - aligned_begin(output.y_begin)) / kTileSide;
     const uint32_t tile_columns =
         (aligned_end(output.x_begin, output.x_length) - aligned_begin(output.x_begin)) / kTileSide;
-#ifdef TTWV_LWT_2D_FULL_TILE_PERSISTENCE
-    if (!capture_snapshot) {
-        const uint32_t tile_count = tile_rows * tile_columns;
-        for (uint32_t first_tile = 0; first_tile < tile_count;) {
-            const uint32_t read_ptr = get_read_ptr(cb_output);
-            const uint32_t fifo_limit = get_local_cb_interface(cb_output).fifo_limit;
-            const uint32_t batch = first_tile + 1 < tile_count && read_ptr + 2 * kTileBytes <= fifo_limit ? 2U : 1U;
-#ifdef TTWV_CAPTURE_TRANSPORT_METRICS
-            const uint64_t wait_start = get_timestamp();
-#endif
-            cb_wait_front(cb_output, batch);
-#ifdef TTWV_CAPTURE_TRANSPORT_METRICS
-            compute_wait_cycles += get_timestamp() - wait_start;
-            const uint64_t persistence_start = get_timestamp();
-#endif
-            for (uint32_t tile_in_batch = 0; tile_in_batch < batch; ++tile_in_batch) {
-                const uint32_t flat_tile = first_tile + tile_in_batch;
-                const uint32_t tile_y = flat_tile / tile_columns;
-                const uint32_t tile_x = flat_tile % tile_columns;
-                const uint32_t destination_addr = plane_addr + (tile_y * plane_tile_columns + tile_x) * kTileBytes;
-                noc_async_write(read_ptr + tile_in_batch * kTileBytes, get_noc_addr(destination_addr), kTileBytes);
-            }
-            noc_async_write_barrier();
-            for (uint32_t tile_in_batch = 0; tile_in_batch < batch; ++tile_in_batch) {
-                const uint32_t flat_tile = first_tile + tile_in_batch;
-                const uint32_t tile_y = flat_tile / tile_columns;
-                const uint32_t tile_x = flat_tile % tile_columns;
-                const uint32_t destination_addr = plane_addr + (tile_y * plane_tile_columns + tile_x) * kTileBytes;
-                TTWV_VALIDATE_PERSISTED_TILE(
-                    destination_addr, read_ptr + tile_in_batch * kTileBytes, validation_metrics);
-            }
-            cb_pop_front(cb_output, batch);
-#ifdef TTWV_CAPTURE_TRANSPORT_METRICS
-            persistence_cycles += get_timestamp() - persistence_start;
-#endif
-            first_tile += batch;
-        }
-        return;
-    }
-#endif
-    for (uint32_t tile_y = 0; tile_y < tile_rows; ++tile_y) {
-        for (uint32_t tile_x = 0; tile_x < tile_columns; ++tile_x) {
-#ifdef TTWV_CAPTURE_TRANSPORT_METRICS
-            const uint64_t wait_start = get_timestamp();
-#endif
-            cb_wait_front(cb_output, 1);
-#ifdef TTWV_CAPTURE_TRANSPORT_METRICS
-            compute_wait_cycles += get_timestamp() - wait_start;
-            const uint64_t persistence_start = get_timestamp();
-#endif
-#ifdef TTWV_LWT_2D_FULL_TILE_PERSISTENCE
+    const uint32_t tile_count = tile_rows * tile_columns;
+    for (uint32_t first_tile = 0; first_tile < tile_count;) {
+        const uint32_t read_ptr = get_read_ptr(cb_output);
+        const uint32_t fifo_limit = get_local_cb_interface(cb_output).fifo_limit;
+        const uint32_t batch = first_tile + 1 < tile_count && read_ptr + 2 * kTileBytes <= fifo_limit ? 2U : 1U;
+        cb_wait_front(cb_output, batch);
+        for (uint32_t tile_in_batch = 0; tile_in_batch < batch; ++tile_in_batch) {
+            const uint32_t flat_tile = first_tile + tile_in_batch;
+            const uint32_t tile_y = flat_tile / tile_columns;
+            const uint32_t tile_x = flat_tile % tile_columns;
             const uint32_t destination_addr = plane_addr + (tile_y * plane_tile_columns + tile_x) * kTileBytes;
-            noc_async_write(get_read_ptr(cb_output), get_noc_addr(destination_addr), kTileBytes);
-            noc_async_write_barrier();
-            TTWV_VALIDATE_PERSISTED_TILE(destination_addr, get_read_ptr(cb_output), validation_metrics);
-#else
-            auto* destination = reinterpret_cast<volatile tt_l1_ptr uint32_t*>(
-                plane_addr + (tile_y * plane_tile_columns + tile_x) * kTileBytes);
-            const auto* source = reinterpret_cast<volatile tt_l1_ptr uint32_t*>(get_read_ptr(cb_output));
-            for (uint32_t word = 0; word < kTileBytes / sizeof(uint32_t); ++word) {
-                destination[word] = source[word];
-            }
-#endif
-            cb_pop_front(cb_output, 1);
-#ifdef TTWV_CAPTURE_TRANSPORT_METRICS
-            persistence_cycles += get_timestamp() - persistence_start;
-#endif
-            if (capture_snapshot) {
-                const uint32_t snapshot_page = snapshot_page_base + tile_y * tile_columns + tile_x;
-                noc_async_write(
-                    plane_addr + (tile_y * plane_tile_columns + tile_x) * kTileBytes,
-                    snapshots.get_noc_addr(snapshot_page),
-                    kTileBytes);
-                noc_async_write_barrier();
-            }
+            noc_async_write(read_ptr + tile_in_batch * kTileBytes, get_noc_addr(destination_addr), kTileBytes);
         }
+        noc_async_write_barrier();
+        cb_pop_front(cb_output, batch);
+        first_tile += batch;
     }
 }
-
-struct TerminalWriteMetrics {
-    uint32_t exact_tiles{0};
-    uint32_t fragmented_tiles{0};
-};
 
 template <typename OutputAccessor>
 ALWI void write_band_fragmented(
@@ -251,7 +128,6 @@ ALWI void write_band_fragmented(
     }
 }
 
-#ifdef TTWV_LWT_2D_TILED_TERMINAL_WRITES
 template <typename OutputAccessor>
 [[nodiscard]] ALWI bool write_band_full_tiles(
     const OutputAccessor& output_args,
@@ -263,8 +139,7 @@ template <typename OutputAccessor>
     const uint32_t final_y_begin,
     const uint32_t final_y_length,
     const uint32_t final_x_begin,
-    const uint32_t final_x_length,
-    TerminalWriteMetrics& metrics) {
+    const uint32_t final_x_length) {
     const bool exact = final_y_begin % kTileSide == 0 && final_x_begin % kTileSide == 0 &&
                        final_y_length % kTileSide == 0 && final_x_length % kTileSide == 0 &&
                        source.y_begin % kTileSide == 0 && source.x_begin % kTileSide == 0 &&
@@ -284,7 +159,6 @@ template <typename OutputAccessor>
             const uint32_t destination_tile =
                 (final_y_begin / kTileSide + tile_y) * output_tile_columns + final_x_begin / kTileSide + tile_x;
             noc_async_write(plane_addr + source_tile * kTileBytes, output.get_noc_addr(destination_tile), kTileBytes);
-            ++metrics.exact_tiles;
             if (++outstanding == kWriteBatchTiles) {
                 noc_async_write_barrier();
                 outstanding = 0;
@@ -296,7 +170,6 @@ template <typename OutputAccessor>
     }
     return true;
 }
-#endif
 
 template <typename OutputAccessor>
 ALWI void write_band(
@@ -310,9 +183,7 @@ ALWI void write_band(
     const uint32_t final_y_length,
     const uint32_t final_x_begin,
     const uint32_t final_x_length,
-    const uint32_t noc_scratch_addr,
-    TerminalWriteMetrics& metrics) {
-#ifdef TTWV_LWT_2D_TILED_TERMINAL_WRITES
+    const uint32_t noc_scratch_addr) {
     if (write_band_full_tiles(
             output_args,
             output_addr,
@@ -323,16 +194,9 @@ ALWI void write_band(
             final_y_begin,
             final_y_length,
             final_x_begin,
-            final_x_length,
-            metrics)) {
+            final_x_length)) {
         return;
     }
-#endif
-    const uint32_t destination_tile_rows =
-        (aligned_end(final_y_begin, final_y_length) - aligned_begin(final_y_begin)) / kTileSide;
-    const uint32_t destination_tile_columns =
-        (aligned_end(final_x_begin, final_x_length) - aligned_begin(final_x_begin)) / kTileSide;
-    metrics.fragmented_tiles += destination_tile_rows * destination_tile_columns;
     write_band_fragmented(
         output_args,
         output_addr,
@@ -377,8 +241,7 @@ ALWI void write_interleaved_output(
     const uint32_t final_x_length,
     const uint32_t pad_y,
     const uint32_t pad_x,
-    const uint32_t scratch_addr,
-    TerminalWriteMetrics& metrics) {
+    const uint32_t scratch_addr) {
     const auto output = TensorAccessor(output_args, output_addr, kTileBytes);
     const uint32_t tile_y_begin = aligned_begin(final_y_begin);
     const uint32_t tile_y_end = aligned_end(final_y_begin, final_y_length);
@@ -419,7 +282,6 @@ ALWI void write_interleaved_output(
                 tile_x + kTileSide <= final_x_begin + final_x_length;
             if (complete) {
                 noc_async_write(scratch_addr, output.get_noc_addr(destination_tile), kTileBytes);
-                ++metrics.exact_tiles;
             } else {
                 const uint32_t valid_y_begin = std::max(tile_y, final_y_begin);
                 const uint32_t valid_x_begin = std::max(tile_x, final_x_begin);
@@ -436,7 +298,6 @@ ALWI void write_interleaved_output(
                         x += count;
                     }
                 }
-                ++metrics.fragmented_tiles;
             }
             noc_async_write_barrier();
         }
@@ -444,88 +305,6 @@ ALWI void write_interleaved_output(
 }
 #endif
 
-#ifdef TTWV_CAPTURE_TRANSPORT_METRICS
-template <typename MetricAccessor>
-ALWI void write_transport_writer_half(
-    const MetricAccessor& metric_args,
-    const uint32_t metrics_addr,
-    const uint32_t metric_pages_per_chunk,
-    const uint32_t global_chunk,
-    const uint32_t page_in_chunk,
-    const uint32_t scratch_addr,
-    const uint64_t config_cycles,
-    const uint64_t persistence_cycles,
-    const uint64_t compute_cycles,
-    const uint32_t persistence_tiles,
-    const TerminalWriteMetrics terminal_metrics,
-    const uint64_t terminal_cycles,
-    const uint64_t kernel_cycles) {
-    constexpr uint32_t base = ttwv::device_protocol::kLwt2DTransportMetricWriterConfigCyclesLow;
-    auto* words = reinterpret_cast<volatile tt_l1_ptr uint32_t*>(scratch_addr);
-    for (uint32_t word = 0; word < ttwv::device_protocol::kLwt2DTransportMetricWordCount / 2; ++word) {
-        words[word] = 0;
-    }
-    words[ttwv::device_protocol::kLwt2DTransportMetricWriterConfigCyclesLow - base] =
-        static_cast<uint32_t>(config_cycles);
-    words[ttwv::device_protocol::kLwt2DTransportMetricWriterConfigCyclesHigh - base] =
-        static_cast<uint32_t>(config_cycles >> 32);
-    words[ttwv::device_protocol::kLwt2DTransportMetricPersistenceCyclesLow - base] =
-        static_cast<uint32_t>(persistence_cycles);
-    words[ttwv::device_protocol::kLwt2DTransportMetricPersistenceCyclesHigh - base] =
-        static_cast<uint32_t>(persistence_cycles >> 32);
-    words[ttwv::device_protocol::kLwt2DTransportMetricComputeCyclesLow - base] = static_cast<uint32_t>(compute_cycles);
-    words[ttwv::device_protocol::kLwt2DTransportMetricComputeCyclesHigh - base] =
-        static_cast<uint32_t>(compute_cycles >> 32);
-    words[ttwv::device_protocol::kLwt2DTransportMetricPersistenceTiles - base] = persistence_tiles;
-    words[ttwv::device_protocol::kLwt2DTransportMetricExactTerminalTiles - base] = terminal_metrics.exact_tiles;
-    words[ttwv::device_protocol::kLwt2DTransportMetricFragmentedTerminalTiles - base] =
-        terminal_metrics.fragmented_tiles;
-    words[ttwv::device_protocol::kLwt2DTransportMetricTerminalWriteCyclesLow - base] =
-        static_cast<uint32_t>(terminal_cycles);
-    words[ttwv::device_protocol::kLwt2DTransportMetricTerminalWriteCyclesHigh - base] =
-        static_cast<uint32_t>(terminal_cycles >> 32);
-    words[ttwv::device_protocol::kLwt2DTransportMetricKernelCyclesLow - base] = static_cast<uint32_t>(kernel_cycles);
-    words[ttwv::device_protocol::kLwt2DTransportMetricKernelCyclesHigh - base] =
-        static_cast<uint32_t>(kernel_cycles >> 32);
-    const auto metrics =
-        TensorAccessor(metric_args, metrics_addr, ttwv::device_protocol::kLwt2DTransportMetricPageBytes);
-    const uint32_t page = global_chunk * metric_pages_per_chunk + page_in_chunk;
-    noc_async_write(
-        scratch_addr,
-        metrics.get_noc_addr(page) + ttwv::device_protocol::kLwt2DTransportMetricHalfPageBytes,
-        ttwv::device_protocol::kLwt2DTransportMetricHalfPageBytes);
-    noc_async_write_barrier();
-}
-#endif
-
-#ifdef TTWV_VALIDATE_ROUTE_PERSISTENCE
-template <typename MetricAccessor>
-ALWI void write_persistence_validation_summary(
-    const MetricAccessor& metric_args,
-    const uint32_t metrics_addr,
-    const uint32_t metric_pages_per_chunk,
-    const uint32_t global_chunk,
-    const uint32_t page_in_chunk,
-    const uint32_t scratch_addr,
-    const PersistenceValidationMetrics& validation) {
-    constexpr uint32_t base = ttwv::device_protocol::kLwt2DTransportMetricWriterConfigCyclesLow;
-    auto* words = reinterpret_cast<volatile tt_l1_ptr uint32_t*>(scratch_addr);
-    for (uint32_t word = 0; word < ttwv::device_protocol::kLwt2DTransportMetricWordCount / 2; ++word) {
-        words[word] = 0;
-    }
-    words[ttwv::device_protocol::kLwt2DTransportMetricValidatedPersistenceTiles - base] = validation.validated_tiles;
-    words[ttwv::device_protocol::kLwt2DTransportMetricPersistenceValidationMismatches - base] =
-        validation.mismatched_words;
-    const auto metrics =
-        TensorAccessor(metric_args, metrics_addr, ttwv::device_protocol::kLwt2DTransportMetricPageBytes);
-    const uint32_t page = global_chunk * metric_pages_per_chunk + page_in_chunk;
-    noc_async_write(
-        scratch_addr,
-        metrics.get_noc_addr(page) + ttwv::device_protocol::kLwt2DTransportMetricHalfPageBytes,
-        ttwv::device_protocol::kLwt2DTransportMetricHalfPageBytes);
-    noc_async_write_barrier();
-}
-#endif
 
 }  // namespace
 
@@ -547,62 +326,30 @@ void kernel_main() {
     const uint32_t chunk_begin = get_arg_val<uint32_t>(plane_arg_count + 7);
     const uint32_t chunk_count = get_arg_val<uint32_t>(plane_arg_count + 8);
     const uint32_t route_count = get_arg_val<uint32_t>(plane_arg_count + 9);
-    const bool capture_snapshots = get_arg_val<uint32_t>(plane_arg_count + 10) != 0;
-    const uint32_t snapshot_addr = get_arg_val<uint32_t>(plane_arg_count + 11);
-    const uint32_t snapshot_tiles_per_route = get_arg_val<uint32_t>(plane_arg_count + 12);
-#if defined(TTWV_CAPTURE_TRANSPORT_METRICS) || defined(TTWV_VALIDATE_ROUTE_PERSISTENCE)
-    const uint32_t transport_metrics_addr = get_arg_val<uint32_t>(plane_arg_count + 13);
-    const uint32_t transport_metric_pages_per_chunk = get_arg_val<uint32_t>(plane_arg_count + 14);
-#endif
 #ifdef TTWV_ILWT_2D
-    const uint32_t pad_y = get_arg_val<uint32_t>(plane_arg_count + 15);
-    const uint32_t pad_x = get_arg_val<uint32_t>(plane_arg_count + 16);
+    const uint32_t pad_y = get_arg_val<uint32_t>(plane_arg_count + 10);
+    const uint32_t pad_x = get_arg_val<uint32_t>(plane_arg_count + 11);
 #endif
 
     constexpr uint32_t cb_output = get_compile_time_arg_val(0);
     constexpr uint32_t cb_sync = get_compile_time_arg_val(1);
-    constexpr uint32_t cb_route_config = get_compile_time_arg_val(2);
-    constexpr uint32_t cb_band_config = get_compile_time_arg_val(3);
-    constexpr uint32_t cb_noc_scratch = get_compile_time_arg_val(4);
-    constexpr auto route_args = TensorAccessorArgs<5>();
+    constexpr uint32_t cb_band_config = get_compile_time_arg_val(2);
+    constexpr uint32_t cb_noc_scratch = get_compile_time_arg_val(3);
+    constexpr auto route_args = TensorAccessorArgs<4>();
     constexpr auto band_args = TensorAccessorArgs<route_args.next_compile_time_args_offset()>();
     constexpr auto output_args = TensorAccessorArgs<band_args.next_compile_time_args_offset()>();
-    constexpr auto transport_metric_args = TensorAccessorArgs<output_args.next_compile_time_args_offset()>();
-    constexpr uint32_t split_scratch_bytes =
-        get_compile_time_arg_val(transport_metric_args.next_compile_time_args_offset());
-    const uint32_t noc_scratch_raw = get_write_ptr(cb_noc_scratch);
-    const uint32_t noc_scratch_addr = (noc_scratch_raw + 63U) & ~63U;
-#if defined(TTWV_CAPTURE_TRANSPORT_METRICS) || defined(TTWV_VALIDATE_ROUTE_PERSISTENCE)
-    // Reader and writer execute concurrently and share cb_noc_scratch's L1
-    // allocation.  Keep their metric assembly cache lines disjoint so one
-    // RISC cannot overwrite the other's in-flight NoC source buffer.
-    const uint32_t writer_metric_scratch_addr = noc_scratch_addr + split_scratch_bytes -
-                                                ttwv::device_protocol::kLwt2DTransportMetricHalfPageBytes;
-#endif
-#ifdef TTWV_LWT_2D_PRELOAD_ROUTE_CONFIG
-    constexpr uint32_t writer_config_capacity =
-        split_scratch_bytes / 2 - ttwv::device_protocol::kLwt2DTransportMetricPageBytes;
+    constexpr uint32_t split_scratch_bytes = get_compile_time_arg_val(output_args.next_compile_time_args_offset());
+    const uint32_t noc_scratch_addr = get_write_ptr(cb_noc_scratch);
+    constexpr uint32_t writer_config_capacity = split_scratch_bytes / 2;
     const uint32_t writer_config_addr = noc_scratch_addr + split_scratch_bytes / 2;
-#endif
 
     for (uint32_t local_chunk = 0; local_chunk < chunk_count; ++local_chunk) {
         const uint32_t global_chunk = chunk_begin + local_chunk;
-#ifdef TTWV_VALIDATE_ROUTE_PERSISTENCE
-        PersistenceValidationMetrics persistence_validation_metrics{};
-#endif
-#ifdef TTWV_CAPTURE_TRANSPORT_METRICS
-        const uint64_t chunk_start = get_timestamp();
-        uint64_t preload_config_cycles = 0;
-#endif
-#ifdef TTWV_LWT_2D_PRELOAD_ROUTE_CONFIG
         // The first packed output proves that split and reader preloading no
         // longer use the shared split scratch. Leave the page in the CB for
         // write_local_output() to consume after descriptor preloading.
         cb_wait_front(cb_output, 1);
         ASSERT(route_count * ttwv::device_protocol::kLwt2DRouteConfigPageBytes <= writer_config_capacity);
-#ifdef TTWV_CAPTURE_TRANSPORT_METRICS
-        const uint64_t preload_config_start = get_timestamp();
-#endif
         preload_config_pages(
             route_args,
             route_config_addr,
@@ -610,90 +357,24 @@ void kernel_main() {
             global_chunk * route_count,
             route_count,
             writer_config_addr);
-#ifdef TTWV_CAPTURE_TRANSPORT_METRICS
-        preload_config_cycles = get_timestamp() - preload_config_start;
-#endif
-#endif
         for (uint32_t route_index = 0; route_index < route_count; ++route_index) {
-#ifdef TTWV_LWT_2D_PRELOAD_ROUTE_CONFIG
             const auto* route_words = reinterpret_cast<const uint32_t*>(
                 writer_config_addr + route_index * ttwv::device_protocol::kLwt2DRouteConfigPageBytes);
-#ifdef TTWV_CAPTURE_TRANSPORT_METRICS
-            constexpr uint64_t config_cycles = 0;
-#endif
-#else
-            uint32_t route_words[ttwv::device_protocol::kLwt2DRouteConfigWordCount];
-#ifdef TTWV_CAPTURE_TRANSPORT_METRICS
-            const uint64_t config_start = get_timestamp();
-#endif
-            load_config_page(
-                route_args,
-                route_config_addr,
-                ttwv::device_protocol::kLwt2DRouteConfigPageBytes,
-                global_chunk * route_count + route_index,
-                cb_route_config,
-                route_words,
-                ttwv::device_protocol::kLwt2DRouteConfigWordCount);
-#ifdef TTWV_CAPTURE_TRANSPORT_METRICS
-            const uint64_t config_cycles = get_timestamp() - config_start;
-#endif
-#endif
             const uint32_t flags = route_words[ttwv::device_protocol::kLwt2DRouteFlags];
             if ((flags & ttwv::device_protocol::kLwt2DRouteFlagMetadataOnly) != 0) {
                 continue;
             }
             const uint32_t output_slot = route_words[ttwv::device_protocol::kLwt2DRouteOutputSlot];
             const Rect output = load_rect(route_words, ttwv::device_protocol::kLwt2DRouteOutputRect);
-#ifdef TTWV_CAPTURE_TRANSPORT_METRICS
-            uint64_t persistence_cycles = 0;
-            uint64_t compute_cycles = 0;
-#else
-            uint64_t unused_wait_cycles = 0;
-            uint64_t unused_persistence_cycles = 0;
-#endif
             write_local_output(
                 cb_output,
                 plane_addrs[output_slot],
                 plane_tile_columns[output_slot],
-                output,
-                output_args,
-                capture_snapshots,
-                snapshot_addr,
-                (global_chunk * route_count + route_index) * snapshot_tiles_per_route,
-#ifdef TTWV_CAPTURE_TRANSPORT_METRICS
-                compute_cycles,
-                persistence_cycles TTWV_PERSISTENCE_VALIDATION_ARGUMENT);
-#else
-                unused_wait_cycles,
-                unused_persistence_cycles TTWV_PERSISTENCE_VALIDATION_ARGUMENT);
-#endif
+                output);
             cb_reserve_back(cb_sync, 1);
             cb_push_back(cb_sync, 1);
-#ifdef TTWV_CAPTURE_TRANSPORT_METRICS
-            const uint32_t tile_rows =
-                (aligned_end(output.y_begin, output.y_length) - aligned_begin(output.y_begin)) / kTileSide;
-            const uint32_t tile_columns =
-                (aligned_end(output.x_begin, output.x_length) - aligned_begin(output.x_begin)) / kTileSide;
-            write_transport_writer_half(
-                transport_metric_args,
-                transport_metrics_addr,
-                transport_metric_pages_per_chunk,
-                global_chunk,
-                route_index,
-                writer_metric_scratch_addr,
-                config_cycles,
-                persistence_cycles,
-                compute_cycles,
-                tile_rows * tile_columns,
-                TerminalWriteMetrics{},
-                0,
-                0);
-#endif
         }
 
-#ifdef TTWV_CAPTURE_TRANSPORT_METRICS
-        const uint64_t terminal_start = get_timestamp();
-#endif
         uint32_t band_words[ttwv::device_protocol::kLwt2DBandConfigWordCount];
         load_config_page(
             band_args,
@@ -713,7 +394,6 @@ void kernel_main() {
             ttwv::device_protocol::kLwt2DBandHl,
             ttwv::device_protocol::kLwt2DBandHh,
         };
-        TerminalWriteMetrics terminal_metrics{};
 #ifdef TTWV_ILWT_2D
         uint32_t parity_slots[4];
         Rect parity_sources[4];
@@ -738,8 +418,7 @@ void kernel_main() {
             final_x_length,
             pad_y,
             pad_x,
-            noc_scratch_addr,
-            terminal_metrics);
+            noc_scratch_addr);
 #else
         for (uint32_t band = 0; band < 4; ++band) {
             const uint32_t band_offset = band_offsets[band];
@@ -756,42 +435,12 @@ void kernel_main() {
                 final_y_length,
                 final_x_begin,
                 final_x_length,
-                noc_scratch_addr,
-                terminal_metrics);
+                noc_scratch_addr);
         }
-#endif
-#ifdef TTWV_CAPTURE_TRANSPORT_METRICS
-        const uint64_t terminal_cycles = get_timestamp() - terminal_start;
 #endif
         // Release the reader only after every final band has stopped reading
         // this chunk's workspace.
         cb_reserve_back(cb_sync, 1);
         cb_push_back(cb_sync, 1);
-#ifdef TTWV_CAPTURE_TRANSPORT_METRICS
-        const uint64_t kernel_cycles = get_timestamp() - chunk_start;
-        write_transport_writer_half(
-            transport_metric_args,
-            transport_metrics_addr,
-            transport_metric_pages_per_chunk,
-            global_chunk,
-            route_count,
-            writer_metric_scratch_addr,
-            preload_config_cycles,
-            0,
-            0,
-            0,
-            terminal_metrics,
-            terminal_cycles,
-            kernel_cycles);
-#elif defined(TTWV_VALIDATE_ROUTE_PERSISTENCE)
-        write_persistence_validation_summary(
-            transport_metric_args,
-            transport_metrics_addr,
-            transport_metric_pages_per_chunk,
-            global_chunk,
-            route_count,
-            writer_metric_scratch_addr,
-            persistence_validation_metrics);
-#endif
     }
 }

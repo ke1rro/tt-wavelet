@@ -267,6 +267,10 @@ int run(const Options& options) {
             const double difference = value - mean;
             return sum + difference * difference;
         });
+    for (size_t repeat = 0; repeat < times.size(); ++repeat) {
+        std::cerr << std::fixed << std::setprecision(6) << "ilwt_2d_repeat_time_ms[" << repeat
+                  << "]: " << times[repeat] << '\n';
+    }
     const size_t route_count = executable.plan.chunks.empty() ? 0 : executable.plan.chunks.front().routes.size();
     const size_t scale_routes_removed =
         executable.plan.chunks.empty()
@@ -275,7 +279,11 @@ int run(const Options& options) {
                   executable.plan.chunks.front().routes.begin(),
                   executable.plan.chunks.front().routes.end(),
                   [](const ttwv::Lwt2DRoutePlan& route) { return ttwv::is_scale_step(route.type); }));
-    std::cerr << "ilwt_2d_boundary_mode: " << ttwv::boundary_mode_name(options.boundary_mode) << '\n'
+    std::cerr << "ilwt_2d_architecture: "
+              << tt::arch_to_str(executable.buffers.scheduler.architecture) << '\n'
+              << "ilwt_2d_boundary_mode: " << ttwv::boundary_mode_name(options.boundary_mode) << '\n'
+              << "ilwt_2d_available_worker_core_count: "
+              << executable.buffers.scheduler.available_worker_core_count << '\n'
               << std::fixed << std::setprecision(6) << "ilwt_2d_execution_time_ms: " << mean << '\n'
               << "ilwt_2d_min_execution_time_ms: " << sorted_times.front() << '\n'
               << "ilwt_2d_median_time_ms: " << percentile(0.5) << '\n'

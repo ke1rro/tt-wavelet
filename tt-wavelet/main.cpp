@@ -30,7 +30,11 @@ namespace {
 
 struct CliOptions {
     bool benchmark{false};
+#ifdef TTWV_DEFAULT_INVERSE
+    bool inverse{true};
+#else
     bool inverse{false};
+#endif
     uint32_t repeats{1};
     uint32_t warmup_runs{1};
     std::optional<size_t> generated_length;

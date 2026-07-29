@@ -24,66 +24,6 @@
 
 namespace ttwv {
 
-enum class Lwt2DSplitImplementation : uint8_t {
-    kScalar,
-    kTiled,
-};
-
-enum class Lwt2DRouteStagingImplementation : uint8_t {
-    kScalar,
-    kOptimized,
-};
-
-enum class Lwt2DRoutePersistenceImplementation : uint8_t {
-    kScalar,
-    kFullTile,
-};
-
-enum class Lwt2DTerminalWriteImplementation : uint8_t {
-    kFragmented,
-    kTiled,
-};
-
-enum class Lwt2DScalePolicy : uint8_t {
-    kExplicit,
-    kFused,
-};
-
-enum class Lwt2DPlannerPolicy : uint8_t {
-    kMaxCores,
-    kLatency,
-};
-
-enum class Lwt2DRouteConfigImplementation : uint8_t {
-    kPerRoute,
-    kPreloaded,
-};
-
-enum class Lwt2DExactTransferImplementation : uint8_t {
-    kLocalNoc,
-    kL1Copy,
-};
-
-struct Lwt2DTransportPolicy {
-    Lwt2DRouteStagingImplementation route_staging{Lwt2DRouteStagingImplementation::kOptimized};
-    Lwt2DRoutePersistenceImplementation route_persistence{Lwt2DRoutePersistenceImplementation::kFullTile};
-    Lwt2DTerminalWriteImplementation terminal_writes{Lwt2DTerminalWriteImplementation::kTiled};
-    Lwt2DScalePolicy scale{Lwt2DScalePolicy::kFused};
-    Lwt2DPlannerPolicy planner{Lwt2DPlannerPolicy::kLatency};
-    Lwt2DRouteConfigImplementation route_config{Lwt2DRouteConfigImplementation::kPreloaded};
-    Lwt2DExactTransferImplementation exact_transfer{Lwt2DExactTransferImplementation::kLocalNoc};
-    Lwt2DRouteDomainPolicy route_domain{Lwt2DRouteDomainPolicy::kExact};
-    // Benchmark-only: feed persistent-zero tiles directly to the real
-    // unpack/SFPU/pack route kernel, bypassing workspace plane assembly.
-    bool compute_only_benchmark{false};
-    // Diagnostic-only: run initial EE/EO/OE/OO construction for every chunk
-    // without entering the downstream lifting route pipeline.
-    bool split_only_benchmark{false};
-    // Validation-only: compare every optimized fast-path CB page against the
-    // scalar gather before publishing it to the compute kernel.
-    bool validate_route_staging{false};
-};
-
 struct Lwt2DSchedulerTelemetry {
     tt::ARCH architecture{tt::ARCH::Invalid};
     BoundaryMode boundary_mode{BoundaryMode::kSymmetric};
@@ -91,6 +31,7 @@ struct Lwt2DSchedulerTelemetry {
     Shape2D padded_input{};
     Shape2D logical_band{};
     Shape2D padded_band{};
+    uint32_t available_worker_core_count{0};
     uint32_t active_core_count{0};
     uint32_t chunk_count{0};
     uint32_t chunk_tiles_y{0};
@@ -98,8 +39,6 @@ struct Lwt2DSchedulerTelemetry {
     uint32_t route_count{0};
     uint32_t executable_route_count{0};
     uint32_t scale_routes_removed{0};
-    bool latency_oriented_planner{false};
-    Lwt2DRouteDomainPolicy route_domain{Lwt2DRouteDomainPolicy::kExact};
     uint64_t estimated_latency_cycles{0};
     double max_dependency_overhead{0.0};
     uint64_t l1_workspace_bytes{0};
@@ -117,95 +56,12 @@ struct Lwt2DSchedulerTelemetry {
     uint64_t internal_final_elements{0};
 };
 
-struct Lwt2DSplitMetricsSummary {
-    uint64_t max_core_cycles{0};
-    uint64_t raw_input_bytes{0};
-    uint64_t local_output_bytes{0};
-    uint64_t noc_read_calls{0};
-    uint64_t noc_read_barriers{0};
-    uint64_t interior_macro_tiles{0};
-    uint64_t boundary_macro_tiles{0};
-    uint64_t max_core_macro_tiles{0};
-};
-
-struct Lwt2DRouteTransportMetric {
-    uint32_t chunk_index{0};
-    uint32_t route_index{0};
-    uint32_t axis{0};
-    uint32_t step_type{0};
-    uint32_t coefficient_count{0};
-    uint32_t output_tiles{0};
-    uint64_t reader_config_cycles{0};
-    uint64_t staging_cycles{0};
-    uint64_t compute_cycles{0};
-    uint64_t persistence_cycles{0};
-    uint64_t synchronization_wait_cycles{0};
-    uint64_t writer_config_cycles{0};
-    uint64_t exact_source_tiles{0};
-    uint64_t shifted_source_tiles{0};
-    uint64_t generic_source_tiles{0};
-    uint64_t exact_base_tiles{0};
-    uint64_t shifted_base_tiles{0};
-    uint64_t generic_base_tiles{0};
-    uint64_t persistence_tiles{0};
-};
-
-struct Lwt2DTransportMetricsSummary {
-    std::vector<Lwt2DRouteTransportMetric> routes;
-    uint64_t max_reader_kernel_cycles{0};
-    uint64_t max_writer_kernel_cycles{0};
-    uint64_t max_route_staging_cycles{0};
-    uint64_t max_route_compute_cycles{0};
-    uint64_t max_route_persistence_cycles{0};
-    uint64_t max_route_synchronization_wait_cycles{0};
-    uint64_t total_route_tiles{0};
-    uint64_t exact_source_tiles{0};
-    uint64_t shifted_source_tiles{0};
-    uint64_t generic_source_tiles{0};
-    uint64_t exact_base_tiles{0};
-    uint64_t shifted_base_tiles{0};
-    uint64_t generic_base_tiles{0};
-    uint64_t exact_terminal_tiles{0};
-    uint64_t fragmented_terminal_tiles{0};
-    uint64_t validated_staging_tiles{0};
-    uint64_t staging_validation_mismatches{0};
-    uint64_t validation_exact_mismatches{0};
-    uint64_t validation_shifted_mismatches{0};
-    uint64_t validation_two_axis_mismatches{0};
-    uint64_t validation_partial_mismatches{0};
-    uint64_t validation_empty_mismatches{0};
-    uint64_t validated_persistence_tiles{0};
-    uint64_t persistence_validation_mismatches{0};
-    uint64_t max_terminal_write_cycles{0};
-    uint64_t max_core_cycles{0};
-    double mean_active_core_cycles{0.0};
-    uint64_t max_core_route_tiles{0};
-    uint64_t max_core_config_cycles{0};
-    uint64_t max_core_staging_cycles{0};
-    uint64_t max_core_compute_pipeline_cycles{0};
-    uint64_t max_core_persistence_cycles{0};
-    uint64_t max_core_synchronization_wait_cycles{0};
-    uint64_t max_core_terminal_write_cycles{0};
-    double mean_active_core_config_cycles{0.0};
-    double mean_active_core_staging_cycles{0.0};
-    double mean_active_core_compute_pipeline_cycles{0.0};
-    double mean_active_core_persistence_cycles{0.0};
-    double mean_active_core_synchronization_wait_cycles{0.0};
-    double mean_active_core_terminal_write_cycles{0.0};
-};
-
 struct Lwt2DWorkingBuffers {
     std::array<std::shared_ptr<tt::tt_metal::distributed::MeshBuffer>, device_protocol::kLwt2DPlaneCount> planes{};
     std::array<std::shared_ptr<tt::tt_metal::distributed::MeshBuffer>, device_protocol::kLwt2DBandCount> outputs{};
     std::shared_ptr<tt::tt_metal::distributed::MeshBuffer> chunk_config{};
     std::shared_ptr<tt::tt_metal::distributed::MeshBuffer> route_config{};
     std::shared_ptr<tt::tt_metal::distributed::MeshBuffer> band_config{};
-    std::shared_ptr<tt::tt_metal::distributed::MeshBuffer> split_metrics{};
-    std::shared_ptr<tt::tt_metal::distributed::MeshBuffer> transport_metrics{};
-    std::shared_ptr<tt::tt_metal::distributed::MeshBuffer> split_snapshots{};
-    uint32_t split_snapshot_tiles_per_plane{0};
-    std::shared_ptr<tt::tt_metal::distributed::MeshBuffer> route_snapshots{};
-    uint32_t snapshot_tiles_per_route{0};
     std::vector<tt::tt_metal::CoreCoord> cores;
     Lwt2DSchedulerTelemetry scheduler{};
 };
@@ -228,13 +84,7 @@ struct Ilwt2DExecutable {
     const tt::tt_metal::Buffer& input_buffer,
     Lwt2DExecutionPlan plan,
     const char* compute_scheme_header,
-    const char* compute_scheme_type,
-    bool capture_route_snapshots,
-    Lwt2DSplitImplementation split_implementation,
-    bool capture_split_metrics,
-    bool capture_split_snapshots,
-    Lwt2DTransportPolicy transport_policy,
-    bool capture_transport_metrics);
+    const char* compute_scheme_type);
 
 template <typename Scheme>
 [[nodiscard]] Lwt2DExecutable create_lwt_2d_executable(
@@ -244,30 +94,17 @@ template <typename Scheme>
     const size_t logical_height,
     const size_t logical_width,
     const uint32_t core_limit = 1,
-    const bool capture_route_snapshots = false,
-    const Lwt2DSplitImplementation split_implementation = Lwt2DSplitImplementation::kTiled,
-    const bool capture_split_metrics = false,
-    const bool capture_split_snapshots = false,
-    const Lwt2DTransportPolicy transport_policy = {},
-    const bool capture_transport_metrics = false,
     const BoundaryMode boundary_mode = BoundaryMode::kSymmetric) {
     TT_FATAL(logical_height > 0 && logical_width > 0, "2D LWT input shape must be positive");
-    // Preserve the benchmarked production search space for the exact domain.
-    // The deliberately larger tile-closed A/B domain must instead be judged
-    // against the architecture's actual per-core L1 capacity.
-    const uint64_t initial_l1_budget_bytes =
-        transport_policy.route_domain == Lwt2DRouteDomainPolicy::kTileClosed
-            ? mesh_device.l1_size_per_core()
-            : 768 * 1024;
     Lwt2DExecutionPlan plan = make_lwt_2d_execution_plan<Scheme>(
         logical_height,
         logical_width,
         core_limit,
-        initial_l1_budget_bytes,
+        768 * 1024,
         boundary_mode,
-        transport_policy.scale == Lwt2DScalePolicy::kFused,
-        transport_policy.planner == Lwt2DPlannerPolicy::kLatency,
-        transport_policy.route_domain);
+        true,
+        true,
+        Lwt2DRouteDomainPolicy::kExact);
     TT_FATAL(
         input_buffer.size() >= checked_shape_area_2d(plan.tiling.input.storage, "2D input storage") * sizeof(float),
         "2D input buffer is smaller than its padded tile shape");
@@ -277,13 +114,7 @@ template <typename Scheme>
         input_buffer,
         std::move(plan),
         Scheme::compute_scheme_header,
-        Scheme::compute_scheme_type,
-        capture_route_snapshots,
-        split_implementation,
-        capture_split_metrics,
-        capture_split_snapshots,
-        transport_policy,
-        capture_transport_metrics);
+        Scheme::compute_scheme_type);
 }
 
 void prepare_lwt_2d(tt::tt_metal::distributed::MeshCommandQueue& command_queue, Lwt2DExecutable& executable);
@@ -339,11 +170,5 @@ void execute_ilwt_2d(
     tt::tt_metal::distributed::MeshDevice& mesh_device,
     tt::tt_metal::distributed::MeshCommandQueue& command_queue,
     Ilwt2DExecutable& executable);
-
-[[nodiscard]] Lwt2DSplitMetricsSummary read_lwt_2d_split_metrics(
-    tt::tt_metal::distributed::MeshCommandQueue& command_queue, Lwt2DExecutable& executable);
-
-[[nodiscard]] Lwt2DTransportMetricsSummary read_lwt_2d_transport_metrics(
-    tt::tt_metal::distributed::MeshCommandQueue& command_queue, Lwt2DExecutable& executable);
 
 }  // namespace ttwv

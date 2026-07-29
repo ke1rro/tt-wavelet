@@ -25,7 +25,6 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SCHEME_DIR = PROJECT_ROOT / "wavelets"
 LWT = PROJECT_ROOT / "build" / "lwt_2d"
 ILWT = PROJECT_ROOT / "build" / "ilwt_2d"
-REFERENCE = PROJECT_ROOT / "build" / "lwt_2d_reference"
 SET_ENV = PROJECT_ROOT / "scripts" / "set_env.sh"
 DOCS = PROJECT_ROOT / "docs"
 
@@ -78,8 +77,6 @@ CORRECTNESS_FIELDS = (
     "worst_band",
     "worst_row",
     "worst_col",
-    "device_oracle_status",
-    "device_oracle_max_abs_error",
     "pywavelets_status",
     "tolerance",
     "error",
@@ -129,6 +126,15 @@ def parse_args() -> argparse.Namespace:
         help="Comma-separated one-based case numbers from the full selected matrix.",
     )
     parser.add_argument(
+        "--shape",
+        help="Use one HEIGHTxWIDTH shape for every selected case (smoke tests).",
+    )
+    parser.add_argument(
+        "--input-type",
+        choices=INPUT_TYPES,
+        help="Use one input pattern for every selected case (smoke tests).",
+    )
+    parser.add_argument(
         "--merge-existing",
         action="store_true",
         help="Replace matching scheme/mode rows in existing output artifacts.",
@@ -141,11 +147,6 @@ def parse_args() -> argparse.Namespace:
         "--architecture",
         choices=("blackhole", "wormhole"),
         default="blackhole",
-    )
-    parser.add_argument(
-        "--fp32-arithmetic",
-        choices=("blackhole-sfpu", "wormhole-sfpu"),
-        default="blackhole-sfpu",
     )
     parser.add_argument("--fail-fast", action="store_true")
     parser.add_argument(
@@ -165,24 +166,6 @@ def run_device(command: list[str], timeout: float) -> subprocess.CompletedProces
     )
     completed = subprocess.run(
         ["bash", "-lc", shell_command],
-        cwd=PROJECT_ROOT,
-        env=os.environ.copy(),
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-        check=False,
-    )
-    if completed.returncode != 0:
-        raise RuntimeError(
-            f"command failed ({completed.returncode}): {' '.join(command)}\n"
-            f"{completed.stdout}{completed.stderr}"
-        )
-    return completed
-
-
-def run_host(command: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
-    completed = subprocess.run(
-        command,
         cwd=PROJECT_ROOT,
         env=os.environ.copy(),
         capture_output=True,
@@ -242,13 +225,6 @@ def read_device_bands(prefix: Path) -> dict[str, np.ndarray]:
     }
 
 
-def read_reference_bands(prefix: Path) -> dict[str, np.ndarray]:
-    return {
-        band: np.fromfile(Path(f"{prefix}.{band.lower()}.f32"), dtype=np.float32)
-        for band in BANDS
-    }
-
-
 def run_lwt(
     scheme: str,
     mode: str,
@@ -278,36 +254,6 @@ def run_lwt(
         timeout,
     )
     return read_device_bands(prefix)
-
-
-def run_reference(
-    scheme: str,
-    mode: str,
-    height: int,
-    width: int,
-    signal_path: Path,
-    prefix: Path,
-    arithmetic: str,
-    timeout: float,
-) -> dict[str, np.ndarray]:
-    run_host(
-        [
-            str(REFERENCE),
-            "--binary-input",
-            "--boundary-mode",
-            mode,
-            "--fp32-arithmetic",
-            arithmetic,
-            "--output-prefix",
-            str(prefix),
-            scheme,
-            str(height),
-            str(width),
-            str(signal_path),
-        ],
-        timeout,
-    )
-    return read_reference_bands(prefix)
 
 
 def run_ilwt(
@@ -497,8 +443,6 @@ def failure_row(
         "worst_band": "",
         "worst_row": -1,
         "worst_col": -1,
-        "device_oracle_status": "fail",
-        "device_oracle_max_abs_error": finite_failure,
         "pywavelets_status": "fail",
         "tolerance": tolerance,
         "error": str(error),
@@ -511,9 +455,17 @@ def main() -> int:
         raise ValueError("--cores must be positive")
     if args.tolerance <= 0:
         raise ValueError("--tolerance must be positive")
-    for binary in (LWT, ILWT, REFERENCE):
+    for binary in (LWT, ILWT):
         if not binary.is_file():
             raise FileNotFoundError(f"required binary is missing: {binary}")
+    fixed_shape: tuple[int, int] | None = None
+    if args.shape:
+        dimensions = args.shape.lower().split("x")
+        if len(dimensions) != 2:
+            raise ValueError("--shape must use HEIGHTxWIDTH syntax")
+        fixed_shape = (int(dimensions[0]), int(dimensions[1]))
+        if min(fixed_shape) <= 0:
+            raise ValueError("--shape dimensions must be positive")
 
     schemes = (
         parse_csv_values(args.schemes)
@@ -555,11 +507,17 @@ def main() -> int:
             scheme_index = schemes.index(scheme)
             mode_index = MODES.index(mode)
             shape_index = (3 * scheme_index + mode_index) % len(SHAPES)
-            height, width = SHAPES[shape_index]
+            height, width = fixed_shape or SHAPES[shape_index]
             if mode in {"reflect", "antireflect"} and min(height, width) <= 1:
+                if fixed_shape is not None:
+                    raise ValueError(
+                        "reflect and antireflect require both dimensions greater than one"
+                    )
                 valid_shapes = [shape for shape in SHAPES if min(shape) > 1]
                 height, width = valid_shapes[(scheme_index + mode_index) % len(valid_shapes)]
-            input_type = INPUT_TYPES[(scheme_index + mode_index) % len(INPUT_TYPES)]
+            input_type = args.input_type or INPUT_TYPES[
+                (scheme_index + mode_index) % len(INPUT_TYPES)
+            ]
             signal = make_input(
                 height,
                 width,
@@ -571,7 +529,6 @@ def main() -> int:
             signal_path = case_root / "signal.f32"
             signal.tofile(signal_path)
             lwt_prefix = case_root / "tt"
-            reference_prefix = case_root / "reference"
             pywt_prefix = case_root / "pywt"
             roundtrip_path = case_root / "roundtrip.f32"
             ilwt_path = case_root / "pywt_ilwt.f32"
@@ -593,19 +550,7 @@ def main() -> int:
                     args.cores,
                     args.timeout_seconds,
                 )
-                oracle_bands = run_reference(
-                    scheme,
-                    mode,
-                    height,
-                    width,
-                    signal_path,
-                    reference_prefix,
-                    args.fp32_arithmetic,
-                    args.timeout_seconds,
-                )
                 pywt_metrics = band_error_metrics(device_bands, pywt_bands)
-                oracle_metrics = band_error_metrics(device_bands, oracle_bands)
-                oracle_ok = oracle_metrics[0] <= args.tolerance
                 pywt_ok = pywt_metrics[0] <= args.tolerance
                 lwt_rows.append(
                     {
@@ -617,17 +562,13 @@ def main() -> int:
                         "input_type": input_type,
                         "layout": "tile-native",
                         "architecture": args.architecture,
-                        "status": "pass" if oracle_ok else "fail",
+                        "status": "pass" if pywt_ok else "fail",
                         "max_abs_error": pywt_metrics[0],
                         "max_rel_error": pywt_metrics[1],
                         "worst_band": pywt_metrics[2],
                         "worst_row": pywt_metrics[3],
                         "worst_col": pywt_metrics[4],
-                        "device_oracle_status": "pass" if oracle_ok else "fail",
-                        "device_oracle_max_abs_error": oracle_metrics[0],
-                        "pywavelets_status": (
-                            "pass" if pywt_ok else "known_fp32_difference"
-                        ),
+                        "pywavelets_status": "pass" if pywt_ok else "fail",
                         "tolerance": args.tolerance,
                         "error": "",
                     }
@@ -699,8 +640,6 @@ def main() -> int:
                         "worst_band": "reconstruction",
                         "worst_row": ilwt_metrics[2],
                         "worst_col": ilwt_metrics[3],
-                        "device_oracle_status": "not-applicable",
-                        "device_oracle_max_abs_error": 0.0,
                         "pywavelets_status": (
                             "pass" if ilwt_metrics[0] <= args.tolerance else "fail"
                         ),

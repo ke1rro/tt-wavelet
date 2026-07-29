@@ -2,8 +2,6 @@
 
 The production vertical stencil primitive is implemented in
 [`vertical_stencil_sfpi.h`](../tt-wavelet/kernels/sfpi/vertical_stencil_sfpi.h).
-The hardware regression executable and its small reader/compute/writer kernels
-live under [`tt-wavelet/tests`](../tt-wavelet/tests).
 
 For a column signal `f` and filter `h`, the valid output is:
 
@@ -40,15 +38,8 @@ live:
 No partial result is written to L1, so the coefficient order and FP32 MAD
 sequence are unchanged.
 
-Unlike the horizontal stencil, columns do not need even/odd decomposition or an explicit cross-register masked move. This primitive is not part of the current 1D LWT/ILWT executable, but it is retained as production kernel infrastructure rather than verification-only code.
-
-Build and run the Wormhole regression with:
-
-```bash
-./update.sh Release vertical_stencil_k17_test
-source scripts/set_env.sh
-./build/vertical_stencil_k17_test
-```
-
-The test covers `K = 13, 14, 17`, all 32 output rows, all 32 columns, and
-compares the device output with an ordered `std::fma` reference.
+Unlike the horizontal stencil, columns do not need even/odd decomposition or
+an explicit cross-register masked move. This primitive is used by the
+production 2D LWT and ILWT compute kernel. Validate the high-order paths with
+the production executables and the synthetic `K=17` scheme; a device run is
+required to JIT-compile the SFPI kernel.

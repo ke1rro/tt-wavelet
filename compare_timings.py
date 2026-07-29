@@ -16,7 +16,6 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 TT_WAVELET_BINARY = PROJECT_ROOT / "build" / "lwt"
 TT_WAVELET_2D_BINARY = PROJECT_ROOT / "build" / "lwt_2d"
 TT_WAVELET_ILWT_2D_BINARY = PROJECT_ROOT / "build" / "ilwt_2d"
-TT_WAVELET_2D_REFERENCE_BINARY = PROJECT_ROOT / "build" / "lwt_2d_reference"
 TT_WAVELET_ENV = PROJECT_ROOT / "scripts" / "set_env.sh"
 DEFAULT_SCHEMES_DIR = PROJECT_ROOT / "wavelets"
 TT_PREFIX = r"(?:lwt|ilwt)"
@@ -51,12 +50,6 @@ TT_INVERSE_FINAL_INTERLEAVE_DIRECT_PATTERN = re.compile(
 TT_L1_TOTAL_BYTES_PATTERN = re.compile(rf"{TT_PREFIX}_l1_total_bytes:\s*(\d+)")
 TT_L1_CAPACITY_BYTES_PATTERN = re.compile(rf"{TT_PREFIX}_l1_capacity_bytes:\s*(\d+)")
 TT_L1_HEADROOM_BYTES_PATTERN = re.compile(rf"{TT_PREFIX}_l1_headroom_bytes:\s*(\d+)")
-REFERENCE_2D_MEAN_TIME_PATTERN = re.compile(
-    r"lwt_2d_reference_mean_time_ms:\s*([0-9eE+.\-]+)"
-)
-REFERENCE_2D_MIN_TIME_PATTERN = re.compile(
-    r"lwt_2d_reference_min_time_ms:\s*([0-9eE+.\-]+)"
-)
 TT_2D_PREFIX = r"(?:lwt|ilwt)_2d"
 TT_2D_MEAN_TIME_PATTERN = re.compile(
     rf"{TT_2D_PREFIX}_execution_time_ms:\s*([0-9eE+.\-]+)"
@@ -138,8 +131,7 @@ def ensure_runtime_packages(require_pywt: bool) -> None:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Benchmark TT-wavelet 1D device timings or PyWavelets vs the "
-            "vertical-first 2D FP32 scalar oracle."
+            "Benchmark TT-wavelet and PyWavelets 1D or 2D transform timings."
         )
     )
     parser.add_argument(
@@ -187,9 +179,7 @@ def parse_args() -> argparse.Namespace:
         nargs="+",
         metavar="HEIGHTxWIDTH",
         help=(
-            "Run 2D timing mode for explicit shapes such as 512x512 1024x768. "
-            "TT-wavelet measures the fused device program; fp32-reference "
-            "measures the scalar correctness oracle."
+            "Run 2D timing mode for explicit shapes such as 512x512 1024x768."
         ),
     )
     parser.add_argument(
@@ -211,12 +201,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--backend",
-        choices=["both", "tt-wavelet", "pywt", "fp32-reference"],
+        choices=["both", "tt-wavelet", "pywt"],
         default="both",
-        help=(
-            "Benchmark both available backends or one backend. fp32-reference "
-            "is valid only with --shapes (default: %(default)s)."
-        ),
+        help="Benchmark both available backends or one backend (default: %(default)s).",
     )
     parser.add_argument(
         "--transform",
@@ -275,73 +262,6 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=64,
         help="Maximum worker cores used by the fused 2D TT backend (default: %(default)s).",
-    )
-    parser.add_argument(
-        "--tt-split-implementation",
-        choices=["scalar", "tiled"],
-        default="tiled",
-        help=(
-            "Initial 2D input-to-polyphase split implementation used by the fused "
-            "TT backend (default: %(default)s)."
-        ),
-    )
-    parser.add_argument(
-        "--tt-route-staging",
-        choices=["scalar", "optimized"],
-        default="optimized",
-        help="2D route source/base staging implementation (default: %(default)s).",
-    )
-    parser.add_argument(
-        "--tt-route-persistence",
-        choices=["scalar", "full-tile"],
-        default="full-tile",
-        help="2D compute-output persistence implementation (default: %(default)s).",
-    )
-    parser.add_argument(
-        "--tt-terminal-writes",
-        choices=["fragmented", "tiled"],
-        default="tiled",
-        help="2D terminal-band writer implementation (default: %(default)s).",
-    )
-    parser.add_argument(
-        "--tt-scale-policy",
-        choices=["explicit", "fused"],
-        default="fused",
-        help="2D terminal scale policy (default: %(default)s).",
-    )
-    parser.add_argument(
-        "--tt-planner",
-        choices=["max-cores", "latency"],
-        default="latency",
-        help="2D chunk-planner selection policy (default: %(default)s).",
-    )
-    parser.add_argument(
-        "--tt-route-config",
-        choices=("per-route", "preloaded"),
-        default="preloaded",
-        help="2D route descriptor loading policy (default: %(default)s).",
-    )
-    parser.add_argument(
-        "--tt-route-domain",
-        choices=("exact", "tile-closed"),
-        default="exact",
-        help="2D internal dependency-domain policy (default: %(default)s).",
-    )
-    parser.add_argument(
-        "--tt-exact-transfer",
-        choices=("local-noc", "l1-copy"),
-        default="local-noc",
-        help="Same-core exact-tile transfer mechanism (default: %(default)s).",
-    )
-    parser.add_argument(
-        "--tt-transport-metrics",
-        action="store_true",
-        help="Enable compile-time-optional 2D route-transport telemetry.",
-    )
-    parser.add_argument(
-        "--tt-alignment-csv-dir",
-        type=Path,
-        help="Write host-derived per-tile route-alignment CSVs to this directory.",
     )
     parser.add_argument(
         "--tt-warmup-runs",
@@ -775,50 +695,6 @@ def parse_2d_shapes(raw_shapes: list[str]) -> list[tuple[int, int]]:
     return shapes
 
 
-def run_fp32_reference_2d_benchmark(
-    args: argparse.Namespace,
-    wavelet: str,
-    height: int,
-    width: int,
-    signal_file: Path,
-) -> tuple[float, float]:
-    command = [
-        str(TT_WAVELET_2D_REFERENCE_BINARY),
-        "--boundary-mode",
-        args.tt_boundary_mode,
-        "--benchmark",
-        "--repeats",
-        str(args.tt_repeats),
-        "--warmup-runs",
-        str(args.tt_warmup_runs),
-        wavelet,
-        str(height),
-        str(width),
-        str(signal_file),
-    ]
-    completed = subprocess.run(
-        command,
-        cwd=PROJECT_ROOT,
-        capture_output=True,
-        text=True,
-        check=False,
-        env=os.environ.copy(),
-    )
-    output = completed.stdout + completed.stderr
-    if completed.returncode != 0:
-        raise RuntimeError(
-            "2D FP32 reference benchmark failed with exit code "
-            f"{completed.returncode}.\n{output}"
-        )
-    mean_match = REFERENCE_2D_MEAN_TIME_PATTERN.search(output)
-    min_match = REFERENCE_2D_MIN_TIME_PATTERN.search(output)
-    if mean_match is None or min_match is None:
-        raise RuntimeError(
-            "2D FP32 reference output did not include mean and minimum timings"
-        )
-    return float(mean_match.group(1)) / 1000.0, float(min_match.group(1)) / 1000.0
-
-
 def run_tt_wavelet_2d_benchmark(
     args: argparse.Namespace,
     transform: str,
@@ -842,29 +718,11 @@ def run_tt_wavelet_2d_benchmark(
             + " ".join(sh_quote(str(path)) for path in band_files)
         )
     else:
-        alignment_option = ""
-        if args.tt_alignment_csv_dir is not None:
-            args.tt_alignment_csv_dir.mkdir(parents=True, exist_ok=True)
-            alignment_path = (
-                args.tt_alignment_csv_dir / f"{wavelet}_{height}x{width}.csv"
-            )
-            alignment_option = f"--alignment-csv {sh_quote(str(alignment_path))} "
         command = (
             f"source {sh_quote(str(TT_WAVELET_ENV))} "
             f"&& {sh_quote(str(TT_WAVELET_2D_BINARY))} "
             f"--boundary-mode {sh_quote(args.tt_boundary_mode)} "
             f"--benchmark --cores {args.tt_cores} "
-            f"--split-implementation {args.tt_split_implementation} "
-            f"--route-staging {args.tt_route_staging} "
-            f"--route-persistence {args.tt_route_persistence} "
-            f"--terminal-writes {args.tt_terminal_writes} "
-            f"--scale-policy {args.tt_scale_policy} "
-            f"--planner {args.tt_planner} "
-            f"--route-config {args.tt_route_config} "
-            f"--route-domain {args.tt_route_domain} "
-            f"--exact-transfer {args.tt_exact_transfer} "
-            f"{alignment_option}"
-            f"{'--transport-metrics ' if args.tt_transport_metrics else ''}"
             f"--repeats {args.tt_repeats} "
             f"--warmup-runs {args.tt_warmup_runs} "
             f"{sh_quote(wavelet)} {height} {width} "
@@ -884,8 +742,6 @@ def run_tt_wavelet_2d_benchmark(
             "Fused 2D TT-wavelet benchmark failed with exit code "
             f"{completed.returncode}.\n{output}"
         )
-    if args.tt_transport_metrics:
-        print(output, file=sys.stderr, end="")
     mean_match = TT_2D_MEAN_TIME_PATTERN.search(output)
     min_match = TT_2D_MIN_TIME_PATTERN.search(output)
     median_match = TT_2D_MEDIAN_TIME_PATTERN.search(output)
@@ -934,10 +790,7 @@ def run_tt_wavelet_2d_benchmark(
 def run_2d_benchmarks(args: argparse.Namespace) -> int:
     needs_pywt = args.backend in {"both", "pywt"}
     needs_tt = args.backend in {"both", "tt-wavelet"}
-    needs_reference = args.backend == "fp32-reference"
     transforms = ["lwt", "ilwt"] if args.transform == "both" else [args.transform]
-    if needs_reference and "ilwt" in transforms:
-        raise ValueError("The 2D FP32 reference backend currently supports forward LWT only")
     ensure_runtime_packages(require_pywt=needs_pywt)
     if needs_pywt:
         import numpy as np
@@ -957,16 +810,10 @@ def run_2d_benchmarks(args: argparse.Namespace) -> int:
         raise ValueError("--tt-cores must be positive")
     if any(min(height, width) <= 1 for height, width in shapes) and (
         (needs_pywt and args.pywt_mode in {"reflect", "antireflect"})
-        or ((needs_reference or needs_tt) and args.tt_boundary_mode in {"reflect", "antireflect"})
+        or (needs_tt and args.tt_boundary_mode in {"reflect", "antireflect"})
     ):
         raise ValueError(
             "2D reflect and antireflect modes require both dimensions to exceed one"
-        )
-    if needs_reference and not TT_WAVELET_2D_REFERENCE_BINARY.exists():
-        raise FileNotFoundError(
-            "2D FP32 reference binary not found at "
-            f"{TT_WAVELET_2D_REFERENCE_BINARY}. Rebuild with "
-            "./update.sh Release lwt_2d_reference"
         )
     if needs_tt and not TT_WAVELET_2D_BINARY.exists():
         if "lwt" in transforms:
@@ -984,7 +831,7 @@ def run_2d_benchmarks(args: argparse.Namespace) -> int:
         wavelets = args.wavelets
     else:
         wavelets = load_wavelets_from_log(resolve_wavelets_log(args.wavelets_log))
-    if (needs_reference or needs_tt) and not args.schemes_dir.exists():
+    if needs_tt and not args.schemes_dir.exists():
         raise FileNotFoundError(f"Schemes directory not found: {args.schemes_dir}")
 
     csv_path = args.csv or PROJECT_ROOT / "tt_wavelet_timings_2d.csv"
@@ -1015,11 +862,6 @@ def run_2d_benchmarks(args: argparse.Namespace) -> int:
         "tt_route_count",
         "tt_executable_route_count",
         "tt_scale_routes_removed",
-        "fp32_reference_boundary_mode",
-        "fp32_reference_mean_s",
-        "fp32_reference_min_s",
-        "fp32_reference_runs",
-        "speedup_pywt_over_fp32_reference",
         "speedup_pywt_over_tt",
         "status",
         "error",
@@ -1038,7 +880,7 @@ def run_2d_benchmarks(args: argparse.Namespace) -> int:
                         float(raw_row["signal_start"]),
                         float(raw_row["signal_step"]),
                         raw_row["pywt_mode"],
-                        raw_row["fp32_reference_boundary_mode"],
+                        raw_row["tt_boundary_mode"],
                     )
                 except (KeyError, TypeError, ValueError):
                     continue
@@ -1056,7 +898,7 @@ def run_2d_benchmarks(args: argparse.Namespace) -> int:
             signal_list = generate_signal(
                 height * width, args.signal_start, args.signal_step
             )
-            if needs_reference or needs_tt:
+            if needs_tt:
                 write_signal_file(signal_file, signal_list)
             matrix = (
                 np.asarray(signal_list, dtype=np.float32).reshape(height, width)
@@ -1099,7 +941,6 @@ def run_2d_benchmarks(args: argparse.Namespace) -> int:
                             "signal_step": args.signal_step,
                             "pywt_mode": args.pywt_mode,
                             "tt_boundary_mode": args.tt_boundary_mode,
-                            "fp32_reference_boundary_mode": args.tt_boundary_mode,
                             "status": "pending",
                             "error": "",
                         }
@@ -1126,17 +967,6 @@ def run_2d_benchmarks(args: argparse.Namespace) -> int:
                             row["pywt_mean_s"] = pywt_mean if pywt_mean is not None else ""
                             row["pywt_min_s"] = pywt_min if pywt_min is not None else ""
                             row["pywt_runs"] = args.pywt_repeats
-
-                        if needs_reference:
-                            scheme_path = args.schemes_dir / f"{wavelet}.json"
-                            if not scheme_path.exists() and wavelet != "synthetic-k17":
-                                raise FileNotFoundError(f"Scheme not found: {scheme_path}")
-                            reference_mean, reference_min = run_fp32_reference_2d_benchmark(
-                                args, wavelet, height, width, signal_file
-                            )
-                            row["fp32_reference_mean_s"] = reference_mean
-                            row["fp32_reference_min_s"] = reference_min
-                            row["fp32_reference_runs"] = args.tt_repeats
 
                         if needs_tt:
                             scheme_path = args.schemes_dir / f"{wavelet}.json"
@@ -1181,15 +1011,7 @@ def run_2d_benchmarks(args: argparse.Namespace) -> int:
                             row["tt_scale_routes_removed"] = scale_routes_removed
 
                         pywt_mean = optional_float(row.get("pywt_mean_s"))
-                        reference_mean = optional_float(row.get("fp32_reference_mean_s"))
                         tt_mean = optional_float(row.get("tt_mean_s"))
-                        row["speedup_pywt_over_fp32_reference"] = (
-                            pywt_mean / reference_mean
-                            if pywt_mean is not None
-                            and reference_mean is not None
-                            and reference_mean > 0
-                            else ""
-                        )
                         row["speedup_pywt_over_tt"] = (
                             pywt_mean / tt_mean
                             if pywt_mean is not None
@@ -1223,8 +1045,6 @@ def main() -> int:
     args = parse_args()
     if args.shapes is not None:
         return run_2d_benchmarks(args)
-    if args.backend == "fp32-reference":
-        raise ValueError("--backend fp32-reference requires --shapes")
 
     needs_pywt = args.backend in {"both", "pywt"}
     needs_tt = args.backend in {"both", "tt-wavelet"}
