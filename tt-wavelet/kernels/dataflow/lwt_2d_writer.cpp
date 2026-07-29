@@ -12,7 +12,6 @@ namespace {
 
 using ttwv::kernels::primitives::kFaceSide;
 using ttwv::kernels::primitives::kTileBytes;
-using ttwv::kernels::primitives::kTileElements;
 using ttwv::kernels::primitives::kTileSide;
 using ttwv::kernels::primitives::load_config_page;
 using ttwv::kernels::primitives::tile_element_offset;
@@ -226,6 +225,95 @@ ALWI void write_band(
     return plane[tiled_element_offset(local_y, local_x, plane_tile_columns)];
 }
 
+struct TiledRowCursor {
+    const volatile tt_l1_ptr float* plane;
+    uint32_t tile_columns;
+    uint32_t local_y;
+    uint32_t local_x;
+    uint32_t physical;
+};
+
+[[nodiscard]] ALWI TiledRowCursor make_tiled_row_cursor(
+    const uint32_t plane_addr,
+    const uint32_t plane_tile_columns,
+    const Rect& stored,
+    const uint32_t y,
+    const uint32_t x) {
+    ASSERT(y >= stored.y_begin && y < stored.y_begin + stored.y_length);
+    ASSERT(x >= stored.x_begin && x < stored.x_begin + stored.x_length);
+    const uint32_t local_y = y - aligned_begin(stored.y_begin);
+    const uint32_t local_x = x - aligned_begin(stored.x_begin);
+    return TiledRowCursor{
+        .plane = reinterpret_cast<const volatile tt_l1_ptr float*>(plane_addr),
+        .tile_columns = plane_tile_columns,
+        .local_y = local_y,
+        .local_x = local_x,
+        .physical = tiled_element_offset(local_y, local_x, plane_tile_columns),
+    };
+}
+
+[[nodiscard]] ALWI float read_and_advance(TiledRowCursor& cursor) {
+    const float value = cursor.plane[cursor.physical];
+    ++cursor.local_x;
+    if (cursor.local_x % kFaceSide == 0) {
+        cursor.physical = tiled_element_offset(cursor.local_y, cursor.local_x, cursor.tile_columns);
+    } else {
+        ++cursor.physical;
+    }
+    return value;
+}
+
+ALWI void fill_complete_interleaved_tile(
+    const uint32_t* plane_addrs,
+    const uint32_t* plane_tile_columns,
+    const uint32_t* parity_slots,
+    const Rect* parity_sources,
+    const uint32_t tile_y,
+    const uint32_t tile_x,
+    const uint32_t pad_y,
+    const uint32_t pad_x,
+    const uint32_t tile_addr) {
+    auto* tile = reinterpret_cast<volatile tt_l1_ptr float*>(tile_addr);
+    const uint32_t padded_x = tile_x + pad_x;
+    const uint32_t first_parity_x = padded_x & 1U;
+    const uint32_t first_polyphase_x = padded_x / 2;
+    const uint32_t second_polyphase_x = (padded_x + 1) / 2;
+
+    for (uint32_t local_y = 0; local_y < kTileSide; ++local_y) {
+        const uint32_t padded_y = tile_y + local_y + pad_y;
+        const uint32_t parity_y = padded_y & 1U;
+        const uint32_t polyphase_y = padded_y / 2;
+        const uint32_t first_parity = 2 * parity_y + first_parity_x;
+        const uint32_t second_parity = 2 * parity_y + (first_parity_x ^ 1U);
+        const uint32_t first_slot = parity_slots[first_parity];
+        const uint32_t second_slot = parity_slots[second_parity];
+        TiledRowCursor first = make_tiled_row_cursor(
+            plane_addrs[first_slot],
+            plane_tile_columns[first_slot],
+            parity_sources[first_parity],
+            polyphase_y,
+            first_polyphase_x);
+        TiledRowCursor second = make_tiled_row_cursor(
+            plane_addrs[second_slot],
+            plane_tile_columns[second_slot],
+            parity_sources[second_parity],
+            polyphase_y,
+            second_polyphase_x);
+        auto* left_face_row = tile + tile_element_offset(local_y, 0);
+        auto* right_face_row = tile + tile_element_offset(local_y, kFaceSide);
+#pragma unroll
+        for (uint32_t pair = 0; pair < kFaceSide / 2; ++pair) {
+            left_face_row[2 * pair] = read_and_advance(first);
+            left_face_row[2 * pair + 1] = read_and_advance(second);
+        }
+#pragma unroll
+        for (uint32_t pair = 0; pair < kFaceSide / 2; ++pair) {
+            right_face_row[2 * pair] = read_and_advance(first);
+            right_face_row[2 * pair + 1] = read_and_advance(second);
+        }
+    }
+}
+
 template <typename OutputAccessor>
 ALWI void write_interleaved_output(
     const OutputAccessor& output_args,
@@ -251,29 +339,8 @@ ALWI void write_interleaved_output(
 
     for (uint32_t tile_y = tile_y_begin; tile_y < tile_y_end; tile_y += kTileSide) {
         for (uint32_t tile_x = tile_x_begin; tile_x < tile_x_end; tile_x += kTileSide) {
-            for (uint32_t element = 0; element < kTileElements; ++element) {
-                tile[element] = 0.0F;
-            }
             const uint32_t y_end = std::min(tile_y + kTileSide, final_y_begin + final_y_length);
             const uint32_t x_end = std::min(tile_x + kTileSide, final_x_begin + final_x_length);
-            for (uint32_t y = std::max(tile_y, final_y_begin); y < y_end; ++y) {
-                const uint32_t padded_y = y + pad_y;
-                const uint32_t parity_y = padded_y & 1U;
-                const uint32_t polyphase_y = padded_y / 2;
-                for (uint32_t x = std::max(tile_x, final_x_begin); x < x_end; ++x) {
-                    const uint32_t padded_x = x + pad_x;
-                    const uint32_t parity_x = padded_x & 1U;
-                    const uint32_t polyphase_x = padded_x / 2;
-                    const uint32_t parity = 2 * parity_y + parity_x;
-                    const uint32_t slot = parity_slots[parity];
-                    tile[tile_element_offset(y - tile_y, x - tile_x)] = read_plane_value(
-                        plane_addrs[slot],
-                        plane_tile_columns[slot],
-                        parity_sources[parity],
-                        polyphase_y,
-                        polyphase_x);
-                }
-            }
             const uint32_t destination_tile =
                 (tile_y / kTileSide) * output_tile_columns + tile_x / kTileSide;
             const bool complete =
@@ -281,8 +348,38 @@ ALWI void write_interleaved_output(
                 tile_y + kTileSide <= final_y_begin + final_y_length &&
                 tile_x + kTileSide <= final_x_begin + final_x_length;
             if (complete) {
+                // Complete tiles fill every lane. Partial tiles write only
+                // their valid fragments, so neither path needs a scratch clear.
+                fill_complete_interleaved_tile(
+                    plane_addrs,
+                    plane_tile_columns,
+                    parity_slots,
+                    parity_sources,
+                    tile_y,
+                    tile_x,
+                    pad_y,
+                    pad_x,
+                    scratch_addr);
                 noc_async_write(scratch_addr, output.get_noc_addr(destination_tile), kTileBytes);
             } else {
+                for (uint32_t y = std::max(tile_y, final_y_begin); y < y_end; ++y) {
+                    const uint32_t padded_y = y + pad_y;
+                    const uint32_t parity_y = padded_y & 1U;
+                    const uint32_t polyphase_y = padded_y / 2;
+                    for (uint32_t x = std::max(tile_x, final_x_begin); x < x_end; ++x) {
+                        const uint32_t padded_x = x + pad_x;
+                        const uint32_t parity_x = padded_x & 1U;
+                        const uint32_t polyphase_x = padded_x / 2;
+                        const uint32_t parity = 2 * parity_y + parity_x;
+                        const uint32_t slot = parity_slots[parity];
+                        tile[tile_element_offset(y - tile_y, x - tile_x)] = read_plane_value(
+                            plane_addrs[slot],
+                            plane_tile_columns[slot],
+                            parity_sources[parity],
+                            polyphase_y,
+                            polyphase_x);
+                    }
+                }
                 const uint32_t valid_y_begin = std::max(tile_y, final_y_begin);
                 const uint32_t valid_x_begin = std::max(tile_x, final_x_begin);
                 for (uint32_t y = valid_y_begin; y < y_end; ++y) {

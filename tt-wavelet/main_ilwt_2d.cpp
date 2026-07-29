@@ -295,6 +295,7 @@ int run(const Options& options) {
               << "ilwt_2d_chunk_count: " << executable.plan.chunks.size() << '\n'
               << "ilwt_2d_chunk_tiles: " << executable.plan.chunk_tiles_y << 'x'
               << executable.plan.chunk_tiles_x << '\n'
+              << "ilwt_2d_estimated_latency_cycles: " << executable.plan.estimated_latency_cycles << '\n'
               << "ilwt_2d_route_count: " << route_count << '\n'
               << "ilwt_2d_executable_route_count: " << executable.plan.executable_route_count << '\n'
               << "ilwt_2d_scale_routes_removed: " << scale_routes_removed << '\n'

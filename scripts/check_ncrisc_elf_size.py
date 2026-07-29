@@ -17,6 +17,7 @@ class ElfTextSize:
     architecture: str
     path: Path
     text_bytes: int
+    executable_segment_bytes: int
 
 
 def architecture_from_dependency_file(path: Path) -> str:
@@ -47,9 +48,34 @@ def text_size(size_tool: Path, elf_path: Path) -> int:
     return int(match.group(1))
 
 
+def executable_segment_size(readelf_tool: Path, elf_path: Path) -> int:
+    result = subprocess.run(
+        [str(readelf_tool), "-W", "-l", str(elf_path)],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"ELF readelf tool failed for {elf_path}:\n"
+            f"{result.stdout}{result.stderr}"
+        )
+
+    executable_sizes: list[int] = []
+    for line in result.stdout.splitlines():
+        fields = line.split()
+        if len(fields) < 8 or fields[0] != "LOAD" or "E" not in fields[6:-1]:
+            continue
+        executable_sizes.append(int(fields[5], 16))
+    if not executable_sizes:
+        raise RuntimeError(f"ELF metadata has no executable LOAD segment: {elf_path}")
+    return max(executable_sizes)
+
+
 def collect_elf_sizes(
     cache_root: Path,
     size_tool: Path,
+    readelf_tool: Path,
     kernel_name: str,
     architecture: str,
 ) -> list[ElfTextSize]:
@@ -70,6 +96,9 @@ def collect_elf_sizes(
                 architecture=detected_architecture,
                 path=elf_path,
                 text_bytes=text_size(size_tool, elf_path),
+                executable_segment_bytes=executable_segment_size(
+                    readelf_tool, elf_path
+                ),
             )
         )
     return sizes
@@ -79,12 +108,19 @@ def print_result(result: ElfTextSize) -> bool:
     print(f"kernel: {result.kernel}")
     print(f"architecture: {result.architecture}")
     print(f".text bytes: {result.text_bytes}")
+    print(f"executable LOAD segment bytes: {result.executable_segment_bytes}")
     print(f"limit bytes: {WORMHOLE_TEXT_LIMIT_BYTES}")
-    if result.text_bytes <= WORMHOLE_TEXT_LIMIT_BYTES:
-        print(f"headroom bytes: {WORMHOLE_TEXT_LIMIT_BYTES - result.text_bytes}")
+    if result.executable_segment_bytes <= WORMHOLE_TEXT_LIMIT_BYTES:
+        print(
+            "headroom bytes: "
+            f"{WORMHOLE_TEXT_LIMIT_BYTES - result.executable_segment_bytes}"
+        )
         print("result: PASS")
         return True
-    print(f"overflow bytes: {result.text_bytes - WORMHOLE_TEXT_LIMIT_BYTES}")
+    print(
+        "overflow bytes: "
+        f"{result.executable_segment_bytes - WORMHOLE_TEXT_LIMIT_BYTES}"
+    )
     print("result: FAIL")
     return False
 
@@ -115,6 +151,17 @@ def main() -> int:
         / "bin"
         / "riscv-tt-elf-size",
     )
+    parser.add_argument(
+        "--readelf-tool",
+        type=Path,
+        default=root
+        / "tt-metal"
+        / "runtime"
+        / "sfpi"
+        / "compiler"
+        / "bin"
+        / "riscv-tt-elf-readelf",
+    )
     args = parser.parse_args()
 
     if args.architecture == "blackhole":
@@ -127,10 +174,13 @@ def main() -> int:
         parser.error(f"TT-Metal cache root not found: {args.cache_root}")
     if not args.size_tool.is_file():
         parser.error(f"ELF size tool not found: {args.size_tool}")
+    if not args.readelf_tool.is_file():
+        parser.error(f"ELF readelf tool not found: {args.readelf_tool}")
 
     results = collect_elf_sizes(
         args.cache_root.resolve(),
         args.size_tool.resolve(),
+        args.readelf_tool.resolve(),
         args.kernel,
         args.architecture,
     )
@@ -143,10 +193,11 @@ def main() -> int:
     passed = True
     for result in results:
         passed = print_result(result) and passed
-    largest = max(results, key=lambda result: result.text_bytes)
+    largest = max(results, key=lambda result: result.executable_segment_bytes)
     print(f"checked_ncrisc_elfs: {len(results)}")
     print(f"maximum_text_kernel: {largest.kernel}")
     print(f"maximum_text_bytes: {largest.text_bytes}")
+    print(f"maximum_executable_segment_bytes: {largest.executable_segment_bytes}")
     return 0 if passed else 1
 
 

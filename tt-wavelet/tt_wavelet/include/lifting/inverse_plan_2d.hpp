@@ -34,6 +34,7 @@ struct Ilwt2DExecutionPlan {
     std::vector<Lwt2DChunkPlan> chunks;
     double max_dependency_overhead{0.0};
     uint64_t max_l1_bytes{0};
+    uint64_t estimated_latency_cycles{0};
     std::array<uint32_t, 5> allocated_plane_heights_elements{};
     std::array<uint32_t, 5> allocated_plane_widths_elements{};
     std::array<uint64_t, 5> allocated_plane_slot_bytes{};
@@ -366,10 +367,15 @@ inline void append_axis_routes(
                 .active_core_count = static_cast<uint32_t>(std::min(chunks.size(), static_cast<size_t>(core_limit))),
                 .max_l1_bytes = max_l1,
                 .max_dependency_overhead = max_overhead,
-                .estimated_latency_cycles = 0,
+                .estimated_latency_cycles = plan_2d_detail::estimate_candidate_latency_cycles(
+                    chunks,
+                    static_cast<uint32_t>(std::min(chunks.size(), static_cast<size_t>(core_limit))),
+                    y_plan.forward_trace,
+                    x_plan.forward_trace,
+                    true),
                 .chunks = std::move(chunks),
             };
-            if (!found || plan_2d_detail::is_better_candidate(candidate, best, false)) {
+            if (!found || plan_2d_detail::is_better_candidate(candidate, best, true)) {
                 best = std::move(candidate);
                 found = true;
             }
@@ -420,6 +426,7 @@ inline void append_axis_routes(
         .chunks = std::move(best.chunks),
         .max_dependency_overhead = best.max_dependency_overhead,
         .max_l1_bytes = best.max_l1_bytes,
+        .estimated_latency_cycles = best.estimated_latency_cycles,
         .allocated_plane_heights_elements = heights,
         .allocated_plane_widths_elements = widths,
         .allocated_plane_slot_bytes = slot_bytes,

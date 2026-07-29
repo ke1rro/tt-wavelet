@@ -25,6 +25,7 @@
 #include "tt-metalium/shape.hpp"
 #include "tt-metalium/tensor_accessor_args.hpp"
 #include "tt-metalium/tile.hpp"
+#include "tt_wavelet/include/lifting/policy.hpp"
 
 namespace ttwv {
 namespace {
@@ -529,9 +530,10 @@ Lwt2DExecutable create_lwt_2d_executable_impl(
     // Large route schedules and antireflect's affine boundary expansion can
     // exceed Blackhole's kernel-config budget when fully inlined.
     constexpr size_t kCompactBoundaryRouteThreshold = 52;
-    const bool compact_boundary_code =
-        plan.chunks.front().routes.size() >= kCompactBoundaryRouteThreshold ||
-        plan.y_plan.preprocess_layout.pad_config.mode == BoundaryMode::kAntireflect;
+    const ArchitecturePolicy architecture_policy = make_architecture_policy(mesh_device.arch());
+    const bool compact_boundary_code = architecture_policy.compact_2d_reader ||
+                                       plan.chunks.front().routes.size() >= kCompactBoundaryRouteThreshold ||
+                                       plan.y_plan.preprocess_layout.pad_config.mode == BoundaryMode::kAntireflect;
     Lwt2DProgram program = create_program(
         kernel_root,
         core_set(buffers.cores),
@@ -634,6 +636,7 @@ Ilwt2DExecutable create_ilwt_2d_executable_impl(
                 .route_count = checked_u32(route_count, "2D ILWT route count"),
                 .executable_route_count = plan.executable_route_count,
                 .scale_routes_removed = checked_u32(route_count - plan.executable_route_count, "2D ILWT metadata routes"),
+                .estimated_latency_cycles = plan.estimated_latency_cycles,
                 .max_dependency_overhead = plan.max_dependency_overhead,
                 .l1_workspace_bytes = plan.allocated_workspace_bytes,
                 .l1_circular_buffer_bytes = plan_2d_detail::kCircularBufferBytes,
@@ -647,6 +650,7 @@ Ilwt2DExecutable create_ilwt_2d_executable_impl(
 
     const std::vector<CoreChunkWork> work =
         partition_work(buffers.cores, checked_u32(plan.chunks.size(), "2D ILWT chunk count"));
+    const ArchitecturePolicy architecture_policy = make_architecture_policy(mesh_device.arch());
     Lwt2DProgram program = create_program(
         kernel_root,
         core_set(buffers.cores),
@@ -655,7 +659,7 @@ Ilwt2DExecutable create_ilwt_2d_executable_impl(
         inverse_compute_scheme_header,
         inverse_compute_scheme_type,
         plan.y_plan.forward_trace.preprocess_layout.pad_config.mode,
-        false,
+        architecture_policy.compact_2d_reader,
         true);
     TT_FATAL(program.compute && program.writer, "2D ILWT program is missing a route kernel");
     for (const CoreChunkWork& core_work : work) {

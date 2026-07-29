@@ -14,6 +14,7 @@ struct ArchitecturePolicy {
     WorkspaceLayout ilwt_layout{WorkspaceLayout::kRowMajor};
     bool inverse_scale_inline{true};
     bool final_interleave_direct{false};
+    bool compact_2d_reader{false};
     uint32_t l1_scratch_bytes{0};
 };
 
@@ -26,6 +27,7 @@ struct ArchitecturePolicy {
                 .ilwt_layout = ilwt_layout_override.value_or(WorkspaceLayout::kRowMajor),
                 .inverse_scale_inline = true,
                 .final_interleave_direct = false,
+                .compact_2d_reader = true,
                 .l1_scratch_bytes = 0,
             };
         case tt::ARCH::BLACKHOLE: {
@@ -35,6 +37,7 @@ struct ArchitecturePolicy {
                 .ilwt_layout = layout,
                 .inverse_scale_inline = true,
                 .final_interleave_direct = layout == WorkspaceLayout::kTileNative,
+                .compact_2d_reader = false,
                 .l1_scratch_bytes = 0,
             };
         }

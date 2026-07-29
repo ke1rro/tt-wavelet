@@ -726,10 +726,14 @@ enum class AlignmentCostClass : uint8_t {
 }
 
 [[nodiscard]] inline uint64_t estimate_chunk_latency_cycles(
-    const Lwt2DChunkPlan& chunk, const LiftingForwardPlan& y_plan, const LiftingForwardPlan& x_plan) {
+    const Lwt2DChunkPlan& chunk,
+    const LiftingForwardPlan& y_plan,
+    const LiftingForwardPlan& x_plan,
+    const bool inverse = false) {
     constexpr uint64_t route_config_and_sync_cycles = 3'700;
     constexpr uint64_t full_tile_persistence_cycles = 1'200;
     constexpr uint64_t fragmented_terminal_tile_cycles = 80'000;
+    constexpr uint64_t interleaved_terminal_tile_cycles = 80'000;
     constexpr uint64_t tiled_terminal_tile_cycles = 1'200;
     uint64_t cycles = chunk.initial.total_area() * 12;
     std::array<IndexRectangle, 5> stored = {
@@ -799,8 +803,15 @@ enum class AlignmentCostClass : uint8_t {
         chunk.final_band_rect.height() % kTileHeight == 0 && chunk.final_band_rect.width() % kTileWidth == 0;
     const uint64_t terminal_tiles =
         static_cast<uint64_t>(ceil_div(chunk.final_band_rect.height(), static_cast<size_t>(kTileHeight))) *
-        ceil_div(chunk.final_band_rect.width(), static_cast<size_t>(kTileWidth)) * 4;
-    cycles += terminal_tiles * (full_terminal_tiles ? tiled_terminal_tile_cycles : fragmented_terminal_tile_cycles);
+        ceil_div(chunk.final_band_rect.width(), static_cast<size_t>(kTileWidth));
+    if (inverse) {
+        // ILWT currently constructs each final output tile by interleaving
+        // four local polyphase planes before issuing one tile write.
+        cycles += terminal_tiles * interleaved_terminal_tile_cycles;
+    } else {
+        cycles +=
+            4 * terminal_tiles * (full_terminal_tiles ? tiled_terminal_tile_cycles : fragmented_terminal_tile_cycles);
+    }
     return cycles;
 }
 
@@ -808,11 +819,12 @@ enum class AlignmentCostClass : uint8_t {
     const std::vector<Lwt2DChunkPlan>& chunks,
     const uint32_t active_core_count,
     const LiftingForwardPlan& y_plan,
-    const LiftingForwardPlan& x_plan) {
+    const LiftingForwardPlan& x_plan,
+    const bool inverse = false) {
     std::vector<uint64_t> chunk_costs;
     chunk_costs.reserve(chunks.size());
     for (const Lwt2DChunkPlan& chunk : chunks) {
-        chunk_costs.push_back(estimate_chunk_latency_cycles(chunk, y_plan, x_plan));
+        chunk_costs.push_back(estimate_chunk_latency_cycles(chunk, y_plan, x_plan, inverse));
     }
     const size_t base = chunks.size() / active_core_count;
     const size_t extra = chunks.size() % active_core_count;
@@ -826,6 +838,12 @@ enum class AlignmentCostClass : uint8_t {
         }
         maximum = std::max(maximum, core_cycles);
         begin += count;
+    }
+    if (inverse && active_core_count > 64) {
+        // Blackhole measurements show a repeatable coordination penalty once
+        // the inverse program expands beyond 64 workers. Wormhole exposes at
+        // most 64 workers, so this term is naturally inactive there.
+        maximum += static_cast<uint64_t>(active_core_count - 64) * 6'000;
     }
     return maximum;
 }
