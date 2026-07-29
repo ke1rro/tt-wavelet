@@ -833,6 +833,7 @@ def run_tt_wavelet_2d_benchmark(
         command = (
             f"source {sh_quote(str(TT_WAVELET_ENV))} "
             f"&& {sh_quote(str(TT_WAVELET_ILWT_2D_BINARY))} "
+            f"--boundary-mode {sh_quote(args.tt_boundary_mode)} "
             f"--cores {args.tt_cores} "
             f"--repeats {args.tt_repeats} "
             f"--warmup-runs {args.tt_warmup_runs} "
@@ -851,7 +852,8 @@ def run_tt_wavelet_2d_benchmark(
         command = (
             f"source {sh_quote(str(TT_WAVELET_ENV))} "
             f"&& {sh_quote(str(TT_WAVELET_2D_BINARY))} "
-            f"--boundary-mode symmetric --benchmark --cores {args.tt_cores} "
+            f"--boundary-mode {sh_quote(args.tt_boundary_mode)} "
+            f"--benchmark --cores {args.tt_cores} "
             f"--split-implementation {args.tt_split_implementation} "
             f"--route-staging {args.tt_route_staging} "
             f"--route-persistence {args.tt_route_persistence} "
@@ -953,13 +955,9 @@ def run_2d_benchmarks(args: argparse.Namespace) -> int:
         raise ValueError("--tt-warmup-runs cannot be negative")
     if args.tt_cores <= 0:
         raise ValueError("--tt-cores must be positive")
-    if needs_tt and args.tt_boundary_mode != "symmetric":
-        raise ValueError(
-            "The fused 2D TT-wavelet backend currently supports symmetric boundary mode only"
-        )
     if any(min(height, width) <= 1 for height, width in shapes) and (
         (needs_pywt and args.pywt_mode in {"reflect", "antireflect"})
-        or (needs_reference and args.tt_boundary_mode in {"reflect", "antireflect"})
+        or ((needs_reference or needs_tt) and args.tt_boundary_mode in {"reflect", "antireflect"})
     ):
         raise ValueError(
             "2D reflect and antireflect modes require both dimensions to exceed one"

@@ -1,0 +1,2122 @@
+{
+  "wavelet": "db7",
+  "implementation": "tiled",
+  "pad": 13,
+  "case_count": 264,
+  "passed": 264,
+  "failed": 0,
+  "results": [
+    {
+      "shape": "1x1",
+      "pattern": "zeros",
+      "snapshot_count": 4,
+      "checked_values": 676,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "1x1",
+      "pattern": "constant",
+      "snapshot_count": 4,
+      "checked_values": 676,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "1x1",
+      "pattern": "sequence",
+      "snapshot_count": 4,
+      "checked_values": 676,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "1x1",
+      "pattern": "row-ramp",
+      "snapshot_count": 4,
+      "checked_values": 676,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "1x1",
+      "pattern": "column-ramp",
+      "snapshot_count": 4,
+      "checked_values": 676,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "1x1",
+      "pattern": "checkerboard",
+      "snapshot_count": 4,
+      "checked_values": 676,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "1x1",
+      "pattern": "corner-impulses",
+      "snapshot_count": 4,
+      "checked_values": 676,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "1x1",
+      "pattern": "row-31-impulse",
+      "snapshot_count": 4,
+      "checked_values": 676,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "1x1",
+      "pattern": "row-32-impulse",
+      "snapshot_count": 4,
+      "checked_values": 676,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "1x1",
+      "pattern": "column-31-impulse",
+      "snapshot_count": 4,
+      "checked_values": 676,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "1x1",
+      "pattern": "column-32-impulse",
+      "snapshot_count": 4,
+      "checked_values": 676,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "1x1",
+      "pattern": "random",
+      "snapshot_count": 4,
+      "checked_values": 676,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "1x7",
+      "pattern": "zeros",
+      "snapshot_count": 4,
+      "checked_values": 832,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "1x7",
+      "pattern": "constant",
+      "snapshot_count": 4,
+      "checked_values": 832,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "1x7",
+      "pattern": "sequence",
+      "snapshot_count": 4,
+      "checked_values": 832,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "1x7",
+      "pattern": "row-ramp",
+      "snapshot_count": 4,
+      "checked_values": 832,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "1x7",
+      "pattern": "column-ramp",
+      "snapshot_count": 4,
+      "checked_values": 832,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "1x7",
+      "pattern": "checkerboard",
+      "snapshot_count": 4,
+      "checked_values": 832,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "1x7",
+      "pattern": "corner-impulses",
+      "snapshot_count": 4,
+      "checked_values": 832,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "1x7",
+      "pattern": "row-31-impulse",
+      "snapshot_count": 4,
+      "checked_values": 832,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "1x7",
+      "pattern": "row-32-impulse",
+      "snapshot_count": 4,
+      "checked_values": 832,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "1x7",
+      "pattern": "column-31-impulse",
+      "snapshot_count": 4,
+      "checked_values": 832,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "1x7",
+      "pattern": "column-32-impulse",
+      "snapshot_count": 4,
+      "checked_values": 832,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "1x7",
+      "pattern": "random",
+      "snapshot_count": 4,
+      "checked_values": 832,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "7x1",
+      "pattern": "zeros",
+      "snapshot_count": 4,
+      "checked_values": 832,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "7x1",
+      "pattern": "constant",
+      "snapshot_count": 4,
+      "checked_values": 832,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "7x1",
+      "pattern": "sequence",
+      "snapshot_count": 4,
+      "checked_values": 832,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "7x1",
+      "pattern": "row-ramp",
+      "snapshot_count": 4,
+      "checked_values": 832,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "7x1",
+      "pattern": "column-ramp",
+      "snapshot_count": 4,
+      "checked_values": 832,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "7x1",
+      "pattern": "checkerboard",
+      "snapshot_count": 4,
+      "checked_values": 832,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "7x1",
+      "pattern": "corner-impulses",
+      "snapshot_count": 4,
+      "checked_values": 832,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "7x1",
+      "pattern": "row-31-impulse",
+      "snapshot_count": 4,
+      "checked_values": 832,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "7x1",
+      "pattern": "row-32-impulse",
+      "snapshot_count": 4,
+      "checked_values": 832,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "7x1",
+      "pattern": "column-31-impulse",
+      "snapshot_count": 4,
+      "checked_values": 832,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "7x1",
+      "pattern": "column-32-impulse",
+      "snapshot_count": 4,
+      "checked_values": 832,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "7x1",
+      "pattern": "random",
+      "snapshot_count": 4,
+      "checked_values": 832,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "2x2",
+      "pattern": "zeros",
+      "snapshot_count": 4,
+      "checked_values": 676,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "2x2",
+      "pattern": "constant",
+      "snapshot_count": 4,
+      "checked_values": 676,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "2x2",
+      "pattern": "sequence",
+      "snapshot_count": 4,
+      "checked_values": 676,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "2x2",
+      "pattern": "row-ramp",
+      "snapshot_count": 4,
+      "checked_values": 676,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "2x2",
+      "pattern": "column-ramp",
+      "snapshot_count": 4,
+      "checked_values": 676,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "2x2",
+      "pattern": "checkerboard",
+      "snapshot_count": 4,
+      "checked_values": 676,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "2x2",
+      "pattern": "corner-impulses",
+      "snapshot_count": 4,
+      "checked_values": 676,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "2x2",
+      "pattern": "row-31-impulse",
+      "snapshot_count": 4,
+      "checked_values": 676,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "2x2",
+      "pattern": "row-32-impulse",
+      "snapshot_count": 4,
+      "checked_values": 676,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "2x2",
+      "pattern": "column-31-impulse",
+      "snapshot_count": 4,
+      "checked_values": 676,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "2x2",
+      "pattern": "column-32-impulse",
+      "snapshot_count": 4,
+      "checked_values": 676,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "2x2",
+      "pattern": "random",
+      "snapshot_count": 4,
+      "checked_values": 676,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "2x3",
+      "pattern": "zeros",
+      "snapshot_count": 4,
+      "checked_values": 728,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "2x3",
+      "pattern": "constant",
+      "snapshot_count": 4,
+      "checked_values": 728,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "2x3",
+      "pattern": "sequence",
+      "snapshot_count": 4,
+      "checked_values": 728,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "2x3",
+      "pattern": "row-ramp",
+      "snapshot_count": 4,
+      "checked_values": 728,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "2x3",
+      "pattern": "column-ramp",
+      "snapshot_count": 4,
+      "checked_values": 728,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "2x3",
+      "pattern": "checkerboard",
+      "snapshot_count": 4,
+      "checked_values": 728,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "2x3",
+      "pattern": "corner-impulses",
+      "snapshot_count": 4,
+      "checked_values": 728,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "2x3",
+      "pattern": "row-31-impulse",
+      "snapshot_count": 4,
+      "checked_values": 728,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "2x3",
+      "pattern": "row-32-impulse",
+      "snapshot_count": 4,
+      "checked_values": 728,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "2x3",
+      "pattern": "column-31-impulse",
+      "snapshot_count": 4,
+      "checked_values": 728,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "2x3",
+      "pattern": "column-32-impulse",
+      "snapshot_count": 4,
+      "checked_values": 728,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "2x3",
+      "pattern": "random",
+      "snapshot_count": 4,
+      "checked_values": 728,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "3x2",
+      "pattern": "zeros",
+      "snapshot_count": 4,
+      "checked_values": 728,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "3x2",
+      "pattern": "constant",
+      "snapshot_count": 4,
+      "checked_values": 728,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "3x2",
+      "pattern": "sequence",
+      "snapshot_count": 4,
+      "checked_values": 728,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "3x2",
+      "pattern": "row-ramp",
+      "snapshot_count": 4,
+      "checked_values": 728,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "3x2",
+      "pattern": "column-ramp",
+      "snapshot_count": 4,
+      "checked_values": 728,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "3x2",
+      "pattern": "checkerboard",
+      "snapshot_count": 4,
+      "checked_values": 728,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "3x2",
+      "pattern": "corner-impulses",
+      "snapshot_count": 4,
+      "checked_values": 728,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "3x2",
+      "pattern": "row-31-impulse",
+      "snapshot_count": 4,
+      "checked_values": 728,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "3x2",
+      "pattern": "row-32-impulse",
+      "snapshot_count": 4,
+      "checked_values": 728,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "3x2",
+      "pattern": "column-31-impulse",
+      "snapshot_count": 4,
+      "checked_values": 728,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "3x2",
+      "pattern": "column-32-impulse",
+      "snapshot_count": 4,
+      "checked_values": 728,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "3x2",
+      "pattern": "random",
+      "snapshot_count": 4,
+      "checked_values": 728,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "15x17",
+      "pattern": "zeros",
+      "snapshot_count": 4,
+      "checked_values": 1680,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "15x17",
+      "pattern": "constant",
+      "snapshot_count": 4,
+      "checked_values": 1680,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "15x17",
+      "pattern": "sequence",
+      "snapshot_count": 4,
+      "checked_values": 1680,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "15x17",
+      "pattern": "row-ramp",
+      "snapshot_count": 4,
+      "checked_values": 1680,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "15x17",
+      "pattern": "column-ramp",
+      "snapshot_count": 4,
+      "checked_values": 1680,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "15x17",
+      "pattern": "checkerboard",
+      "snapshot_count": 4,
+      "checked_values": 1680,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "15x17",
+      "pattern": "corner-impulses",
+      "snapshot_count": 4,
+      "checked_values": 1680,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "15x17",
+      "pattern": "row-31-impulse",
+      "snapshot_count": 4,
+      "checked_values": 1680,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "15x17",
+      "pattern": "row-32-impulse",
+      "snapshot_count": 4,
+      "checked_values": 1680,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "15x17",
+      "pattern": "column-31-impulse",
+      "snapshot_count": 4,
+      "checked_values": 1680,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "15x17",
+      "pattern": "column-32-impulse",
+      "snapshot_count": 4,
+      "checked_values": 1680,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "15x17",
+      "pattern": "random",
+      "snapshot_count": 4,
+      "checked_values": 1680,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "31x31",
+      "pattern": "zeros",
+      "snapshot_count": 4,
+      "checked_values": 3136,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "31x31",
+      "pattern": "constant",
+      "snapshot_count": 4,
+      "checked_values": 3136,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "31x31",
+      "pattern": "sequence",
+      "snapshot_count": 4,
+      "checked_values": 3136,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "31x31",
+      "pattern": "row-ramp",
+      "snapshot_count": 4,
+      "checked_values": 3136,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "31x31",
+      "pattern": "column-ramp",
+      "snapshot_count": 4,
+      "checked_values": 3136,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "31x31",
+      "pattern": "checkerboard",
+      "snapshot_count": 4,
+      "checked_values": 3136,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "31x31",
+      "pattern": "corner-impulses",
+      "snapshot_count": 4,
+      "checked_values": 3136,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "31x31",
+      "pattern": "row-31-impulse",
+      "snapshot_count": 4,
+      "checked_values": 3136,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "31x31",
+      "pattern": "row-32-impulse",
+      "snapshot_count": 4,
+      "checked_values": 3136,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "31x31",
+      "pattern": "column-31-impulse",
+      "snapshot_count": 4,
+      "checked_values": 3136,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "31x31",
+      "pattern": "column-32-impulse",
+      "snapshot_count": 4,
+      "checked_values": 3136,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "31x31",
+      "pattern": "random",
+      "snapshot_count": 4,
+      "checked_values": 3136,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "31x32",
+      "pattern": "zeros",
+      "snapshot_count": 4,
+      "checked_values": 3136,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "31x32",
+      "pattern": "constant",
+      "snapshot_count": 4,
+      "checked_values": 3136,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "31x32",
+      "pattern": "sequence",
+      "snapshot_count": 4,
+      "checked_values": 3136,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "31x32",
+      "pattern": "row-ramp",
+      "snapshot_count": 4,
+      "checked_values": 3136,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "31x32",
+      "pattern": "column-ramp",
+      "snapshot_count": 4,
+      "checked_values": 3136,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "31x32",
+      "pattern": "checkerboard",
+      "snapshot_count": 4,
+      "checked_values": 3136,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "31x32",
+      "pattern": "corner-impulses",
+      "snapshot_count": 4,
+      "checked_values": 3136,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "31x32",
+      "pattern": "row-31-impulse",
+      "snapshot_count": 4,
+      "checked_values": 3136,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "31x32",
+      "pattern": "row-32-impulse",
+      "snapshot_count": 4,
+      "checked_values": 3136,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "31x32",
+      "pattern": "column-31-impulse",
+      "snapshot_count": 4,
+      "checked_values": 3136,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "31x32",
+      "pattern": "column-32-impulse",
+      "snapshot_count": 4,
+      "checked_values": 3136,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "31x32",
+      "pattern": "random",
+      "snapshot_count": 4,
+      "checked_values": 3136,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "32x31",
+      "pattern": "zeros",
+      "snapshot_count": 4,
+      "checked_values": 3136,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "32x31",
+      "pattern": "constant",
+      "snapshot_count": 4,
+      "checked_values": 3136,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "32x31",
+      "pattern": "sequence",
+      "snapshot_count": 4,
+      "checked_values": 3136,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "32x31",
+      "pattern": "row-ramp",
+      "snapshot_count": 4,
+      "checked_values": 3136,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "32x31",
+      "pattern": "column-ramp",
+      "snapshot_count": 4,
+      "checked_values": 3136,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "32x31",
+      "pattern": "checkerboard",
+      "snapshot_count": 4,
+      "checked_values": 3136,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "32x31",
+      "pattern": "corner-impulses",
+      "snapshot_count": 4,
+      "checked_values": 3136,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "32x31",
+      "pattern": "row-31-impulse",
+      "snapshot_count": 4,
+      "checked_values": 3136,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "32x31",
+      "pattern": "row-32-impulse",
+      "snapshot_count": 4,
+      "checked_values": 3136,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "32x31",
+      "pattern": "column-31-impulse",
+      "snapshot_count": 4,
+      "checked_values": 3136,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "32x31",
+      "pattern": "column-32-impulse",
+      "snapshot_count": 4,
+      "checked_values": 3136,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "32x31",
+      "pattern": "random",
+      "snapshot_count": 4,
+      "checked_values": 3136,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "32x32",
+      "pattern": "zeros",
+      "snapshot_count": 4,
+      "checked_values": 3136,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "32x32",
+      "pattern": "constant",
+      "snapshot_count": 4,
+      "checked_values": 3136,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "32x32",
+      "pattern": "sequence",
+      "snapshot_count": 4,
+      "checked_values": 3136,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "32x32",
+      "pattern": "row-ramp",
+      "snapshot_count": 4,
+      "checked_values": 3136,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "32x32",
+      "pattern": "column-ramp",
+      "snapshot_count": 4,
+      "checked_values": 3136,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "32x32",
+      "pattern": "checkerboard",
+      "snapshot_count": 4,
+      "checked_values": 3136,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "32x32",
+      "pattern": "corner-impulses",
+      "snapshot_count": 4,
+      "checked_values": 3136,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "32x32",
+      "pattern": "row-31-impulse",
+      "snapshot_count": 4,
+      "checked_values": 3136,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "32x32",
+      "pattern": "row-32-impulse",
+      "snapshot_count": 4,
+      "checked_values": 3136,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "32x32",
+      "pattern": "column-31-impulse",
+      "snapshot_count": 4,
+      "checked_values": 3136,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "32x32",
+      "pattern": "column-32-impulse",
+      "snapshot_count": 4,
+      "checked_values": 3136,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "32x32",
+      "pattern": "random",
+      "snapshot_count": 4,
+      "checked_values": 3136,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "32x33",
+      "pattern": "zeros",
+      "snapshot_count": 4,
+      "checked_values": 3248,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "32x33",
+      "pattern": "constant",
+      "snapshot_count": 4,
+      "checked_values": 3248,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "32x33",
+      "pattern": "sequence",
+      "snapshot_count": 4,
+      "checked_values": 3248,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "32x33",
+      "pattern": "row-ramp",
+      "snapshot_count": 4,
+      "checked_values": 3248,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "32x33",
+      "pattern": "column-ramp",
+      "snapshot_count": 4,
+      "checked_values": 3248,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "32x33",
+      "pattern": "checkerboard",
+      "snapshot_count": 4,
+      "checked_values": 3248,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "32x33",
+      "pattern": "corner-impulses",
+      "snapshot_count": 4,
+      "checked_values": 3248,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "32x33",
+      "pattern": "row-31-impulse",
+      "snapshot_count": 4,
+      "checked_values": 3248,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "32x33",
+      "pattern": "row-32-impulse",
+      "snapshot_count": 4,
+      "checked_values": 3248,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "32x33",
+      "pattern": "column-31-impulse",
+      "snapshot_count": 4,
+      "checked_values": 3248,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "32x33",
+      "pattern": "column-32-impulse",
+      "snapshot_count": 4,
+      "checked_values": 3248,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "32x33",
+      "pattern": "random",
+      "snapshot_count": 4,
+      "checked_values": 3248,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "33x32",
+      "pattern": "zeros",
+      "snapshot_count": 4,
+      "checked_values": 3248,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "33x32",
+      "pattern": "constant",
+      "snapshot_count": 4,
+      "checked_values": 3248,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "33x32",
+      "pattern": "sequence",
+      "snapshot_count": 4,
+      "checked_values": 3248,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "33x32",
+      "pattern": "row-ramp",
+      "snapshot_count": 4,
+      "checked_values": 3248,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "33x32",
+      "pattern": "column-ramp",
+      "snapshot_count": 4,
+      "checked_values": 3248,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "33x32",
+      "pattern": "checkerboard",
+      "snapshot_count": 4,
+      "checked_values": 3248,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "33x32",
+      "pattern": "corner-impulses",
+      "snapshot_count": 4,
+      "checked_values": 3248,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "33x32",
+      "pattern": "row-31-impulse",
+      "snapshot_count": 4,
+      "checked_values": 3248,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "33x32",
+      "pattern": "row-32-impulse",
+      "snapshot_count": 4,
+      "checked_values": 3248,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "33x32",
+      "pattern": "column-31-impulse",
+      "snapshot_count": 4,
+      "checked_values": 3248,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "33x32",
+      "pattern": "column-32-impulse",
+      "snapshot_count": 4,
+      "checked_values": 3248,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "33x32",
+      "pattern": "random",
+      "snapshot_count": 4,
+      "checked_values": 3248,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "33x33",
+      "pattern": "zeros",
+      "snapshot_count": 4,
+      "checked_values": 3364,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "33x33",
+      "pattern": "constant",
+      "snapshot_count": 4,
+      "checked_values": 3364,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "33x33",
+      "pattern": "sequence",
+      "snapshot_count": 4,
+      "checked_values": 3364,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "33x33",
+      "pattern": "row-ramp",
+      "snapshot_count": 4,
+      "checked_values": 3364,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "33x33",
+      "pattern": "column-ramp",
+      "snapshot_count": 4,
+      "checked_values": 3364,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "33x33",
+      "pattern": "checkerboard",
+      "snapshot_count": 4,
+      "checked_values": 3364,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "33x33",
+      "pattern": "corner-impulses",
+      "snapshot_count": 4,
+      "checked_values": 3364,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "33x33",
+      "pattern": "row-31-impulse",
+      "snapshot_count": 4,
+      "checked_values": 3364,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "33x33",
+      "pattern": "row-32-impulse",
+      "snapshot_count": 4,
+      "checked_values": 3364,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "33x33",
+      "pattern": "column-31-impulse",
+      "snapshot_count": 4,
+      "checked_values": 3364,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "33x33",
+      "pattern": "column-32-impulse",
+      "snapshot_count": 4,
+      "checked_values": 3364,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "33x33",
+      "pattern": "random",
+      "snapshot_count": 4,
+      "checked_values": 3364,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "63x63",
+      "pattern": "zeros",
+      "snapshot_count": 16,
+      "checked_values": 10000,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "63x63",
+      "pattern": "constant",
+      "snapshot_count": 16,
+      "checked_values": 10000,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "63x63",
+      "pattern": "sequence",
+      "snapshot_count": 16,
+      "checked_values": 10000,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "63x63",
+      "pattern": "row-ramp",
+      "snapshot_count": 16,
+      "checked_values": 10000,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "63x63",
+      "pattern": "column-ramp",
+      "snapshot_count": 16,
+      "checked_values": 10000,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "63x63",
+      "pattern": "checkerboard",
+      "snapshot_count": 16,
+      "checked_values": 10000,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "63x63",
+      "pattern": "corner-impulses",
+      "snapshot_count": 16,
+      "checked_values": 10000,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "63x63",
+      "pattern": "row-31-impulse",
+      "snapshot_count": 16,
+      "checked_values": 10000,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "63x63",
+      "pattern": "row-32-impulse",
+      "snapshot_count": 16,
+      "checked_values": 10000,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "63x63",
+      "pattern": "column-31-impulse",
+      "snapshot_count": 16,
+      "checked_values": 10000,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "63x63",
+      "pattern": "column-32-impulse",
+      "snapshot_count": 16,
+      "checked_values": 10000,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "63x63",
+      "pattern": "random",
+      "snapshot_count": 16,
+      "checked_values": 10000,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "63x64",
+      "pattern": "zeros",
+      "snapshot_count": 16,
+      "checked_values": 10000,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "63x64",
+      "pattern": "constant",
+      "snapshot_count": 16,
+      "checked_values": 10000,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "63x64",
+      "pattern": "sequence",
+      "snapshot_count": 16,
+      "checked_values": 10000,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "63x64",
+      "pattern": "row-ramp",
+      "snapshot_count": 16,
+      "checked_values": 10000,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "63x64",
+      "pattern": "column-ramp",
+      "snapshot_count": 16,
+      "checked_values": 10000,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "63x64",
+      "pattern": "checkerboard",
+      "snapshot_count": 16,
+      "checked_values": 10000,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "63x64",
+      "pattern": "corner-impulses",
+      "snapshot_count": 16,
+      "checked_values": 10000,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "63x64",
+      "pattern": "row-31-impulse",
+      "snapshot_count": 16,
+      "checked_values": 10000,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "63x64",
+      "pattern": "row-32-impulse",
+      "snapshot_count": 16,
+      "checked_values": 10000,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "63x64",
+      "pattern": "column-31-impulse",
+      "snapshot_count": 16,
+      "checked_values": 10000,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "63x64",
+      "pattern": "column-32-impulse",
+      "snapshot_count": 16,
+      "checked_values": 10000,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "63x64",
+      "pattern": "random",
+      "snapshot_count": 16,
+      "checked_values": 10000,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "64x63",
+      "pattern": "zeros",
+      "snapshot_count": 16,
+      "checked_values": 10000,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "64x63",
+      "pattern": "constant",
+      "snapshot_count": 16,
+      "checked_values": 10000,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "64x63",
+      "pattern": "sequence",
+      "snapshot_count": 16,
+      "checked_values": 10000,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "64x63",
+      "pattern": "row-ramp",
+      "snapshot_count": 16,
+      "checked_values": 10000,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "64x63",
+      "pattern": "column-ramp",
+      "snapshot_count": 16,
+      "checked_values": 10000,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "64x63",
+      "pattern": "checkerboard",
+      "snapshot_count": 16,
+      "checked_values": 10000,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "64x63",
+      "pattern": "corner-impulses",
+      "snapshot_count": 16,
+      "checked_values": 10000,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "64x63",
+      "pattern": "row-31-impulse",
+      "snapshot_count": 16,
+      "checked_values": 10000,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "64x63",
+      "pattern": "row-32-impulse",
+      "snapshot_count": 16,
+      "checked_values": 10000,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "64x63",
+      "pattern": "column-31-impulse",
+      "snapshot_count": 16,
+      "checked_values": 10000,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "64x63",
+      "pattern": "column-32-impulse",
+      "snapshot_count": 16,
+      "checked_values": 10000,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "64x63",
+      "pattern": "random",
+      "snapshot_count": 16,
+      "checked_values": 10000,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "64x64",
+      "pattern": "zeros",
+      "snapshot_count": 16,
+      "checked_values": 10000,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "64x64",
+      "pattern": "constant",
+      "snapshot_count": 16,
+      "checked_values": 10000,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "64x64",
+      "pattern": "sequence",
+      "snapshot_count": 16,
+      "checked_values": 10000,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "64x64",
+      "pattern": "row-ramp",
+      "snapshot_count": 16,
+      "checked_values": 10000,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "64x64",
+      "pattern": "column-ramp",
+      "snapshot_count": 16,
+      "checked_values": 10000,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "64x64",
+      "pattern": "checkerboard",
+      "snapshot_count": 16,
+      "checked_values": 10000,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "64x64",
+      "pattern": "corner-impulses",
+      "snapshot_count": 16,
+      "checked_values": 10000,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "64x64",
+      "pattern": "row-31-impulse",
+      "snapshot_count": 16,
+      "checked_values": 10000,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "64x64",
+      "pattern": "row-32-impulse",
+      "snapshot_count": 16,
+      "checked_values": 10000,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "64x64",
+      "pattern": "column-31-impulse",
+      "snapshot_count": 16,
+      "checked_values": 10000,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "64x64",
+      "pattern": "column-32-impulse",
+      "snapshot_count": 16,
+      "checked_values": 10000,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "64x64",
+      "pattern": "random",
+      "snapshot_count": 16,
+      "checked_values": 10000,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "64x65",
+      "pattern": "zeros",
+      "snapshot_count": 16,
+      "checked_values": 10200,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "64x65",
+      "pattern": "constant",
+      "snapshot_count": 16,
+      "checked_values": 10200,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "64x65",
+      "pattern": "sequence",
+      "snapshot_count": 16,
+      "checked_values": 10200,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "64x65",
+      "pattern": "row-ramp",
+      "snapshot_count": 16,
+      "checked_values": 10200,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "64x65",
+      "pattern": "column-ramp",
+      "snapshot_count": 16,
+      "checked_values": 10200,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "64x65",
+      "pattern": "checkerboard",
+      "snapshot_count": 16,
+      "checked_values": 10200,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "64x65",
+      "pattern": "corner-impulses",
+      "snapshot_count": 16,
+      "checked_values": 10200,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "64x65",
+      "pattern": "row-31-impulse",
+      "snapshot_count": 16,
+      "checked_values": 10200,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "64x65",
+      "pattern": "row-32-impulse",
+      "snapshot_count": 16,
+      "checked_values": 10200,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "64x65",
+      "pattern": "column-31-impulse",
+      "snapshot_count": 16,
+      "checked_values": 10200,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "64x65",
+      "pattern": "column-32-impulse",
+      "snapshot_count": 16,
+      "checked_values": 10200,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "64x65",
+      "pattern": "random",
+      "snapshot_count": 16,
+      "checked_values": 10200,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "65x64",
+      "pattern": "zeros",
+      "snapshot_count": 16,
+      "checked_values": 10200,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "65x64",
+      "pattern": "constant",
+      "snapshot_count": 16,
+      "checked_values": 10200,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "65x64",
+      "pattern": "sequence",
+      "snapshot_count": 16,
+      "checked_values": 10200,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "65x64",
+      "pattern": "row-ramp",
+      "snapshot_count": 16,
+      "checked_values": 10200,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "65x64",
+      "pattern": "column-ramp",
+      "snapshot_count": 16,
+      "checked_values": 10200,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "65x64",
+      "pattern": "checkerboard",
+      "snapshot_count": 16,
+      "checked_values": 10200,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "65x64",
+      "pattern": "corner-impulses",
+      "snapshot_count": 16,
+      "checked_values": 10200,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "65x64",
+      "pattern": "row-31-impulse",
+      "snapshot_count": 16,
+      "checked_values": 10200,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "65x64",
+      "pattern": "row-32-impulse",
+      "snapshot_count": 16,
+      "checked_values": 10200,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "65x64",
+      "pattern": "column-31-impulse",
+      "snapshot_count": 16,
+      "checked_values": 10200,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "65x64",
+      "pattern": "column-32-impulse",
+      "snapshot_count": 16,
+      "checked_values": 10200,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "65x64",
+      "pattern": "random",
+      "snapshot_count": 16,
+      "checked_values": 10200,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "65x65",
+      "pattern": "zeros",
+      "snapshot_count": 16,
+      "checked_values": 10404,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "65x65",
+      "pattern": "constant",
+      "snapshot_count": 16,
+      "checked_values": 10404,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "65x65",
+      "pattern": "sequence",
+      "snapshot_count": 16,
+      "checked_values": 10404,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "65x65",
+      "pattern": "row-ramp",
+      "snapshot_count": 16,
+      "checked_values": 10404,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "65x65",
+      "pattern": "column-ramp",
+      "snapshot_count": 16,
+      "checked_values": 10404,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "65x65",
+      "pattern": "checkerboard",
+      "snapshot_count": 16,
+      "checked_values": 10404,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "65x65",
+      "pattern": "corner-impulses",
+      "snapshot_count": 16,
+      "checked_values": 10404,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "65x65",
+      "pattern": "row-31-impulse",
+      "snapshot_count": 16,
+      "checked_values": 10404,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "65x65",
+      "pattern": "row-32-impulse",
+      "snapshot_count": 16,
+      "checked_values": 10404,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "65x65",
+      "pattern": "column-31-impulse",
+      "snapshot_count": 16,
+      "checked_values": 10404,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "65x65",
+      "pattern": "column-32-impulse",
+      "snapshot_count": 16,
+      "checked_values": 10404,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "65x65",
+      "pattern": "random",
+      "snapshot_count": 16,
+      "checked_values": 10404,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "1000x100",
+      "pattern": "zeros",
+      "snapshot_count": 128,
+      "checked_values": 163744,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "1000x100",
+      "pattern": "constant",
+      "snapshot_count": 128,
+      "checked_values": 163744,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "1000x100",
+      "pattern": "sequence",
+      "snapshot_count": 128,
+      "checked_values": 163744,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "1000x100",
+      "pattern": "row-ramp",
+      "snapshot_count": 128,
+      "checked_values": 163744,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "1000x100",
+      "pattern": "column-ramp",
+      "snapshot_count": 128,
+      "checked_values": 163744,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "1000x100",
+      "pattern": "checkerboard",
+      "snapshot_count": 128,
+      "checked_values": 163744,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "1000x100",
+      "pattern": "corner-impulses",
+      "snapshot_count": 128,
+      "checked_values": 163744,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "1000x100",
+      "pattern": "row-31-impulse",
+      "snapshot_count": 128,
+      "checked_values": 163744,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "1000x100",
+      "pattern": "row-32-impulse",
+      "snapshot_count": 128,
+      "checked_values": 163744,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "1000x100",
+      "pattern": "column-31-impulse",
+      "snapshot_count": 128,
+      "checked_values": 163744,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "1000x100",
+      "pattern": "column-32-impulse",
+      "snapshot_count": 128,
+      "checked_values": 163744,
+      "mismatches": 0,
+      "passed": true
+    },
+    {
+      "shape": "1000x100",
+      "pattern": "random",
+      "snapshot_count": 128,
+      "checked_values": 163744,
+      "mismatches": 0,
+      "passed": true
+    }
+  ]
+}

@@ -21,6 +21,16 @@ FORWARD = PROJECT_ROOT / "build" / "lwt_2d"
 INVERSE = PROJECT_ROOT / "build" / "ilwt_2d"
 SET_ENV = PROJECT_ROOT / "scripts" / "set_env.sh"
 BANDS = ("LL", "LH", "HL", "HH")
+BOUNDARY_MODES = (
+    "zero",
+    "constant",
+    "symmetric",
+    "reflect",
+    "periodic",
+    "smooth",
+    "antisymmetric",
+    "antireflect",
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -34,6 +44,11 @@ def parse_args() -> argparse.Namespace:
         "--shapes",
         default="32x32,33x35,100x70,1000x100",
         help="Comma-separated HEIGHTxWIDTH shapes (default: %(default)s).",
+    )
+    parser.add_argument(
+        "--modes",
+        default="symmetric",
+        help="Comma-separated signal-extension modes (default: %(default)s).",
     )
     parser.add_argument("--cores", type=int, default=64)
     parser.add_argument("--seed", type=int, default=20260727)
@@ -78,6 +93,7 @@ def parse_shapes(text: str) -> list[tuple[int, int]]:
 
 def forward(
     scheme: str,
+    mode: str,
     height: int,
     width: int,
     input_path: Path,
@@ -89,6 +105,8 @@ def forward(
         [
             str(FORWARD),
             "--binary-input",
+            "--boundary-mode",
+            mode,
             "--quiet",
             "--cores",
             str(cores),
@@ -105,6 +123,7 @@ def forward(
 
 def inverse(
     scheme: str,
+    mode: str,
     height: int,
     width: int,
     prefix: Path,
@@ -115,6 +134,8 @@ def inverse(
     return run_device(
         [
             str(INVERSE),
+            "--boundary-mode",
+            mode,
             "--cores",
             str(cores),
             "--output",
@@ -146,13 +167,13 @@ def max_error(reference: np.ndarray, path: Path) -> float:
     return float(np.max(np.abs(reference - reconstructed)))
 
 
-def pywavelets_check(root: Path, timeout: float) -> float:
+def pywavelets_check(root: Path, mode: str, timeout: float) -> float:
     import pywt
 
     height, width = 33, 35
     signal = np.random.default_rng(17).normal(size=(height, width)).astype(np.float32)
     approximation, (horizontal, vertical, diagonal) = pywt.dwt2(
-        signal, "db1", mode="symmetric"
+        signal, "db1", mode=mode
     )
     prefix = root / "pywt"
     # Device convention is (low-y,high-x)=LH and (high-y,low-x)=HL.
@@ -161,11 +182,11 @@ def pywavelets_check(root: Path, timeout: float) -> float:
     ):
         np.asarray(values, dtype=np.float32).tofile(Path(f"{prefix}_{name}.f32"))
     output = root / "pywt_output.f32"
-    inverse("db1", height, width, prefix, output, 1, timeout)
+    inverse("db1", mode, height, width, prefix, output, 1, timeout)
     pywt_reconstructed = pywt.idwt2(
         (approximation, (horizontal, vertical, diagonal)),
         "db1",
-        mode="symmetric",
+        mode=mode,
     )[:height, :width].astype(np.float32)
     return max_error(pywt_reconstructed, output)
 
@@ -173,72 +194,90 @@ def pywavelets_check(root: Path, timeout: float) -> float:
 def main() -> int:
     args = parse_args()
     schemes = [item.strip() for item in args.schemes.split(",") if item.strip()]
+    modes = [item.strip() for item in args.modes.split(",") if item.strip()]
+    unsupported = sorted(set(modes) - set(BOUNDARY_MODES))
+    if unsupported:
+        raise ValueError(f"unsupported signal-extension modes: {', '.join(unsupported)}")
+    if not modes:
+        raise ValueError("--modes did not contain a signal-extension mode")
     shapes = parse_shapes(args.shapes)
     failures: list[str] = []
     with tempfile.TemporaryDirectory(prefix="ttwv-ilwt2d-") as directory:
         root = Path(directory)
         for scheme_index, scheme in enumerate(schemes):
-            for shape_index, (height, width) in enumerate(shapes):
-                signal = np.random.default_rng(
-                    args.seed + 1000 * scheme_index + shape_index
-                ).uniform(-1.0, 1.0, size=(height, width)).astype(np.float32)
-                input_path = root / f"{scheme}_{height}x{width}_input.f32"
-                prefix = root / f"{scheme}_{height}x{width}"
-                output = root / f"{scheme}_{height}x{width}_output.f32"
-                signal.tofile(input_path)
-                forward(
-                    scheme,
-                    height,
-                    width,
-                    input_path,
-                    prefix,
-                    args.cores,
-                    args.timeout_seconds,
-                )
-                inverse(
-                    scheme,
-                    height,
-                    width,
-                    prefix,
-                    output,
-                    args.cores,
-                    args.timeout_seconds,
-                )
-                error = max_error(signal, output)
-                status = "PASS" if error <= args.tolerance else "FAIL"
-                print(f"{status} {scheme} {height}x{width} max_abs_error={error:.9g}")
-                if error > args.tolerance:
-                    failures.append(f"{scheme} {height}x{width}: {error}")
-
-                if scheme == "db7" and (height, width) == (33, 35):
-                    single_output = root / "db7_33x35_single_core.f32"
+            for mode_index, mode in enumerate(modes):
+                for shape_index, (height, width) in enumerate(shapes):
+                    if mode in {"reflect", "antireflect"} and min(height, width) <= 1:
+                        print(f"UNSUPPORTED {scheme} {mode} {height}x{width}: both dimensions must exceed one")
+                        continue
+                    signal = np.random.default_rng(
+                        args.seed + 1000 * scheme_index + 100 * mode_index + shape_index
+                    ).uniform(-1.0, 1.0, size=(height, width)).astype(np.float32)
+                    stem = f"{scheme}_{mode}_{height}x{width}"
+                    input_path = root / f"{stem}_input.f32"
+                    prefix = root / stem
+                    output = root / f"{stem}_output.f32"
+                    signal.tofile(input_path)
+                    forward(
+                        scheme,
+                        mode,
+                        height,
+                        width,
+                        input_path,
+                        prefix,
+                        args.cores,
+                        args.timeout_seconds,
+                    )
                     inverse(
                         scheme,
+                        mode,
                         height,
                         width,
                         prefix,
-                        single_output,
-                        1,
+                        output,
+                        args.cores,
                         args.timeout_seconds,
                     )
-                    single_error = max_error(signal, single_output)
-                    multi = np.fromfile(output, dtype=np.float32)
-                    single = np.fromfile(single_output, dtype=np.float32)
-                    bit_identical = np.array_equal(multi.view(np.uint32), single.view(np.uint32))
-                    print(
-                        "PASS" if bit_identical and single_error <= args.tolerance else "FAIL",
-                        "db7 33x35 single-vs-multi-core",
-                        f"bit_identical={bit_identical}",
-                        f"max_abs_error={single_error:.9g}",
-                    )
-                    if not bit_identical or single_error > args.tolerance:
-                        failures.append("db7 33x35 single/multi-core mismatch")
+                    error = max_error(signal, output)
+                    status = "PASS" if error <= args.tolerance else "FAIL"
+                    print(f"{status} {scheme} {mode} {height}x{width} max_abs_error={error:.9g}")
+                    if error > args.tolerance:
+                        failures.append(f"{scheme} {mode} {height}x{width}: {error}")
+
+                    if scheme == "db7" and (height, width) == (33, 35):
+                        single_output = root / f"db7_{mode}_33x35_single_core.f32"
+                        inverse(
+                            scheme,
+                            mode,
+                            height,
+                            width,
+                            prefix,
+                            single_output,
+                            1,
+                            args.timeout_seconds,
+                        )
+                        single_error = max_error(signal, single_output)
+                        multi = np.fromfile(output, dtype=np.float32)
+                        single = np.fromfile(single_output, dtype=np.float32)
+                        bit_identical = np.array_equal(multi.view(np.uint32), single.view(np.uint32))
+                        print(
+                            "PASS" if bit_identical and single_error <= args.tolerance else "FAIL",
+                            f"db7 {mode} 33x35 single-vs-multi-core",
+                            f"bit_identical={bit_identical}",
+                            f"max_abs_error={single_error:.9g}",
+                        )
+                        if not bit_identical or single_error > args.tolerance:
+                            failures.append(f"db7 {mode} 33x35 single/multi-core mismatch")
 
         if not args.skip_pywavelets:
-            error = pywavelets_check(root, args.timeout_seconds)
-            print(f"{'PASS' if error <= args.tolerance else 'FAIL'} pywt db1 33x35 max_abs_error={error:.9g}")
-            if error > args.tolerance:
-                failures.append(f"PyWavelets db1 33x35: {error}")
+            for mode in modes:
+                error = pywavelets_check(root, mode, args.timeout_seconds)
+                print(
+                    f"{'PASS' if error <= args.tolerance else 'FAIL'} "
+                    f"pywt db1 {mode} 33x35 max_abs_error={error:.9g}"
+                )
+                if error > args.tolerance:
+                    failures.append(f"PyWavelets db1 {mode} 33x35: {error}")
 
     if failures:
         print("2D ILWT validation failures:")

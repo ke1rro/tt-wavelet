@@ -24,6 +24,7 @@
 #include "tt-metalium/mesh_buffer.hpp"
 #include "tt-metalium/mesh_device.hpp"
 #include "tt-metalium/tilize_utils.hpp"
+#include "tt_wavelet/include/common/boundary_parse.hpp"
 #include "tt_wavelet/include/common/tiling_2d.hpp"
 #include "tt_wavelet/include/lifting/device_2d.hpp"
 #include "tt_wavelet/include/schemes/generated/registry.hpp"
@@ -40,6 +41,7 @@ struct Options {
     uint32_t core_limit{1};
     size_t repeats{1};
     size_t warmup_runs{0};
+    ttwv::BoundaryMode boundary_mode{ttwv::BoundaryMode::kSymmetric};
 };
 
 [[nodiscard]] size_t parse_positive(const std::string& text, const char* label) {
@@ -56,7 +58,13 @@ struct Options {
     std::vector<std::string> positional;
     for (int index = 1; index < argc; ++index) {
         const std::string argument = argv[index];
-        if (argument == "--cores") {
+        if (argument == "--boundary-mode") {
+            if (++index >= argc || !ttwv::parse_boundary_mode(argv[index], options.boundary_mode)) {
+                throw std::runtime_error(
+                    "--boundary-mode requires zero, constant, symmetric, reflect, periodic, smooth, "
+                    "antisymmetric, or antireflect");
+            }
+        } else if (argument == "--cores") {
             if (++index >= argc) {
                 throw std::runtime_error("--cores requires a value");
             }
@@ -81,7 +89,8 @@ struct Options {
             }
             options.warmup_runs = static_cast<size_t>(std::stoull(argv[index]));
         } else if (argument == "--help" || argument == "-h") {
-            std::cout << "Usage: ilwt_2d [--cores N] [--output PATH] [--repeats N] [--warmup-runs N] "
+            std::cout << "Usage: ilwt_2d [--boundary-mode MODE] [--cores N] [--output PATH] "
+                         "[--repeats N] [--warmup-runs N] "
                          "WAVELET HEIGHT WIDTH LL.f32 LH.f32 HL.f32 HH.f32\n";
             std::exit(EXIT_SUCCESS);
         } else if (argument.starts_with("--")) {
@@ -97,6 +106,10 @@ struct Options {
     options.wavelet = positional[0];
     options.height = parse_positive(positional[1], "HEIGHT");
     options.width = parse_positive(positional[2], "WIDTH");
+    if (ttwv::boundary_mode_requires_multiple_samples(options.boundary_mode) &&
+        (options.height <= 1 || options.width <= 1)) {
+        throw std::runtime_error("2D reflect and antireflect modes require HEIGHT and WIDTH greater than one");
+    }
     for (size_t band = 0; band < options.bands.size(); ++band) {
         options.bands[band] = positional[3 + band];
     }
@@ -176,7 +189,8 @@ struct Options {
 template <typename Scheme>
 int run(const Options& options) {
     const ttwv::Ilwt2DExecutionPlan host_plan =
-        ttwv::make_ilwt_2d_execution_plan<Scheme>(options.height, options.width, options.core_limit, 768 * 1024);
+        ttwv::make_ilwt_2d_execution_plan<Scheme>(
+            options.height, options.width, options.core_limit, 768 * 1024, options.boundary_mode);
     std::array<std::vector<float>, 4> tiled_bands;
     for (size_t band = 0; band < tiled_bands.size(); ++band) {
         const std::vector<float> logical =
@@ -205,7 +219,8 @@ int run(const Options& options) {
         *band_buffers[3]->get_backing_buffer(),
         options.height,
         options.width,
-        options.core_limit);
+        options.core_limit,
+        options.boundary_mode);
     ttwv::prepare_ilwt_2d(queue, executable);
     for (size_t warmup = 0; warmup < options.warmup_runs; ++warmup) {
         ttwv::execute_ilwt_2d(*mesh_device, queue, executable);
@@ -260,7 +275,8 @@ int run(const Options& options) {
                   executable.plan.chunks.front().routes.begin(),
                   executable.plan.chunks.front().routes.end(),
                   [](const ttwv::Lwt2DRoutePlan& route) { return ttwv::is_scale_step(route.type); }));
-    std::cerr << std::fixed << std::setprecision(6) << "ilwt_2d_execution_time_ms: " << mean << '\n'
+    std::cerr << "ilwt_2d_boundary_mode: " << ttwv::boundary_mode_name(options.boundary_mode) << '\n'
+              << std::fixed << std::setprecision(6) << "ilwt_2d_execution_time_ms: " << mean << '\n'
               << "ilwt_2d_min_execution_time_ms: " << sorted_times.front() << '\n'
               << "ilwt_2d_median_time_ms: " << percentile(0.5) << '\n'
               << "ilwt_2d_p10_time_ms: " << percentile(0.1) << '\n'

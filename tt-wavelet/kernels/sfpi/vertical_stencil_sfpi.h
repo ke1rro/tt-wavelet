@@ -12,10 +12,7 @@
 #include <algorithm>
 #include <array>
 
-#include "../ckernel.h"
-#include "ckernel_defs.h"
-#include "cmath_common.h"
-#include "sfpi.h"
+#include "lwt_sfpi_common.h"
 
 using namespace sfpi;
 
@@ -194,7 +191,7 @@ inline void _vertical_stencil(
     const uint32_t base = 8) {
     math::set_dst_write_addr<DstTileShape::Tile32x32, UnpackDestination::SrcRegs>(0);
     // We use addr mod 3, so base=0
-    ckernel::math::clear_addr_mod_base();
+    _lwt_clear_addr_mod_base_();
     TTI_STALLWAIT(p_stall::STALL_SFPU, p_stall::MATH);
 
     constexpr uint32_t ROW_STRIDE = (K >= 10) ? 4 : (K >= 6) ? 8 : 12;

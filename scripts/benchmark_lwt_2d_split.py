@@ -89,9 +89,9 @@ def run_case(
     command = [
         str(DEVICE_BINARY),
         "--binary-input",
-        "--benchmark",
+        "--microbenchmark",
+        "split",
         "--quiet",
-        "--split-metrics",
         "--split-implementation",
         implementation,
         "--cores",
@@ -153,11 +153,18 @@ def run_case(
         "width": width,
         "implementation": implementation,
         "active_cores": int(metrics["lwt_2d_active_core_count"]),
-        "split_latency_ms": metrics["lwt_2d_split_time_ms_at_1ghz"],
+        "split_workload_ms": metrics["lwt_2d_execution_time_ms"],
+        "split_workload_min_ms": metrics["lwt_2d_min_execution_time_ms"],
+        "split_cycles_ms_at_1ghz": metrics[
+            "lwt_2d_split_time_ms_at_1ghz"
+        ],
         "split_max_core_cycles": int(
             metrics["lwt_2d_split_max_core_cycles"]
         ),
-        "input_elements_per_second": metrics[
+        "input_elements_per_second": (
+            height * width * 1000.0 / metrics["lwt_2d_execution_time_ms"]
+        ),
+        "input_elements_per_second_at_1ghz": metrics[
             "lwt_2d_split_input_elements_per_second_at_1ghz"
         ],
         "raw_input_bytes": int(metrics["lwt_2d_split_raw_input_bytes"]),
@@ -177,8 +184,6 @@ def run_case(
         "max_macro_tiles_per_core": int(
             metrics["lwt_2d_split_max_macro_tiles_per_core"]
         ),
-        "complete_lwt_ms": metrics["lwt_2d_execution_time_ms"],
-        "complete_lwt_min_ms": metrics["lwt_2d_min_execution_time_ms"],
     }
 
 
@@ -188,8 +193,8 @@ def print_results(results: list[dict[str, int | float | str]]) -> None:
         key = (int(result["height"]), int(result["width"]))
         by_shape.setdefault(key, {})[str(result["implementation"])] = result
     print(
-        "shape       implementation split_ms  split_speedup "
-        "NoC_calls barriers full_db7_ms"
+        "shape       implementation workload_ms cycle_ms@1GHz speedup "
+        "NoC_calls barriers"
     )
     for height, width in sorted(by_shape):
         scalar = by_shape[(height, width)].get("scalar")
@@ -198,18 +203,18 @@ def print_results(results: list[dict[str, int | float | str]]) -> None:
             if result is None:
                 continue
             speedup = (
-                float(scalar["split_latency_ms"])
-                / float(result["split_latency_ms"])
+                float(scalar["split_workload_ms"])
+                / float(result["split_workload_ms"])
                 if scalar is not None
                 else 1.0
             )
             print(
                 f"{height}x{width:<6} {implementation:<14} "
-                f"{float(result['split_latency_ms']):8.4f} "
-                f"{speedup:13.3f} "
+                f"{float(result['split_workload_ms']):11.4f} "
+                f"{float(result['split_cycles_ms_at_1ghz']):13.4f} "
+                f"{speedup:7.3f} "
                 f"{int(result['noc_read_calls']):9d} "
-                f"{int(result['noc_read_barriers']):8d} "
-                f"{float(result['complete_lwt_ms']):11.4f}"
+                f"{int(result['noc_read_barriers']):8d}"
             )
 
 

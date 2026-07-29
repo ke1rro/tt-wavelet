@@ -1,15 +1,17 @@
-You are currently on server with Wormhole n150. 
+You are currently on server with Blackhole p150. 
 
-To build the whole project we use 
+While validating the sfpi code in the [sfpi](tt-wavelet/kernels/sfpi) - check if this contract works with Blackhole (understand that fp is not fully IEEE compratible here this is stated in tt-isa). This sfpi code workis perfectly on wormhole for sanity check use some very big input like 10M samples
+The csv file from wormhole is here 
+To build the whole project we use [timings](wormhole_timings.csv)
 
-[tt-metal + tt-wavelet](build.sh) - takes a bit long of time
+[tt-metal + tt-wavelet](build.sh) - takes a bit long of time I already built
 
 [tt-wavelet only](update.sh) - rebuils only the tt-wavelet (fast)
 
 The first check for 2D lwt is validate against PyWavelets error [used to compare but this code laks of 2D only 1D](compare.py)
 
 For time we use
-[timings](compare_timings.py) - needs 2D support also 
+[timings](compare_timings.py)
 
 To your note the all schemes 106 some of them have big error due to that all those schemes was factorized in saga math and then put to fp32 so some of them are really unstable the schemes have two representations .hpp templates [here](scripts/generate_static_schemes.py) and json [here](wavelets)
 

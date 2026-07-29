@@ -21,6 +21,7 @@
 #include "tt-metalium/host_api.hpp"
 #include "tt-metalium/mesh_buffer.hpp"
 #include "tt-metalium/mesh_device.hpp"
+#include "tt_wavelet/include/common/boundary_parse.hpp"
 #include "tt_wavelet/include/lifting/device.hpp"
 #include "tt_wavelet/include/schemes/generated/registry.hpp"
 #include "tt_wavelet/include/schemes/testing/synthetic_k17.hpp"
@@ -156,23 +157,7 @@ struct InverseOutput {
             options.signal_step = parse_double(require_option_value(argc, argv, i, arg), "--signal-step");
         } else if (arg == "--boundary-mode") {
             const std::string mode = require_option_value(argc, argv, i, arg);
-            if (mode == "symmetric") {
-                options.boundary_mode = ttwv::BoundaryMode::kSymmetric;
-            } else if (mode == "zero") {
-                options.boundary_mode = ttwv::BoundaryMode::kZero;
-            } else if (mode == "constant") {
-                options.boundary_mode = ttwv::BoundaryMode::kConstant;
-            } else if (mode == "periodic") {
-                options.boundary_mode = ttwv::BoundaryMode::kPeriodic;
-            } else if (mode == "antisymmetric") {
-                options.boundary_mode = ttwv::BoundaryMode::kAntisymmetric;
-            } else if (mode == "smooth") {
-                options.boundary_mode = ttwv::BoundaryMode::kSmooth;
-            } else if (mode == "reflect") {
-                options.boundary_mode = ttwv::BoundaryMode::kReflect;
-            } else if (mode == "antireflect") {
-                options.boundary_mode = ttwv::BoundaryMode::kAntireflect;
-            } else {
+            if (!ttwv::parse_boundary_mode(mode, options.boundary_mode)) {
                 throw std::runtime_error(
                     "--boundary-mode must be 'symmetric', 'zero', 'constant', 'periodic', "
                     "'antisymmetric', 'smooth', 'reflect', or 'antireflect'.");

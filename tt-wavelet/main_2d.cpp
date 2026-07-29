@@ -28,6 +28,7 @@
 #include "tt-metalium/mesh_buffer.hpp"
 #include "tt-metalium/mesh_device.hpp"
 #include "tt-metalium/tilize_utils.hpp"
+#include "tt_wavelet/include/common/boundary_parse.hpp"
 #include "tt_wavelet/include/common/tiling_2d.hpp"
 #include "tt_wavelet/include/lifting/device_2d.hpp"
 #include "tt_wavelet/include/lifting/reference_2d.hpp"
@@ -47,6 +48,7 @@ struct Options {
     size_t repeats{1};
     size_t warmup_runs{1};
     uint32_t core_limit{1};
+    ttwv::BoundaryMode boundary_mode{ttwv::BoundaryMode::kSymmetric};
     ttwv::Lwt2DSplitImplementation split_implementation{ttwv::Lwt2DSplitImplementation::kTiled};
     ttwv::Lwt2DTransportPolicy transport_policy{};
     std::string wavelet;
@@ -71,7 +73,9 @@ struct DeviceOutput {
 };
 
 [[nodiscard]] std::string usage() {
-    return "Usage: lwt_2d [--boundary-mode symmetric] [--binary-input] "
+    return "Usage: lwt_2d "
+           "[--boundary-mode zero|constant|symmetric|reflect|periodic|smooth|antisymmetric|antireflect] "
+           "[--binary-input] "
            "[--cores N] "
            "[--output-prefix PATH] [--quiet] [--split-implementation scalar|tiled] [--split-metrics] "
            "[--route-staging scalar|optimized] [--route-persistence scalar|full-tile] "
@@ -117,8 +121,10 @@ struct DeviceOutput {
     for (int index = 1; index < argc; ++index) {
         const std::string argument = argv[index];
         if (argument == "--boundary-mode") {
-            if (++index >= argc || std::string_view{argv[index]} != "symmetric") {
-                throw std::runtime_error("Initial 2D device scope supports --boundary-mode symmetric only");
+            if (++index >= argc || !ttwv::parse_boundary_mode(argv[index], options.boundary_mode)) {
+                throw std::runtime_error(
+                    "--boundary-mode requires zero, constant, symmetric, reflect, periodic, smooth, "
+                    "antisymmetric, or antireflect");
             }
         } else if (argument == "--benchmark") {
             options.benchmark = true;
@@ -155,6 +161,7 @@ struct DeviceOutput {
             options.benchmark = true;
             if (options.microbenchmark_mode == "split") {
                 options.split_metrics = true;
+                options.transport_policy.split_only_benchmark = true;
             } else if (options.microbenchmark_mode == "compute") {
                 options.transport_metrics = true;
                 options.transport_policy.compute_only_benchmark = true;
@@ -323,6 +330,10 @@ struct DeviceOutput {
     options.wavelet = positional[0];
     options.height = parse_positive(positional[1], "HEIGHT");
     options.width = parse_positive(positional[2], "WIDTH");
+    if (ttwv::boundary_mode_requires_multiple_samples(options.boundary_mode) &&
+        (options.height <= 1 || options.width <= 1)) {
+        throw std::runtime_error("2D reflect and antireflect modes require HEIGHT and WIDTH greater than one");
+    }
     options.input_path = positional[3];
     if (!options.benchmark && (options.repeats != 1 || options.warmup_runs != 1)) {
         throw std::runtime_error("--repeats and --warmup-runs require --benchmark");
@@ -666,7 +677,11 @@ template <typename Scheme>
     const std::optional<std::filesystem::path>& split_snapshot_prefix,
     const std::optional<std::filesystem::path>& snapshot_prefix,
     const ttwv::Lwt2DSplitImplementation split_implementation,
-    const ttwv::Lwt2DTransportPolicy transport_policy) {
+    const ttwv::Lwt2DTransportPolicy transport_policy,
+    const ttwv::BoundaryMode boundary_mode) {
+    ttwv::Lwt2DTransportPolicy effective_transport_policy = transport_policy;
+    effective_transport_policy.split_only_benchmark =
+        split_snapshot_prefix.has_value() && !snapshot_prefix.has_value() && !read_outputs;
     ttwv::Lwt2DExecutable executable = ttwv::create_lwt_2d_executable<Scheme>(
         TT_WAVELET_SOURCE_DIR,
         mesh_device,
@@ -678,8 +693,9 @@ template <typename Scheme>
         split_implementation,
         false,
         split_snapshot_prefix.has_value(),
-        transport_policy,
-        false);
+        effective_transport_policy,
+        false,
+        boundary_mode);
     ttwv::prepare_lwt_2d(command_queue, executable);
     const auto start = std::chrono::steady_clock::now();
     ttwv::execute_lwt_2d(mesh_device, command_queue, executable);
@@ -763,7 +779,8 @@ void print_telemetry(const ttwv::Lwt2DSchedulerTelemetry& telemetry) {
     const auto ratio = [](const uint64_t internal, const uint64_t exact) {
         return exact == 0 ? 1.0 : static_cast<double>(internal) / static_cast<double>(exact);
     };
-    std::cerr << "lwt_2d_active_core_count: " << telemetry.active_core_count << '\n'
+    std::cerr << "lwt_2d_boundary_mode: " << ttwv::boundary_mode_name(telemetry.boundary_mode) << '\n'
+              << "lwt_2d_active_core_count: " << telemetry.active_core_count << '\n'
               << "lwt_2d_chunk_count: " << telemetry.chunk_count << '\n'
               << "lwt_2d_chunk_tiles: " << telemetry.chunk_tiles_y << 'x' << telemetry.chunk_tiles_x << '\n'
               << "lwt_2d_route_count: " << telemetry.route_count << '\n'
@@ -1132,7 +1149,8 @@ int main(int argc, char** argv) {
                     options.split_metrics,
                     false,
                     options.transport_policy,
-                    options.transport_metrics);
+                    options.transport_metrics,
+                    options.boundary_mode);
                 if (options.alignment_csv) {
                     write_alignment_csv(*options.alignment_csv, options.wavelet, executable.plan);
                 }
@@ -1235,6 +1253,9 @@ int main(int argc, char** argv) {
                 return EXIT_SUCCESS;
             }
 
+            const bool read_outputs =
+                !options.split_snapshot_prefix.has_value() || options.route_snapshot_prefix.has_value() ||
+                options.output_prefix.has_value() || !options.quiet;
             DeviceOutput output = run_once<Scheme>(
                 *mesh_device,
                 command_queue,
@@ -1242,11 +1263,12 @@ int main(int argc, char** argv) {
                 options.height,
                 options.width,
                 options.core_limit,
-                true,
+                read_outputs,
                 options.split_snapshot_prefix,
                 options.route_snapshot_prefix,
                 options.split_implementation,
-                options.transport_policy);
+                options.transport_policy,
+                options.boundary_mode);
             if (options.output_prefix) {
                 write_output_bands(*options.output_prefix, output.values);
             }

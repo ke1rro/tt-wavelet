@@ -44,6 +44,9 @@ if(BUILD_TT_WAVELET)
   add_dependencies(ilwt_2d_planner_tests tt_wavelet_generate_static_schemes)
   tt_wavelet_configure_metal_target(ilwt_2d_planner_tests)
 
+  add_executable(signal_extension_tests tests/signal_extension_tests.cpp)
+  tt_wavelet_configure_metal_target(signal_extension_tests)
+
   add_executable(lwt_2d_reference reference_2d.cpp)
   add_dependencies(lwt_2d_reference tt_wavelet_generate_static_schemes)
   tt_wavelet_configure_metal_target(lwt_2d_reference)

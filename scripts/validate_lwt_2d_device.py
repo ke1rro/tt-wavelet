@@ -30,6 +30,16 @@ STABLE_MANIFEST = (
     / "lwt_2d_symmetric_stable_schemes.json"
 )
 BANDS = ("LL", "LH", "HL", "HH")
+BOUNDARY_MODES = (
+    "zero",
+    "constant",
+    "symmetric",
+    "reflect",
+    "periodic",
+    "smooth",
+    "antisymmetric",
+    "antireflect",
+)
 REQUIRED_SHAPES = (
     (1, 1),
     (1, 7),
@@ -96,6 +106,11 @@ def parse_args() -> argparse.Namespace:
         type=parse_shapes,
         default=list(REQUIRED_SHAPES),
         help="Comma-separated HEIGHTxWIDTH list (default: required corpus).",
+    )
+    parser.add_argument(
+        "--modes",
+        default="symmetric",
+        help="Comma-separated signal-extension modes (default: %(default)s).",
     )
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument(
@@ -212,6 +227,16 @@ def scheme_names(args: argparse.Namespace) -> list[str]:
     return names
 
 
+def boundary_modes(args: argparse.Namespace) -> list[str]:
+    modes = [mode.strip() for mode in args.modes.split(",") if mode.strip()]
+    unsupported = sorted(set(modes) - set(BOUNDARY_MODES))
+    if unsupported:
+        raise ValueError(f"unsupported signal-extension modes: {', '.join(unsupported)}")
+    if not modes:
+        raise ValueError("--modes did not contain a signal-extension mode")
+    return modes
+
+
 def make_input(
     height: int, width: int, input_type: str, seed: int
 ) -> np.ndarray:
@@ -296,6 +321,7 @@ def read_device(prefix: Path) -> dict[str, np.ndarray]:
 
 def run_reference(
     scheme: str,
+    mode: str,
     height: int,
     width: int,
     input_path: Path,
@@ -307,6 +333,8 @@ def run_reference(
         [
             str(REFERENCE_BINARY),
             "--binary-input",
+            "--boundary-mode",
+            mode,
             "--fp32-arithmetic",
             fp32_arithmetic,
             "--output-prefix",
@@ -323,6 +351,7 @@ def run_reference(
 
 def run_device(
     scheme: str,
+    mode: str,
     height: int,
     width: int,
     input_path: Path,
@@ -341,6 +370,8 @@ def run_device(
         [
             str(DEVICE_BINARY),
             "--binary-input",
+            "--boundary-mode",
+            mode,
             "--quiet",
             "--output-prefix",
             str(prefix),
@@ -373,6 +404,7 @@ def run_device(
 
 def validate_case(
     scheme: str,
+    mode: str,
     shape: tuple[int, int],
     args: argparse.Namespace,
     directory: Path,
@@ -382,6 +414,7 @@ def validate_case(
     make_input(height, width, args.input_type, args.seed).tofile(input_path)
     reference = run_reference(
         scheme,
+        mode,
         height,
         width,
         input_path,
@@ -391,6 +424,7 @@ def validate_case(
     )
     single = run_device(
         scheme,
+        mode,
         height,
         width,
         input_path,
@@ -409,6 +443,7 @@ def validate_case(
     if not args.skip_multi_core:
         multi = run_device(
             scheme,
+            mode,
             height,
             width,
             input_path,
@@ -431,6 +466,7 @@ def validate_case(
             )
         fragmented = run_device(
             scheme,
+            mode,
             height,
             width,
             input_path,
@@ -449,6 +485,7 @@ def validate_case(
     if args.validate_route_domain_ab:
         alternate_domain = run_device(
             scheme,
+            mode,
             height,
             width,
             input_path,
@@ -513,6 +550,7 @@ def validate_case(
         }
     return {
         "scheme": scheme,
+        "mode": mode,
         "shape": [height, width],
         "input_type": args.input_type,
         "seed": args.seed,
@@ -531,53 +569,57 @@ def main() -> int:
             "Build lwt_2d and lwt_2d_reference before validation"
         )
     schemes = scheme_names(args)
+    modes = boundary_modes(args)
     results: list[dict[str, object]] = []
     failed = 0
     target_misses = 0
-    total = len(schemes) * len(args.shapes)
+    total = len(schemes) * len(modes) * len(args.shapes)
     case_index = 0
     for scheme in schemes:
-        for shape in args.shapes:
-            case_index += 1
-            with tempfile.TemporaryDirectory(
-                prefix="ttwv-lwt2d-"
-            ) as temporary:
-                try:
-                    result = validate_case(
-                        scheme, shape, args, Path(temporary)
-                    )
-                except Exception as error:  # noqa: BLE001
-                    if args.fail_fast:
-                        raise
-                    result = {
-                        "scheme": scheme,
-                        "shape": [shape[0], shape[1]],
-                        "input_type": args.input_type,
-                        "seed": args.seed,
-                        "passed": False,
-                        "reached_target": False,
-                        "error": str(error),
-                        "bands": {},
-                    }
-            results.append(result)
-            failed += not bool(result["passed"])
-            target_misses += not bool(result["reached_target"])
-            worst = max(
-                (
-                    float(band["max_abs_error"])
-                    for band in result["bands"].values()
-                ),
-                default=float("inf"),
-            )
-            print(
-                f"[{case_index}/{total}] {scheme} {shape[0]}x{shape[1]} "
-                f"{'PASS' if result['passed'] else 'FAIL'} "
-                f"max_abs={worst:.8e} "
-                f"target={'yes' if result['reached_target'] else 'no'}"
-            )
+        for mode in modes:
+            for shape in args.shapes:
+                case_index += 1
+                with tempfile.TemporaryDirectory(
+                    prefix="ttwv-lwt2d-"
+                ) as temporary:
+                    try:
+                        result = validate_case(
+                            scheme, mode, shape, args, Path(temporary)
+                        )
+                    except Exception as error:  # noqa: BLE001
+                        if args.fail_fast:
+                            raise
+                        result = {
+                            "scheme": scheme,
+                            "mode": mode,
+                            "shape": [shape[0], shape[1]],
+                            "input_type": args.input_type,
+                            "seed": args.seed,
+                            "passed": False,
+                            "reached_target": False,
+                            "error": str(error),
+                            "bands": {},
+                        }
+                results.append(result)
+                failed += not bool(result["passed"])
+                target_misses += not bool(result["reached_target"])
+                worst = max(
+                    (
+                        float(band["max_abs_error"])
+                        for band in result["bands"].values()
+                    ),
+                    default=float("inf"),
+                )
+                print(
+                    f"[{case_index}/{total}] {scheme} {mode} {shape[0]}x{shape[1]} "
+                    f"{'PASS' if result['passed'] else 'FAIL'} "
+                    f"max_abs={worst:.8e} "
+                    f"target={'yes' if result['reached_target'] else 'no'}"
+                )
     report = {
         "schema_version": 1,
         "fp32_arithmetic": args.fp32_arithmetic,
+        "boundary_modes": modes,
         "hard_tolerance": args.tolerance,
         "target_tolerance": args.target_tolerance,
         "multi_core_limit": args.multi_core_limit,

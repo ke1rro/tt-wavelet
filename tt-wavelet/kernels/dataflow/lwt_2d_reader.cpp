@@ -4,6 +4,7 @@
 
 #include <cstdint>
 
+#include "../../tt_wavelet/include/common/signal_extension.hpp"
 #include "../../tt_wavelet/include/device_protocol/lwt_2d_config.hpp"
 #include "../../tt_wavelet/include/lifting/step.hpp"
 #include "../primitives/tile_2d_layout.hpp"
@@ -16,6 +17,8 @@ using ttwv::kernels::primitives::kTileBytes;
 using ttwv::kernels::primitives::kTileElements;
 using ttwv::kernels::primitives::kTileSide;
 using ttwv::kernels::primitives::tile_element_offset;
+using ttwv::kernels::primitives::tile_face_column_offset;
+using ttwv::kernels::primitives::tile_face_row_offset;
 using ttwv::kernels::primitives::tiled_element_offset;
 
 struct Rect {
@@ -67,6 +70,12 @@ struct StagingValidationMetrics {
 #define TTWV_SPLIT_METRIC(statement) statement
 #else
 #define TTWV_SPLIT_METRIC(statement)
+#endif
+
+#ifdef TTWV_LWT_2D_COMPACT_BOUNDARY_CODE
+#define TTWV_BOUNDARY_FUNCTION __attribute__((noinline))
+#else
+#define TTWV_BOUNDARY_FUNCTION ALWI
 #endif
 
 [[nodiscard]] ALWI Rect load_rect(const uint32_t* words, const uint32_t offset) {
@@ -127,18 +136,79 @@ ALWI void preload_config_pages(
     noc_async_read_barrier();
 }
 
-[[nodiscard]] ALWI int32_t symmetric_index(const int32_t index, const uint32_t length) {
-    const int32_t signed_length = static_cast<int32_t>(length);
-    const int32_t period = 2 * signed_length;
-    int32_t phase = index % period;
-    if (phase < 0) {
-        phase += period;
-    }
-    return phase < signed_length ? phase : period - 1 - phase;
-}
-
 #ifndef TTWV_LWT_2D_TILED_SPLIT
 template <typename InputAccessor>
+struct DirectInputColumnReader {
+    const InputAccessor& input;
+    uint32_t source_y;
+    uint32_t input_tile_columns;
+    uint32_t scratch_addr;
+    SplitMetrics& metrics;
+
+    ALWI float operator()(const uint32_t source_x) const {
+        const uint32_t source_tile = (source_y / kTileSide) * input_tile_columns + source_x / kTileSide;
+        const uint32_t source_offset =
+            tile_element_offset(source_y % kTileSide, source_x % kTileSide) * sizeof(float);
+        const uint64_t source_noc_addr = input.get_noc_addr(source_tile) + source_offset;
+        const uint32_t scratch_lane = static_cast<uint32_t>(source_noc_addr) & 63U;
+        noc_async_read(source_noc_addr, scratch_addr + scratch_lane, sizeof(float));
+        TTWV_SPLIT_METRIC(metrics.input_bytes += sizeof(float));
+        TTWV_SPLIT_METRIC(++metrics.noc_read_calls);
+        noc_async_read_barrier();
+        TTWV_SPLIT_METRIC(++metrics.noc_read_barriers);
+        return *reinterpret_cast<volatile tt_l1_ptr float*>(scratch_addr + scratch_lane);
+    }
+};
+
+template <ttwv::BoundaryMode Mode, typename InputAccessor>
+struct DirectInputRowReader {
+    const InputAccessor& input;
+    const ttwv::ExtendedIndex& x_extended;
+    uint32_t input_width;
+    uint32_t input_tile_columns;
+    uint32_t scratch_addr;
+    SplitMetrics& metrics;
+
+    ALWI float operator()(const uint32_t source_y) const {
+        return ttwv::evaluate_extended_index<Mode>(
+            x_extended,
+            input_width,
+            DirectInputColumnReader<InputAccessor>{
+                .input = input,
+                .source_y = source_y,
+                .input_tile_columns = input_tile_columns,
+                .scratch_addr = scratch_addr,
+                .metrics = metrics,
+            });
+    }
+};
+
+template <ttwv::BoundaryMode Mode, typename InputAccessor>
+ALWI float read_direct_extended_2d(
+    const InputAccessor& input,
+    const int64_t raw_y,
+    const int64_t raw_x,
+    const uint32_t input_height,
+    const uint32_t input_width,
+    const uint32_t input_tile_columns,
+    const uint32_t scratch_addr,
+    SplitMetrics& metrics) {
+    const ttwv::ExtendedIndex y_extended = ttwv::make_extended_index<Mode>(raw_y, input_height);
+    const ttwv::ExtendedIndex x_extended = ttwv::make_extended_index<Mode>(raw_x, input_width);
+    return ttwv::evaluate_extended_index<Mode>(
+        y_extended,
+        input_height,
+        DirectInputRowReader<Mode, InputAccessor>{
+            .input = input,
+            .x_extended = x_extended,
+            .input_width = input_width,
+            .input_tile_columns = input_tile_columns,
+            .scratch_addr = scratch_addr,
+            .metrics = metrics,
+        });
+}
+
+template <ttwv::BoundaryMode Mode, typename InputAccessor>
 ALWI void initialize_plane(
     const InputAccessor& input,
     const uint32_t input_height,
@@ -167,13 +237,13 @@ ALWI void initialize_plane(
     for (uint32_t local_y = 0; local_y < storage_height; ++local_y) {
         for (uint32_t local_x = 0; local_x < storage_width; ++local_x) {
             destination[tiled_element_offset(local_y, local_x, plane_tile_columns)] = 0.0F;
-        }
-    }
+}
+
+}
 
     for (uint32_t polyphase_y = rectangle.y_begin; polyphase_y < rectangle.y_begin + rectangle.y_length;
          ++polyphase_y) {
         const int32_t raw_y = static_cast<int32_t>(2 * polyphase_y + parity_y) - static_cast<int32_t>(pad_y);
-        const uint32_t source_y = static_cast<uint32_t>(symmetric_index(raw_y, input_height));
         const uint32_t local_y = polyphase_y - y_origin;
         const int32_t raw_x_begin =
             static_cast<int32_t>(2 * rectangle.x_begin + parity_x) - static_cast<int32_t>(pad_x);
@@ -184,7 +254,9 @@ ALWI void initialize_plane(
         // burst reads at most 15 contiguous FP32 values and emits up to eight
         // plane values.  The 64-byte aligned scratch window is large enough
         // for the complete burst.
-        if (raw_x_begin >= 0 && raw_x_end < static_cast<int32_t>(input_width)) {
+        if (raw_y >= 0 && raw_y < static_cast<int32_t>(input_height) && raw_x_begin >= 0 &&
+            raw_x_end < static_cast<int32_t>(input_width)) {
+            const uint32_t source_y = static_cast<uint32_t>(raw_y);
             uint32_t local_x = rectangle.x_begin - x_origin;
             uint32_t source_x = static_cast<uint32_t>(raw_x_begin);
             uint32_t remaining = rectangle.x_length;
@@ -213,39 +285,63 @@ ALWI void initialize_plane(
             continue;
         }
 
-        // Symmetric left/right edge segments are not monotonic in raw memory;
-        // retain the scalar correctness path for those small boundary cones.
+        // Affine and reflected edges are evaluated only in this conservative
+        // boundary path. The dense in-bounds row path above remains mode-free.
         for (uint32_t polyphase_x = rectangle.x_begin; polyphase_x < rectangle.x_begin + rectangle.x_length;
              ++polyphase_x) {
-            const int32_t raw_y = static_cast<int32_t>(2 * polyphase_y + parity_y) - static_cast<int32_t>(pad_y);
             const int32_t raw_x = static_cast<int32_t>(2 * polyphase_x + parity_x) - static_cast<int32_t>(pad_x);
-            const uint32_t source_x = static_cast<uint32_t>(symmetric_index(raw_x, input_width));
-            const uint32_t source_tile = (source_y / kTileSide) * input_tile_columns + source_x / kTileSide;
-            const uint32_t source_offset =
-                tile_element_offset(source_y % kTileSide, source_x % kTileSide) * sizeof(float);
-            const uint64_t source_noc_addr = input.get_noc_addr(source_tile) + source_offset;
-            const uint32_t scratch_lane = static_cast<uint32_t>(source_noc_addr) & 63U;
-            noc_async_read(source_noc_addr, noc_scratch_addr + scratch_lane, sizeof(float));
-            TTWV_SPLIT_METRIC(metrics.input_bytes += sizeof(float));
-            TTWV_SPLIT_METRIC(++metrics.noc_read_calls);
-            noc_async_read_barrier();
-            TTWV_SPLIT_METRIC(++metrics.noc_read_barriers);
-            const auto* staged = reinterpret_cast<volatile tt_l1_ptr float*>(noc_scratch_addr + scratch_lane);
-            destination[tiled_element_offset(local_y, polyphase_x - x_origin, plane_tile_columns)] = *staged;
+            destination[tiled_element_offset(local_y, polyphase_x - x_origin, plane_tile_columns)] =
+                read_direct_extended_2d<Mode>(
+                    input,
+                    raw_y,
+                    raw_x,
+                    input_height,
+                    input_width,
+                    input_tile_columns,
+                    noc_scratch_addr,
+                    metrics);
         }
     }
 }
 #else
+template <ttwv::BoundaryMode Mode>
 struct SplitSourceTiles {
-    uint32_t rows[ttwv::device_protocol::kLwt2DSplitScratchTileRows];
-    uint32_t columns[ttwv::device_protocol::kLwt2DSplitScratchTileColumns];
+    static constexpr uint32_t kAxisCapacity =
+        Mode == ttwv::BoundaryMode::kSymmetric
+            ? ttwv::device_protocol::kLwt2DSymmetricSplitScratchTileRows
+            : ttwv::device_protocol::kLwt2DSplitScratchTileRows;
+    uint32_t rows[kAxisCapacity];
+    uint32_t columns[kAxisCapacity];
     uint32_t row_count;
     uint32_t column_count;
+};
+
+struct SourceAxisTileCollector {
+    uint32_t* tiles;
+    uint32_t& count;
+    uint32_t capacity;
+
+    TTWV_BOUNDARY_FUNCTION void operator()(const uint32_t source_index) const {
+        const uint32_t source_tile = source_index / kTileSide;
+        for (uint32_t index = 0; index < count; ++index) {
+            if (tiles[index] == source_tile) {
+                return;
+            }
+        }
+        if (count < capacity) {
+            tiles[count++] = source_tile;
+        }
+    }
 };
 
 [[nodiscard]] ALWI bool intersects_tile(const Rect& rectangle, const uint32_t tile_y, const uint32_t tile_x) {
     return rectangle.y_begin < tile_y + kTileSide && rectangle.y_begin + rectangle.y_length > tile_y &&
            rectangle.x_begin < tile_x + kTileSide && rectangle.x_begin + rectangle.x_length > tile_x;
+}
+
+[[nodiscard]] ALWI bool covers_tile(const Rect& rectangle, const uint32_t tile_y, const uint32_t tile_x) {
+    return rectangle.y_begin <= tile_y && rectangle.y_begin + rectangle.y_length >= tile_y + kTileSide &&
+           rectangle.x_begin <= tile_x && rectangle.x_begin + rectangle.x_length >= tile_x + kTileSide;
 }
 
 template <uint32_t Capacity>
@@ -258,9 +354,67 @@ template <uint32_t Capacity>
     return 0;
 }
 
-template <bool Interior>
+template <ttwv::BoundaryMode Mode>
+TTWV_BOUNDARY_FUNCTION void collect_boundary_source_axis_tiles(
+    uint32_t* tiles,
+    uint32_t& count,
+    const uint32_t capacity,
+    const int32_t raw_begin,
+    const uint32_t logical_length) {
+    if constexpr (Mode == ttwv::BoundaryMode::kSymmetric) {
+        for (uint32_t offset = 0; offset < 2 * kTileSide; ++offset) {
+            const uint32_t source_tile =
+                ttwv::make_symmetric_index_i32(raw_begin + static_cast<int32_t>(offset), logical_length) / kTileSide;
+            bool found = false;
+            for (uint32_t index = 0; index < count; ++index) {
+                found = found || tiles[index] == source_tile;
+            }
+            if (!found && count < capacity) {
+                tiles[count++] = source_tile;
+            }
+        }
+        return;
+    }
+    const SourceAxisTileCollector collector{
+        .tiles = tiles,
+        .count = count,
+        .capacity = capacity,
+    };
+    if constexpr (Mode == ttwv::BoundaryMode::kAntireflect) {
+        for (uint32_t offset = 0; offset < 2 * kTileSide; ++offset) {
+            const int32_t raw_index = raw_begin + static_cast<int32_t>(offset);
+            const ttwv::AntireflectIndexI32 extended =
+                ttwv::make_antireflect_index_i32(raw_index, logical_length);
+            collector(extended.source_index);
+        }
+        // Affine extension may use both endpoint values, but their tile IDs
+        // are invariant across this whole macro-tile.
+        collector(0);
+        collector(logical_length - 1U);
+    } else if constexpr (Mode == ttwv::BoundaryMode::kSmooth) {
+        for (uint32_t offset = 0; offset < 2 * kTileSide; ++offset) {
+            const int32_t raw_index = raw_begin + static_cast<int32_t>(offset);
+            const ttwv::SmoothIndexI32 extended =
+                ttwv::make_smooth_index_i32(raw_index, logical_length);
+            ttwv::visit_smooth_source_indices_i32(extended, collector);
+        }
+    } else {
+        for (uint32_t offset = 0; offset < 2 * kTileSide; ++offset) {
+            const int32_t raw_index = raw_begin + static_cast<int32_t>(offset);
+            const ttwv::ExtendedIndex extended =
+                ttwv::make_extended_index<Mode>(raw_index, logical_length);
+            ttwv::visit_extended_source_indices<Mode>(extended, logical_length, collector);
+        }
+    }
+}
+
+template <bool Interior, ttwv::BoundaryMode Mode>
 ALWI void collect_source_axis_tiles(
-    uint32_t* tiles, uint32_t& count, const int32_t raw_begin, const uint32_t logical_length) {
+    uint32_t* tiles,
+    uint32_t& count,
+    const uint32_t capacity,
+    const int32_t raw_begin,
+    const uint32_t logical_length) {
     if constexpr (Interior) {
         const uint32_t source_begin = static_cast<uint32_t>(raw_begin);
         const uint32_t source_end = source_begin + 2 * kTileSide - 1;
@@ -268,23 +422,12 @@ ALWI void collect_source_axis_tiles(
             tiles[count++] = tile;
         }
     } else {
-        for (uint32_t offset = 0; offset < 2 * kTileSide; ++offset) {
-            const uint32_t tile =
-                static_cast<uint32_t>(symmetric_index(raw_begin + static_cast<int32_t>(offset), logical_length)) /
-                kTileSide;
-            bool found = false;
-            for (uint32_t index = 0; index < count; ++index) {
-                found = found || tiles[index] == tile;
-            }
-            if (!found && count < ttwv::device_protocol::kLwt2DSplitScratchTileRows) {
-                tiles[count++] = tile;
-            }
-        }
+        collect_boundary_source_axis_tiles<Mode>(tiles, count, capacity, raw_begin, logical_length);
     }
 }
 
-template <bool Interior, typename InputAccessor>
-[[nodiscard]] ALWI SplitSourceTiles stage_split_source_tiles(
+template <bool Interior, ttwv::BoundaryMode Mode, typename InputAccessor>
+[[nodiscard]] ALWI SplitSourceTiles<Mode> stage_split_source_tiles(
     const InputAccessor& input,
     const uint32_t input_height,
     const uint32_t input_width,
@@ -293,9 +436,19 @@ template <bool Interior, typename InputAccessor>
     const int32_t raw_x_begin,
     const uint32_t scratch_addr,
     SplitMetrics& metrics) {
-    SplitSourceTiles tiles{};
-    collect_source_axis_tiles<Interior>(tiles.rows, tiles.row_count, raw_y_begin, input_height);
-    collect_source_axis_tiles<Interior>(tiles.columns, tiles.column_count, raw_x_begin, input_width);
+    SplitSourceTiles<Mode> tiles{};
+    collect_source_axis_tiles<Interior, Mode>(
+        tiles.rows,
+        tiles.row_count,
+        SplitSourceTiles<Mode>::kAxisCapacity,
+        raw_y_begin,
+        input_height);
+    collect_source_axis_tiles<Interior, Mode>(
+        tiles.columns,
+        tiles.column_count,
+        SplitSourceTiles<Mode>::kAxisCapacity,
+        raw_x_begin,
+        input_width);
 
     for (uint32_t tile_y = 0; tile_y < tiles.row_count; ++tile_y) {
         for (uint32_t tile_x = 0; tile_x < tiles.column_count; ++tile_x) {
@@ -311,26 +464,166 @@ template <bool Interior, typename InputAccessor>
     return tiles;
 }
 
-template <bool Interior>
-[[nodiscard]] ALWI uint32_t split_source_index(const int32_t raw_index, const uint32_t logical_length) {
-    if constexpr (Interior) {
-        return static_cast<uint32_t>(raw_index);
+template <ttwv::BoundaryMode Mode>
+struct StagedInputColumnReader {
+    uint32_t source_y;
+    const SplitSourceTiles<Mode>& source_tiles;
+    uint32_t scratch_addr;
+
+    TTWV_BOUNDARY_FUNCTION float operator()(const uint32_t source_x) const {
+        const uint32_t source_tile_y = find_index(source_tiles.rows, source_tiles.row_count, source_y / kTileSide);
+        const uint32_t source_tile_x =
+            find_index(source_tiles.columns, source_tiles.column_count, source_x / kTileSide);
+        const uint32_t scratch_tile = source_tile_y * source_tiles.column_count + source_tile_x;
+        const auto* source =
+            reinterpret_cast<volatile tt_l1_ptr float*>(scratch_addr + scratch_tile * kTileBytes);
+        return source[tile_element_offset(source_y % kTileSide, source_x % kTileSide)];
     }
-    return static_cast<uint32_t>(symmetric_index(raw_index, logical_length));
+};
+
+template <ttwv::BoundaryMode Mode>
+struct StagedInputRowReader {
+    const ttwv::ExtendedIndex& x_extended;
+    uint32_t input_width;
+    const SplitSourceTiles<Mode>& source_tiles;
+    uint32_t scratch_addr;
+
+    ALWI float operator()(const uint32_t source_y) const {
+        return ttwv::evaluate_extended_index<Mode>(
+            x_extended,
+            input_width,
+            StagedInputColumnReader<Mode>{
+                .source_y = source_y,
+                .source_tiles = source_tiles,
+                .scratch_addr = scratch_addr,
+            });
+    }
+};
+
+struct StagedAntireflectInputRowReader {
+    const ttwv::AntireflectIndexI32& x_extended;
+    uint32_t input_width;
+    const SplitSourceTiles<ttwv::BoundaryMode::kAntireflect>& source_tiles;
+    uint32_t scratch_addr;
+
+    TTWV_BOUNDARY_FUNCTION float operator()(const uint32_t source_y) const {
+        return ttwv::evaluate_antireflect_index_i32(
+            x_extended,
+            input_width,
+            StagedInputColumnReader<ttwv::BoundaryMode::kAntireflect>{
+                .source_y = source_y,
+                .source_tiles = source_tiles,
+                .scratch_addr = scratch_addr,
+            });
+    }
+};
+
+struct StagedSmoothInputRowReader {
+    const ttwv::SmoothIndexI32& x_extended;
+    const SplitSourceTiles<ttwv::BoundaryMode::kSmooth>& source_tiles;
+    uint32_t scratch_addr;
+
+    TTWV_BOUNDARY_FUNCTION float operator()(const uint32_t source_y) const {
+        return ttwv::evaluate_smooth_index_i32(
+            x_extended,
+            StagedInputColumnReader<ttwv::BoundaryMode::kSmooth>{
+                .source_y = source_y,
+                .source_tiles = source_tiles,
+                .scratch_addr = scratch_addr,
+            });
+    }
+};
+
+template <ttwv::BoundaryMode Mode>
+[[nodiscard]] ALWI float read_staged_extended_2d(
+    const int32_t raw_y,
+    const int32_t raw_x,
+    const uint32_t input_height,
+    const uint32_t input_width,
+    const SplitSourceTiles<Mode>& source_tiles,
+    const uint32_t scratch_addr) {
+    if constexpr (Mode == ttwv::BoundaryMode::kAntireflect) {
+        const ttwv::AntireflectIndexI32 y_extended =
+            ttwv::make_antireflect_index_i32(raw_y, input_height);
+        const ttwv::AntireflectIndexI32 x_extended =
+            ttwv::make_antireflect_index_i32(raw_x, input_width);
+        return ttwv::evaluate_antireflect_index_i32(
+            y_extended,
+            input_height,
+            StagedAntireflectInputRowReader{
+                .x_extended = x_extended,
+                .input_width = input_width,
+                .source_tiles = source_tiles,
+                .scratch_addr = scratch_addr,
+            });
+    }
+    if constexpr (Mode == ttwv::BoundaryMode::kSmooth) {
+        const ttwv::SmoothIndexI32 y_extended =
+            ttwv::make_smooth_index_i32(raw_y, input_height);
+        const ttwv::SmoothIndexI32 x_extended =
+            ttwv::make_smooth_index_i32(raw_x, input_width);
+        return ttwv::evaluate_smooth_index_i32(
+            y_extended,
+            StagedSmoothInputRowReader{
+                .x_extended = x_extended,
+                .source_tiles = source_tiles,
+                .scratch_addr = scratch_addr,
+            });
+    }
+    if constexpr (Mode == ttwv::BoundaryMode::kSymmetric) {
+        const uint32_t source_y =
+            ttwv::make_symmetric_index_i32(raw_y, input_height);
+        const uint32_t source_x =
+            ttwv::make_symmetric_index_i32(raw_x, input_width);
+        return StagedInputColumnReader<Mode>{
+            .source_y = source_y,
+            .source_tiles = source_tiles,
+            .scratch_addr = scratch_addr,
+        }(source_x);
+    }
+    const ttwv::ExtendedIndex y_extended = ttwv::make_extended_index<Mode>(raw_y, input_height);
+    const ttwv::ExtendedIndex x_extended = ttwv::make_extended_index<Mode>(raw_x, input_width);
+    return ttwv::evaluate_extended_index<Mode>(
+        y_extended,
+        input_height,
+        StagedInputRowReader<Mode>{
+            .x_extended = x_extended,
+            .input_width = input_width,
+            .source_tiles = source_tiles,
+            .scratch_addr = scratch_addr,
+        });
 }
 
-template <bool Interior, uint32_t ParityY, uint32_t ParityX>
-ALWI void write_polyphase_tile(
+#ifdef TTWV_LWT_2D_COMPACT_BOUNDARY_CODE
+#define TTWV_POLYPHASE_TEMPLATE template <bool Interior, ttwv::BoundaryMode Mode>
+#define TTWV_POLYPHASE_FUNCTION __attribute__((noinline))
+#define TTWV_POLYPHASE_PARITY_PARAMETERS \
+    const uint32_t parity_y,              \
+    const uint32_t parity_x,
+#define TTWV_POLYPHASE_PARITY_Y parity_y
+#define TTWV_POLYPHASE_PARITY_X parity_x
+#else
+#define TTWV_POLYPHASE_TEMPLATE \
+    template <bool Interior, ttwv::BoundaryMode Mode, uint32_t ParityY, uint32_t ParityX>
+#define TTWV_POLYPHASE_FUNCTION ALWI
+#define TTWV_POLYPHASE_PARITY_PARAMETERS
+#define TTWV_POLYPHASE_PARITY_Y ParityY
+#define TTWV_POLYPHASE_PARITY_X ParityX
+#endif
+
+TTWV_POLYPHASE_TEMPLATE
+TTWV_POLYPHASE_FUNCTION void write_polyphase_tile(
     const uint32_t input_height,
     const uint32_t input_width,
     const uint32_t pad_y,
     const uint32_t pad_x,
+    TTWV_POLYPHASE_PARITY_PARAMETERS
     const Rect& rectangle,
     const uint32_t plane_addr,
     const uint32_t plane_tile_columns,
     const uint32_t tile_y,
     const uint32_t tile_x,
-    const SplitSourceTiles& source_tiles,
+    const SplitSourceTiles<Mode>& source_tiles,
     const uint32_t scratch_addr) {
     if (!intersects_tile(rectangle, tile_y, tile_x)) {
         return;
@@ -349,24 +642,189 @@ ALWI void write_polyphase_tile(
     const uint32_t x_end = std::min(rectangle.x_begin + rectangle.x_length, tile_x + kTileSide);
     for (uint32_t polyphase_y = y_begin; polyphase_y < y_end; ++polyphase_y) {
         const int32_t raw_y =
-            2 * static_cast<int32_t>(polyphase_y) + static_cast<int32_t>(ParityY) - static_cast<int32_t>(pad_y);
-        const uint32_t source_y = split_source_index<Interior>(raw_y, input_height);
-        const uint32_t source_tile_y = find_index(source_tiles.rows, source_tiles.row_count, source_y / kTileSide);
+            2 * static_cast<int32_t>(polyphase_y) + static_cast<int32_t>(TTWV_POLYPHASE_PARITY_Y) -
+            static_cast<int32_t>(pad_y);
         for (uint32_t polyphase_x = x_begin; polyphase_x < x_end; ++polyphase_x) {
             const int32_t raw_x =
-                2 * static_cast<int32_t>(polyphase_x) + static_cast<int32_t>(ParityX) - static_cast<int32_t>(pad_x);
-            const uint32_t source_x = split_source_index<Interior>(raw_x, input_width);
-            const uint32_t source_tile_x =
-                find_index(source_tiles.columns, source_tiles.column_count, source_x / kTileSide);
-            const uint32_t scratch_tile = source_tile_y * source_tiles.column_count + source_tile_x;
-            const auto* source = reinterpret_cast<volatile tt_l1_ptr float*>(scratch_addr + scratch_tile * kTileBytes);
-            destination[tile_element_offset(polyphase_y - tile_y, polyphase_x - tile_x)] =
-                source[tile_element_offset(source_y % kTileSide, source_x % kTileSide)];
+                2 * static_cast<int32_t>(polyphase_x) + static_cast<int32_t>(TTWV_POLYPHASE_PARITY_X) -
+                static_cast<int32_t>(pad_x);
+            if constexpr (Interior) {
+                const uint32_t source_y = static_cast<uint32_t>(raw_y);
+                const uint32_t source_x = static_cast<uint32_t>(raw_x);
+                const uint32_t source_tile_y =
+                    find_index(source_tiles.rows, source_tiles.row_count, source_y / kTileSide);
+                const uint32_t source_tile_x =
+                    find_index(source_tiles.columns, source_tiles.column_count, source_x / kTileSide);
+                const uint32_t scratch_tile = source_tile_y * source_tiles.column_count + source_tile_x;
+                const auto* source =
+                    reinterpret_cast<volatile tt_l1_ptr float*>(scratch_addr + scratch_tile * kTileBytes);
+                destination[tile_element_offset(polyphase_y - tile_y, polyphase_x - tile_x)] =
+                    source[tile_element_offset(source_y % kTileSide, source_x % kTileSide)];
+            } else {
+                destination[tile_element_offset(polyphase_y - tile_y, polyphase_x - tile_x)] =
+                    read_staged_extended_2d<Mode>(
+                        raw_y,
+                        raw_x,
+                        input_height,
+                        input_width,
+                        source_tiles,
+                        scratch_addr);
+            }
         }
     }
 }
 
-template <bool Interior, typename InputAccessor>
+#undef TTWV_POLYPHASE_TEMPLATE
+#undef TTWV_POLYPHASE_FUNCTION
+#undef TTWV_POLYPHASE_PARITY_PARAMETERS
+#undef TTWV_POLYPHASE_PARITY_Y
+#undef TTWV_POLYPHASE_PARITY_X
+
+template <bool Interior, ttwv::BoundaryMode Mode, uint32_t ParityY, uint32_t ParityX>
+ALWI void write_polyphase_tile_dispatch(
+    const uint32_t input_height,
+    const uint32_t input_width,
+    const uint32_t pad_y,
+    const uint32_t pad_x,
+    const Rect& rectangle,
+    const uint32_t plane_addr,
+    const uint32_t plane_tile_columns,
+    const uint32_t tile_y,
+    const uint32_t tile_x,
+    const SplitSourceTiles<Mode>& source_tiles,
+    const uint32_t scratch_addr) {
+#ifdef TTWV_LWT_2D_COMPACT_BOUNDARY_CODE
+    write_polyphase_tile<Interior, Mode>(
+        input_height,
+        input_width,
+        pad_y,
+        pad_x,
+        ParityY,
+        ParityX,
+        rectangle,
+        plane_addr,
+        plane_tile_columns,
+        tile_y,
+        tile_x,
+        source_tiles,
+        scratch_addr);
+#else
+    write_polyphase_tile<Interior, Mode, ParityY, ParityX>(
+        input_height,
+        input_width,
+        pad_y,
+        pad_x,
+        rectangle,
+        plane_addr,
+        plane_tile_columns,
+        tile_y,
+        tile_x,
+        source_tiles,
+        scratch_addr);
+#endif
+}
+
+struct SplitSourceColumn {
+    uint32_t scratch_tile_byte_offset;
+    uint32_t face_column_offset;
+};
+
+[[nodiscard]] ALWI uint32_t split_destination_tile_address(
+    const Rect& rectangle,
+    const uint32_t plane_addr,
+    const uint32_t plane_tile_columns,
+    const uint32_t tile_y,
+    const uint32_t tile_x) {
+    const uint32_t rectangle_y_origin = aligned_begin(rectangle.y_begin);
+    const uint32_t rectangle_x_origin = aligned_begin(rectangle.x_begin);
+    const uint32_t plane_tile_y = (tile_y - rectangle_y_origin) / kTileSide;
+    const uint32_t plane_tile_x = (tile_x - rectangle_x_origin) / kTileSide;
+    return plane_addr + (plane_tile_y * plane_tile_columns + plane_tile_x) * kTileBytes;
+}
+
+template <ttwv::BoundaryMode Mode>
+ALWI void write_full_interior_polyphase_tiles(
+    const int32_t raw_y_begin,
+    const int32_t raw_x_begin,
+    const Rect* rectangles,
+    const uint32_t* plane_addrs,
+    const uint32_t* plane_tile_columns,
+    const uint32_t tile_y,
+    const uint32_t tile_x,
+    const SplitSourceTiles<Mode>& source_tiles,
+    const uint32_t scratch_addr) {
+    // A complete interior macro-tile is a pure bit permutation. Precompute
+    // the tiled source-column mapping once, then traverse the four outputs
+    // together. This removes symmetric mapping, source-tile searches,
+    // division/modulo, and tile_element_offset() from the 32x32 hot loop.
+    SplitSourceColumn even_columns[kTileSide];
+    SplitSourceColumn odd_columns[kTileSide];
+    uint32_t destination_column_offsets[kTileSide];
+    const uint32_t first_source_tile_column = source_tiles.columns[0];
+    for (uint32_t column = 0; column < kTileSide; ++column) {
+        const uint32_t source_even_x = static_cast<uint32_t>(raw_x_begin + 2 * static_cast<int32_t>(column));
+        const uint32_t source_odd_x = source_even_x + 1;
+        destination_column_offsets[column] = tile_face_column_offset(column);
+        even_columns[column] = SplitSourceColumn{
+            .scratch_tile_byte_offset =
+                (source_even_x / kTileSide - first_source_tile_column) * kTileBytes,
+            .face_column_offset = tile_face_column_offset(source_even_x % kTileSide),
+        };
+        odd_columns[column] = SplitSourceColumn{
+            .scratch_tile_byte_offset =
+                (source_odd_x / kTileSide - first_source_tile_column) * kTileBytes,
+            .face_column_offset = tile_face_column_offset(source_odd_x % kTileSide),
+        };
+    }
+
+    auto* ee = reinterpret_cast<volatile tt_l1_ptr uint32_t*>(
+        split_destination_tile_address(
+            rectangles[0], plane_addrs[0], plane_tile_columns[0], tile_y, tile_x));
+    auto* eo = reinterpret_cast<volatile tt_l1_ptr uint32_t*>(
+        split_destination_tile_address(
+            rectangles[1], plane_addrs[1], plane_tile_columns[1], tile_y, tile_x));
+    auto* oe = reinterpret_cast<volatile tt_l1_ptr uint32_t*>(
+        split_destination_tile_address(
+            rectangles[2], plane_addrs[2], plane_tile_columns[2], tile_y, tile_x));
+    auto* oo = reinterpret_cast<volatile tt_l1_ptr uint32_t*>(
+        split_destination_tile_address(
+            rectangles[3], plane_addrs[3], plane_tile_columns[3], tile_y, tile_x));
+
+    const uint32_t first_source_tile_row = source_tiles.rows[0];
+    const uint32_t scratch_tile_row_stride = source_tiles.column_count * kTileBytes;
+    for (uint32_t row = 0; row < kTileSide; ++row) {
+        const uint32_t source_even_y = static_cast<uint32_t>(raw_y_begin + 2 * static_cast<int32_t>(row));
+        const uint32_t source_odd_y = source_even_y + 1;
+        const uint32_t source_even_row_base =
+            scratch_addr + (source_even_y / kTileSide - first_source_tile_row) * scratch_tile_row_stride;
+        const uint32_t source_odd_row_base =
+            scratch_addr + (source_odd_y / kTileSide - first_source_tile_row) * scratch_tile_row_stride;
+        const uint32_t source_even_row_offset = tile_face_row_offset(source_even_y % kTileSide);
+        const uint32_t source_odd_row_offset = tile_face_row_offset(source_odd_y % kTileSide);
+        const uint32_t destination_row_offset = tile_face_row_offset(row);
+
+        for (uint32_t column = 0; column < kTileSide; ++column) {
+            const SplitSourceColumn even_column = even_columns[column];
+            const SplitSourceColumn odd_column = odd_columns[column];
+            const auto* even_row_even_column = reinterpret_cast<volatile tt_l1_ptr uint32_t*>(
+                source_even_row_base + even_column.scratch_tile_byte_offset);
+            const auto* even_row_odd_column = reinterpret_cast<volatile tt_l1_ptr uint32_t*>(
+                source_even_row_base + odd_column.scratch_tile_byte_offset);
+            const auto* odd_row_even_column = reinterpret_cast<volatile tt_l1_ptr uint32_t*>(
+                source_odd_row_base + even_column.scratch_tile_byte_offset);
+            const auto* odd_row_odd_column = reinterpret_cast<volatile tt_l1_ptr uint32_t*>(
+                source_odd_row_base + odd_column.scratch_tile_byte_offset);
+            const uint32_t destination_offset = destination_row_offset + destination_column_offsets[column];
+            ee[destination_offset] =
+                even_row_even_column[source_even_row_offset + even_column.face_column_offset];
+            eo[destination_offset] = even_row_odd_column[source_even_row_offset + odd_column.face_column_offset];
+            oe[destination_offset] = odd_row_even_column[source_odd_row_offset + even_column.face_column_offset];
+            oo[destination_offset] = odd_row_odd_column[source_odd_row_offset + odd_column.face_column_offset];
+        }
+    }
+}
+
+template <bool Interior, ttwv::BoundaryMode Mode, typename InputAccessor>
 ALWI void split_macro_tile(
     const InputAccessor& input,
     const uint32_t input_height,
@@ -383,10 +841,30 @@ ALWI void split_macro_tile(
     SplitMetrics& metrics) {
     const int32_t raw_y_begin = 2 * static_cast<int32_t>(tile_y) - static_cast<int32_t>(pad_y);
     const int32_t raw_x_begin = 2 * static_cast<int32_t>(tile_x) - static_cast<int32_t>(pad_x);
-    const SplitSourceTiles source_tiles = stage_split_source_tiles<Interior>(
+    const SplitSourceTiles<Mode> source_tiles = stage_split_source_tiles<Interior, Mode>(
         input, input_height, input_width, input_tile_columns, raw_y_begin, raw_x_begin, scratch_addr, metrics);
 
-    write_polyphase_tile<Interior, 0, 0>(
+    if constexpr (Interior) {
+        bool complete = true;
+        for (uint32_t plane = 0; plane < 4; ++plane) {
+            complete = complete && covers_tile(rectangles[plane], tile_y, tile_x);
+        }
+        if (complete) {
+            write_full_interior_polyphase_tiles<Mode>(
+                raw_y_begin,
+                raw_x_begin,
+                rectangles,
+                plane_addrs,
+                plane_tile_columns,
+                tile_y,
+                tile_x,
+                source_tiles,
+                scratch_addr);
+            return;
+        }
+    }
+
+    write_polyphase_tile_dispatch<Interior, Mode, 0, 0>(
         input_height,
         input_width,
         pad_y,
@@ -398,7 +876,7 @@ ALWI void split_macro_tile(
         tile_x,
         source_tiles,
         scratch_addr);
-    write_polyphase_tile<Interior, 0, 1>(
+    write_polyphase_tile_dispatch<Interior, Mode, 0, 1>(
         input_height,
         input_width,
         pad_y,
@@ -410,7 +888,7 @@ ALWI void split_macro_tile(
         tile_x,
         source_tiles,
         scratch_addr);
-    write_polyphase_tile<Interior, 1, 0>(
+    write_polyphase_tile_dispatch<Interior, Mode, 1, 0>(
         input_height,
         input_width,
         pad_y,
@@ -422,7 +900,7 @@ ALWI void split_macro_tile(
         tile_x,
         source_tiles,
         scratch_addr);
-    write_polyphase_tile<Interior, 1, 1>(
+    write_polyphase_tile_dispatch<Interior, Mode, 1, 1>(
         input_height,
         input_width,
         pad_y,
@@ -436,7 +914,7 @@ ALWI void split_macro_tile(
         scratch_addr);
 }
 
-template <typename InputAccessor>
+template <ttwv::BoundaryMode Mode, typename InputAccessor>
 ALWI void initialize_planes_tiled(
     const InputAccessor& input,
     const uint32_t input_height,
@@ -483,7 +961,7 @@ ALWI void initialize_planes_tiled(
                 raw_x_begin + static_cast<int32_t>(2 * kTileSide) <= static_cast<int32_t>(input_width);
             if (interior) {
                 TTWV_SPLIT_METRIC(++metrics.interior_macro_tiles);
-                split_macro_tile<true>(
+                split_macro_tile<true, Mode>(
                     input,
                     input_height,
                     input_width,
@@ -499,7 +977,7 @@ ALWI void initialize_planes_tiled(
                     metrics);
             } else {
                 TTWV_SPLIT_METRIC(++metrics.boundary_macro_tiles);
-                split_macro_tile<false>(
+                split_macro_tile<false, Mode>(
                     input,
                     input_height,
                     input_width,
@@ -1278,6 +1756,11 @@ void kernel_main() {
     constexpr auto metric_args = TensorAccessorArgs<route_args.next_compile_time_args_offset()>();
     constexpr auto snapshot_args = TensorAccessorArgs<metric_args.next_compile_time_args_offset()>();
     constexpr auto transport_metric_args = TensorAccessorArgs<snapshot_args.next_compile_time_args_offset()>();
+    constexpr uint32_t boundary_mode_arg_offset = transport_metric_args.next_compile_time_args_offset();
+    constexpr auto boundary_mode =
+        static_cast<ttwv::BoundaryMode>(get_compile_time_arg_val(boundary_mode_arg_offset));
+    constexpr uint32_t split_scratch_bytes = get_compile_time_arg_val(boundary_mode_arg_offset + 1);
+    static_assert(ttwv::is_supported_lwt_boundary_mode(boundary_mode), "Unsupported 2D signal-extension mode");
 #ifndef TTWV_ILWT_2D
     const auto input = TensorAccessor(input_args, input_addr, kTileBytes);
 #endif
@@ -1296,11 +1779,11 @@ void kernel_main() {
 #endif
 #ifdef TTWV_LWT_2D_PRELOAD_ROUTE_CONFIG
     constexpr uint32_t reader_config_capacity =
-        ttwv::device_protocol::kLwt2DSplitScratchBytes / 2 - ttwv::device_protocol::kLwt2DTransportMetricPageBytes;
+        split_scratch_bytes / 2 - ttwv::device_protocol::kLwt2DTransportMetricPageBytes;
     const uint32_t reader_config_addr = noc_scratch_addr;
 #endif
 #if defined(TTWV_CAPTURE_TRANSPORT_METRICS) || defined(TTWV_VALIDATE_ROUTE_STAGING)
-    const uint32_t reader_metric_scratch_addr = noc_scratch_addr + ttwv::device_protocol::kLwt2DSplitScratchBytes / 2 -
+    const uint32_t reader_metric_scratch_addr = noc_scratch_addr + split_scratch_bytes / 2 -
                                                 ttwv::device_protocol::kLwt2DTransportMetricPageBytes;
 #endif
 
@@ -1349,7 +1832,7 @@ void kernel_main() {
             noc_scratch_addr,
             zero_tile_addr);
 #elif defined(TTWV_LWT_2D_TILED_SPLIT)
-        initialize_planes_tiled(
+        initialize_planes_tiled<boundary_mode>(
             input,
             input_height,
             input_width,
@@ -1362,7 +1845,7 @@ void kernel_main() {
             noc_scratch_addr,
             split_metrics);
 #else
-        initialize_plane(
+        initialize_plane<boundary_mode>(
             input,
             input_height,
             input_width,
@@ -1376,7 +1859,7 @@ void kernel_main() {
             plane_tile_columns[0],
             noc_scratch_addr,
             split_metrics);
-        initialize_plane(
+        initialize_plane<boundary_mode>(
             input,
             input_height,
             input_width,
@@ -1390,7 +1873,7 @@ void kernel_main() {
             plane_tile_columns[1],
             noc_scratch_addr,
             split_metrics);
-        initialize_plane(
+        initialize_plane<boundary_mode>(
             input,
             input_height,
             input_width,
@@ -1404,7 +1887,7 @@ void kernel_main() {
             plane_tile_columns[2],
             noc_scratch_addr,
             split_metrics);
-        initialize_plane(
+        initialize_plane<boundary_mode>(
             input,
             input_height,
             input_width,
@@ -1462,6 +1945,9 @@ void kernel_main() {
             stored,
             plane_addrs,
             plane_tile_columns);
+#endif
+#ifdef TTWV_LWT_2D_SPLIT_ONLY_BENCHMARK
+        continue;
 #endif
 #ifdef TTWV_LWT_2D_PRELOAD_ROUTE_CONFIG
         ASSERT(route_count * ttwv::device_protocol::kLwt2DRouteConfigPageBytes <= reader_config_capacity);

@@ -2,56 +2,28 @@
 
 #include <cstdint>
 
+#include "../../tt_wavelet/include/common/signal_extension.hpp"
+
 #define ALWI inline __attribute__((always_inline))
 
 namespace ttwv::kernels::primitives {
 
 ALWI uint32_t positive_mod(const int32_t value, const uint32_t modulus) {
-    if (modulus == 0) {
-        return 0;
-    }
-
-    const int32_t signed_modulus = static_cast<int32_t>(modulus);
-    const int32_t remainder = value % signed_modulus;
-    return static_cast<uint32_t>(remainder < 0 ? remainder + signed_modulus : remainder);
+    return ttwv::extension_positive_mod(value, modulus);
 }
 
-struct SignedPeriodIndex {
-    int64_t quotient;
-    uint64_t remainder;
-};
+using SignedPeriodIndex = ttwv::SignedExtensionPeriod;
 
 ALWI SignedPeriodIndex decompose_signed_period(const int32_t value, const uint64_t period) {
-    const int64_t signed_value = static_cast<int64_t>(value);
-    const int64_t signed_period = static_cast<int64_t>(period);
-    int64_t quotient = signed_value / signed_period;
-    int64_t remainder = signed_value % signed_period;
-    if (remainder < 0) {
-        remainder += signed_period;
-        --quotient;
-    }
-    return SignedPeriodIndex{.quotient = quotient, .remainder = static_cast<uint64_t>(remainder)};
+    return ttwv::decompose_extension_period(value, period);
 }
 
 ALWI uint32_t symmetric_index(const int32_t index, const uint32_t length) {
-    if (length <= 1) {
-        return 0;
-    }
-
-    const uint64_t period = static_cast<uint64_t>(length) * 2U;
-    const uint64_t reflected = decompose_signed_period(index, period).remainder;
-    return reflected < length ? static_cast<uint32_t>(reflected) : static_cast<uint32_t>(period - 1U - reflected);
+    return ttwv::make_extended_index<ttwv::BoundaryMode::kSymmetric>(index, length).source_index;
 }
 
 ALWI uint32_t reflect_index(const int32_t index, const uint32_t length) {
-    if (length <= 1) {
-        return 0;
-    }
-
-    const uint64_t last_index = static_cast<uint64_t>(length - 1U);
-    const uint64_t period = 2U * last_index;
-    const uint64_t reflected = decompose_signed_period(index, period).remainder;
-    return reflected <= last_index ? static_cast<uint32_t>(reflected) : static_cast<uint32_t>(period - reflected);
+    return ttwv::make_extended_index<ttwv::BoundaryMode::kReflect>(index, length).source_index;
 }
 
 struct AntisymmetricIndex {
@@ -60,27 +32,12 @@ struct AntisymmetricIndex {
 };
 
 ALWI AntisymmetricIndex antisymmetric_index(const int32_t index, const uint32_t length) {
-    if (length <= 1) {
-        const auto period_index = decompose_signed_period(index, 2U);
-        return AntisymmetricIndex{
-            .source_index = 0,
-            .negate = period_index.remainder != 0,
-        };
-    }
-
-    const uint64_t segment = static_cast<uint64_t>(length);
-    const uint64_t period = 4U * segment;
-    const uint64_t reflected = decompose_signed_period(index, period).remainder;
-    if (reflected < segment) {
-        return AntisymmetricIndex{.source_index = static_cast<uint32_t>(reflected), .negate = false};
-    }
-    if (reflected < 2U * segment) {
-        return AntisymmetricIndex{.source_index = static_cast<uint32_t>(2U * segment - 1U - reflected), .negate = true};
-    }
-    if (reflected < 3U * segment) {
-        return AntisymmetricIndex{.source_index = static_cast<uint32_t>(reflected - 2U * segment), .negate = false};
-    }
-    return AntisymmetricIndex{.source_index = static_cast<uint32_t>(4U * segment - 1U - reflected), .negate = true};
+    const ttwv::ExtendedIndex extended =
+        ttwv::make_extended_index<ttwv::BoundaryMode::kAntisymmetric>(index, length);
+    return AntisymmetricIndex{
+        .source_index = extended.source_index,
+        .negate = extended.operation == ttwv::ExtensionOperation::kNegatedSample,
+    };
 }
 
 }  // namespace ttwv::kernels::primitives

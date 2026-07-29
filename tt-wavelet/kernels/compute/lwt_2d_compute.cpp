@@ -225,6 +225,11 @@ inline void run_step(
     if constexpr (Step::type == ttwv::StepType::kSwap) {
         return;
     } else if constexpr (ttwv::is_scale_step(Step::type)) {
+#if TTWV_INLINE_INVERSE_SCALE
+        // Inverse scale routes are metadata-only. Their reciprocal scales are
+        // applied on the first predict/update use of each stream below.
+        return;
+#endif
 #if defined(TTWV_LWT_2D_FUSE_TERMINAL_SCALE) && TTWV_LWT_2D_FUSE_TERMINAL_SCALE
         if constexpr (Step::type == inline_terminal_scale_type()) {
             return;

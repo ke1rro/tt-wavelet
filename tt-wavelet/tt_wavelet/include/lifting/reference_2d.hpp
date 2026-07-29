@@ -13,6 +13,7 @@
 
 #include "tt_wavelet/include/common/boundary.hpp"
 #include "tt_wavelet/include/common/fp32_arithmetic.hpp"
+#include "tt_wavelet/include/common/signal_extension.hpp"
 #include "tt_wavelet/include/lifting/plan.hpp"
 #include "tt_wavelet/include/lifting/static_scheme.hpp"
 
@@ -39,66 +40,19 @@ struct Stream {
     int shift{0};
 };
 
-[[nodiscard]] constexpr int64_t positive_mod(const int64_t value, const int64_t modulus) noexcept {
-    const int64_t remainder = value % modulus;
-    return remainder < 0 ? remainder + modulus : remainder;
-}
-
-[[nodiscard]] inline float antireflect_value(const std::span<const float> input, const int64_t index) {
-    const int64_t length = static_cast<int64_t>(input.size());
-    if (index >= 0 && index < length) {
-        return input[static_cast<size_t>(index)];
-    }
-    if (index < 0) {
-        return 2.0F * input.front() - antireflect_value(input, -index);
-    }
-    return 2.0F * input.back() - antireflect_value(input, 2 * length - 2 - index);
-}
+struct SpanSourceReader {
+    std::span<const float> input;
+    [[nodiscard]] float operator()(const uint32_t index) const { return input[index]; }
+};
 
 [[nodiscard]] inline float padded_value(
     const std::span<const float> input, const int64_t index, const BoundaryMode mode) {
     TT_FATAL(!input.empty(), "FP32 reference boundary extension requires a non-empty signal");
-    const int64_t length = static_cast<int64_t>(input.size());
-    if (index >= 0 && index < length) {
-        return input[static_cast<size_t>(index)];
-    }
-
-    switch (mode) {
-        case BoundaryMode::kZero: return 0.0F;
-        case BoundaryMode::kConstant: return index < 0 ? input.front() : input.back();
-        case BoundaryMode::kPeriodic: {
-            return input[static_cast<size_t>(positive_mod(index, length))];
-        }
-        case BoundaryMode::kSymmetric:
-        case BoundaryMode::kAntisymmetric: {
-            const int64_t period = 2 * length;
-            const int64_t phase = positive_mod(index, period);
-            const size_t source_index = static_cast<size_t>(phase < length ? phase : period - 1 - phase);
-            const bool negate = mode == BoundaryMode::kAntisymmetric && phase >= length;
-            return negate ? -input[source_index] : input[source_index];
-        }
-        case BoundaryMode::kSmooth: {
-            if (input.size() == 1) {
-                return input.front();
-            }
-            if (index < 0) {
-                const float delta = input[1] - input[0];
-                return std::fma(static_cast<float>(index), delta, input[0]);
-            }
-            const float delta = input[input.size() - 1] - input[input.size() - 2];
-            return std::fma(static_cast<float>(index - length + 1), delta, input.back());
-        }
-        case BoundaryMode::kReflect: {
-            TT_FATAL(input.size() > 1, "Reflect extension requires at least two samples");
-            const int64_t period = 2 * (length - 1);
-            const int64_t phase = positive_mod(index, period);
-            return input[static_cast<size_t>(phase < length ? phase : period - phase)];
-        }
-        case BoundaryMode::kAntireflect:
-            TT_FATAL(input.size() > 1, "Antireflect extension requires at least two samples");
-            return antireflect_value(input, index);
-    }
-    TT_THROW("Unsupported FP32 reference boundary mode");
+    const uint32_t length = static_cast<uint32_t>(input.size());
+    return evaluate_extended_index(
+        make_extended_index(mode, index, length),
+        length,
+        SpanSourceReader{.input = input});
 }
 
 template <typename Step>

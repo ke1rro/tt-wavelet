@@ -76,6 +76,9 @@ struct Lwt2DTransportPolicy {
     // Benchmark-only: feed persistent-zero tiles directly to the real
     // unpack/SFPU/pack route kernel, bypassing workspace plane assembly.
     bool compute_only_benchmark{false};
+    // Diagnostic-only: run initial EE/EO/OE/OO construction for every chunk
+    // without entering the downstream lifting route pipeline.
+    bool split_only_benchmark{false};
     // Validation-only: compare every optimized fast-path CB page against the
     // scalar gather before publishing it to the compute kernel.
     bool validate_route_staging{false};
@@ -83,6 +86,7 @@ struct Lwt2DTransportPolicy {
 
 struct Lwt2DSchedulerTelemetry {
     tt::ARCH architecture{tt::ARCH::Invalid};
+    BoundaryMode boundary_mode{BoundaryMode::kSymmetric};
     Shape2D logical_input{};
     Shape2D padded_input{};
     Shape2D logical_band{};
@@ -245,7 +249,8 @@ template <typename Scheme>
     const bool capture_split_metrics = false,
     const bool capture_split_snapshots = false,
     const Lwt2DTransportPolicy transport_policy = {},
-    const bool capture_transport_metrics = false) {
+    const bool capture_transport_metrics = false,
+    const BoundaryMode boundary_mode = BoundaryMode::kSymmetric) {
     TT_FATAL(logical_height > 0 && logical_width > 0, "2D LWT input shape must be positive");
     // Preserve the benchmarked production search space for the exact domain.
     // The deliberately larger tile-closed A/B domain must instead be judged
@@ -259,7 +264,7 @@ template <typename Scheme>
         logical_width,
         core_limit,
         initial_l1_budget_bytes,
-        BoundaryMode::kSymmetric,
+        boundary_mode,
         transport_policy.scale == Lwt2DScalePolicy::kFused,
         transport_policy.planner == Lwt2DPlannerPolicy::kLatency,
         transport_policy.route_domain);
@@ -306,10 +311,12 @@ template <typename Scheme>
     const tt::tt_metal::Buffer& hh,
     const size_t output_height,
     const size_t output_width,
-    const uint32_t core_limit = 1) {
+    const uint32_t core_limit = 1,
+    const BoundaryMode boundary_mode = BoundaryMode::kSymmetric) {
     using InverseScheme = typename Scheme::inverse;
     Ilwt2DExecutionPlan plan =
-        make_ilwt_2d_execution_plan<Scheme>(output_height, output_width, core_limit, 768 * 1024);
+        make_ilwt_2d_execution_plan<Scheme>(
+            output_height, output_width, core_limit, 768 * 1024, boundary_mode);
     const size_t required_band_bytes =
         checked_shape_area_2d(plan.tiling.band.storage, "2D ILWT band storage") * sizeof(float);
     const std::array<const tt::tt_metal::Buffer*, device_protocol::kLwt2DBandCount> bands = {&ll, &lh, &hl, &hh};

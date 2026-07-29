@@ -43,16 +43,26 @@ constexpr uint32_t kNocScratchCb = tt::CBIndex::c_8;
 constexpr uint32_t kRouteZeroCb = tt::CBIndex::c_9;
 constexpr uint32_t kOutputCb = tt::CBIndex::c_16;
 constexpr uint32_t kTileBuffering = 2;
+// Wormhole needs 32-byte DRAM-read alignment and Blackhole needs 64.  Using
+// the stricter common alignment keeps all metadata CB bases portable.
+constexpr uint32_t kConfigNocAlignmentBytes = 64;
 
 constexpr const char* kReaderKernel = "kernels/dataflow/lwt_2d_reader.cpp";
 constexpr const char* kComputeKernel = "kernels/compute/lwt_2d_compute.cpp";
 constexpr const char* kWriterKernel = "kernels/dataflow/lwt_2d_writer.cpp";
 
+[[nodiscard]] constexpr uint32_t split_scratch_tile_count(
+    const BoundaryMode boundary_mode, const bool inverse) {
+    return !inverse && boundary_mode == BoundaryMode::kSymmetric
+               ? device_protocol::kLwt2DSymmetricSplitScratchTileCount
+               : device_protocol::kLwt2DSplitScratchTileCount;
+}
+
 struct Lwt2DProgram {
     tt::tt_metal::Program program;
     tt::tt_metal::KernelHandle reader{};
-    tt::tt_metal::KernelHandle compute{};
-    tt::tt_metal::KernelHandle writer{};
+    std::optional<tt::tt_metal::KernelHandle> compute{};
+    std::optional<tt::tt_metal::KernelHandle> writer{};
 };
 
 struct CoreChunkWork {
@@ -370,18 +380,22 @@ template <typename Plan>
     const char* compute_scheme_type,
     const Lwt2DSplitImplementation split_implementation,
     const Lwt2DTransportPolicy transport_policy,
+    const BoundaryMode boundary_mode,
+    const bool compact_boundary_code,
     const bool inverse) {
     tt::tt_metal::Program program = tt::tt_metal::CreateProgram();
+    const uint32_t scratch_tile_count = split_scratch_tile_count(boundary_mode, inverse);
+    const uint32_t scratch_bytes = scratch_tile_count * kTileBytes;
     create_cb(program, cores, kSource0Cb, kTileBuffering, kTileBytes, true);
     create_cb(program, cores, kSource1Cb, kTileBuffering, kTileBytes, true);
     create_cb(program, cores, kBaseCb, kTileBuffering, kTileBytes, true);
     create_cb(program, cores, kOutputCb, kTileBuffering, kTileBytes, true);
-    create_cb(program, cores, kSyncCb, 1, kNocAlignmentBytes, false);
+    create_cb(program, cores, kSyncCb, 1, kConfigNocAlignmentBytes, false);
     create_cb(program, cores, kReaderChunkConfigCb, 1, device_protocol::kLwt2DChunkConfigPageBytes, false);
     create_cb(program, cores, kReaderRouteConfigCb, 1, device_protocol::kLwt2DRouteConfigPageBytes, false);
     create_cb(program, cores, kWriterRouteConfigCb, 1, device_protocol::kLwt2DRouteConfigPageBytes, false);
     create_cb(program, cores, kWriterBandConfigCb, 1, device_protocol::kLwt2DBandConfigPageBytes, false);
-    create_cb(program, cores, kNocScratchCb, device_protocol::kLwt2DSplitScratchTileCount, kTileBytes, true);
+    create_cb(program, cores, kNocScratchCb, scratch_tile_count, kTileBytes, true);
     create_cb(program, cores, kRouteZeroCb, 1, kTileBytes, true);
     std::vector<uint32_t> reader_compile_args = {
         kSource0Cb,
@@ -412,6 +426,8 @@ template <typename Plan>
     } else {
         tt::tt_metal::TensorAccessorArgs(*buffers.chunk_config->get_backing_buffer()).append_to(reader_compile_args);
     }
+    reader_compile_args.push_back(static_cast<uint32_t>(boundary_mode));
+    reader_compile_args.push_back(scratch_bytes);
     std::map<std::string, std::string> reader_defines;
     if (inverse) {
         reader_defines.emplace("TTWV_ILWT_2D", "1");
@@ -423,6 +439,9 @@ template <typename Plan>
     }
     if (buffers.split_snapshots) {
         reader_defines.emplace("TTWV_CAPTURE_SPLIT_SNAPSHOTS", "1");
+    }
+    if (compact_boundary_code) {
+        reader_defines.emplace("TTWV_LWT_2D_COMPACT_BOUNDARY_CODE", "1");
     }
     if (transport_policy.route_staging == Lwt2DRouteStagingImplementation::kOptimized) {
         reader_defines.emplace("TTWV_LWT_2D_OPTIMIZED_ROUTE_STAGING", "1");
@@ -439,6 +458,9 @@ template <typename Plan>
     if (transport_policy.compute_only_benchmark) {
         reader_defines.emplace("TTWV_LWT_2D_COMPUTE_ONLY_BENCHMARK", "1");
     }
+    if (transport_policy.split_only_benchmark) {
+        reader_defines.emplace("TTWV_LWT_2D_SPLIT_ONLY_BENCHMARK", "1");
+    }
     if (buffers.transport_metrics && !transport_policy.validate_route_staging) {
         reader_defines.emplace("TTWV_CAPTURE_TRANSPORT_METRICS", "1");
     }
@@ -447,6 +469,12 @@ template <typename Plan>
         kernel_path(kernel_root, kReaderKernel),
         cores,
         tt::tt_metal::ReaderDataMovementConfig(reader_compile_args, reader_defines));
+    if (transport_policy.split_only_benchmark) {
+        return Lwt2DProgram{
+            .program = std::move(program),
+            .reader = reader,
+        };
+    }
 
     std::vector<uint32_t> writer_compile_args = {
         kOutputCb,
@@ -464,6 +492,7 @@ template <typename Plan>
     } else {
         tt::tt_metal::TensorAccessorArgs(*buffers.band_config->get_backing_buffer()).append_to(writer_compile_args);
     }
+    writer_compile_args.push_back(scratch_bytes);
     std::map<std::string, std::string> writer_defines;
     if (inverse) {
         writer_defines.emplace("TTWV_ILWT_2D", "1");
@@ -557,8 +586,9 @@ Lwt2DExecutable create_lwt_2d_executable_impl(
     }
     const size_t route_count = plan.chunks.front().routes.size();
     if (transport_policy.route_config == Lwt2DRouteConfigImplementation::kPreloaded) {
-        constexpr size_t config_capacity =
-            device_protocol::kLwt2DSplitScratchBytes / 2 - device_protocol::kLwt2DTransportMetricPageBytes;
+        const size_t config_capacity =
+            split_scratch_tile_count(plan.y_plan.preprocess_layout.pad_config.mode, false) * kTileBytes / 2 -
+            device_protocol::kLwt2DTransportMetricPageBytes;
         TT_FATAL(
             route_count * device_protocol::kLwt2DRouteConfigPageBytes <= config_capacity,
             "2D LWT {} route descriptors require {} bytes, exceeding the {}-byte per-RISC preload region",
@@ -634,6 +664,7 @@ Lwt2DExecutable create_lwt_2d_executable_impl(
         .scheduler =
             Lwt2DSchedulerTelemetry{
                 .architecture = mesh_device.arch(),
+                .boundary_mode = plan.y_plan.preprocess_layout.pad_config.mode,
                 .logical_input = plan.tiling.input.logical,
                 .padded_input = plan.tiling.input.storage,
                 .logical_band = plan.tiling.band.logical,
@@ -666,6 +697,12 @@ Lwt2DExecutable create_lwt_2d_executable_impl(
     };
     const std::vector<CoreChunkWork> work =
         partition_work(buffers.cores, checked_u32(plan.chunks.size(), "2D chunk count"));
+    // Large static route schedules leave less Blackhole kernel-config space
+    // for affine boundary code. Keep the fast inlined reader for the default
+    // and use the compact boundary-only variant at the observed pressure point.
+    constexpr size_t kCompactBoundaryRouteThreshold = 52;
+    const bool compact_boundary_code =
+        plan.chunks.front().routes.size() >= kCompactBoundaryRouteThreshold;
     Lwt2DProgram program = create_program(
         kernel_root,
         core_set(buffers.cores),
@@ -675,13 +712,20 @@ Lwt2DExecutable create_lwt_2d_executable_impl(
         compute_scheme_type,
         split_implementation,
         transport_policy,
+        plan.y_plan.preprocess_layout.pad_config.mode,
+        compact_boundary_code,
         false);
     for (const CoreChunkWork& core_work : work) {
         tt::tt_metal::SetRuntimeArgs(
             program.program, program.reader, core_work.core, reader_args(input_buffer, plan, buffers, core_work));
-        tt::tt_metal::SetRuntimeArgs(program.program, program.compute, core_work.core, compute_args(plan, core_work));
-        tt::tt_metal::SetRuntimeArgs(
-            program.program, program.writer, core_work.core, writer_args(plan, buffers, core_work));
+        if (program.compute) {
+            tt::tt_metal::SetRuntimeArgs(
+                program.program, *program.compute, core_work.core, compute_args(plan, core_work));
+        }
+        if (program.writer) {
+            tt::tt_metal::SetRuntimeArgs(
+                program.program, *program.writer, core_work.core, writer_args(plan, buffers, core_work));
+        }
     }
     tt::tt_metal::distributed::MeshWorkload workload;
     workload.add_program(
@@ -722,8 +766,9 @@ Ilwt2DExecutable create_ilwt_2d_executable_impl(
     outputs.fill(output);
 
     const size_t route_count = plan.chunks.front().routes.size();
-    constexpr size_t config_capacity =
-        device_protocol::kLwt2DSplitScratchBytes / 2 - device_protocol::kLwt2DTransportMetricPageBytes;
+    const size_t config_capacity =
+        split_scratch_tile_count(plan.y_plan.forward_trace.preprocess_layout.pad_config.mode, true) * kTileBytes / 2 -
+        device_protocol::kLwt2DTransportMetricPageBytes;
     TT_FATAL(
         route_count * device_protocol::kLwt2DRouteConfigPageBytes <= config_capacity,
         "2D ILWT route descriptors exceed the per-RISC preload region");
@@ -748,6 +793,7 @@ Ilwt2DExecutable create_ilwt_2d_executable_impl(
         .scheduler =
             Lwt2DSchedulerTelemetry{
                 .architecture = mesh_device.arch(),
+                .boundary_mode = plan.y_plan.forward_trace.preprocess_layout.pad_config.mode,
                 .logical_input = plan.tiling.input.logical,
                 .padded_input = plan.tiling.input.storage,
                 .logical_band = plan.tiling.band.logical,
@@ -783,16 +829,20 @@ Ilwt2DExecutable create_ilwt_2d_executable_impl(
         inverse_compute_scheme_type,
         Lwt2DSplitImplementation::kTiled,
         transport_policy,
+        plan.y_plan.forward_trace.preprocess_layout.pad_config.mode,
+        false,
         true);
+    TT_FATAL(program.compute && program.writer, "2D ILWT program is missing a route kernel");
     for (const CoreChunkWork& core_work : work) {
         tt::tt_metal::SetRuntimeArgs(
             program.program,
             program.reader,
             core_work.core,
             inverse_reader_args(band_buffers, plan, buffers, core_work));
-        tt::tt_metal::SetRuntimeArgs(program.program, program.compute, core_work.core, compute_args(plan, core_work));
         tt::tt_metal::SetRuntimeArgs(
-            program.program, program.writer, core_work.core, inverse_writer_args(plan, buffers, core_work));
+            program.program, *program.compute, core_work.core, compute_args(plan, core_work));
+        tt::tt_metal::SetRuntimeArgs(
+            program.program, *program.writer, core_work.core, inverse_writer_args(plan, buffers, core_work));
     }
     tt::tt_metal::distributed::MeshWorkload workload;
     workload.add_program(

@@ -187,9 +187,9 @@ constexpr uint64_t kMetadataBytes = device_protocol::kLwt2DChunkConfigPageBytes 
                                     2 * device_protocol::kLwt2DRouteConfigPageBytes +
                                     device_protocol::kLwt2DBandConfigPageBytes;
 // One reader/writer synchronization page plus the fused split staging area.
-// The latter holds at most a 3x3 set of physical raw tiles for one logical
-// 64x64 macro-tile.
-constexpr uint64_t kSynchronizationBytes = kNocAlignmentBytes + device_protocol::kLwt2DSplitScratchBytes;
+// The latter holds the bounded source-tile Cartesian product needed by one
+// logical 64x64 macro-tile for every supported extension mode.
+constexpr uint64_t kSynchronizationBytes = 64 + device_protocol::kLwt2DSplitScratchBytes;
 
 [[nodiscard]] inline size_t checked_area(const size_t height, const size_t width, const char* label) {
     TT_FATAL(width == 0 || height <= std::numeric_limits<size_t>::max() / width, "{} area overflows size_t", label);
@@ -881,9 +881,13 @@ enum class AlignmentCostClass : uint8_t {
     TT_FATAL(y_plan.preprocess_layout.input.length > 0, "2D LWT input height must be positive");
     TT_FATAL(x_plan.preprocess_layout.input.length > 0, "2D LWT input width must be positive");
     TT_FATAL(
-        y_plan.preprocess_layout.pad_config.mode == BoundaryMode::kSymmetric &&
-            x_plan.preprocess_layout.pad_config.mode == BoundaryMode::kSymmetric,
-        "Initial forward 2D LWT production scope supports symmetric boundary mode only");
+        y_plan.preprocess_layout.pad_config.mode == x_plan.preprocess_layout.pad_config.mode &&
+            is_supported_lwt_boundary_mode(y_plan.preprocess_layout.pad_config.mode),
+        "2D LWT requires one supported extension mode shared by both axes");
+    TT_FATAL(
+        !boundary_mode_requires_multiple_samples(y_plan.preprocess_layout.pad_config.mode) ||
+            (y_plan.preprocess_layout.input.length > 1 && x_plan.preprocess_layout.input.length > 1),
+        "2D reflect and antireflect extension require both input dimensions to exceed one");
     TT_FATAL(
         l1_budget_bytes > plan_2d_detail::kCircularBufferBytes + plan_2d_detail::kMetadataBytes +
                               plan_2d_detail::kSynchronizationBytes,

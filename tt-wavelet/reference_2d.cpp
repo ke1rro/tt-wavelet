@@ -22,6 +22,7 @@
 #include <string_view>
 #include <vector>
 
+#include "tt_wavelet/include/common/boundary_parse.hpp"
 #include "tt_wavelet/include/schemes/generated/registry.hpp"
 #include "tt_wavelet/include/schemes/testing/synthetic_k17.hpp"
 
@@ -61,34 +62,6 @@ struct Options {
     throw std::runtime_error("Unsupported FP32 arithmetic model: " + std::string{name});
 }
 
-[[nodiscard]] ttwv::BoundaryMode parse_boundary_mode(const std::string_view name) {
-    if (name == "zero") {
-        return ttwv::BoundaryMode::kZero;
-    }
-    if (name == "constant") {
-        return ttwv::BoundaryMode::kConstant;
-    }
-    if (name == "symmetric") {
-        return ttwv::BoundaryMode::kSymmetric;
-    }
-    if (name == "periodic") {
-        return ttwv::BoundaryMode::kPeriodic;
-    }
-    if (name == "antisymmetric") {
-        return ttwv::BoundaryMode::kAntisymmetric;
-    }
-    if (name == "smooth") {
-        return ttwv::BoundaryMode::kSmooth;
-    }
-    if (name == "antireflect") {
-        return ttwv::BoundaryMode::kAntireflect;
-    }
-    if (name == "reflect") {
-        return ttwv::BoundaryMode::kReflect;
-    }
-    throw std::runtime_error("Unsupported boundary mode: " + std::string{name});
-}
-
 [[nodiscard]] size_t parse_size(const std::string& text, const char* label) {
     if (text.empty() || text.front() == '-') {
         throw std::runtime_error(std::string{label} + " must be a positive integer");
@@ -125,7 +98,9 @@ struct Options {
             if (++index >= argc) {
                 throw std::runtime_error("--boundary-mode requires a value");
             }
-            options.boundary_mode = parse_boundary_mode(argv[index]);
+            if (!ttwv::parse_boundary_mode(argv[index], options.boundary_mode)) {
+                throw std::runtime_error("Unsupported boundary mode: " + std::string{argv[index]});
+            }
         } else if (argument == "--fp32-arithmetic") {
             if (++index >= argc) {
                 throw std::runtime_error("--fp32-arithmetic requires a value");

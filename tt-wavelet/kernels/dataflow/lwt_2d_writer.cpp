@@ -568,19 +568,21 @@ void kernel_main() {
     constexpr auto band_args = TensorAccessorArgs<route_args.next_compile_time_args_offset()>();
     constexpr auto output_args = TensorAccessorArgs<band_args.next_compile_time_args_offset()>();
     constexpr auto transport_metric_args = TensorAccessorArgs<output_args.next_compile_time_args_offset()>();
+    constexpr uint32_t split_scratch_bytes =
+        get_compile_time_arg_val(transport_metric_args.next_compile_time_args_offset());
     const uint32_t noc_scratch_raw = get_write_ptr(cb_noc_scratch);
     const uint32_t noc_scratch_addr = (noc_scratch_raw + 63U) & ~63U;
 #if defined(TTWV_CAPTURE_TRANSPORT_METRICS) || defined(TTWV_VALIDATE_ROUTE_PERSISTENCE)
     // Reader and writer execute concurrently and share cb_noc_scratch's L1
     // allocation.  Keep their metric assembly cache lines disjoint so one
     // RISC cannot overwrite the other's in-flight NoC source buffer.
-    const uint32_t writer_metric_scratch_addr = noc_scratch_addr + ttwv::device_protocol::kLwt2DSplitScratchBytes -
+    const uint32_t writer_metric_scratch_addr = noc_scratch_addr + split_scratch_bytes -
                                                 ttwv::device_protocol::kLwt2DTransportMetricHalfPageBytes;
 #endif
 #ifdef TTWV_LWT_2D_PRELOAD_ROUTE_CONFIG
     constexpr uint32_t writer_config_capacity =
-        ttwv::device_protocol::kLwt2DSplitScratchBytes / 2 - ttwv::device_protocol::kLwt2DTransportMetricPageBytes;
-    const uint32_t writer_config_addr = noc_scratch_addr + ttwv::device_protocol::kLwt2DSplitScratchBytes / 2;
+        split_scratch_bytes / 2 - ttwv::device_protocol::kLwt2DTransportMetricPageBytes;
+    const uint32_t writer_config_addr = noc_scratch_addr + split_scratch_bytes / 2;
 #endif
 
     for (uint32_t local_chunk = 0; local_chunk < chunk_count; ++local_chunk) {
