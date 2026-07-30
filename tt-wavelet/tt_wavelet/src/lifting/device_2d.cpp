@@ -75,6 +75,25 @@ struct CoreChunkWork {
     return static_cast<uint32_t>(value);
 }
 
+[[nodiscard]] uint32_t noc_scratch_tile_count(
+    const BoundaryMode boundary_mode, const bool inverse, const size_t route_count) {
+    TT_FATAL(
+        route_count <=
+            std::numeric_limits<size_t>::max() / (2 * device_protocol::kLwt2DRouteConfigPageBytes),
+        "2D route-config scratch size overflows size_t");
+    const size_t route_config_bytes = route_count * device_protocol::kLwt2DRouteConfigPageBytes;
+    const size_t route_config_tile_count =
+        ceil_div(2 * route_config_bytes, static_cast<size_t>(kTileBytes));
+    const size_t tile_count =
+        std::max(static_cast<size_t>(split_scratch_tile_count(boundary_mode, inverse)), route_config_tile_count);
+    TT_FATAL(
+        tile_count <= device_protocol::kLwt2DSplitScratchTileCount,
+        "2D route descriptors require {} scratch tiles, exceeding the {}-tile accounted split-scratch budget",
+        tile_count,
+        device_protocol::kLwt2DSplitScratchTileCount);
+    return checked_u32(tile_count, "2D NoC scratch tile count");
+}
+
 [[nodiscard]] std::filesystem::path kernel_path(const std::filesystem::path& root, const char* relative) {
     return root / relative;
 }
@@ -344,9 +363,9 @@ template <typename Plan>
     const char* compute_scheme_type,
     const BoundaryMode boundary_mode,
     const bool compact_boundary_code,
-    const bool inverse) {
+    const bool inverse,
+    const uint32_t scratch_tile_count) {
     tt::tt_metal::Program program = tt::tt_metal::CreateProgram();
-    const uint32_t scratch_tile_count = split_scratch_tile_count(boundary_mode, inverse);
     const uint32_t scratch_bytes = scratch_tile_count * kTileBytes;
     create_cb(program, cores, kSource0Cb, kTileBuffering, kTileBytes, true);
     create_cb(program, cores, kSource1Cb, kTileBuffering, kTileBytes, true);
@@ -464,8 +483,9 @@ Lwt2DExecutable create_lwt_2d_executable_impl(
         output = create_dram_pages(mesh_device, band_tiles, kTileBytes);
     }
     const size_t route_count = plan.chunks.front().routes.size();
-    const size_t config_capacity =
-        split_scratch_tile_count(plan.y_plan.preprocess_layout.pad_config.mode, false) * kTileBytes / 2;
+    const uint32_t scratch_tile_count =
+        noc_scratch_tile_count(plan.y_plan.preprocess_layout.pad_config.mode, false, route_count);
+    const size_t config_capacity = static_cast<size_t>(scratch_tile_count) * kTileBytes / 2;
     TT_FATAL(
         route_count * device_protocol::kLwt2DRouteConfigPageBytes <= config_capacity,
         "2D LWT {} route descriptors require {} bytes, exceeding the {}-byte per-RISC preload region",
@@ -527,12 +547,12 @@ Lwt2DExecutable create_lwt_2d_executable_impl(
     };
     const std::vector<CoreChunkWork> work =
         partition_work(buffers.cores, checked_u32(plan.chunks.size(), "2D chunk count"));
-    // Large route schedules and antireflect's affine boundary expansion can
-    // exceed Blackhole's kernel-config budget when fully inlined.
+    // Wormhole's NCRISC text budget, large route schedules, and antireflect's
+    // affine boundary expansion require compact boundary/fallback helpers.
     constexpr size_t kCompactBoundaryRouteThreshold = 52;
     const ArchitecturePolicy architecture_policy = make_architecture_policy(mesh_device.arch());
     const bool compact_boundary_code = architecture_policy.compact_2d_reader ||
-                                       plan.chunks.front().routes.size() >= kCompactBoundaryRouteThreshold ||
+                                       route_count >= kCompactBoundaryRouteThreshold ||
                                        plan.y_plan.preprocess_layout.pad_config.mode == BoundaryMode::kAntireflect;
     Lwt2DProgram program = create_program(
         kernel_root,
@@ -543,7 +563,8 @@ Lwt2DExecutable create_lwt_2d_executable_impl(
         compute_scheme_type,
         plan.y_plan.preprocess_layout.pad_config.mode,
         compact_boundary_code,
-        false);
+        false,
+        scratch_tile_count);
     for (const CoreChunkWork& core_work : work) {
         tt::tt_metal::SetRuntimeArgs(
             program.program, program.reader, core_work.core, reader_args(input_buffer, plan, buffers, core_work));
@@ -595,8 +616,9 @@ Ilwt2DExecutable create_ilwt_2d_executable_impl(
     outputs.fill(output);
 
     const size_t route_count = plan.chunks.front().routes.size();
-    const size_t config_capacity =
-        split_scratch_tile_count(plan.y_plan.forward_trace.preprocess_layout.pad_config.mode, true) * kTileBytes / 2;
+    const uint32_t scratch_tile_count =
+        noc_scratch_tile_count(plan.y_plan.forward_trace.preprocess_layout.pad_config.mode, true, route_count);
+    const size_t config_capacity = static_cast<size_t>(scratch_tile_count) * kTileBytes / 2;
     TT_FATAL(
         route_count * device_protocol::kLwt2DRouteConfigPageBytes <= config_capacity,
         "2D ILWT route descriptors exceed the per-RISC preload region");
@@ -660,7 +682,8 @@ Ilwt2DExecutable create_ilwt_2d_executable_impl(
         inverse_compute_scheme_type,
         plan.y_plan.forward_trace.preprocess_layout.pad_config.mode,
         architecture_policy.compact_2d_reader,
-        true);
+        true,
+        scratch_tile_count);
     TT_FATAL(program.compute && program.writer, "2D ILWT program is missing a route kernel");
     for (const CoreChunkWork& core_work : work) {
         tt::tt_metal::SetRuntimeArgs(
