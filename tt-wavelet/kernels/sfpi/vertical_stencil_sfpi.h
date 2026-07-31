@@ -124,7 +124,7 @@ inline void _vertical_stencil_block(
         TTI_SFPMOV(0, p_sfpu::LCONST_0, g_2, 0);
     }
 
-#pragma unroll 13
+#pragma GCC unroll 13
     for (uint8_t j = 0; j < std::min<uint8_t>(K, 13); j++) {
         TT_SFPLOADI(tmp, sfpi::SFPLOADI_MOD0_UPPER, (h_packed[(K - 1) - j]) >> 16);
         TT_SFPLOADI(tmp, sfpi::SFPLOADI_MOD0_LOWER, (h_packed[(K - 1) - j]) & 0xFFFF);
@@ -156,7 +156,7 @@ inline void _vertical_stencil_block(
         TT_SFPLOAD(f_3, sfpi::SFPLOAD_MOD0_FMT_FP32, ADDR_MOD_3, dst_tail3);
         _vertical_stencil_rotate_();
 
-#pragma unroll 4
+#pragma GCC unroll 4
         for (uint8_t j = 13; j < K; ++j) {
             TT_SFPLOADI(tmp, sfpi::SFPLOADI_MOD0_UPPER, (h_packed[(K - 1) - j]) >> 16);
             TT_SFPLOADI(tmp, sfpi::SFPLOADI_MOD0_LOWER, (h_packed[(K - 1) - j]) & 0xFFFF);
@@ -196,9 +196,9 @@ inline void _vertical_stencil(
 
     constexpr uint32_t ROW_STRIDE = (K >= 10) ? 4 : (K >= 6) ? 8 : 12;
 
-#pragma unroll 8
+#pragma GCC unroll 8
     for (uint32_t row = 0; row < 32; row += ROW_STRIDE) {
-#pragma unroll 4
+#pragma GCC unroll 4
         for (uint32_t col = 0; col < 4; col += 1) {
             _vertical_stencil_block<K>(
                 h_packed,

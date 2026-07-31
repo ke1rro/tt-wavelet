@@ -78,7 +78,12 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--binary", type=Path, default=root / "build" / "lwt")
     parser.add_argument("--wavelets", nargs="+", default=["db1", "db7", "bior3.9"])
-    parser.add_argument("--lengths", nargs="+", type=int, default=[17, 32, 33, 3071, 3072, 3073])
+    parser.add_argument(
+        "--lengths",
+        nargs="+",
+        type=int,
+        default=[17, 20, 31, 32, 33, 3071, 3072, 3073],
+    )
     parser.add_argument(
         "--layouts",
         nargs="+",

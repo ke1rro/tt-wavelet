@@ -99,7 +99,7 @@ ALWI void write_local_half_block(
     } else {
         auto* dst = reinterpret_cast<volatile tt_l1_ptr float*>(dst_addr);
         const auto* src = reinterpret_cast<volatile tt_l1_ptr float*>(tile_addr);
-#pragma unroll
+#pragma GCC unroll 8
         for (uint32_t lane = 0; lane < ttwv::device_protocol::kLwtHalfStickElements; ++lane) {
             dst[destination_index + lane] = src[source_index + lane];
         }
@@ -131,7 +131,7 @@ ALWI void write_local_output_groups(
             const uint32_t destination_group = destination_index / group_elements;
             const uint32_t destination_addr = dst_addr + destination_group * group_bytes;
             if constexpr (UseNocLocalWrite) {
-#pragma unroll
+#pragma GCC unroll 3
                 for (uint32_t block = 0; block < blocks_per_group; ++block) {
                     noc_async_write_one_packet_with_state(
                         output_tiles + block * tile_bytes, destination_addr + block * tile_bytes);
@@ -139,7 +139,7 @@ ALWI void write_local_output_groups(
             } else {
                 auto* dst = reinterpret_cast<volatile tt_l1_ptr uint32_t*>(destination_addr);
                 const auto* src = reinterpret_cast<volatile tt_l1_ptr uint32_t*>(output_tiles);
-#pragma unroll 4
+#pragma GCC unroll 4
                 for (uint32_t word = 0; word < group_bytes / sizeof(uint32_t); ++word) {
                     dst[word] = src[word];
                 }
@@ -197,7 +197,7 @@ void kernel_main() {
             const uint32_t global_chunk = chunk_begin + local_chunk;
             uint32_t chunk_words[ttwv::device_protocol::kLwtChunkConfigWordCount];
             const uint32_t* loaded_chunk = load_route_config(config_args, chunk_config_addr, cb_config, global_chunk);
-#pragma unroll
+#pragma GCC unroll 8
             for (uint32_t word = 0; word < ttwv::device_protocol::kLwtChunkConfigWordCount; ++word) {
                 chunk_words[word] = loaded_chunk[word];
             }

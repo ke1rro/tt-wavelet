@@ -54,7 +54,7 @@ ALWI void read_workspace_block(
                 : 0;
         const uint32_t valid_start = logical_start < 0 ? 0U : static_cast<uint32_t>(logical_start);
         WorkspaceIndexCursor cursor(valid_start);
-#pragma unroll
+#pragma GCC unroll 8
         for (uint32_t lane = 0; lane < kBlockElements; ++lane) {
             const bool valid = lane >= zero_prefix && valid_start + lane - zero_prefix < logical_end;
             dst[lane] = valid ? src[cursor.physical] : 0.0F;
@@ -64,7 +64,7 @@ ALWI void read_workspace_block(
         }
     } else {
         WorkspaceIndexCursor cursor(static_cast<uint32_t>(logical_start));
-#pragma unroll
+#pragma GCC unroll 8
         for (uint32_t lane = 0; lane < kBlockElements; ++lane) {
             dst[lane] = src[cursor.physical];
             cursor.advance();
@@ -98,7 +98,7 @@ ALWI void read_aligned_source_group(
 ALWI void read_aligned_output_group(
     const uint32_t source_addr, const uint32_t logical_start, const uint32_t narrow_tiles_addr) {
     const uint32_t physical_group_addr = source_addr + logical_start * sizeof(float);
-#pragma unroll
+#pragma GCC unroll 3
     for (uint32_t block = 0; block < kOutputBlocksPerRow; ++block) {
         noc_async_read(
             get_noc_addr(physical_group_addr + block * kNarrowTileBytes),
@@ -226,7 +226,7 @@ ALWI void fill_source_row_major(
             auto* tile_row = narrow_tile + row * kBlockElements;
             const int64_t logical_start = static_cast<int64_t>(source_offset) + group_base +
                                           (row * kOutputBlocksPerRow + block) * kBlockElements - source_left_pad;
-#pragma unroll
+#pragma GCC unroll 8
             for (uint32_t lane = 0; lane < kBlockElements; ++lane) {
                 const int64_t logical_index = logical_start + lane;
                 if constexpr (BoundsChecked) {
@@ -253,7 +253,7 @@ ALWI void fill_output_row_major(
         for (uint32_t block = 0; block < kOutputBlocksPerRow; ++block) {
             auto* tile_block = narrow_tiles + block * kNarrowTileElements + row * kBlockElements;
             const uint32_t output_index = group_base + (row * kOutputBlocksPerRow + block) * kBlockElements;
-#pragma unroll
+#pragma GCC unroll 8
             for (uint32_t lane = 0; lane < kBlockElements; ++lane) {
                 const uint32_t local_index = output_index + lane;
                 const uint32_t logical_index = source_offset + local_index;

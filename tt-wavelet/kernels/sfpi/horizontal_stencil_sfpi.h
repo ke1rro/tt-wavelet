@@ -123,7 +123,7 @@ inline void _horizontal_stencil_plus_base_block(
         _lwt_scale_register_(g_o, tmp, tmp_acc);
     }
 
-#pragma unroll 17
+#pragma GCC unroll 17
     for (uint8_t j = 0; j < K; j++) {
         TT_SFPLOADI(tmp, sfpi::SFPLOADI_MOD0_UPPER, (h_packed[j]) >> 16);
         TT_SFPLOADI(tmp, sfpi::SFPLOADI_MOD0_LOWER, (h_packed[j]) & 0xFFFF);
@@ -165,7 +165,7 @@ inline void _horizontal_stencil_plus_base_face(
     constexpr uint32_t ROWS = std::min(Rows, static_cast<uint32_t>(16));
     constexpr uint32_t ROW_STRIDE = 4;
 
-#pragma unroll 4
+#pragma GCC unroll 4
     for (uint32_t row = 0; row < ROWS; row += ROW_STRIDE) {
         _horizontal_stencil_plus_base_block<K, ScaleSource, ScaleBase, SourceScalePacked, BaseScalePacked>(
             h_packed, input1 + row, input2 + row, base + row, output + row);
@@ -280,9 +280,9 @@ inline void _horizontal_stencil_plus_base_narrow(
 
     const uint32_t sources[4] = {source0, source1, source2, source3};
     const uint32_t bases[3] = {base0, base1, base2};
-#pragma unroll 3
+#pragma GCC unroll 3
     for (uint32_t block = 0; block < 3; ++block) {
-#pragma unroll 2
+#pragma GCC unroll 2
         for (uint32_t face = 0; face < 2; ++face) {
             _horizontal_stencil_plus_base_face<K, 16, ScaleSource, ScaleBase, SourceScalePacked, BaseScalePacked>(
                 h_packed,

@@ -5,9 +5,9 @@
 #include <cstdint>
 
 // clang-format off
-#include "compute_kernel_api/common.h"
-#include "compute_kernel_api/eltwise_unary/eltwise_unary.h"
-#include "compute_kernel_api/tile_move_copy.h"
+#include "api/compute/common.h"
+#include "api/compute/eltwise_unary/eltwise_unary.h"
+#include "api/compute/tile_move_copy.h"
 #include "tt_metal/fabric/hw/inc/edm_fabric/compile_time_arg_tmp.hpp"
 
 #include "../../tt_wavelet/include/device_protocol/lwt_2d_config.hpp"

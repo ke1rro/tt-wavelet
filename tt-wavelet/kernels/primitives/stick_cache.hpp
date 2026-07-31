@@ -48,7 +48,7 @@ ALWI void cache_source_sticks(
 
     cb_reserve_back(cache.cb_id, reserve_sticks);
     const uint32_t cache_l1_addr = get_write_ptr(cache.cb_id);
-#pragma unroll 8
+#pragma GCC unroll 8
     for (uint32_t i = 0; i < reserve_sticks; ++i) {
         const uint64_t src_noc_addr = src.get_noc_addr(source_stick + i);
         noc_async_read(src_noc_addr, cache_l1_addr + i * cache.stick_nbytes, cache.stick_nbytes);

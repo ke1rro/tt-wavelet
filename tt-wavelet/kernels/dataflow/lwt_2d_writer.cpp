@@ -301,12 +301,12 @@ ALWI void fill_complete_interleaved_tile(
             second_polyphase_x);
         auto* left_face_row = tile + tile_element_offset(local_y, 0);
         auto* right_face_row = tile + tile_element_offset(local_y, kFaceSide);
-#pragma unroll
+#pragma GCC unroll 8
         for (uint32_t pair = 0; pair < kFaceSide / 2; ++pair) {
             left_face_row[2 * pair] = read_and_advance(first);
             left_face_row[2 * pair + 1] = read_and_advance(second);
         }
-#pragma unroll
+#pragma GCC unroll 8
         for (uint32_t pair = 0; pair < kFaceSide / 2; ++pair) {
             right_face_row[2 * pair] = read_and_advance(first);
             right_face_row[2 * pair + 1] = read_and_advance(second);

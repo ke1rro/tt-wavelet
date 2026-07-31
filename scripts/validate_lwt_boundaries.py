@@ -124,7 +124,7 @@ def main() -> None:
         "--lengths",
         nargs="+",
         type=int,
-        default=[1, 2, 3, 17, 31, 32, 33, 3071, 3072, 3073],
+        default=[1, 2, 3, 17, 20, 31, 32, 33, 3071, 3072, 3073],
     )
     parser.add_argument(
         "--layouts",

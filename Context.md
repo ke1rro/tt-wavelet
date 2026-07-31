@@ -1,4 +1,4 @@
-You are currently on server with Blackhole p150. 
+You are currently on server with Wormhole n150. 
 
 While validating the sfpi code in the [sfpi](tt-wavelet/kernels/sfpi) - check if this contract works with Blackhole (understand that fp is not fully IEEE compratible here this is stated in tt-isa). This sfpi code workis perfectly on wormhole for sanity check use some very big input like 10M samples
 The csv file from wormhole is here 

@@ -320,6 +320,7 @@ void configure_tt_runtime(const bool benchmark) {
 struct DeviceInput {
     std::shared_ptr<tt::tt_metal::distributed::MeshBuffer> buffer;
     ttwv::SignalBuffer desc{};
+    std::vector<float> upload_payload;
 };
 
 [[nodiscard]] DeviceInput create_device_input(
@@ -339,8 +340,20 @@ struct DeviceInput {
     };
     auto input_buffer =
         tt::tt_metal::distributed::MeshBuffer::create(input_replicated_config, input_local_config, &mesh_device);
+    TT_FATAL(
+        input_desc.physical_nbytes() % sizeof(float) == 0,
+        "Input physical size {} bytes is not divisible by the FP32 element size",
+        input_desc.physical_nbytes());
+    std::vector<float> upload_payload(input_desc.physical_nbytes() / sizeof(float), 0.0F);
+    std::copy(signal.begin(), signal.end(), upload_payload.begin());
+    TT_FATAL(
+        upload_payload.size() * sizeof(float) == input_buffer->size(),
+        "Input upload payload is {} bytes but the mesh buffer is {} bytes",
+        upload_payload.size() * sizeof(float),
+        input_buffer->size());
     input_desc.dram_address = input_buffer->get_backing_buffer()->address();
-    return DeviceInput{.buffer = std::move(input_buffer), .desc = input_desc};
+    return DeviceInput{
+        .buffer = std::move(input_buffer), .desc = input_desc, .upload_payload = std::move(upload_payload)};
 }
 
 template <typename Scheme>
@@ -569,7 +582,8 @@ int main(int argc, char** argv) {
         std::optional<DeviceInput> input;
         if (!external_coefficients) {
             input = create_device_input(*mesh_device, signal);
-            tt::tt_metal::distributed::EnqueueWriteMeshBuffer(command_queue, input->buffer, signal, false);
+            tt::tt_metal::distributed::EnqueueWriteMeshBuffer(
+                command_queue, input->buffer, input->upload_payload, false);
             if (options.benchmark) {
                 tt::tt_metal::distributed::Finish(command_queue);
             }
@@ -603,8 +617,9 @@ int main(int argc, char** argv) {
                 DeviceInput approximation = create_device_input(*mesh_device, approximation_values);
                 DeviceInput detail = create_device_input(*mesh_device, detail_values);
                 tt::tt_metal::distributed::EnqueueWriteMeshBuffer(
-                    command_queue, approximation.buffer, approximation_values, false);
-                tt::tt_metal::distributed::EnqueueWriteMeshBuffer(command_queue, detail.buffer, detail_values, false);
+                    command_queue, approximation.buffer, approximation.upload_payload, false);
+                tt::tt_metal::distributed::EnqueueWriteMeshBuffer(
+                    command_queue, detail.buffer, detail.upload_payload, false);
                 tt::tt_metal::distributed::Finish(command_queue);
 
                 if (options.benchmark) {

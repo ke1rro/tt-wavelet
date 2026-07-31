@@ -32,7 +32,7 @@ ALWI void write_reconstructed_signal(
         cb_reserve_back(cb_interleave, 1);
         auto* staging = reinterpret_cast<float*>(get_write_ptr(cb_interleave));
         const uint32_t signal_base = output_begin + local_stick * ttwv::kStickWidth;
-#pragma unroll
+#pragma GCC unroll 8
         for (uint32_t lane = 0; lane < ttwv::kStickWidth; ++lane) {
             const uint32_t signal_index = signal_base + lane;
             float value = 0.0F;
@@ -115,7 +115,7 @@ ALWI void write_direct_interleaved_signal(
             cb_reserve_back(cb_interleave, 1);
             auto* staging = reinterpret_cast<float*>(get_write_ptr(cb_interleave));
             const uint32_t local_signal_base = group_signal_offset + local_stick * ttwv::kStickWidth;
-#pragma unroll
+#pragma GCC unroll 8
             for (uint32_t lane = 0; lane < ttwv::kStickWidth; ++lane) {
                 const uint32_t local_signal_index = local_signal_base + lane;
                 float value = 0.0F;

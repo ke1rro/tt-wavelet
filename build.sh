@@ -45,7 +45,7 @@ log INFO "Starting full build (tt-metal + tt-wavelet) with -j${JOBS}"
 export_tt_env
 ensure_base_deps
 run_tt_metal_install_deps
-apply_cmake_fixes
+# apply_cmake_fixes
 configure_project "$BUILD_TYPE"
 cmake --build "$BUILD_DIR" -j"${JOBS}"
 

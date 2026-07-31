@@ -1,1249 +1,1247 @@
-## Main diagnosis
+You are working as a senior Tenstorrent/TTNN systems engineer and technical design reviewer.
 
-The current implementation is **not compute-bound**. It is dominated by:
+Your task is to research the latest `tt-metal`/TTNN source tree and produce a detailed integration design for moving the existing `tt-wavelet` implementation into upstream-quality TTNN operations.
 
-1. scalar data rearrangement on the RISC-V data-movement cores;
-2. thousands of tiny NoC transfers and barriers;
-3. route-level synchronization;
-4. excessive one-output-tile-per-core parallelism;
-5. fixed dispatch and control overhead.
+## Primary objective
 
-The benchmark strongly supports this conclusion:
+Design how the following existing operations should become TTNN operations:
+
+* 1D forward Lifting Wavelet Transform: `lwt`
+* 1D inverse Lifting Wavelet Transform: `ilwt`
+* 2D forward Lifting Wavelet Transform: `lwt_2d`
+* 2D inverse Lifting Wavelet Transform: `ilwt_2d`
+
+The output of this task is a technical design document, not an implementation.
+
+Create the following file:
 
 ```text
-100,000 elements -> 17.162 ms
-210,000 elements -> 17.160 ms
+docs/TTNN_WAVELET_INTEGRATION_DESIGN.md
 ```
 
-The transform time is essentially constant while the input size more than doubles. That means the SFPU arithmetic is not determining runtime. You are observing a **latency floor**, not a throughput limit.
+The document must be written in English.
 
-PyWavelets takes roughly `2.7–5.7 ms`, while the device stays around `17.2 ms`, so the current path needs approximately a **3–6× latency reduction** to become competitive at these sizes.
+## Non-negotiable constraints
 
----
+1. Do not replace, simplify, or redesign the mathematical LWT/ILWT algorithm.
+2. Preserve the existing device-side execution strategy unless a change is strictly required by a TTNN contract.
+3. Preserve all currently supported 106/106 lifting schemes.
+4. Preserve both forward and inverse transforms.
+5. Preserve both 1D and 2D transforms.
+6. Preserve all currently supported boundary-extension modes:
 
-# 1. The largest bottleneck: scalar tile construction in the reader
+   * `zero`
+   * `constant`
+   * `symmetric`
+   * `reflect`
+   * `periodic`
+   * `smooth`
+   * `antisymmetric`
+   * `antireflect`
+7. The integration must support both:
 
-The critical functions are:
+   * Wormhole
+   * Blackhole
+8. FP32 correctness must remain the primary correctness contract.
+9. This task is primarily about:
+
+   * TTNN API design;
+   * operation contracts;
+   * memory behavior;
+   * large-input execution;
+   * device and mesh behavior;
+   * namespace and source-tree organization;
+   * architecture compatibility;
+   * validation;
+   * testing;
+   * upstream PR readiness.
+10. Do not implement the TTNN operations in this task.
+11. Do not refactor the current kernels or planner in this task.
+12. Apart from updating the `tt-metal` submodule pointer and creating the requested Markdown document, do not modify source code.
+
+## Repository safety rules
+
+Before making any change:
+
+```bash
+git status --short
+git submodule status
+git -C tt-metal status --short
+git -C tt-metal rev-parse HEAD
+```
+
+Record:
+
+* the current parent repository commit;
+* the current `tt-metal` submodule commit;
+* whether either working tree is dirty.
+
+Do not overwrite, discard, reset, or modify existing uncommitted work.
+
+If the `tt-metal` submodule working tree is clean, update it to the newest commit from the upstream `main` branch:
+
+```bash
+git -C tt-metal fetch origin main
+git -C tt-metal checkout --detach origin/main
+```
+
+After updating, record:
+
+```bash
+git -C tt-metal rev-parse HEAD
+git -C tt-metal log -1 --oneline
+git diff --submodule=log
+```
+
+The design document must state both the old and new `tt-metal` commit SHAs.
+
+If the submodule contains uncommitted changes, do not reset or overwrite them. Continue the analysis using the existing checkout and document:
+
+* why the update was not performed;
+* the current SHA;
+* the latest fetched `origin/main` SHA;
+* the exact safe command sequence that should be run after the local changes are preserved.
+
+## Required research approach
+
+Do not inspect only one operation and generalize from it.
+
+You must inspect the complete organization of:
+
+```text
+ttnn/cpp/ttnn/operations/
+```
+
+First create an inventory of all top-level operation families in that directory.
+
+Then select and deeply inspect representative operations covering different TTNN design patterns.
+
+At minimum, deeply inspect the following categories:
+
+1. Convolution:
+
+   ```text
+   ttnn/cpp/ttnn/operations/conv/conv1d/
+   ttnn/cpp/ttnn/operations/conv/conv2d/
+   ttnn/cpp/ttnn/operations/conv/conv2d/device/
+   ttnn/cpp/ttnn/operations/conv/conv2d/device/kernels/
+   ```
+
+2. FFT:
+
+   * Locate every FFT-related implementation in the current source tree.
+   * Do not assume its path.
+   * Search for:
+
+     ```bash
+     rg -n --hidden --glob '!build/**' \
+       'fft|FFT|ifft|IFFT|Fourier' \
+       ttnn tt_metal tests
+     ```
+   * Determine whether FFT is:
+
+     * public or experimental;
+     * a composite operation or device operation;
+     * single-device or mesh-aware;
+     * implemented using primitive TTNN operations or custom kernels;
+     * restricted by dtype, layout, shape, rank, or architecture.
+
+3. Matrix multiplication:
+
+   * Inspect how a major compute operation separates:
+
+     * public API;
+     * operation attributes;
+     * tensor arguments;
+     * validation;
+     * output specification;
+     * program factory;
+     * program cache;
+     * architecture-specific compute configuration.
+
+4. Data movement operations:
+
+   * `pad`
+   * `slice`
+   * `reshape`
+   * `transpose`
+   * `concat`
+   * `to_layout`
+   * sharding/res harding operations
+   * operations that stream or slice data because the full working set does not fit in L1.
+
+5. Reduction or normalization operations:
+
+   * Inspect at least one operation that returns multiple outputs or has nontrivial output-shape calculation.
+
+6. Collective communication or multi-device operations:
+
+   * Locate CCL, distributed, mesh, all-gather, reduce-scatter, or related operations.
+   * Determine how public TTNN operations execute on `MeshDevice`.
+   * Determine how distributed tensors describe replication and sharding.
+
+7. Experimental operations:
+
+   * Determine when new operations are placed under an experimental namespace or directory.
+   * Determine the criteria for promotion to the main public TTNN API.
+
+8. Operations with architecture-specific behavior:
+
+   * Find examples that support both Wormhole and Blackhole.
+   * Find examples that:
+
+     * select different kernels;
+     * change compile-time arguments;
+     * change compute configuration;
+     * use `hal::get_arch()`;
+     * use `DeviceComputeKernelConfig`;
+     * use architecture macros inside kernels;
+     * reject unsupported architectures.
+
+For every significant conclusion, cite the exact source path and relevant line range in the Markdown document.
+
+Distinguish conclusions using these labels:
+
+* **Fact** — directly supported by source code or documentation.
+* **Inference** — your technical interpretation.
+* **Recommendation** — the proposed design for `tt-wavelet`.
+* **Open question** — a decision that must be made by the project owner.
+
+Do not state uncertain behavior as fact.
+
+## Existing `tt-wavelet` analysis
+
+Before proposing a TTNN structure, inspect the current `tt-wavelet` repository completely enough to understand:
+
+* public host API;
+* planners;
+* execution plans;
+* scheme representation;
+* generated scheme headers;
+* use of compile-time scheme types;
+* kernel compilation model;
+* 1D reader, writer, and compute kernels;
+* 2D reader, writer, and compute kernels;
+* L1 working-set model;
+* DRAM buffers;
+* chunk planning;
+* halo/dependency-cone planning;
+* logical and padded shapes;
+* row-major and tile layouts;
+* output layout;
+* boundary extension;
+* MeshBuffer or distributed APIs currently used;
+* Wormhole/Blackhole-specific code;
+* program caching or JIT behavior;
+* current tests;
+* current benchmarks;
+* current Python exposure, if any.
+
+Pay particular attention to:
+
+```text
+tt_wavelet/include/
+kernels/
+kernels/compute/
+kernels/dataflow/
+kernels/sfpi/
+tests/
+generated/
+```
+
+Also search for:
+
+```bash
+rg -n \
+  'namespace ttwv|ARCH_WORMHOLE|ARCH_BLACKHOLE|hal::get_arch|MeshDevice|MeshBuffer|CreateProgram|CreateKernel|CreateCircularBuffer|SetRuntimeArgs|override_runtime_arguments|program_cache|scheme|boundary|padding|shard|chunk|halo' \
+  .
+```
+
+The design document must include a concise architecture diagram of the current implementation before describing the TTNN target structure.
+
+## Questions that must be answered
+
+### 1. Large inputs and inputs that do not fit
+
+The phrase “does not fit” is ambiguous. Analyze it at three separate levels:
+
+#### A. Input does not fit in one core’s L1
+
+Explain:
+
+* how TTNN operations normally stream blocks from DRAM;
+* how circular buffers limit the active working set;
+* how program factories calculate per-core CB memory;
+* how operations reject configurations that exceed available L1;
+* how the existing `tt-wavelet` chunk/dependency-cone approach maps to this model;
+* whether the current algorithm already solves this case.
+
+#### B. Full tensor fits in device DRAM but not in aggregate L1
+
+Explain:
+
+* whether the tensor should remain interleaved in DRAM;
+* when an input should be sharded to L1;
+* whether the op should support both interleaved and sharded inputs;
+* whether the first TTNN version should accept DRAM tensors only;
+* whether outputs should be DRAM-interleaved by default;
+* how chunk scheduling should work;
+* how partial final chunks and padding should be handled.
+
+#### C. Full tensor does not fit in device DRAM
+
+Determine whether TTNN operations provide a standard out-of-core tensor contract.
+
+If not, state that clearly.
+
+Propose whether this should be handled by:
+
+* application-level streaming;
+* a future sliced API;
+* batched windows;
+* host orchestration;
+* multi-device sharding;
+* an explicit unsupported-input error in the first PR.
+
+Do not silently treat an out-of-core problem as an L1 problem.
+
+Provide separate recommendations for:
+
+* 1D LWT/ILWT;
+* 2D LWT/ILWT;
+* single-level transforms;
+* future multilevel transforms.
+
+### 2. Multi-chip behavior
+
+Investigate actual current TTNN and Metalium behavior rather than relying on assumptions.
+
+Specifically verify or correct the following assumptions:
+
+* Wormhole N150 contains one chip.
+* Wormhole N300 contains two chips.
+* A program must be manually sent from one chip to another.
+* Inter-chip communication uses the same mechanism as ordinary intra-chip NoC traffic.
+* Launching one operation on a mesh automatically duplicates the same work on all chips.
+* A tensor can instead be partitioned into different spatial regions across chips.
+
+Clearly distinguish:
+
+* on-chip NoC communication;
+* inter-chip Ethernet/fabric communication;
+* host dispatch to multiple chips;
+* replicated tensors;
+* sharded/distributed tensors;
+* data-parallel execution;
+* tensor-parallel or spatially partitioned execution.
+
+Determine how a registered TTNN operation receives a tensor placed on a `MeshDevice`.
+
+Answer:
+
+1. Does TTNN invoke the same operation independently on every device shard?
+2. How does the operation obtain the local tensor shard?
+3. Is mesh orchestration automatic or operation-specific?
+4. How are output distributed tensor specifications created?
+5. What program caching occurs per device or per architecture?
+6. Can a single logical operation launch different runtime arguments on different chips?
+7. Which existing operations partition work across devices rather than merely replicate it?
+8. Does an operation need explicit fabric kernels for cross-chip communication?
+9. What is the correct mechanism for exchanging wavelet halos across chip boundaries?
+10. Can halos be duplicated before execution to avoid runtime chip-to-chip communication?
+
+For `tt-wavelet`, analyze at least these execution modes:
+
+#### Mode A: Replicated execution
+
+Each chip receives a complete independent input and performs the same operation.
+
+Use cases:
+
+* independent batch elements;
+* throughput benchmarking;
+* data-parallel inference.
+
+#### Mode B: Batch sharding
+
+Different batch elements are assigned to different chips.
+
+Determine whether this can be supported without any wavelet-specific cross-chip communication.
+
+#### Mode C: 1D spatial sharding
+
+Different intervals of one signal are assigned to different chips.
+
+Analyze:
+
+* boundary halos;
+* lifting-step dependency growth;
+* whether a one-time expanded input interval is sufficient;
+* whether halos can be precomputed by the host planner;
+* whether inter-chip communication is needed during execution;
+* inverse-transform implications.
+
+#### Mode D: 2D spatial sharding
+
+Different rectangles of one image or matrix are assigned to different chips.
+
+Analyze:
+
+* horizontal and vertical halos;
+* corner halos;
+* vertical-first versus horizontal-first execution;
+* LL/LH/HL/HH output ownership;
+* whether each chip can own an independent dependency-expanded rectangle;
+* whether intermediate cross-chip exchange is required.
+
+Provide a staged recommendation:
+
+* what the first upstream PR should support;
+* what should explicitly be rejected;
+* what should be deferred to a later multi-chip PR.
+
+### 3. TTNN operation source style and namespaces
+
+Inspect current source style across multiple operations.
+
+Answer:
+
+* where public operation declarations live;
+* where public operation definitions live;
+* where nanobind bindings live;
+* where primitive/device operations live;
+* where program factories live;
+* where device kernels live;
+* where common utility types live;
+* how public operations are registered;
+* how Python names are exposed;
+* how docs are attached to registered operations;
+* how operation names are organized.
+
+Determine the preferred namespace structure for wavelet operations.
+
+Evaluate at least these options:
 
 ```cpp
-initialize_plane(...)
-fill_base_or_scale_tile(...)
-fill_stencil_source_tile(...)
+namespace ttnn::operations::wavelet
+namespace ttnn::operations::signal_processing::wavelet
+namespace ttnn::operations::experimental::wavelet
+namespace ttnn::prim
 ```
 
-They construct tiles using nested scalar loops:
-
-```cpp
-for (uint32_t row = 0; row < 32; ++row) {
-    for (uint32_t column = 0; column < 32; ++column) {
-        tile[tile_element_offset(row, column)] =
-            read_plane(...);
-    }
-}
-```
-
-For every output tile of a predict/update route, the reader constructs:
-
-* source tile 0;
-* source tile 1;
-* base tile.
-
-That is approximately:
-
-```text
-3 × 1024 = 3072
-```
-
-scalar element copies **per output tile per lifting route**, before the SFPU receives anything.
-
-For `db7`, this happens repeatedly across:
-
-* two vertical transforms;
-* two horizontal transforms;
-* every predict/update route.
-
-The SFPU then performs a relatively small amount of vector arithmetic, while the data-movement RISC-V has already executed thousands of scalar address calculations and L1 loads/stores. The supplied implementation confirms that all route tiles are currently assembled element-by-element. 
-
-### Required optimization
-
-Create two separate route paths.
-
-#### Fast aligned path
-
-When source, base, and output rectangles are tile-aligned:
-
-```text
-plane tile -> CB full-tile copy
-```
-
-Use full-tile local NoC transfers or direct L1 copies:
+Determine where the current custom namespace:
 
 ```cpp
-noc_async_read(
-    get_noc_addr(local_plane_tile_addr),
-    get_write_ptr(cb_source),
-    kTileBytes);
+namespace ttwv
 ```
 
-or the appropriate local one-packet/full-tile primitive.
+may remain appropriate.
 
-No scalar `read_plane()` calls, no per-element indexing, no tile clearing.
+Possible distinction to evaluate:
 
-#### Generic misaligned path
+* public TTNN wrapper in `ttnn::operations::wavelet`;
+* device primitive in `ttnn::prim`;
+* private scheme/kernel implementation helpers in an internal namespace;
+* removal of `ttwv` from the public API surface.
 
-Retain the current gather implementation only for routes whose phase or rectangle cannot be represented as direct tiles.
+Do not assume that the Conv namespace layout is universally correct. Compare it with several operations.
 
-The planner should report:
+Propose exact namespaces for:
+
+* public operation structs;
+* registered operation constants;
+* configuration structs;
+* scheme identifiers;
+* device-operation attributes;
+* program factories;
+* kernel-only helper types;
+* nanobind functions.
+
+### 4. Wormhole and Blackhole differences
+
+The current implementation includes architecture-sensitive kernel code.
+
+Investigate how upstream TTNN operations support multiple architectures.
+
+Answer:
+
+* when one common kernel source is used;
+* when separate architecture-specific kernel files are used;
+* how `ARCH_WORMHOLE` and `ARCH_BLACKHOLE` are supplied;
+* whether direct LLK architecture headers should be included by an upstream TTNN kernel;
+* whether public compute-kernel APIs can remove the need for custom architecture-header forwarding;
+* how `hal::get_arch()` is used on the host;
+* how `DeviceComputeKernelConfig` is initialized;
+* whether Wormhole and Blackhole need different:
+
+  * SFPI code;
+  * tile register handling;
+  * CB sizes;
+  * kernel compile definitions;
+  * math fidelity settings;
+  * `fp32_dest_acc_en`;
+  * runtime-argument limits;
+  * NoC/fabric behavior.
+
+Inspect the existing `tt-wavelet` architecture-selection code and determine whether it is upstream-compatible.
+
+Create a table with columns:
+
+| Concern | Current tt-wavelet behavior | Wormhole requirement | Blackhole requirement | Proposed TTNN handling |
+
+The recommendation should minimize architecture-specific code while preserving correctness and performance.
+
+### 5. Additional design topics that may have been missed
+
+Identify all other major design decisions required before an upstream-quality TTNN PR.
+
+At minimum, investigate:
+
+* public API naming;
+* operation granularity;
+* single-level versus multilevel API;
+* forward output representation;
+* inverse input representation;
+* separate coefficient tensors versus one packed tensor;
+* LL/LH/HL/HH tuple versus packed 2D output;
+* logical shape versus padded shape;
+* odd signal lengths;
+* odd image height and width;
+* batch dimensions;
+* channel dimensions;
+* supported tensor ranks;
+* supported dtypes;
+* supported tensor layouts;
+* supported memory layouts;
+* supported buffer types;
+* output memory configuration;
+* output layout configuration;
+* preallocated output tensors;
+* asynchronous execution;
+* queue ID support;
+* tensor ownership and lifetime;
+* device consistency;
+* mesh consistency;
+* aliasing restrictions;
+* in-place execution;
+* output shape inference;
+* program-cache keys;
+* runtime-argument override;
+* compile-time argument selection;
+* generated scheme-header packaging;
+* 106-scheme kernel compilation cost;
+* binary size;
+* JIT compilation latency;
+* persistent kernel cache;
+* thread safety;
+* deterministic execution;
+* error messages;
+* `TT_FATAL` versus validation errors;
+* special-value behavior;
+* NaN/Inf policy;
+* zero-sized tensors;
+* integer overflow in shape and byte calculations;
+* huge tensors requiring 64-bit indexing;
+* profiler integration;
+* Tracy zones or TTNN profiling hooks;
+* documentation;
+* examples;
+* code ownership;
+* CI duration;
+* benchmark methodology;
+* backward compatibility.
+
+For each topic, classify it as:
+
+* must be decided before implementation;
+* can be decided during implementation;
+* can be deferred after the first PR.
+
+### 6. Pre-integration safeguards for `tt-wavelet`
+
+Evaluate what should be validated before changing the operation into TTNN form.
+
+The project owner currently prefers to integrate first and then add more tests and fixes. Analyze the risks of this approach.
+
+Propose a minimal pre-integration baseline that does not delay integration unnecessarily.
+
+At minimum, determine whether the following should be captured before the submodule/API migration:
+
+* current correctness test count;
+* 106/106 scheme coverage;
+* boundary-mode coverage;
+* 1D forward coverage;
+* 1D inverse coverage;
+* 2D forward coverage;
+* 2D inverse coverage;
+* odd/even dimensions;
+* square and non-square matrices;
+* Wormhole results;
+* Blackhole results;
+* maximum absolute error;
+* maximum relative error;
+* LWT→ILWT round-trip error;
+* known high-order FP32 failures;
+* device-only timing;
+* host-to-device-inclusive timing;
+* program compilation timing;
+* memory usage;
+* L1 usage;
+* DRAM usage.
+
+Recommend a small “migration lock” test suite that must pass before and after TTNN integration.
+
+Do not require a complete testing rewrite before integration.
+
+Separate the test strategy into:
+
+1. pre-migration baseline;
+2. TTNN bring-up tests;
+3. full correctness tests;
+4. architecture matrix;
+5. multi-device tests;
+6. performance regressions;
+7. upstream CI tests.
+
+### 7. FFT investigation
+
+Locate and inspect the current FFT implementation after updating the `tt-metal` submodule.
+
+The document must answer:
+
+* where FFT lives;
+* whether it is public or experimental;
+* its public Python and C++ APIs;
+* namespace structure;
+* nanobind structure;
+* validation model;
+* output-shape model;
+* dtype/layout restrictions;
+* memory-config handling;
+* program factories;
+* device kernels;
+* architecture handling;
+* large-input behavior;
+* multi-device behavior;
+* testing strategy;
+* documentation;
+* any reusable signal-processing abstractions.
+
+Compare FFT with the proposed wavelet integration.
+
+Create a table:
+
+| Design concern | FFT approach | Conv approach | Other relevant op | Recommendation for wavelet |
+
+Do not copy FFT blindly. Explain which patterns are appropriate and which are not.
+
+### 8. Valid TTNN operation contract
+
+Define what contracts `lwt`, `ilwt`, `lwt_2d`, and `ilwt_2d` must provide to be valid TTNN operations.
+
+Cover these layers separately:
+
+#### Public semantic contract
+
+* mathematical meaning;
+* boundary behavior;
+* scheme selection;
+* output ordering;
+* shape behavior;
+* inverse reconstruction behavior;
+* precision expectations.
+
+#### Tensor contract
+
+* accepted ranks;
+* accepted logical shapes;
+* accepted padded shapes;
+* dtype;
+* layout;
+* memory layout;
+* storage location;
+* device or mesh placement;
+* batch semantics.
+
+#### Operation validation contract
+
+* exact validation checks;
+* failure conditions;
+* error messages;
+* unsupported combinations.
+
+#### Output specification contract
+
+* shape inference;
+* dtype inference;
+* layout;
+* memory configuration;
+* distributed tensor specification;
+* output allocation.
+
+#### Device-operation contract
+
+* operation attributes;
+* tensor arguments;
+* optional tensor arguments;
+* hash/program-cache inputs;
+* program factory selection;
+* runtime-argument override;
+* architecture-dependent configuration.
+
+#### Python binding contract
+
+* Python function names;
+* positional and keyword-only arguments;
+* enum/string handling;
+* return types;
+* docstrings;
+* defaults;
+* exceptions.
+
+#### Testing contract
+
+* golden/reference implementation;
+* PyWavelets comparison;
+* tolerance policy;
+* round-trip policy;
+* architecture coverage;
+* mesh coverage.
+
+### 9. Proposed public API
+
+Propose concrete C++ and Python API signatures for all four operations.
+
+At minimum, evaluate these questions:
+
+#### Scheme representation
+
+Should the API accept:
+
+* a wavelet name such as `"db7"`;
+* a `Wavelet` enum;
+* a `WaveletScheme` struct;
+* a numeric scheme ID;
+* coefficient tensors;
+* a precompiled scheme object?
+
+All 106 schemes must remain supported.
+
+Discuss how the selected representation affects:
+
+* nanobind;
+* program-cache keys;
+* compile-time kernel specialization;
+* generated scheme headers;
+* Python usability;
+* ABI stability;
+* adding future schemes.
+
+#### 1D forward output
+
+Evaluate:
+
+```python
+approx, detail = ttnn.lwt(...)
+```
+
+versus:
+
+```python
+output = ttnn.lwt(...)  # packed representation
+```
+
+#### 1D inverse input
+
+Evaluate:
+
+```python
+output = ttnn.ilwt(approx, detail, ...)
+```
+
+versus accepting one packed tensor.
+
+#### 2D forward output
+
+Evaluate:
+
+```python
+ll, lh, hl, hh = ttnn.lwt_2d(...)
+```
+
+versus one packed tensor.
+
+#### 2D inverse input
+
+Evaluate:
+
+```python
+output = ttnn.ilwt_2d(ll, lh, hl, hh, ...)
+```
+
+versus one packed tensor.
+
+#### Shape restoration metadata
+
+Determine how ILWT knows the original odd/even logical dimensions.
+
+Evaluate:
+
+* explicit `output_shape`;
+* metadata encoded in a result object;
+* deterministic inference;
+* returned auxiliary shape values;
+* padded tensor metadata.
+
+Recommend one upstream-compatible design.
+
+Provide complete proposed signatures for:
+
+* C++ public API;
+* registered operation declarations;
+* nanobind bindings;
+* Python-facing usage examples.
+
+### 10. Primitive versus composite operation structure
+
+Determine whether each public wavelet operation should be:
+
+* one registered primitive device operation;
+* a composite TTNN wrapper around multiple primitive operations;
+* a public wrapper calling one internal device primitive;
+* separate primitives for split, lifting, scale, and interleave;
+* one primitive per transform direction and dimensionality.
+
+The existing algorithm should remain fused where it is currently fused.
+
+Consider this possible structure:
 
 ```text
-aligned_route_tiles
-misaligned_route_tiles
+ttnn::lwt
+  -> public validation and API normalization
+  -> ttnn::prim::lwt
+  -> host planner
+  -> program factory
+  -> reader/compute/writer kernels
 ```
 
-For performance schemes, the aligned proportion should be very high.
+But verify whether this matches current upstream conventions.
 
----
-
-# 2. `split2d` is currently extremely expensive
-
-The current `initialize_plane()` is called four times:
-
-```text
-initialize EE
-initialize EO
-initialize OE
-initialize OO
-```
-
-Each call:
-
-1. clears the complete tile-aligned plane using scalar stores;
-2. rereads the corresponding input samples;
-3. performs alternating-value gathers;
-4. issues many small NoC reads;
-5. waits on a barrier after each small read.
-
-For an interior row, it reads short segments containing at most a small fraction of a tile. For edge elements, the code can issue:
+Propose an exact directory tree, for example:
 
 ```text
-4-byte NoC read
-barrier
-4-byte NoC read
-barrier
-...
+ttnn/cpp/ttnn/operations/wavelet/
+    lwt.hpp
+    lwt.cpp
+    lwt_nanobind.hpp
+    lwt_nanobind.cpp
+    common/
+    device/
+        lwt_device_operation.hpp
+        lwt_device_operation.cpp
+        lwt_program_factory.hpp
+        lwt_program_factory.cpp
+        kernels/
+            dataflow/
+            compute/
 ```
 
-That is a correctness implementation, not a performance implementation. 
+Do not use this example mechanically. Derive the final tree from current TTNN best practices.
 
-## Replace it with macro-tile `split2d`
+Include:
 
-A `64×64` raw input region consists of four `32×32` raw tiles and produces:
+* CMake/build registration files;
+* nanobind module registration;
+* Python exports;
+* documentation location;
+* unit-test location;
+* performance-test location.
+
+### 11. Scheme specialization and compilation strategy
+
+This is a critical part of the design.
+
+The current implementation uses static scheme specialization and generated scheme headers.
+
+All 106 schemes are required.
+
+Analyze:
+
+* whether each scheme creates a unique compute-kernel binary;
+* whether LWT and ILWT create separate binaries;
+* whether row-major and tile layouts create separate binaries;
+* whether 1D and 2D create separate binaries;
+* whether boundary modes affect compute binaries or only readers;
+* potential total kernel-variant count;
+* compile-time cost;
+* JIT cache cost;
+* binary-cache size;
+* program-cache key size;
+* CI cost;
+* Python first-call latency.
+
+Compare three strategies:
+
+1. preserve fully compile-time-specialized schemes;
+2. use runtime coefficient/step metadata;
+3. hybrid design:
+
+   * compile-time bounded kernel structure;
+   * runtime coefficients and scheme metadata;
+   * specialized fast paths where justified.
+
+The algorithm must not be changed merely to reduce compile time.
+
+If compile-time specialization is required for current performance or register allocation, state that.
+
+Recommend how all 106 schemes should be registered, generated, packaged, and tested in an upstream TTNN tree.
+
+### 12. Memory and sharding contract
+
+Use TTNN tensor terminology precisely:
+
+* tensor layout:
+
+  * row-major;
+  * tile.
+* memory layout:
+
+  * interleaved;
+  * height-sharded;
+  * width-sharded;
+  * block-sharded.
+* buffer type:
+
+  * DRAM;
+  * L1.
+
+For every operation, define the recommended first-PR support matrix.
+
+Example format:
+
+| Operation | Input layout | Input memory layout | Input buffer | Output layout | Output memory layout | Supported in first PR |
+| --------- | ------------ | ------------------- | ------------ | ------------- | -------------------- | --------------------- |
+
+Explicitly address:
+
+* current use of narrow 32×16 FP32 tiles in 1D kernels;
+* standard TTNN tile contracts;
+* whether custom tile shapes are acceptable for an upstream public op;
+* logical versus physical padding;
+* output memory configuration;
+* sharded outputs;
+* resharding costs;
+* DRAM round trips;
+* zero-copy opportunities;
+* preallocated outputs;
+* L1 capacity checks;
+* per-core CB allocation.
+
+### 13. Program factory and cache design
+
+Based on current TTNN operations, propose:
+
+* operation attribute structs;
+* tensor argument structs;
+* tensor-return structs;
+* `validate`;
+* `compute_output_specs`;
+* `create_output_tensors`;
+* program factory classes;
+* cached-program type;
+* `create`;
+* `override_runtime_arguments`.
+
+List exactly what belongs in:
+
+* operation attributes;
+* compile-time arguments;
+* runtime arguments;
+* program-cache key;
+* per-core runtime arguments.
+
+Consider:
+
+* scheme ID;
+* direction;
+* boundary mode;
+* logical dimensions;
+* padded dimensions;
+* input/output layout;
+* memory configuration;
+* core grid;
+* chunk count;
+* dependency intervals;
+* coefficient metadata;
+* architecture;
+* compute-kernel config.
+
+Avoid putting dynamic tensor addresses into the compile cache key when runtime-argument override is appropriate.
+
+### 14. Validation and safeguards
+
+Propose exact validation checks.
+
+At minimum:
+
+* tensor is allocated;
+* tensor is on device when required;
+* all tensors are on the same device or compatible mesh;
+* dtype is supported;
+* layout is supported;
+* memory layout is supported;
+* rank is supported;
+* dimensions are nonzero where required;
+* dimensions fit index types;
+* shape is compatible with boundary mode;
+* scheme ID is valid;
+* generated scheme metadata is internally consistent;
+* tap count does not exceed kernel capacity;
+* coefficient counts fit compile/runtime argument limits;
+* inverse inputs have compatible shapes;
+* inverse output shape is valid;
+* output memory config is valid;
+* core grid is valid;
+* selected CB sizes fit L1;
+* sharding is compatible with work partition;
+* mesh distribution strategy is supported;
+* unsupported architecture is rejected;
+* no accidental input/output aliasing;
+* no integer overflow in byte-size calculations.
+
+Also determine whether host-side input scanning for NaN/Inf is appropriate or too expensive.
+
+Document expected Tensix special-value behavior and whether wavelet operations should:
+
+* propagate values;
+* reject them;
+* provide optional debug detection;
+* leave handling to the caller.
+
+### 15. Recommended first PR scope
+
+Propose a realistic first upstream PR.
+
+The scope should be small enough to review but must preserve the core value of the project.
+
+Evaluate a first PR containing:
+
+* all 106 schemes;
+* 1D and 2D;
+* forward and inverse;
+* all boundary modes;
+* Wormhole and Blackhole;
+* single-device only;
+* FP32 only;
+* DRAM-interleaved inputs and outputs;
+* no out-of-core support;
+* no cross-chip spatial partitioning.
+
+If this is too large for one PR, propose a dependency-ordered PR series without removing required final functionality.
+
+For example:
+
+1. common scheme and boundary infrastructure;
+2. 1D LWT/ILWT primitive;
+3. 1D public API and bindings;
+4. 2D LWT/ILWT primitive;
+5. 2D public API and bindings;
+6. sharded tensor support;
+7. multi-chip support;
+8. optimization and performance follow-up.
+
+Provide recommended PR boundaries and explain why each is independently reviewable.
+
+### 16. Migration plan
+
+Produce a step-by-step implementation plan.
+
+For each stage include:
+
+* files to add;
+* files to modify;
+* source code moved versus wrapped;
+* expected tests;
+* risks;
+* completion criteria.
+
+The migration plan must preserve the current standalone `tt-wavelet` implementation until the TTNN version reaches correctness parity.
+
+Do not suggest deleting the existing implementation during initial integration.
+
+Include a compatibility period where:
+
+* standalone backend and TTNN backend can both run;
+* results are compared automatically;
+* performance regressions are measured;
+* the TTNN implementation becomes authoritative only after parity.
+
+### 17. Questions for the project owner
+
+Create a dedicated section:
 
 ```text
-EE: 32×32
-EO: 32×32
-OE: 32×32
-OO: 32×32
+## Decisions Required From the Project Owner
 ```
 
-The optimized interior path should be:
+Ask only questions that materially affect the API or implementation.
 
-```text
-read four raw tiles once
-    -> unpack into DEST
-    -> SFPU parity deinterleave
-    -> pack four full polyphase tiles
-```
+For every question provide:
 
-Conceptually:
+* why the decision matters;
+* available options;
+* your recommended default;
+* consequences of each option.
 
-```cpp
-split_2x2_raw_tiles_to_four_polyphase_tiles(
-    raw00,
-    raw01,
-    raw10,
-    raw11,
-    ee,
-    eo,
-    oe,
-    oo);
-```
+At minimum include decisions about:
 
-This gives three major improvements:
+1. public namespace;
+2. experimental versus stable API;
+3. scheme argument representation;
+4. 1D output representation;
+5. 2D output representation;
+6. inverse shape restoration;
+7. single-level versus multilevel first API;
+8. supported tensor ranks;
+9. batch semantics;
+10. channel semantics;
+11. input and output layouts;
+12. sharded tensor support in first PR;
+13. multi-chip scope in first PR;
+14. preallocated output support;
+15. whether to expose low-level tuning configuration;
+16. whether the existing `ttwv` namespace remains internally;
+17. expected numerical tolerance;
+18. whether known high-order FP32 differences are acceptable;
+19. first-PR performance regression threshold;
+20. long-term ownership of generated 106-scheme artifacts.
 
-* each input element is read once rather than revisited by four plane initializers;
-* deinterleaving runs on SFPU vectors instead of scalar RISC-V loops;
-* reads and writes become complete tiles rather than tiny fragments.
+Do not ask questions whose answers can be obtained from the source tree.
 
-Keep a special symmetric edge kernel for boundary macro-tiles. Interior tiles should never execute `symmetric_index()` or scalar gathering.
+### 18. Correct or challenge project assumptions
 
----
-
-# 3. The final writer is also scalar and barrier-heavy
-
-The final `write_band()` function writes rows in small face-limited segments:
-
-```cpp
-noc_async_write(..., count * sizeof(float));
-noc_async_write_barrier();
-```
-
-The barrier is inside the row-segment loop. Therefore one output tile may require many small writes and many barriers.
-
-The output buffers are already padded tile-layout tensors. That means the hot path can write complete output tiles, including physical padding:
+Create a section:
 
 ```text
-local band tile -> DRAM band tile
+## Assumptions Verified, Corrected, or Rejected
 ```
 
-There is no need to crop individual rows on the device.
+Evaluate the assumptions in this request.
 
-## Replace final band writes with full-tile writes
+At minimum include:
 
-For every owned output band tile:
+* “N300 execution requires sending a program to another chip through NoC.”
+* “The same program automatically runs twice on two chips.”
+* “A tensor can be divided into independent regions across two chips.”
+* “The custom `ttwv` namespace cannot be used anywhere in a TTNN operation.”
+* “Updating to the latest `tt-metal` main is sufficient to understand current FFT behavior.”
+* “Integration can safely happen before capturing a baseline.”
+* “All 106 schemes should necessarily be exposed as 106 public operations.”
+* “A large input problem is equivalent to an L1-capacity problem.”
+* “Wormhole and Blackhole should use identical device source code.”
+* “Conv is the best single template for the wavelet operation.”
 
-```cpp
-noc_async_write_tile(
-    destination_tile_id,
-    output_accessor,
-    local_plane_tile_addr);
-```
+For each assumption label it:
 
-or:
+* verified;
+* partially correct;
+* incorrect;
+* architecture/version dependent;
+* unresolved.
 
-```cpp
-noc_async_write(
-    local_plane_tile_addr,
-    output.get_noc_addr(destination_tile),
-    kTileBytes);
-```
+Explain the corrected model.
 
-Issue several asynchronous writes, then one barrier after a batch:
+### 19. Final recommendation
 
-```cpp
-for (...) {
-    noc_async_write(...);
-}
-noc_async_write_barrier();
-```
+End the document with a decisive recommendation.
 
-Do not execute one barrier per row or face segment.
+It must contain:
 
-Since physical output storage is tile-padded, the logical crop should remain a host/TTNN tensor-shape concern, not a device scalar-copy concern.
+1. proposed public API;
+2. proposed namespace;
+3. proposed directory structure;
+4. proposed primitive/composite layering;
+5. first-PR device/layout support;
+6. large-input policy;
+7. multi-chip policy;
+8. scheme-specialization policy;
+9. Wormhole/Blackhole policy;
+10. pre-integration test baseline;
+11. recommended PR sequence;
+12. top five technical risks;
+13. top five unanswered owner decisions.
 
----
+The conclusion must not be vague.
 
-# 4. Intermediate route output is copied word-by-word
+## Required document structure
 
-The writer currently persists each compute output tile into the local workspace through:
-
-```cpp
-for (uint32_t word = 0; word < kTileBytes / sizeof(uint32_t); ++word) {
-    destination[word] = source[word];
-}
-```
-
-For FP32 `32×32` tiles, that is:
+Use this approximate structure:
 
 ```text
-1024 scalar 32-bit copies per route tile
+# TTNN Integration Design for tt-wavelet
+
+## 1. Executive Summary
+## 2. Repository and Version Baseline
+## 3. Current tt-wavelet Architecture
+## 4. Survey of TTNN Operation Patterns
+## 5. FFT Case Study
+## 6. Conv and Other Relevant Case Studies
+## 7. Proposed TTNN Wavelet Architecture
+## 8. Public API and Namespace Contract
+## 9. Tensor, Shape, Layout, and Memory Contract
+## 10. Large-Input Execution
+## 11. Multi-Chip and Mesh Execution
+## 12. Wormhole and Blackhole Compatibility
+## 13. Scheme Specialization and Program Caching
+## 14. Validation and Safety Checks
+## 15. Testing and Performance Contract
+## 16. Proposed Source-Tree Layout
+## 17. Migration and PR Plan
+## 18. Decisions Required From the Project Owner
+## 19. Assumptions Verified, Corrected, or Rejected
+## 20. Final Recommendation
+## Appendix A. TTNN Operation Inventory
+## Appendix B. Source References
+## Appendix C. Proposed API Signatures
+## Appendix D. Support Matrices
 ```
 
-This is executed after every non-metadata route. 
-
-## Immediate fix
-
-Use the same local-NoC full-tile path already explored in the 1D implementation:
-
-```cpp
-noc_async_write(
-    get_read_ptr(cb_output),
-    get_noc_addr(local_output_tile_addr),
-    kTileBytes);
-```
-
-Batch or flush appropriately before publishing route completion.
-
-## Better long-term fix
-
-Pack directly into workspace-backed CB storage.
-
-Possible architecture:
-
-```text
-compute packs output
-    -> CB whose backing address is the output plane tile
-```
-
-Then the writer does not copy the tile into the plane at all. It only coordinates ownership and, for terminal outputs, initiates DRAM writes.
-
-This is more difficult because output plane slots vary by route, but it removes a complete local-copy stage.
-
----
-
-# 5. Every route loads configuration from DRAM twice
-
-For every route:
-
-* the reader loads a route config page;
-* the writer loads the same route config page separately;
-* each load performs a NoC read;
-* each load executes a read barrier;
-* the page is copied word-by-word into a local array.
-
-The route topology is mostly compile-time for a generated scheme:
-
-* route type;
-* axis;
-* coefficient count;
-* source/base role;
-* swap behavior;
-* scale behavior.
-
-Only chunk-specific rectangles and physical offsets vary.
-
-## Better protocol
-
-Move invariant data to compile time:
-
-```cpp
-using Step = SchemeStep<Scheme, StepIndex>;
-constexpr StepType type = Step::type;
-constexpr uint32_t k = Step::k;
-```
-
-Move chunk geometry into one packed runtime descriptor loaded once per chunk:
-
-```cpp
-struct ChunkRuntimeDescriptor {
-    Rect initial_planes[4];
-    RouteGeometry routes[kRouteCount];
-    BandGeometry bands[4];
-};
-```
-
-Then:
-
-```text
-one config load per chunk
-```
-
-instead of:
-
-```text
-reader config load per route
-writer config load per route
-```
-
-At minimum, preload all route pages into local L1 before execution begins.
-
----
-
-# 6. Route synchronization serializes the complete program
-
-After every route, the reader waits for the writer:
-
-```cpp
-cb_wait_front(cb_sync, 1);
-cb_pop_front(cb_sync, 1);
-```
-
-The writer only signals after all route output tiles have been persisted to the local plane.
-
-The dependency requires route (n) to finish before route (n+1) consumes its output, but the current synchronization is more expensive than necessary because:
-
-* the writer performs scalar copies;
-* the reader cannot begin any work for the next route;
-* there is no tile-level pipeline;
-* config loading is also serialized.
-
-## First improvement
-
-Keep one route-level barrier, but eliminate all barriers inside tile copy loops.
-
-The desired route structure is:
-
-```text
-load all source/base tiles asynchronously
-barrier once
-compute all route tiles
-write all output tiles asynchronously
-barrier once
-publish route completion
-```
-
-Not:
-
-```text
-small read
-barrier
-small read
-barrier
-compute one tile
-small write
-barrier
-...
-```
-
-## Later improvement
-
-Pipeline route tiles where dependency geometry allows it:
-
-```text
-route n+1 reads completed tile block 0
-route n writes tile block 1
-compute processes another block
-```
-
-This requires tile-level producer-consumer counters or separate ping-pong plane regions, so it should follow the simpler full-tile optimization.
-
----
-
-# 7. The planner is over-parallelizing
-
-Your telemetry shows:
-
-```text
-1000×100 -> 32 chunks, 32 cores
-1000×120 -> 48 chunks, 48 cores
-1000×190 -> 64 chunks, 64 cores
-```
-
-This strongly suggests that each core owns approximately one final band-tile rectangle.
-
-The planner selection logic prioritizes:
-
-1. maximum active core count;
-2. then dependency overhead;
-3. then chunk area.
-
-That is the wrong objective for a latency-heavy route pipeline. The planner currently prefers more cores even if this produces tiny chunks with poor amortization and duplicated halos. 
-
-One core handling one output tile still has to pay for:
-
-* chunk config;
-* four polyphase initializations;
-* the complete `db7` route sequence;
-* route config loads;
-* route synchronization;
-* four final band writes.
-
-Therefore increasing from 32 to 64 cores does not reduce latency. Every core still executes almost the same control-flow sequence.
-
-## Change planner objective
-
-Do not maximize core count first.
-
-Use a cost model such as:
-
-```text
-estimated_cost =
-    launch_and_core_start_cost
-  + route_count * route_barrier_cost
-  + config_page_loads * config_load_cost
-  + scalar_gather_elements * scalar_copy_cost
-  + source_tile_count * tile_read_cost
-  + output_tile_count * tile_write_cost
-  + duplicated_halo_elements * halo_cost
-  + sfpu_operations * sfpu_cost
-```
-
-Prefer larger chunks until each core has enough work to amortize route overhead.
-
-A reasonable first search is:
-
-```text
-1×1 band tiles per chunk
-1×2
-2×1
-2×2
-2×4
-4×2
-4×4
-```
-
-For these shapes, explicitly benchmark:
-
-```text
---cores 4
---cores 8
---cores 16
---cores 32
---cores 48
---cores 64
-```
-
-I would expect `8–16` cores with larger chunks to be competitive with or faster than the current `32–64` core configuration, even before kernel rewrites.
-
----
-
-# 8. Explicit scale routes should be fused
-
-The 1D implementation already has inline terminal-scale logic. The 2D compute path currently runs scales as independent routes:
-
-```text
-read source tile
-copy to DEST
-scale
-pack
-write workspace
-synchronize
-```
-
-This adds an entire plane pass for each scale route.
-
-For four 1D transforms in a 2D decomposition, explicit terminal scales can create substantial extra traffic.
-
-## Reuse the 1D scale policy
-
-Fuse a terminal scale into the final predict/update output:
-
-```cpp
-stencil(...);
-
-if constexpr (InlineTerminalScale) {
-    scale_tile(output_dst, scale_bits);
-}
-```
-
-For a stream not updated by the final route, either:
-
-* scale it during terminal band write;
-* or retain one explicit scale path if FP32 operation order requires it.
-
-This removes:
-
-* one source read;
-* one compute tile copy;
-* one pack;
-* one local workspace write;
-* one route barrier
-
-per fused scale route.
-
----
-
-# 9. Coefficients should be compile-time
-
-The compute source includes the complete generated `Scheme`, but still loads coefficients from runtime arguments:
-
-```cpp
-coefficients[coefficient] =
-    get_arg_val<uint32_t>(coefficient_arg_base + coefficient);
-```
-
-This occurs each time `run_stencil()` is entered.
-
-It is not the main bottleneck, but it is unnecessary. The 1D kernel uses:
-
-```cpp
-Step::coeff_bits
-```
-
-directly.
-
-Use:
-
-```cpp
-run_stencil<Step::k, Vertical>(
-    tile_count,
-    ...,
-    Step::coeff_bits);
-```
-
-This improves specialization and allows the compiler to propagate constants into the SFPI body.
-
----
-
-# 10. Measure the fixed dispatch floor
-
-`execute_lwt_2d()` performs:
-
-```cpp
-EnqueueMeshWorkload(...)
-Finish(...)
-```
-
-inside the measured interval. 
-
-That is correct for device execution latency, but you need to determine how much of the `17.17 ms` is:
-
-* host enqueue/dispatch;
-* kernel startup;
-* actual reader execution;
-* SFPU compute;
-* writer execution;
-* final synchronization.
-
-## Required microbenchmarks
-
-### A. Empty prepared workload
-
-Same number of cores, kernels immediately return:
-
-```text
-T_empty
-```
-
-### B. Split-only workload
-
-Run only local EE/EO/OE/OO construction:
-
-```text
-T_split
-```
-
-### C. Route-copy workload
-
-Perform source/base/output movement without SFPU arithmetic:
-
-```text
-T_movement
-```
-
-### D. Compute-only workload
-
-Feed preconstructed CB tiles and run stencil kernels:
-
-```text
-T_compute
-```
-
-### E. Final write-only workload
-
-Write four local planes to DRAM:
-
-```text
-T_write
-```
-
-Then estimate:
-
-```text
-split cost    = T_split - T_empty
-movement cost = T_movement - T_empty
-compute cost  = T_compute - T_empty
-write cost    = T_write - T_empty
-```
-
-Do not subtract `T_empty` from published transform results, but use it to decide whether kernel optimization can realistically beat PyWavelets at these sizes.
-
-Also compare:
-
-```text
-db1
-db7
-bior3.9
-synthetic_k17
-```
-
-If all remain near `17 ms`, the fixed protocol/dispatch path dominates. If time increases significantly with route count, route staging and synchronization dominate.
-
----
-
-# Recommended optimization order
-
-## Phase 1: inexpensive changes
-
-1. Benchmark core counts `1, 4, 8, 16, 32, 64`.
-2. Change planner priority from maximum cores to estimated latency.
-3. Move coefficient bits to compile time.
-4. Fuse terminal scales.
-5. Load config once per chunk.
-6. Replace route output word-copy with full-tile local NoC copy.
-7. Replace final band row fragments with full-tile DRAM writes.
-
-These changes preserve the current architecture.
-
-## Phase 2: essential dataflow rewrite
-
-8. Add aligned route fast path using full-tile source/base transfers.
-9. Keep scalar gather only for misaligned routes.
-10. Implement tile-native `64×64 -> EE/EO/OE/OO` split.
-11. Separate interior and symmetric-edge kernels.
-12. Batch NoC operations and use one barrier per batch.
-
-This is the phase most likely to produce the required multi-fold speedup.
-
-## Phase 3: deeper fusion
-
-13. Pack compute output directly into workspace-backed buffers.
-14. Introduce route tile pipelining.
-15. Fuse adjacent route processing where the required tile working set fits DEST/L1.
-16. Autotune chunk geometry per scheme and shape.
-
----
-
-# What performance should you expect?
-
-The current version is an MVP whose dominant work is orchestration and scalar data motion. Its `17 ms` latency is not representative of the potential SFPU stencil performance.
-
-For your current sizes, a realistic first target is:
-
-```text
-current:          ~17.2 ms
-after fast copies,
-scale fusion,
-config reduction: 6–10 ms
-
-after tile-native
-split and aligned
-route staging:     2–5 ms
-```
-
-The lower end is not guaranteed, especially on small images where dispatch remains important. But without replacing scalar tile construction and tiny NoC transfers, beating PyWavelets is unlikely.
-
-## Bottom line
-
-The primary bottleneck is **not the horizontal or vertical SFPU stencil**.
-
-It is this path:
-
-```text
-scalar split2d
--> scalar construction of three CB tiles per route tile
--> scalar CB-to-workspace copy
--> route synchronization
--> scalar fragmented final writes
-```
-
-Your best architectural target is:
-
-```text
-full raw tiles
--> SFPU split2d
--> direct full-tile source/base staging
--> SFPU stencil
--> direct full-tile workspace persistence
--> direct full-tile band writes
-```
-
-That transition changes the implementation from a correctness-oriented MVP into an actual tile-native Tenstorrent kernel.
-
-# Optimize the 2D LWT split2d path
-
-The current single-level forward 2D LWT implementation is correct, but its
-performance is significantly slower than PyWavelets. The broader performance
-requirements and optimization ideas are already included elsewhere in this
-prompt.
-
-For this task, focus specifically on the initial input-to-polyphase split
-performed by the 2D reader kernel.
-
-## Current problem
-
-The current implementation in:
-
-```text
-tt-wavelet/kernels/dataflow/lwt_2d_reader.cpp
-```
-
-constructs the initial EE, EO, OE, and OO planes through four separate calls to
-`initialize_plane(...)`.
-
-The existing path:
-
-* clears each complete tile-aligned plane through scalar RISC-V stores;
-* initializes EE, EO, OE, and OO independently;
-* rereads or regathers input data separately for each plane;
-* performs scalar per-element tiled indexing;
-* uses many small NoC reads;
-* executes frequent `noc_async_read_barrier()` calls;
-* retains a scalar element-by-element boundary path.
-
-This is appropriate for correctness, but it is not a tile-native performance
-implementation.
-
-The objective is to design and implement a substantially faster `split2d`
-operation that transforms a tiled raw input region directly into the four
-polyphase planes:
-
-```text
-EE[r, c] = input[2r,     2c]
-EO[r, c] = input[2r,     2c + 1]
-OE[r, c] = input[2r + 1, 2c]
-OO[r, c] = input[2r + 1, 2c + 1]
-```
-
-The implementation must preserve symmetric boundary behavior based on the
-original logical input dimensions.
-
----
-
-# Mandatory investigation before implementation
-
-Before choosing an implementation, inspect:
-
-```text
-tt-isa-documentation/
-```
-
-and any relevant TT-Metal, SFPI, SFPU, unpacker, packer, tile transpose,
-permutation, shuffle, row-shift, face manipulation, and register movement
-documentation available in the repository.
-
-Determine whether the SFPU can efficiently perform the required parity
-deinterleave.
-
-Do not assume that SFPU is automatically the correct solution.
-
-Specifically investigate whether the available ISA and SFPI abstractions can
-efficiently perform operations equivalent to:
-
-```text
-take even rows
-take odd rows
-take even columns
-take odd columns
-repack selected lanes into dense 32x32 output tiles
-```
-
-Relevant operations may include, depending on what actually exists:
-
-* lane shuffle or permutation;
-* vector shift;
-* register transpose;
-* face transpose;
-* row or column broadcast;
-* destination-register remapping;
-* unpacker address manipulation;
-* tile transpose;
-* packer configuration;
-* SFPU conditional moves;
-* direct manipulation of tile faces;
-* custom unpack or pack layouts.
-
-Only use operations that are actually supported by the checked-in
-documentation and current TT-Metal API.
-
-Document the exact relevant ISA/SFPI operations you found and explain why they
-are or are not suitable.
-
----
-
-# Required design comparison
-
-Evaluate at least the following implementation strategies.
-
-## Option A: SFPU split kernel
-
-Investigate a compute kernel that consumes a `64x64` logical raw region,
-represented by four `32x32` raw tiles:
-
-```text
-raw00 raw01
-raw10 raw11
-```
-
-and produces four dense `32x32` tiles:
-
-```text
-EE EO
-OE OO
-```
-
-Conceptually:
-
-```text
-four raw input tiles
-    -> unpack into DEST
-    -> row/column parity deinterleave
-    -> pack EE, EO, OE, OO
-```
-
-Determine:
-
-* whether four raw FP32 tiles can be held or processed with the available DEST
-  register capacity;
-* whether the split must be implemented in multiple passes;
-* how faces and lanes map after parity extraction;
-* whether output can be packed directly into the four local planes;
-* how many unpack, SFPU, and pack operations are required;
-* whether the operation is likely to be compute-bound or data-movement-bound.
-
-## Option B: unpacker/packer-driven split
-
-Investigate whether parity selection can be implemented more efficiently by
-configuring the unpacker or packer rather than running general SFPU arithmetic.
-
-Possible ideas to validate against actual hardware capabilities include:
-
-* unpacking only selected rows or faces;
-* remapping source addresses;
-* packing selected lanes into dense output tiles;
-* using tile or face transpose operations;
-* using two narrow-tile passes;
-* creating temporary `32x16` tiles from alternating columns.
-
-Do not claim support for these mechanisms unless verified in the repository
-documentation or APIs.
-
-## Option C: optimized data-movement split
-
-If SFPU or packer-based splitting is not efficient or practical, implement a
-high-performance data-movement kernel instead of preserving the current scalar
-path.
-
-The optimized data-movement design should:
-
-* load large contiguous input segments;
-* avoid one-value or very small NoC reads;
-* read each raw input tile at most once where possible;
-* avoid initializing EE, EO, OE, and OO independently;
-* process the four polyphase outputs in one fused traversal;
-* batch NoC reads;
-* use one barrier after multiple asynchronous reads;
-* use direct L1 copies where possible;
-* avoid repeated calls to `tiled_element_offset()` inside the innermost loop;
-* use precomputed tile/face offsets;
-* separate the dense interior path from boundary handling.
-
-A hybrid solution is allowed:
-
-```text
-interior macro-tiles -> fast SFPU/unpacker/data-movement split
-edge macro-tiles     -> conservative symmetric gather path
-```
-
-This is likely preferable to forcing one generic implementation onto every
-tile.
-
----
-
-# Target architecture
-
-The preferred interior unit is one `64x64` raw macro-tile:
-
-```text
-raw tile (0,0) | raw tile (0,1)
----------------+---------------
-raw tile (1,0) | raw tile (1,1)
-```
-
-It produces:
-
-```text
-EE 32x32
-EO 32x32
-OE 32x32
-OO 32x32
-```
-
-The implementation should read the four raw tiles once and produce all four
-polyphase tiles before moving to the next macro-tile.
-
-The fast path must not:
-
-* call `symmetric_index()` for interior elements;
-* issue per-element NoC reads;
-* execute a barrier after each small read;
-* clear full output planes element-by-element;
-* initialize each polyphase plane in a separate complete traversal.
-
-Physical tile padding and mathematical boundary handling must remain separate.
-
-The logical input shape remains:
-
-```text
-H x W
-```
-
-The physical storage shape is:
-
-```text
-round_up(H, 32) x round_up(W, 32)
-```
-
-Symmetric mapping must always use the logical dimensions `H` and `W`. Physical
-zero-padding values must never be interpreted as samples of the mathematical
-signal.
-
----
-
-# Boundary strategy
-
-Implement two paths.
-
-## Interior path
-
-A macro-tile is interior only when every raw sample required by its EE, EO, OE,
-and OO outputs lies inside the logical input domain.
-
-The interior path should use only direct tile reads and fast deinterleave
-operations.
-
-## Boundary path
-
-For left, right, top, bottom, and corner macro-tiles:
-
-* use symmetric mapping in original logical coordinates;
-* preserve exact current correctness;
-* avoid penalizing the interior path;
-* batch reads whenever reflected addresses remain contiguous;
-* retain a scalar fallback only for genuinely irregular reflected fragments.
-
-The planner or reader should classify macro-tiles as:
-
-```text
-interior
-top edge
-bottom edge
-left edge
-right edge
-corner
-```
-
-A simpler interior-versus-boundary classification is acceptable for the first
-version.
-
----
-
-# Required implementation work
-
-Implement the selected approach in the repository.
-
-The expected changes may include:
-
-```text
-tt-wavelet/kernels/dataflow/lwt_2d_reader.cpp
-tt-wavelet/kernels/compute/lwt_2d_split_compute.cpp
-tt-wavelet/kernels/sfpi/lwt_2d_split_sfpi.h
-tt-wavelet/kernels/primitives/tile_2d_layout.hpp
-tt_wavelet/include/device_protocol/lwt_2d_config.hpp
-tt_wavelet/include/lifting/device_2d.hpp
-```
-
-The exact file structure may differ if a cleaner design is found.
-
-Do not merely provide pseudocode or update documentation.
-
-The resulting code must compile and execute on the supported Tenstorrent
-architecture.
-
----
-
-# Preserve the existing interface where practical
-
-The current downstream lifting scheduler expects four initial local planes:
-
-```text
-EE
-EO
-OE
-OO
-```
-
-Preserve this contract initially unless changing it provides a clear and
-measured performance benefit.
-
-The initial optimization should not require rewriting the entire vertical and
-horizontal route scheduler.
-
-The new split stage may use:
-
-* dedicated input circular buffers;
-* dedicated output circular buffers;
-* temporary L1 scratch;
-* a dedicated compute kernel;
-* compile-time tiling metadata;
-* per-core macro-tile descriptors.
-
-Account for all additional L1 memory explicitly.
-
----
-
-# Correctness requirements
-
-The optimized split must be validated independently before running the complete
-LWT.
-
-Add a dedicated split test that compares the device split against a scalar
-reference for:
-
-```text
-1x1
-1x7
-7x1
-2x2
-2x3
-3x2
-15x17
-31x31
-31x32
-32x31
-32x32
-32x33
-33x32
-33x33
-63x63
-63x64
-64x63
-64x64
-64x65
-65x64
-65x65
-1000x100
-```
-
-Test inputs should include:
-
-* zeros;
-* constants;
-* increasing row-major sequence;
-* row ramp;
-* column ramp;
-* checkerboard;
-* corner impulses;
-* impulses on row 31, row 32, column 31, and column 32;
-* bounded deterministic random values.
-
-For every case, validate all four planes:
-
-```text
-EE
-EO
-OE
-OO
-```
-
-The split should preferably be bit-identical to the scalar FP32 reference,
-because it is primarily a data rearrangement operation.
-
-Any difference caused by arithmetic should be explained. Tilization or lane
-reordering alone must not introduce numerical error.
-
-Then run full 2D LWT correctness tests for at least:
-
-```text
-db1
-db7
-bior3.9
-synthetic_k17
-```
-
-The full transform must remain within the existing FP32 tolerance policy.
-
----
-
-# Benchmark requirements
-
-Add split-stage microbenchmarks so its cost can be measured separately from the
-complete LWT.
-
-Measure at least:
-
-```text
-current scalar initialize_plane split
-new optimized split
-```
-
-for:
-
-```text
-64x64
-128x128
-256x256
-512x512
-1000x100
-1000x200
-1024x1024
-```
-
-Report:
-
-* total split latency;
-* input elements per second;
-* raw input bytes read;
-* local output bytes written;
-* number of NoC read calls;
-* number of NoC read barriers;
-* interior macro-tile count;
-* boundary macro-tile count;
-* active core count;
-* per-core macro-tile count.
-
-Also benchmark complete `db7` 2D LWT using the same input shapes as the existing
-PyWavelets comparison.
-
-The complete transform benchmark must reuse a prepared executable and enabled
-program cache. Input upload and output readback must remain outside the timed
-region, matching the existing benchmark methodology.
-
----
-
-# Performance acceptance criteria
-
-The optimization is considered successful only if it provides a measurable
-improvement.
-
-Minimum acceptance:
-
-```text
-new split latency < 0.5 * current split latency
-```
-
-for sufficiently large interior-dominated inputs.
-
-Preferred target:
-
-```text
-new split latency < 0.25 * current split latency
-```
-
-The complete `db7` transform should show a clear improvement over the current
-approximately 17 ms latency plateau.
-
-Do not claim success based only on fewer source lines or theoretical operation
-count.
-
-Report measured before-and-after numbers.
-
----
-
-# Implementation priority
-
-Use this order:
-
-```text
-1. Inspect tt-isa-documentation and relevant SFPI/TT-Metal code.
-2. Document available parity-deinterleave mechanisms.
-3. Build a standalone prototype for one 64x64 raw macro-tile.
-4. Compare SFPU, unpacker/packer, and data-movement approaches.
-5. Select the approach based on measured performance and implementation risk.
-6. Add an independent split correctness test.
-7. Implement the interior fast path.
-8. Add the symmetric boundary fallback.
-9. Integrate the split with the existing five-plane 2D LWT scheduler.
-10. Run full 2D correctness tests.
-11. Run split and end-to-end benchmarks.
-12. Report the remaining bottlenecks.
-```
-
----
-
-# Required final report
-
-After implementation, provide:
-
-```text
-1. Root cause of the old split performance.
-2. Relevant SFPU/ISA operations found in tt-isa-documentation.
-3. Whether SFPU was selected and why.
-4. Rejected approaches and their limitations.
-5. Exact files added and modified.
-6. Description of the new interior split dataflow.
-7. Description of the boundary fallback.
-8. L1 and circular-buffer memory usage.
-9. Exact build commands.
-10. Exact correctness test commands.
-11. Exact benchmark commands.
-12. Before-and-after split latency.
-13. Before-and-after complete db7 latency.
-14. Remaining dominant bottleneck.
-```
-
-Do not stop after analysis. Implement and benchmark the best practical approach.
-
-Do not modify unrelated working 1D LWT or ILWT behavior.
-
-Do not weaken existing correctness thresholds to obtain a performance pass.
+You may improve the structure, but every required topic must remain covered.
+
+## Quality requirements
+
+The document must:
+
+* be based on the current checked-out source;
+* use exact source paths;
+* include line references;
+* inspect several operation implementations;
+* avoid treating Conv as the only reference;
+* include FFT;
+* distinguish source facts from recommendations;
+* explicitly discuss uncertainty;
+* provide concrete API signatures;
+* provide concrete directory layouts;
+* provide concrete support matrices;
+* provide a concrete first-PR scope;
+* provide a concrete migration plan;
+* identify blockers;
+* identify owner decisions;
+* correct inaccurate assumptions;
+* preserve the existing algorithm and all 106 schemes.
+
+Do not produce a superficial summary.
+
+Do not stop after locating a single registered operation or FFT wrapper.
+
+Do not implement the operation.
+
+The final response after completing the work should contain:
+
+1. the path of the generated Markdown file;
+2. the old and new `tt-metal` SHAs;
+3. a concise list of the most important recommendations;
+4. any blockers or unresolved source ambiguities;
+5. `git status --short`;
+6. `git diff --stat`;
+7. confirmation that no algorithm source code was modified.

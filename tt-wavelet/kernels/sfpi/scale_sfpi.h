@@ -34,11 +34,11 @@ inline void _scale_lwt_tile(const uint32_t tile, const uint32_t scalar_packed) {
     TT_SFPLOADI(scalar, sfpi::SFPLOADI_MOD0_UPPER, scalar_packed >> 16);
     TT_SFPLOADI(scalar, sfpi::SFPLOADI_MOD0_LOWER, scalar_packed & 0xFFFF);
 
-#pragma unroll 4
+#pragma GCC unroll 4
     for (uint32_t face = 0; face < FaceCount; ++face) {
         const uint32_t face_base =
             TileShape == DstTileShape::Tile32x16 ? _lwt_narrow_dst_base(tile, face) : _lwt_dst_base(tile, face);
-#pragma unroll 8
+#pragma GCC unroll 8
         for (uint32_t row = 0; row < 16; row += 4) {
             TT_SFPLOAD(value, sfpi::SFPLOAD_MOD0_FMT_FP32, ADDR_MOD_3, face_base + row);
             TTI_SFPMUL(value, scalar, p_sfpu::LCONST_0, product, 0);
