@@ -8,6 +8,13 @@ No claim is made that this snapshot builds against the currently pinned
 `tt-metal`. Its purpose is to preserve the implementation while the submodule
 tracks upstream `main`.
 
+The newer standalone Wormhole tile-mirror, aligned-NoC, B96, and planner
+optimizations are intentionally not copied into this checkpoint. Their
+authoritative implementation remains under `tt-wavelet/` and their retained
+policy is documented in `../docs/LWT_TILE_NATIVE_OPTIMIZATION.md`. Port them to
+TTNN only after the checkpoint is adapted to the target TTNN API; keeping two
+independently edited copies now would make the checkpoint ambiguous.
+
 ## Source revisions
 
 - Integration base: `0e9f008f8f303415445285787437c1a09175ca54`

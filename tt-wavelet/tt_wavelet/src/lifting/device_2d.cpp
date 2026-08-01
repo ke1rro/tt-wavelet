@@ -50,11 +50,9 @@ constexpr const char* kReaderKernel = "kernels/dataflow/lwt_2d_reader.cpp";
 constexpr const char* kComputeKernel = "kernels/compute/lwt_2d_compute.cpp";
 constexpr const char* kWriterKernel = "kernels/dataflow/lwt_2d_writer.cpp";
 
-[[nodiscard]] constexpr uint32_t split_scratch_tile_count(
-    const BoundaryMode boundary_mode, const bool inverse) {
-    return !inverse && boundary_mode == BoundaryMode::kSymmetric
-               ? device_protocol::kLwt2DSymmetricSplitScratchTileCount
-               : device_protocol::kLwt2DSplitScratchTileCount;
+[[nodiscard]] constexpr uint32_t split_scratch_tile_count(const BoundaryMode boundary_mode, const bool inverse) {
+    return !inverse && boundary_mode == BoundaryMode::kSymmetric ? device_protocol::kLwt2DSymmetricSplitScratchTileCount
+                                                                 : device_protocol::kLwt2DSplitScratchTileCount;
 }
 
 struct Lwt2DProgram {
@@ -78,12 +76,10 @@ struct CoreChunkWork {
 [[nodiscard]] uint32_t noc_scratch_tile_count(
     const BoundaryMode boundary_mode, const bool inverse, const size_t route_count) {
     TT_FATAL(
-        route_count <=
-            std::numeric_limits<size_t>::max() / (2 * device_protocol::kLwt2DRouteConfigPageBytes),
+        route_count <= std::numeric_limits<size_t>::max() / (2 * device_protocol::kLwt2DRouteConfigPageBytes),
         "2D route-config scratch size overflows size_t");
     const size_t route_config_bytes = route_count * device_protocol::kLwt2DRouteConfigPageBytes;
-    const size_t route_config_tile_count =
-        ceil_div(2 * route_config_bytes, static_cast<size_t>(kTileBytes));
+    const size_t route_config_tile_count = ceil_div(2 * route_config_bytes, static_cast<size_t>(kTileBytes));
     const size_t tile_count =
         std::max(static_cast<size_t>(split_scratch_tile_count(boundary_mode, inverse)), route_config_tile_count);
     TT_FATAL(
@@ -286,10 +282,8 @@ void replace_plane_tile_counts_with_widths(std::vector<uint32_t>& args, const Pl
     const CoreChunkWork& work) {
     const auto& y_forward = plan.y_plan.forward_trace;
     const auto& x_forward = plan.x_plan.forward_trace;
-    const int64_t y_canonical_start =
-        static_cast<int64_t>(y_forward.preprocess_layout.pad_config.left + 1) / 2;
-    const int64_t x_canonical_start =
-        static_cast<int64_t>(x_forward.preprocess_layout.pad_config.left + 1) / 2;
+    const int64_t y_canonical_start = static_cast<int64_t>(y_forward.preprocess_layout.pad_config.left + 1) / 2;
+    const int64_t x_canonical_start = static_cast<int64_t>(x_forward.preprocess_layout.pad_config.left + 1) / 2;
     std::vector<uint32_t> args;
     for (const auto* band : bands) {
         args.push_back(static_cast<uint32_t>(band->address()));
@@ -423,10 +417,11 @@ template <typename Plan>
         cores,
         tt::tt_metal::WriterDataMovementConfig(writer_compile_args, writer_defines));
 
-    std::vector<UnpackToDestMode> unpack_modes(NUM_CIRCULAR_BUFFERS, UnpackToDestMode::Default);
-    unpack_modes[kSource0Cb] = UnpackToDestMode::UnpackToDestFp32;
-    unpack_modes[kSource1Cb] = UnpackToDestMode::UnpackToDestFp32;
-    unpack_modes[kBaseCb] = UnpackToDestMode::UnpackToDestFp32;
+    std::vector<tt::tt_metal::UnpackToDestMode> unpack_modes(
+        NUM_CIRCULAR_BUFFERS, tt::tt_metal::UnpackToDestMode::Default);
+    unpack_modes[kSource0Cb] = tt::tt_metal::UnpackToDestMode::UnpackToDestFp32;
+    unpack_modes[kSource1Cb] = tt::tt_metal::UnpackToDestMode::UnpackToDestFp32;
+    unpack_modes[kBaseCb] = tt::tt_metal::UnpackToDestMode::UnpackToDestFp32;
     std::map<std::string, std::string> compute_defines = {
         {"TTWV_LWT_2D_SCHEME_HEADER", compute_scheme_header},
         {"TTWV_LWT_2D_SCHEME_TYPE", compute_scheme_type},
@@ -439,7 +434,7 @@ template <typename Plan>
         kernel_path(kernel_root, kComputeKernel),
         cores,
         tt::tt_metal::ComputeConfig{
-            .math_fidelity = MathFidelity::HiFi4,
+            .math_fidelity = tt::tt_metal::MathFidelity::HiFi4,
             .fp32_dest_acc_en = true,
             .unpack_to_dest_mode = unpack_modes,
             .compile_args = {kSource0Cb, kSource1Cb, kBaseCb, kOutputCb},
@@ -519,8 +514,7 @@ Lwt2DExecutable create_lwt_2d_executable_impl(
                 .logical_band = plan.tiling.band.logical,
                 .padded_band = plan.tiling.band.storage,
                 .available_worker_core_count = static_cast<uint32_t>(
-                    mesh_device.compute_with_storage_grid_size().x *
-                    mesh_device.compute_with_storage_grid_size().y),
+                    mesh_device.compute_with_storage_grid_size().x * mesh_device.compute_with_storage_grid_size().y),
                 .active_core_count = plan.active_core_count,
                 .chunk_count = checked_u32(plan.chunks.size(), "2D chunk count"),
                 .chunk_tiles_y = plan.chunk_tiles_y,
@@ -609,8 +603,7 @@ Ilwt2DExecutable create_ilwt_2d_executable_impl(
     }
 
     const size_t output_tiles =
-        checked_shape_area_2d(plan.tiling.input.storage, "2D ILWT output") /
-        device_protocol::kLwt2DFullTileElements;
+        checked_shape_area_2d(plan.tiling.input.storage, "2D ILWT output") / device_protocol::kLwt2DFullTileElements;
     auto output = create_dram_pages(mesh_device, output_tiles, kTileBytes);
     std::array<std::shared_ptr<tt::tt_metal::distributed::MeshBuffer>, device_protocol::kLwt2DBandCount> outputs;
     outputs.fill(output);
@@ -649,15 +642,15 @@ Ilwt2DExecutable create_ilwt_2d_executable_impl(
                 .logical_band = plan.tiling.band.logical,
                 .padded_band = plan.tiling.band.storage,
                 .available_worker_core_count = static_cast<uint32_t>(
-                    mesh_device.compute_with_storage_grid_size().x *
-                    mesh_device.compute_with_storage_grid_size().y),
+                    mesh_device.compute_with_storage_grid_size().x * mesh_device.compute_with_storage_grid_size().y),
                 .active_core_count = plan.active_core_count,
                 .chunk_count = checked_u32(plan.chunks.size(), "2D ILWT chunk count"),
                 .chunk_tiles_y = plan.chunk_tiles_y,
                 .chunk_tiles_x = plan.chunk_tiles_x,
                 .route_count = checked_u32(route_count, "2D ILWT route count"),
                 .executable_route_count = plan.executable_route_count,
-                .scale_routes_removed = checked_u32(route_count - plan.executable_route_count, "2D ILWT metadata routes"),
+                .scale_routes_removed =
+                    checked_u32(route_count - plan.executable_route_count, "2D ILWT metadata routes"),
                 .estimated_latency_cycles = plan.estimated_latency_cycles,
                 .max_dependency_overhead = plan.max_dependency_overhead,
                 .l1_workspace_bytes = plan.allocated_workspace_bytes,
@@ -691,8 +684,7 @@ Ilwt2DExecutable create_ilwt_2d_executable_impl(
             program.reader,
             core_work.core,
             inverse_reader_args(band_buffers, plan, buffers, core_work));
-        tt::tt_metal::SetRuntimeArgs(
-            program.program, *program.compute, core_work.core, compute_args(plan, core_work));
+        tt::tt_metal::SetRuntimeArgs(program.program, *program.compute, core_work.core, compute_args(plan, core_work));
         tt::tt_metal::SetRuntimeArgs(
             program.program, *program.writer, core_work.core, inverse_writer_args(plan, buffers, core_work));
     }
@@ -722,8 +714,7 @@ void prepare_lwt_2d(tt::tt_metal::distributed::MeshCommandQueue& command_queue, 
     tt::tt_metal::distributed::Finish(command_queue);
 }
 
-void prepare_ilwt_2d(
-    tt::tt_metal::distributed::MeshCommandQueue& command_queue, Ilwt2DExecutable& executable) {
+void prepare_ilwt_2d(tt::tt_metal::distributed::MeshCommandQueue& command_queue, Ilwt2DExecutable& executable) {
     const std::vector<uint32_t> chunks = build_ilwt_2d_chunk_config_words(executable.plan);
     const std::vector<uint32_t> routes = build_ilwt_2d_route_config_words(executable.plan);
     const std::vector<uint32_t> terminal = build_ilwt_2d_band_config_words(executable.plan);
