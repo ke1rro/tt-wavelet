@@ -34,7 +34,11 @@ struct LiftingSchedulerTelemetry {
     bool inverse_scale_inline{false};
     bool inverse_final_interleave_direct{false};
     WorkspaceLayout workspace_layout{WorkspaceLayout::kRowMajor};
+    bool hybrid_tile_mirror{false};
+    bool row_major_noc_staging{false};
+    uint32_t interleave_batch_sticks{1};
     uint64_t l1_slots_bytes{0};
+    uint64_t l1_workspace_mirror_bytes{0};
     uint64_t l1_circular_buffers_bytes{0};
     uint64_t l1_cache_bytes{0};
     uint64_t l1_output_bytes{0};
@@ -118,8 +122,7 @@ template <typename Scheme>
         Scheme::compute_scheme_type);
 }
 
-void prepare_lwt(
-    tt::tt_metal::distributed::MeshCommandQueue& command_queue, LwtExecutable& executable);
+void prepare_lwt(tt::tt_metal::distributed::MeshCommandQueue& command_queue, LwtExecutable& executable);
 
 void execute_lwt(
     tt::tt_metal::distributed::MeshDevice& mesh_device,
@@ -155,8 +158,7 @@ template <typename Scheme>
         InverseScheme::compute_scheme_type);
 }
 
-void prepare_ilwt(
-    tt::tt_metal::distributed::MeshCommandQueue& command_queue, IlwtExecutable& executable);
+void prepare_ilwt(tt::tt_metal::distributed::MeshCommandQueue& command_queue, IlwtExecutable& executable);
 
 void execute_ilwt(
     tt::tt_metal::distributed::MeshDevice& mesh_device,

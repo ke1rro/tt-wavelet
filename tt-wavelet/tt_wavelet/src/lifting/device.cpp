@@ -1,3 +1,5 @@
+#include "tt_wavelet/include/lifting/device.hpp"
+
 #include <algorithm>
 #include <cerrno>
 #include <cstddef>
@@ -21,7 +23,6 @@
 #include "tt-metalium/tensor_accessor_args.hpp"
 #include "tt-metalium/tile.hpp"
 #include "tt_wavelet/include/device_protocol/lwt_config.hpp"
-#include "tt_wavelet/include/lifting/device.hpp"
 #include "tt_wavelet/include/lifting/l1_accounting.hpp"
 #include "tt_wavelet/include/lifting/policy.hpp"
 
@@ -45,9 +46,18 @@ constexpr uint32_t kSyncCb = tt::CBIndex::c_5;
 constexpr uint32_t kReaderConfigCb = tt::CBIndex::c_6;
 constexpr uint32_t kWriterConfigCb = tt::CBIndex::c_7;
 constexpr uint32_t kTileGroupBuffering = 2;
+constexpr uint32_t kIlwtInterleaveBatchSticks = 96;
+constexpr uint32_t kAlignedNocMaxRouteCount = 5;
+constexpr uint32_t kAlignedNocMinGroupsPerChunk = 2;
+constexpr uint32_t kWormholeSingleGroupLwtTileMinRouteCount = 4;
+constexpr uint32_t kWormholeSingleGroupIlwtTileMinRouteCount = 7;
 constexpr uint32_t kDefaultL1SignalBudgetBytes = 768 * 1024;
 constexpr const char* kL1SignalBudgetEnv = "TT_WAVELET_L1_SIGNAL_BUDGET_BYTES";
 constexpr const char* kWorkspaceLayoutEnv = "TT_WAVELET_LWT_WORKSPACE_LAYOUT";
+
+static_assert(
+    kIlwtInterleaveBatchSticks <= device_protocol::kIlwtGroupOutputElements / kStickWidth,
+    "ILWT interleave batch must fit in one output group");
 
 struct LwtProgram {
     tt::tt_metal::Program program;
@@ -99,6 +109,54 @@ struct CoreChunkWork {
     return parse_positive_env(kL1SignalBudgetEnv, kDefaultL1SignalBudgetBytes);
 }
 
+[[nodiscard]] uint32_t ilwt_interleave_batch_sticks(const tt::ARCH architecture) {
+    // B96 was measured on Wormhole. Keep Blackhole on its existing one-stick
+    // path until the architecture has independent correctness and timing data.
+    return architecture == tt::ARCH::WORMHOLE_B0 ? kIlwtInterleaveBatchSticks : 1U;
+}
+
+[[nodiscard]] bool supports_hybrid_tile_mirror(const tt::ARCH architecture, const WorkspaceLayout layout) {
+    // The tile-shadow path is a Wormhole KEEP result. Blackhole keeps its
+    // tile-native policy until the row-major mirror has been measured there.
+    return architecture == tt::ARCH::WORMHOLE_B0 && layout == WorkspaceLayout::kRowMajor;
+}
+
+[[nodiscard]] uint32_t tile_mirror_elements(const uint32_t workspace_elements, const bool hybrid_tile_mirror) {
+    return hybrid_tile_mirror
+               ? checked_u32(
+                     ceil_div(workspace_elements, static_cast<uint32_t>(device_protocol::kLwtGroupOutputElements)) *
+                         device_protocol::kLwtGroupOutputElements,
+                     "hybrid tile mirror elements")
+               : 0U;
+}
+
+[[nodiscard]] uint32_t planner_signal_budget_bytes(
+    tt::tt_metal::distributed::MeshDevice& mesh_device,
+    const ArchitecturePolicy& policy,
+    const bool hybrid_tile_mirror,
+    const uint32_t interleave_batch_sticks) {
+    const uint32_t configured_budget = l1_signal_budget_bytes();
+    if (!hybrid_tile_mirror) {
+        return configured_budget;
+    }
+
+    const uint32_t capacity_bytes = mesh_device.l1_size_per_core();
+    const L1Accounting fixed =
+        make_l1_accounting(0, 0, 0, interleave_batch_sticks, policy.l1_scratch_bytes, capacity_bytes);
+    constexpr uint64_t mirror_rounding_reserve =
+        uint64_t{3} * (device_protocol::kLwtGroupOutputElements - 1U) * sizeof(float);
+    TT_FATAL(
+        fixed.total_bytes + mirror_rounding_reserve < capacity_bytes,
+        "LWT fixed resources leave no room for a hybrid workspace");
+
+    // The planner accounts for the logical three-slot workspace. A hybrid
+    // slot additionally owns a tile-native mirror of approximately the same
+    // size. Reserve the worst-case group-rounding overhead and halve the
+    // remaining physical workspace capacity.
+    const uint64_t capacity_limited_budget = (capacity_bytes - fixed.total_bytes - mirror_rounding_reserve) / 2U;
+    return std::min(configured_budget, checked_u32(capacity_limited_budget, "hybrid L1 signal budget"));
+}
+
 [[nodiscard]] std::optional<WorkspaceLayout> workspace_layout_override() {
     const char* raw = std::getenv(kWorkspaceLayoutEnv);
     if (raw == nullptr || raw[0] == '\0' || std::strcmp(raw, "auto") == 0) {
@@ -115,7 +173,21 @@ struct CoreChunkWork {
     return WorkspaceLayout::kTileNative;
 }
 
-[[nodiscard]] bool prefer_tile_native_workspace(const LwtExecutionPlan& plan) {
+[[nodiscard]] bool prefer_tile_native_workspace(const LwtExecutionPlan& plan, const tt::ARCH architecture) {
+    TT_FATAL(!plan.chunks.empty(), "LWT workspace selection requires at least one chunk");
+
+    // All-scheme Wormhole measurements show that one-group chunks do not
+    // amortize the row-major tile-shadow traffic once the lifting schedule has
+    // at least four executable routes.  Require multiple chunks so tiny and
+    // external-coefficient edge cases retain their proven layout. Multi-group
+    // chunks retain the hybrid row-major steady-state path. Keep this
+    // crossover architecture-local; Blackhole has an independently selected
+    // tile-native default.
+    if (architecture == tt::ARCH::WORMHOLE_B0 && plan.chunks.size() > 1 && plan.groups_per_chunk == 1 &&
+        plan.chunks.front().routes.size() >= kWormholeSingleGroupLwtTileMinRouteCount) {
+        return true;
+    }
+
     // Tile-native persistence makes an aligned base a three-page transfer and
     // makes every output write three pages instead of 96 half-sticks.  A
     // shifted base still needs a tile/row remap, so keep row-major storage for
@@ -123,7 +195,6 @@ struct CoreChunkWork {
     // path.  The override above keeps this policy directly benchmarkable.
     uint32_t predict_update_count = 0;
     uint32_t aligned_base_count = 0;
-    TT_FATAL(!plan.chunks.empty(), "LWT workspace selection requires at least one chunk");
     for (const auto& route : plan.chunks.front().routes) {
         if (!is_predict_update_step(route.type)) {
             continue;
@@ -132,6 +203,31 @@ struct CoreChunkWork {
         aligned_base_count += route.base_offset_elements == 0 ? 1U : 0U;
     }
     return predict_update_count > 0 && 2U * aligned_base_count >= predict_update_count;
+}
+
+[[nodiscard]] bool prefer_tile_native_inverse_workspace(const IlwtExecutionPlan& plan, const tt::ARCH architecture) {
+    TT_FATAL(!plan.chunks.empty(), "ILWT workspace selection requires at least one chunk");
+
+    // The inverse B96 row-major path remains faster for short lifting
+    // schedules.  On Wormhole, tile-native becomes the consistent winner for
+    // a one-group chunk at seven or more executable routes. Require multiple
+    // chunks so tiny/external ILWT inputs stay on the proven row-major path.
+    // Once a chunk owns multiple groups, the hybrid row-major mirror amortizes
+    // its setup cost.
+    return architecture == tt::ARCH::WORMHOLE_B0 && plan.chunks.size() > 1 && plan.output_groups_per_chunk == 1 &&
+           plan.chunks.front().routes.size() >= kWormholeSingleGroupIlwtTileMinRouteCount;
+}
+
+template <typename Plan>
+[[nodiscard]] bool prefer_aligned_row_major_noc_staging(
+    const Plan& plan, const uint32_t groups_per_chunk, const bool hybrid_tile_mirror) {
+    TT_FATAL(!plan.chunks.empty(), "LWT NoC staging selection requires at least one chunk");
+    // Matched standalone measurements show a clear win for short route
+    // schedules (notably bior3.9) once a core owns multiple groups. Longer
+    // schedules such as db10 and dmey lose to packet setup overhead, so they
+    // retain the scalar row-major gather while still using the tile mirror.
+    return hybrid_tile_mirror && groups_per_chunk >= kAlignedNocMinGroupsPerChunk &&
+           plan.chunks.front().routes.size() <= kAlignedNocMaxRouteCount;
 }
 
 [[nodiscard]] uint32_t core_limit(tt::tt_metal::distributed::MeshDevice& mesh_device) {
@@ -180,7 +276,8 @@ struct CoreChunkWork {
 [[nodiscard]] std::shared_ptr<tt::tt_metal::distributed::MeshBuffer> create_workspace_buffer(
     tt::tt_metal::distributed::MeshDevice& mesh_device,
     const std::vector<tt::tt_metal::CoreCoord>& cores,
-    const uint32_t workspace_elements) {
+    const uint32_t workspace_elements,
+    const bool hybrid_tile_mirror) {
     TT_FATAL(!cores.empty(), "LWT workspace requires at least one owner core");
     TT_FATAL(workspace_elements > 0, "LWT workspace must contain at least one element");
     TT_FATAL(
@@ -189,7 +286,10 @@ struct CoreChunkWork {
         workspace_elements,
         kStickWidth);
 
-    const uint32_t shard_sticks = workspace_elements / kStickWidth;
+    const uint32_t mirror_elements = tile_mirror_elements(workspace_elements, hybrid_tile_mirror);
+    const uint32_t shard_elements =
+        checked_u32(static_cast<size_t>(workspace_elements) + mirror_elements, "hybrid workspace shard elements");
+    const uint32_t shard_sticks = shard_elements / kStickWidth;
     const size_t capacity_sticks = static_cast<size_t>(shard_sticks) * cores.size();
     const size_t physical_nbytes = capacity_sticks * device_protocol::kStickBytes;
     TT_FATAL(
@@ -259,12 +359,11 @@ void create_narrow_tile_circular_buffer(
     work.reserve(cores.size());
     for (uint32_t core_index = 0; core_index < active_core_count; ++core_index) {
         const uint32_t count = base_chunks + (core_index < extra_chunks ? 1U : 0U);
-        work.push_back(
-            CoreChunkWork{
-                .core = cores[core_index],
-                .chunk_begin = chunk_begin,
-                .chunk_count = count,
-            });
+        work.push_back(CoreChunkWork{
+            .core = cores[core_index],
+            .chunk_begin = chunk_begin,
+            .chunk_count = count,
+        });
         chunk_begin += count;
     }
     TT_FATAL(chunk_begin == chunk_count, "LWT chunk partition is incomplete");
@@ -276,16 +375,22 @@ void add_l1_telemetry(
     LiftingSchedulerTelemetry& telemetry,
     const Plan& plan,
     tt::tt_metal::distributed::MeshDevice& mesh_device,
-    const ArchitecturePolicy& policy) {
+    const ArchitecturePolicy& policy,
+    const bool hybrid_tile_mirror,
+    const uint32_t interleave_batch_sticks) {
+    const uint32_t mirror_elements = tile_mirror_elements(plan.workspace_elements, hybrid_tile_mirror);
     const L1Accounting accounting = make_l1_accounting(
         plan.workspace_elements,
         plan.max_workspace_elements,
+        mirror_elements,
+        interleave_batch_sticks,
         policy.l1_scratch_bytes,
         mesh_device.l1_size_per_core());
     telemetry.architecture = policy.architecture;
     telemetry.workspace_layout = plan.workspace_layout;
     telemetry.max_workspace_elements = plan.max_workspace_elements;
     telemetry.l1_slots_bytes = accounting.slots_bytes;
+    telemetry.l1_workspace_mirror_bytes = accounting.workspace_mirror_bytes;
     telemetry.l1_circular_buffers_bytes = accounting.circular_buffers_bytes;
     telemetry.l1_cache_bytes = accounting.cache_bytes;
     telemetry.l1_output_bytes = accounting.output_bytes;
@@ -316,8 +421,7 @@ void add_l1_telemetry(
 }
 
 [[nodiscard]] std::vector<uint32_t> build_chunk_config_words(const LwtExecutionPlan& plan) {
-    std::vector<uint32_t> words(
-        std::max(plan.chunks.size(), size_t{1}) * device_protocol::kLwtChunkConfigWordCount, 0);
+    std::vector<uint32_t> words(std::max(plan.chunks.size(), size_t{1}) * device_protocol::kLwtChunkConfigWordCount, 0);
     for (size_t chunk_index = 0; chunk_index < plan.chunks.size(); ++chunk_index) {
         const auto& chunk = plan.chunks[chunk_index];
         const size_t offset = chunk_index * device_protocol::kLwtChunkConfigWordCount;
@@ -342,6 +446,7 @@ void add_l1_telemetry(
 
     for (size_t chunk_index = 0; chunk_index < plan.chunks.size(); ++chunk_index) {
         const auto& chunk = plan.chunks[chunk_index];
+        std::array<bool, 3> tile_mirror_valid{};
         TT_FATAL(chunk.routes.size() == route_count, "LWT chunks have inconsistent route counts");
         for (size_t route_index = 0; route_index < route_count; ++route_index) {
             const auto& route = chunk.routes[route_index];
@@ -365,8 +470,20 @@ void add_l1_telemetry(
             words[word_offset + device_protocol::kRouteSourceLeftPad] = route.source_left_pad_elements;
             words[word_offset + device_protocol::kRouteOutputOffset] = output_offset;
             words[word_offset + device_protocol::kRouteGroupCount] = output_group_count(route.output_length);
-            words[word_offset + device_protocol::kRouteFlags] =
+            uint32_t route_flags =
                 route.output.storage == RouteOutputStorage::kWorkspaceSlot ? 0U : device_protocol::kRouteFlagFinalDram;
+            route_flags |= tile_mirror_valid[static_cast<size_t>(route.source.slot)]
+                               ? device_protocol::kRouteFlagSourceTileMirror
+                               : 0U;
+            route_flags |= tile_mirror_valid[static_cast<size_t>(route.base.slot)]
+                               ? device_protocol::kRouteFlagBaseTileMirror
+                               : 0U;
+            if (route.output.storage == RouteOutputStorage::kWorkspaceSlot) {
+                const bool produces_tile_mirror = output_offset % device_protocol::kLwtGroupOutputElements == 0;
+                route_flags |= produces_tile_mirror ? device_protocol::kRouteFlagOutputTileMirror : 0U;
+                tile_mirror_valid[static_cast<size_t>(route.output.slot)] = produces_tile_mirror;
+            }
+            words[word_offset + device_protocol::kRouteFlags] = route_flags;
         }
     }
     return words;
@@ -388,6 +505,7 @@ void add_l1_telemetry(
         work.chunk_begin,
         work.chunk_count,
         checked_u32(plan.chunks.front().routes.size(), "LWT route count"),
+        checked_u32(plan.workspace_elements * sizeof(float), "LWT tile mirror offset"),
     };
 }
 
@@ -398,6 +516,7 @@ void add_l1_telemetry(
         work.chunk_begin,
         work.chunk_count,
         checked_u32(plan.chunks.front().routes.size(), "LWT route count"),
+        checked_u32(plan.workspace_elements * sizeof(float), "LWT tile mirror offset"),
     };
 }
 
@@ -421,6 +540,8 @@ void add_l1_telemetry(
     const tt::tt_metal::Buffer& input_buffer,
     const LwtWorkingBuffers& buffers,
     const WorkspaceLayout workspace_layout,
+    const bool hybrid_tile_mirror,
+    const bool row_major_noc_staging,
     const BoundaryMode boundary_mode,
     const char* compute_scheme_header,
     const char* compute_scheme_type) {
@@ -450,6 +571,8 @@ void add_l1_telemetry(
         static_cast<uint32_t>(workspace_layout == WorkspaceLayout::kTileNative),
         0U,
         static_cast<uint32_t>(boundary_mode),
+        static_cast<uint32_t>(row_major_noc_staging),
+        static_cast<uint32_t>(hybrid_tile_mirror),
     };
     tt::tt_metal::TensorAccessorArgs(config_buffer).append_to(reader_compile_args);
     tt::tt_metal::TensorAccessorArgs(input_buffer).append_to(reader_compile_args);
@@ -463,15 +586,23 @@ void add_l1_telemetry(
         static_cast<uint32_t>(workspace_layout == WorkspaceLayout::kTileNative),
         0U,
         kInterleaveCb,
+        1U,
+        static_cast<uint32_t>(hybrid_tile_mirror),
     };
     tt::tt_metal::TensorAccessorArgs(config_buffer).append_to(writer_compile_args);
     tt::tt_metal::TensorAccessorArgs(final_buffer).append_to(writer_compile_args);
 
-    const std::vector<uint32_t> compute_compile_args = {kSrcTile0Cb, kSrcTile1Cb, kBaseTileCb, kOutputCb};
-    std::vector<UnpackToDestMode> unpack_to_dest_mode(NUM_CIRCULAR_BUFFERS, UnpackToDestMode::Default);
-    unpack_to_dest_mode[kSrcTile0Cb] = UnpackToDestMode::UnpackToDestFp32;
-    unpack_to_dest_mode[kSrcTile1Cb] = UnpackToDestMode::UnpackToDestFp32;
-    unpack_to_dest_mode[kBaseTileCb] = UnpackToDestMode::UnpackToDestFp32;
+    const std::vector<uint32_t> compute_compile_args = {
+        kSrcTile0Cb,
+        kSrcTile1Cb,
+        kBaseTileCb,
+        kOutputCb,
+    };
+    std::vector<tt::tt_metal::UnpackToDestMode> unpack_to_dest_mode(
+        NUM_CIRCULAR_BUFFERS, tt::tt_metal::UnpackToDestMode::Default);
+    unpack_to_dest_mode[kSrcTile0Cb] = tt::tt_metal::UnpackToDestMode::UnpackToDestFp32;
+    unpack_to_dest_mode[kSrcTile1Cb] = tt::tt_metal::UnpackToDestMode::UnpackToDestFp32;
+    unpack_to_dest_mode[kBaseTileCb] = tt::tt_metal::UnpackToDestMode::UnpackToDestFp32;
 
     const auto reader = tt::tt_metal::CreateKernel(
         program,
@@ -488,7 +619,7 @@ void add_l1_telemetry(
         kernel_path(kernel_root, kLwtComputeKernelPath),
         cores,
         tt::tt_metal::ComputeConfig{
-            .math_fidelity = MathFidelity::HiFi4,
+            .math_fidelity = tt::tt_metal::MathFidelity::HiFi4,
             .fp32_dest_acc_en = true,
             .unpack_to_dest_mode = unpack_to_dest_mode,
             .compile_args = compute_compile_args,
@@ -527,8 +658,7 @@ void set_runtime_args(
 
 [[nodiscard]] std::vector<uint32_t> build_inverse_chunk_config_words(
     const IlwtExecutionPlan& plan, const IlwtWorkingBuffers& buffers) {
-    std::vector<uint32_t> words(
-        std::max(plan.chunks.size(), size_t{1}) * device_protocol::kLwtChunkConfigWordCount, 0);
+    std::vector<uint32_t> words(std::max(plan.chunks.size(), size_t{1}) * device_protocol::kLwtChunkConfigWordCount, 0);
     for (size_t chunk_index = 0; chunk_index < plan.chunks.size(); ++chunk_index) {
         const auto& chunk = plan.chunks[chunk_index];
         const size_t offset = chunk_index * device_protocol::kLwtChunkConfigWordCount;
@@ -569,6 +699,7 @@ void set_runtime_args(
         std::max(plan.chunks.size() * route_count, size_t{1}) * device_protocol::kRouteConfigWordCount, 0);
     for (size_t chunk_index = 0; chunk_index < plan.chunks.size(); ++chunk_index) {
         const auto& chunk = plan.chunks[chunk_index];
+        std::array<bool, 3> tile_mirror_valid{};
         TT_FATAL(chunk.routes.size() == route_count, "ILWT chunks have inconsistent route counts");
         for (size_t route_index = 0; route_index < route_count; ++route_index) {
             const auto& route = chunk.routes[route_index];
@@ -595,10 +726,18 @@ void set_runtime_args(
             words[word_offset + device_protocol::kRouteSourceLeftPad] = route.source_left_pad_elements;
             words[word_offset + device_protocol::kRouteOutputOffset] = 0;
             words[word_offset + device_protocol::kRouteGroupCount] = output_group_count(route.output_length);
-            words[word_offset + device_protocol::kRouteFlags] =
-                plan.final_interleave_direct && route_index + 1 == route_count
-                    ? device_protocol::kRouteFlagIlwtFinalInterleave
-                    : 0U;
+            uint32_t route_flags = plan.final_interleave_direct && route_index + 1 == route_count
+                                       ? device_protocol::kRouteFlagIlwtFinalInterleave
+                                       : 0U;
+            route_flags |= tile_mirror_valid[static_cast<size_t>(route.source.slot)]
+                               ? device_protocol::kRouteFlagSourceTileMirror
+                               : 0U;
+            route_flags |= tile_mirror_valid[static_cast<size_t>(route.base.slot)]
+                               ? device_protocol::kRouteFlagBaseTileMirror
+                               : 0U;
+            route_flags |= device_protocol::kRouteFlagOutputTileMirror;
+            tile_mirror_valid[static_cast<size_t>(route.output.slot)] = true;
+            words[word_offset + device_protocol::kRouteFlags] = route_flags;
         }
     }
     return words;
@@ -621,6 +760,7 @@ void set_runtime_args(
         work.chunk_begin,
         work.chunk_count,
         checked_u32(plan.chunks.front().routes.size(), "ILWT route count"),
+        checked_u32(plan.workspace_elements * sizeof(float), "ILWT tile mirror offset"),
     };
 }
 
@@ -634,6 +774,7 @@ void set_runtime_args(
         static_cast<uint32_t>(buffers.chunk_config->get_backing_buffer()->address()),
         static_cast<uint32_t>(buffers.output->get_backing_buffer()->address()),
         plan.full_plan.forward_trace.preprocess_layout.pad_config.left,
+        checked_u32(plan.workspace_elements * sizeof(float), "ILWT tile mirror offset"),
     };
 }
 
@@ -659,6 +800,9 @@ void set_runtime_args(
     const tt::tt_metal::Buffer& detail_buffer,
     const IlwtWorkingBuffers& buffers,
     const WorkspaceLayout workspace_layout,
+    const bool hybrid_tile_mirror,
+    const bool row_major_noc_staging,
+    const uint32_t interleave_batch_sticks,
     const char* compute_scheme_header,
     const char* compute_scheme_type) {
     tt::tt_metal::Program program = tt::tt_metal::CreateProgram();
@@ -669,7 +813,7 @@ void set_runtime_args(
     create_narrow_tile_circular_buffer(program, cores, kOutputCb, 3 * kTileGroupBuffering, narrow_tile);
     create_circular_buffer(
         program, cores, kSrcCacheCb, device_protocol::kLwtCacheStickCount, device_protocol::kStickBytes);
-    create_circular_buffer(program, cores, kInterleaveCb, 1, device_protocol::kStickBytes);
+    create_circular_buffer(program, cores, kInterleaveCb, interleave_batch_sticks, device_protocol::kStickBytes);
     create_circular_buffer(program, cores, kSyncCb, 1, kNocAlignmentBytes);
     create_circular_buffer(program, cores, kReaderConfigCb, 1, device_protocol::kRouteConfigPageBytes);
     create_circular_buffer(program, cores, kWriterConfigCb, 1, device_protocol::kRouteConfigPageBytes);
@@ -689,6 +833,8 @@ void set_runtime_args(
         // signal. Keep its unused shared-reader boundary specialization fixed
         // so every ILWT mode reuses the same device binary.
         static_cast<uint32_t>(BoundaryMode::kSymmetric),
+        static_cast<uint32_t>(row_major_noc_staging),
+        static_cast<uint32_t>(hybrid_tile_mirror),
     };
     tt::tt_metal::TensorAccessorArgs(config_buffer).append_to(reader_compile_args);
     tt::tt_metal::TensorAccessorArgs(approximation_buffer).append_to(reader_compile_args);
@@ -702,15 +848,23 @@ void set_runtime_args(
         static_cast<uint32_t>(workspace_layout == WorkspaceLayout::kTileNative),
         1U,
         kInterleaveCb,
+        interleave_batch_sticks,
+        static_cast<uint32_t>(hybrid_tile_mirror),
     };
     tt::tt_metal::TensorAccessorArgs(config_buffer).append_to(writer_compile_args);
     tt::tt_metal::TensorAccessorArgs(output_buffer).append_to(writer_compile_args);
 
-    const std::vector<uint32_t> compute_compile_args = {kSrcTile0Cb, kSrcTile1Cb, kBaseTileCb, kOutputCb};
-    std::vector<UnpackToDestMode> unpack_to_dest_mode(NUM_CIRCULAR_BUFFERS, UnpackToDestMode::Default);
-    unpack_to_dest_mode[kSrcTile0Cb] = UnpackToDestMode::UnpackToDestFp32;
-    unpack_to_dest_mode[kSrcTile1Cb] = UnpackToDestMode::UnpackToDestFp32;
-    unpack_to_dest_mode[kBaseTileCb] = UnpackToDestMode::UnpackToDestFp32;
+    const std::vector<uint32_t> compute_compile_args = {
+        kSrcTile0Cb,
+        kSrcTile1Cb,
+        kBaseTileCb,
+        kOutputCb,
+    };
+    std::vector<tt::tt_metal::UnpackToDestMode> unpack_to_dest_mode(
+        NUM_CIRCULAR_BUFFERS, tt::tt_metal::UnpackToDestMode::Default);
+    unpack_to_dest_mode[kSrcTile0Cb] = tt::tt_metal::UnpackToDestMode::UnpackToDestFp32;
+    unpack_to_dest_mode[kSrcTile1Cb] = tt::tt_metal::UnpackToDestMode::UnpackToDestFp32;
+    unpack_to_dest_mode[kBaseTileCb] = tt::tt_metal::UnpackToDestMode::UnpackToDestFp32;
 
     const auto reader = tt::tt_metal::CreateKernel(
         program,
@@ -727,7 +881,7 @@ void set_runtime_args(
         kernel_path(kernel_root, kLwtComputeKernelPath),
         cores,
         tt::tt_metal::ComputeConfig{
-            .math_fidelity = MathFidelity::HiFi4,
+            .math_fidelity = tt::tt_metal::MathFidelity::HiFi4,
             .fp32_dest_acc_en = true,
             .unpack_to_dest_mode = unpack_to_dest_mode,
             .compile_args = compute_compile_args,
@@ -790,20 +944,30 @@ LwtExecutable create_lwt_executable_impl(
         "LWT padded input length exceeds device signed-index range");
 
     const uint32_t max_cores = core_limit(mesh_device);
-    const uint32_t signal_budget_bytes = l1_signal_budget_bytes();
     const ArchitecturePolicy architecture_policy = make_architecture_policy(mesh_device.arch());
     const std::optional<WorkspaceLayout> workspace_override = workspace_layout_override();
     const WorkspaceLayout initial_workspace_layout = workspace_override.value_or(WorkspaceLayout::kRowMajor);
+    const bool initial_hybrid_tile_mirror =
+        supports_hybrid_tile_mirror(architecture_policy.architecture, initial_workspace_layout);
+    const uint32_t signal_budget_bytes =
+        planner_signal_budget_bytes(mesh_device, architecture_policy, initial_hybrid_tile_mirror, 1U);
     LwtExecutionPlan plan =
         make_lwt_execution_plan(std::move(full_plan), max_cores, signal_budget_bytes, initial_workspace_layout);
-    if (!workspace_override.has_value() && prefer_tile_native_workspace(plan)) {
+    const bool tile_native_preferred = prefer_tile_native_workspace(plan, architecture_policy.architecture);
+    const bool hybrid_has_steady_state = plan.groups_per_chunk >= kAlignedNocMinGroupsPerChunk;
+    if (!workspace_override.has_value() && tile_native_preferred &&
+        (!initial_hybrid_tile_mirror || !hybrid_has_steady_state)) {
         plan = make_lwt_execution_plan(
             std::move(plan.full_plan), max_cores, signal_budget_bytes, WorkspaceLayout::kTileNative);
     }
+    const bool hybrid_tile_mirror =
+        supports_hybrid_tile_mirror(architecture_policy.architecture, plan.workspace_layout);
+    const bool row_major_noc_staging =
+        prefer_aligned_row_major_noc_staging(plan, plan.groups_per_chunk, hybrid_tile_mirror);
     std::vector<tt::tt_metal::CoreCoord> cores = select_cores(mesh_device, plan.active_core_count);
     std::array<std::shared_ptr<tt::tt_metal::distributed::MeshBuffer>, 3> slots;
     for (auto& slot : slots) {
-        slot = create_workspace_buffer(mesh_device, cores, plan.workspace_elements);
+        slot = create_workspace_buffer(mesh_device, cores, plan.workspace_elements, hybrid_tile_mirror);
     }
 
     SignalBuffer final_even_desc = plan.full_plan.preprocess_layout.output.even;
@@ -836,9 +1000,12 @@ LwtExecutable create_lwt_executable_impl(
                 .max_dependency_overhead = plan.max_dependency_overhead,
                 .terminal_scale_inline = true,
                 .workspace_layout = plan.workspace_layout,
+                .hybrid_tile_mirror = hybrid_tile_mirror,
+                .row_major_noc_staging = row_major_noc_staging,
+                .interleave_batch_sticks = 1,
             },
     };
-    add_l1_telemetry(buffers.scheduler, plan, mesh_device, architecture_policy);
+    add_l1_telemetry(buffers.scheduler, plan, mesh_device, architecture_policy, hybrid_tile_mirror, 1U);
 
     const std::vector<CoreChunkWork> work =
         partition_chunk_work(buffers.cores, checked_u32(plan.chunks.size(), "LWT chunk count"));
@@ -848,6 +1015,8 @@ LwtExecutable create_lwt_executable_impl(
         input_buffer,
         buffers,
         plan.workspace_layout,
+        hybrid_tile_mirror,
+        row_major_noc_staging,
         boundary_mode,
         compute_scheme_header,
         compute_scheme_type);
@@ -859,8 +1028,7 @@ LwtExecutable create_lwt_executable_impl(
     };
 }
 
-void prepare_lwt(
-    tt::tt_metal::distributed::MeshCommandQueue& command_queue, LwtExecutable& executable) {
+void prepare_lwt(tt::tt_metal::distributed::MeshCommandQueue& command_queue, LwtExecutable& executable) {
     const std::vector<uint32_t> chunk_words = build_chunk_config_words(executable.plan);
     const std::vector<uint32_t> route_words = build_route_config_words(executable.plan, executable.buffers);
     tt::tt_metal::distributed::EnqueueWriteMeshBuffer(
@@ -898,10 +1066,13 @@ IlwtExecutable create_ilwt_executable_impl(
         "ILWT output length exceeds device limits");
 
     const uint32_t max_cores = core_limit(mesh_device);
-    const uint32_t signal_budget_bytes = l1_signal_budget_bytes();
     const std::optional<WorkspaceLayout> workspace_override = workspace_layout_override();
-    const ArchitecturePolicy architecture_policy =
-        make_architecture_policy(mesh_device.arch(), workspace_override);
+    const ArchitecturePolicy architecture_policy = make_architecture_policy(mesh_device.arch(), workspace_override);
+    const uint32_t interleave_batch_sticks = ilwt_interleave_batch_sticks(architecture_policy.architecture);
+    const bool initial_hybrid_tile_mirror =
+        supports_hybrid_tile_mirror(architecture_policy.architecture, architecture_policy.ilwt_layout);
+    const uint32_t signal_budget_bytes = planner_signal_budget_bytes(
+        mesh_device, architecture_policy, initial_hybrid_tile_mirror, interleave_batch_sticks);
     TT_FATAL(architecture_policy.inverse_scale_inline, "ILWT policy must preserve inline FP32 inverse scaling");
     IlwtExecutionPlan plan = make_ilwt_execution_plan(
         std::move(full_plan),
@@ -909,11 +1080,24 @@ IlwtExecutable create_ilwt_executable_impl(
         signal_budget_bytes,
         architecture_policy.ilwt_layout,
         architecture_policy.final_interleave_direct);
+    if (!workspace_override.has_value() &&
+        prefer_tile_native_inverse_workspace(plan, architecture_policy.architecture)) {
+        plan = make_ilwt_execution_plan(
+            std::move(plan.full_plan),
+            max_cores,
+            signal_budget_bytes,
+            WorkspaceLayout::kTileNative,
+            architecture_policy.final_interleave_direct);
+    }
+    const bool hybrid_tile_mirror =
+        supports_hybrid_tile_mirror(architecture_policy.architecture, plan.workspace_layout);
+    const bool row_major_noc_staging =
+        prefer_aligned_row_major_noc_staging(plan, plan.output_groups_per_chunk, hybrid_tile_mirror);
 
     std::vector<tt::tt_metal::CoreCoord> cores = select_cores(mesh_device, plan.active_core_count);
     std::array<std::shared_ptr<tt::tt_metal::distributed::MeshBuffer>, 3> slots;
     for (auto& slot : slots) {
-        slot = create_workspace_buffer(mesh_device, cores, plan.workspace_elements);
+        slot = create_workspace_buffer(mesh_device, cores, plan.workspace_elements, hybrid_tile_mirror);
     }
 
     const SignalBuffer output_desc{
@@ -949,9 +1133,13 @@ IlwtExecutable create_ilwt_executable_impl(
                 .inverse_scale_inline = architecture_policy.inverse_scale_inline,
                 .inverse_final_interleave_direct = plan.final_interleave_direct,
                 .workspace_layout = plan.workspace_layout,
+                .hybrid_tile_mirror = hybrid_tile_mirror,
+                .row_major_noc_staging = row_major_noc_staging,
+                .interleave_batch_sticks = interleave_batch_sticks,
             },
     };
-    add_l1_telemetry(buffers.scheduler, plan, mesh_device, architecture_policy);
+    add_l1_telemetry(
+        buffers.scheduler, plan, mesh_device, architecture_policy, hybrid_tile_mirror, interleave_batch_sticks);
 
     const std::vector<CoreChunkWork> work =
         partition_chunk_work(buffers.cores, checked_u32(plan.chunks.size(), "ILWT chunk count"));
@@ -962,6 +1150,9 @@ IlwtExecutable create_ilwt_executable_impl(
         detail_buffer,
         buffers,
         plan.workspace_layout,
+        hybrid_tile_mirror,
+        row_major_noc_staging,
+        interleave_batch_sticks,
         inverse_compute_scheme_header,
         inverse_compute_scheme_type);
     set_inverse_runtime_args(program, approximation_buffer, detail_buffer, plan, buffers, work);
@@ -972,8 +1163,7 @@ IlwtExecutable create_ilwt_executable_impl(
     };
 }
 
-void prepare_ilwt(
-    tt::tt_metal::distributed::MeshCommandQueue& command_queue, IlwtExecutable& executable) {
+void prepare_ilwt(tt::tt_metal::distributed::MeshCommandQueue& command_queue, IlwtExecutable& executable) {
     const std::vector<uint32_t> chunk_words = build_inverse_chunk_config_words(executable.plan, executable.buffers);
     const std::vector<uint32_t> route_words = build_inverse_route_config_words(executable.plan, executable.buffers);
     tt::tt_metal::distributed::EnqueueWriteMeshBuffer(

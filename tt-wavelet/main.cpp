@@ -393,17 +393,9 @@ template <typename Scheme>
 
     return ForwardOutput{
         .approximation = canonicalize_forward_output(
-            device_even_result,
-            plan.final_even_length,
-            canonical_length,
-            plan.final_even_shift,
-            canonical_start),
+            device_even_result, plan.final_even_length, canonical_length, plan.final_even_shift, canonical_start),
         .detail = canonicalize_forward_output(
-            device_odd_result,
-            plan.final_odd_length,
-            canonical_length,
-            plan.final_odd_shift,
-            canonical_start),
+            device_odd_result, plan.final_odd_length, canonical_length, plan.final_odd_shift, canonical_start),
         .logical_length = canonical_length,
         .execution_time_ms = execution_time_ms.count(),
         .scheduler = executable.buffers.scheduler,
@@ -484,7 +476,11 @@ void print_scheduler_telemetry(const char* prefix, const ttwv::LiftingSchedulerT
               << prefix << "_inverse_scale_inline: " << (scheduler.inverse_scale_inline ? 1 : 0) << '\n'
               << prefix << "_inverse_final_interleave_direct: " << (scheduler.inverse_final_interleave_direct ? 1 : 0)
               << '\n'
+              << prefix << "_hybrid_tile_mirror: " << (scheduler.hybrid_tile_mirror ? 1 : 0) << '\n'
+              << prefix << "_row_major_noc_staging: " << (scheduler.row_major_noc_staging ? 1 : 0) << '\n'
+              << prefix << "_interleave_batch_sticks: " << scheduler.interleave_batch_sticks << '\n'
               << prefix << "_l1_slots_bytes: " << scheduler.l1_slots_bytes << '\n'
+              << prefix << "_l1_workspace_mirror_bytes: " << scheduler.l1_workspace_mirror_bytes << '\n'
               << prefix << "_l1_circular_buffers_bytes: " << scheduler.l1_circular_buffers_bytes << '\n'
               << prefix << "_l1_cache_bytes: " << scheduler.l1_cache_bytes << '\n'
               << prefix << "_l1_output_bytes: " << scheduler.l1_output_bytes << '\n'

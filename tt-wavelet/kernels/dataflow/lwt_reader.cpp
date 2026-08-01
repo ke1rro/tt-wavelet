@@ -3,9 +3,9 @@
 #include "../../tt_wavelet/include/common/boundary.hpp"
 #include "../../tt_wavelet/include/device_protocol/lwt_config.hpp"
 #include "../../tt_wavelet/include/lifting/step.hpp"
-#include "api/dataflow/dataflow_api.h"
 #include "../primitives/stick_cache.hpp"
 #include "../primitives/workspace_layout.hpp"
+#include "api/dataflow/dataflow_api.h"
 
 namespace {
 
@@ -22,6 +22,8 @@ constexpr uint32_t kSourcePackedElements = kGroupOutputElements + kBlockElements
 constexpr uint32_t kNarrowTileElements = ttwv::device_protocol::kLwtNarrowTileElements;
 constexpr uint32_t kNarrowTileBytes = ttwv::device_protocol::kLwtNarrowTileBytes;
 constexpr uint32_t kGroupOutputBytes = kGroupOutputElements * sizeof(float);
+constexpr uint32_t kNocL1ReadAlignmentElements = NOC_L1_READ_ALIGNMENT_BYTES / sizeof(float);
+static_assert(NOC_L1_READ_ALIGNMENT_BYTES % sizeof(float) == 0);
 
 using ttwv::kernels::primitives::WorkspaceIndexCursor;
 
@@ -104,6 +106,38 @@ ALWI void read_aligned_output_group(
             get_noc_addr(physical_group_addr + block * kNarrowTileBytes),
             narrow_tiles_addr + block * kNarrowTileBytes,
             kNarrowTileBytes);
+    }
+}
+
+ALWI void read_row_major_source_group(
+    const uint32_t source_addr,
+    const uint32_t logical_start,
+    const uint32_t src_tiles01_addr,
+    const uint32_t src_tiles23_addr) {
+    noc_async_read_one_packet_set_state(get_noc_addr(source_addr), ttwv::device_protocol::kLwtHalfStickBytes);
+    for (uint32_t block = 0; block < 4; ++block) {
+        const uint32_t destination_tile_addr =
+            block < 2 ? src_tiles01_addr + block * kNarrowTileBytes : src_tiles23_addr + (block - 2) * kNarrowTileBytes;
+        for (uint32_t row = 0; row < kRowsPerGroup; ++row) {
+            const uint32_t source_index = logical_start + (row * kOutputBlocksPerRow + block) * kBlockElements;
+            noc_async_read_one_packet_with_state(
+                source_addr + source_index * sizeof(float),
+                destination_tile_addr + row * ttwv::device_protocol::kLwtHalfStickBytes);
+        }
+    }
+}
+
+ALWI void read_row_major_output_group(
+    const uint32_t source_addr, const uint32_t logical_start, const uint32_t narrow_tiles_addr) {
+    noc_async_read_one_packet_set_state(get_noc_addr(source_addr), ttwv::device_protocol::kLwtHalfStickBytes);
+    for (uint32_t block = 0; block < kOutputBlocksPerRow; ++block) {
+        const uint32_t destination_tile_addr = narrow_tiles_addr + block * kNarrowTileBytes;
+        for (uint32_t row = 0; row < kRowsPerGroup; ++row) {
+            const uint32_t source_index = logical_start + (row * kOutputBlocksPerRow + block) * kBlockElements;
+            noc_async_read_one_packet_with_state(
+                source_addr + source_index * sizeof(float),
+                destination_tile_addr + row * ttwv::device_protocol::kLwtHalfStickBytes);
+        }
     }
 }
 
@@ -343,7 +377,7 @@ ALWI void fill_output_narrow_tiles(
     }
 }
 
-template <bool TileNative>
+template <bool TileNative, bool RowMajorNocStaging, bool HybridTileMirror>
 ALWI void emit_predict_update_tiles(
     const uint32_t source_addr,
     const uint32_t base_addr,
@@ -356,12 +390,16 @@ ALWI void emit_predict_update_tiles(
     const uint32_t group_count,
     const uint32_t source_offset,
     const uint32_t base_offset,
-    const uint32_t source_left_pad) {
+    const uint32_t source_left_pad,
+    const uint32_t tile_mirror_offset,
+    const bool source_tile_mirror,
+    const bool base_tile_mirror) {
     const auto* src = reinterpret_cast<volatile tt_l1_ptr float*>(source_addr);
     const auto* base = reinterpret_cast<volatile tt_l1_ptr float*>(base_addr);
 
     for (uint32_t group = 0; group < group_count; ++group) {
         const uint32_t group_base = group * kGroupOutputElements;
+        bool needs_read_barrier = false;
         cb_reserve_back(cb_src_tile0, 2);
         auto* src_tiles01 = reinterpret_cast<float*>(get_write_ptr(cb_src_tile0));
         cb_reserve_back(cb_src_tile1, 2);
@@ -374,7 +412,6 @@ ALWI void emit_predict_update_tiles(
             source_is_dense = candidate_begin + kSourcePackedElements <= source_end;
             source_begin = static_cast<uint32_t>(candidate_begin);
         }
-        bool needs_read_barrier = false;
         if constexpr (TileNative) {
             if (source_is_dense && source_begin % kGroupOutputElements == 0) {
                 read_aligned_source_group(
@@ -388,8 +425,33 @@ ALWI void emit_predict_update_tiles(
                     src, src_tiles01, src_tiles23, source_end, source_offset, source_left_pad, group_base);
             }
         } else if (source_is_dense) {
-            fill_source_row_major<false>(
-                src, src_tiles01, src_tiles23, source_end, source_offset, source_left_pad, group_base);
+            bool loaded_from_tile_mirror = false;
+            if constexpr (HybridTileMirror) {
+                if (source_tile_mirror && source_begin % kGroupOutputElements == 0) {
+                    read_aligned_source_group(
+                        source_addr + tile_mirror_offset,
+                        source_begin,
+                        get_write_ptr(cb_src_tile0),
+                        get_write_ptr(cb_src_tile1));
+                    loaded_from_tile_mirror = true;
+                    needs_read_barrier = true;
+                }
+            }
+            if (!loaded_from_tile_mirror) {
+                if constexpr (RowMajorNocStaging) {
+                    if (source_begin % kNocL1ReadAlignmentElements == 0) {
+                        read_row_major_source_group(
+                            source_addr, source_begin, get_write_ptr(cb_src_tile0), get_write_ptr(cb_src_tile1));
+                        needs_read_barrier = true;
+                    } else {
+                        fill_source_row_major<false>(
+                            src, src_tiles01, src_tiles23, source_end, source_offset, source_left_pad, group_base);
+                    }
+                } else {
+                    fill_source_row_major<false>(
+                        src, src_tiles01, src_tiles23, source_end, source_offset, source_left_pad, group_base);
+                }
+            }
         } else {
             fill_source_row_major<true>(
                 src, src_tiles01, src_tiles23, source_end, source_offset, source_left_pad, group_base);
@@ -410,7 +472,27 @@ ALWI void emit_predict_update_tiles(
                 fill_output_narrow_tiles<true>(base, base_tiles, base_end, base_offset, output_length, group_base);
             }
         } else if (base_is_dense) {
-            fill_output_row_major<false>(base, base_tiles, base_end, base_offset, output_length, group_base);
+            bool loaded_from_tile_mirror = false;
+            if constexpr (HybridTileMirror) {
+                if (base_tile_mirror && base_begin % kGroupOutputElements == 0) {
+                    read_aligned_output_group(base_addr + tile_mirror_offset, base_begin, get_write_ptr(cb_base_tile));
+                    loaded_from_tile_mirror = true;
+                    needs_read_barrier = true;
+                }
+            }
+            if (!loaded_from_tile_mirror) {
+                if constexpr (RowMajorNocStaging) {
+                    if (base_begin % kNocL1ReadAlignmentElements == 0) {
+                        read_row_major_output_group(base_addr, base_begin, get_write_ptr(cb_base_tile));
+                        needs_read_barrier = true;
+                    } else {
+                        fill_output_row_major<false>(
+                            base, base_tiles, base_end, base_offset, output_length, group_base);
+                    }
+                } else {
+                    fill_output_row_major<false>(base, base_tiles, base_end, base_offset, output_length, group_base);
+                }
+            }
         } else {
             fill_output_row_major<true>(base, base_tiles, base_end, base_offset, output_length, group_base);
         }
@@ -424,14 +506,16 @@ ALWI void emit_predict_update_tiles(
     }
 }
 
-template <bool TileNative>
+template <bool TileNative, bool RowMajorNocStaging, bool HybridTileMirror>
 ALWI void emit_scale_tiles(
     const uint32_t source_addr,
     const uint32_t cb_scale_tile,
     const uint32_t source_end,
     const uint32_t source_offset,
     const uint32_t output_length,
-    const uint32_t group_count) {
+    const uint32_t group_count,
+    const uint32_t tile_mirror_offset,
+    const bool source_tile_mirror) {
     const auto* src = reinterpret_cast<volatile tt_l1_ptr float*>(source_addr);
 
     for (uint32_t group = 0; group < group_count; ++group) {
@@ -452,7 +536,29 @@ ALWI void emit_scale_tiles(
                 fill_output_narrow_tiles<true>(src, scale_tiles, source_end, source_offset, output_length, group_base);
             }
         } else if (source_is_dense) {
-            fill_output_row_major<false>(src, scale_tiles, source_end, source_offset, output_length, group_base);
+            bool loaded_from_tile_mirror = false;
+            if constexpr (HybridTileMirror) {
+                if (source_tile_mirror && source_begin % kGroupOutputElements == 0) {
+                    read_aligned_output_group(
+                        source_addr + tile_mirror_offset, source_begin, get_write_ptr(cb_scale_tile));
+                    noc_async_read_barrier();
+                    loaded_from_tile_mirror = true;
+                }
+            }
+            if (!loaded_from_tile_mirror) {
+                if constexpr (RowMajorNocStaging) {
+                    if (source_begin % kNocL1ReadAlignmentElements == 0) {
+                        read_row_major_output_group(source_addr, source_begin, get_write_ptr(cb_scale_tile));
+                        noc_async_read_barrier();
+                    } else {
+                        fill_output_row_major<false>(
+                            src, scale_tiles, source_end, source_offset, output_length, group_base);
+                    }
+                } else {
+                    fill_output_row_major<false>(
+                        src, scale_tiles, source_end, source_offset, output_length, group_base);
+                }
+            }
         } else {
             fill_output_row_major<true>(src, scale_tiles, source_end, source_offset, output_length, group_base);
         }
@@ -473,6 +579,7 @@ void kernel_main() {
     const uint32_t chunk_begin = get_arg_val<uint32_t>(7);
     const uint32_t chunk_count = get_arg_val<uint32_t>(8);
     const uint32_t route_count = get_arg_val<uint32_t>(9);
+    const uint32_t tile_mirror_offset = get_arg_val<uint32_t>(10);
 
     constexpr uint32_t cb_config = get_compile_time_arg_val(0);
     constexpr uint32_t cb_src_tile0 = get_compile_time_arg_val(1);
@@ -483,8 +590,10 @@ void kernel_main() {
     constexpr bool tile_native_workspace = get_compile_time_arg_val(6) != 0;
     constexpr bool inverse = get_compile_time_arg_val(7) != 0;
     constexpr auto boundary_mode = static_cast<ttwv::BoundaryMode>(get_compile_time_arg_val(8));
+    constexpr bool row_major_noc_staging = get_compile_time_arg_val(9) != 0;
+    constexpr bool hybrid_tile_mirror = get_compile_time_arg_val(10) != 0;
     static_assert(ttwv::is_supported_lwt_boundary_mode(boundary_mode), "Unsupported LWT boundary mode");
-    constexpr auto config_args = TensorAccessorArgs<9>();
+    constexpr auto config_args = TensorAccessorArgs<11>();
     constexpr auto input0_args = TensorAccessorArgs<config_args.next_compile_time_args_offset()>();
     constexpr auto input1_args = TensorAccessorArgs<input0_args.next_compile_time_args_offset()>();
 
@@ -544,6 +653,7 @@ void kernel_main() {
             }
             const uint32_t config_index = global_chunk * route_count + route_index;
             const uint32_t* route = load_config_page(config_args, route_config_addr, cb_config, config_index);
+            const uint32_t route_flags = route[ttwv::device_protocol::kRouteFlags];
             const uint32_t route_type = route[ttwv::device_protocol::kRouteType];
             const uint32_t source_addr = route[ttwv::device_protocol::kRouteSourceAddr];
             const uint32_t source_end = route[ttwv::device_protocol::kRouteSourceLength];
@@ -554,9 +664,11 @@ void kernel_main() {
             const uint32_t base_offset = route[ttwv::device_protocol::kRouteBaseOffset];
             const uint32_t source_left_pad = route[ttwv::device_protocol::kRouteSourceLeftPad];
             const uint32_t group_count = route[ttwv::device_protocol::kRouteGroupCount];
+            const bool source_tile_mirror = (route_flags & ttwv::device_protocol::kRouteFlagSourceTileMirror) != 0;
+            const bool base_tile_mirror = (route_flags & ttwv::device_protocol::kRouteFlagBaseTileMirror) != 0;
 
             if (route_type == kStepPredict || route_type == kStepUpdate) {
-                emit_predict_update_tiles<tile_native_workspace>(
+                emit_predict_update_tiles<tile_native_workspace, row_major_noc_staging, hybrid_tile_mirror>(
                     source_addr,
                     base_addr,
                     cb_src_tile0,
@@ -568,10 +680,20 @@ void kernel_main() {
                     group_count,
                     source_offset,
                     base_offset,
-                    source_left_pad);
+                    source_left_pad,
+                    tile_mirror_offset,
+                    source_tile_mirror,
+                    base_tile_mirror);
             } else if (route_type == kStepScaleEven || route_type == kStepScaleOdd) {
-                emit_scale_tiles<tile_native_workspace>(
-                    source_addr, cb_base_tile, source_end, source_offset, output_length, group_count);
+                emit_scale_tiles<tile_native_workspace, row_major_noc_staging, hybrid_tile_mirror>(
+                    source_addr,
+                    cb_base_tile,
+                    source_end,
+                    source_offset,
+                    output_length,
+                    group_count,
+                    tile_mirror_offset,
+                    source_tile_mirror);
             }
             cb_pop_front(cb_config, 1);
             first_local_route = false;
