@@ -104,16 +104,37 @@ TTWV_BOUNDARY_CALLABLE float read_extended_value(
     const uint32_t left_pad,
     const uint32_t out_idx) {
     static_assert(ttwv::is_supported_lwt_boundary_mode(Mode), "Unsupported compile-time boundary mode");
-    const int64_t logical = static_cast<int64_t>(out_idx) - static_cast<int64_t>(left_pad);
-    const ttwv::ExtendedIndex extended = ttwv::make_extended_index<Mode>(logical, input_length);
-    return ttwv::evaluate_extended_index<Mode>(
-        extended,
-        input_length,
-        CachedSourceReader<SrcAccessor>{
-            .src = src,
-            .cache = cache,
-            .source_length = input_length,
-        });
+#if defined(ARCH_WORMHOLE)
+    if constexpr (Mode == ttwv::BoundaryMode::kAntireflect) {
+        // Host planning bounds the padded signal to INT32_MAX.  Native 32-bit
+        // decomposition is therefore exactly equivalent on the supported
+        // domain and avoids linking 64-bit divide/modulo helpers into
+        // Wormhole's 16 KiB NCRISC text region.  Keep Blackhole on the proven
+        // canonical ExtendedIndex path below.
+        const int32_t logical = static_cast<int32_t>(out_idx) - static_cast<int32_t>(left_pad);
+        const ttwv::AntireflectIndexI32 extended = ttwv::make_antireflect_index_i32(logical, input_length);
+        return ttwv::evaluate_antireflect_index_i32(
+            extended,
+            input_length,
+            CachedSourceReader<SrcAccessor>{
+                .src = src,
+                .cache = cache,
+                .source_length = input_length,
+            });
+    } else
+#endif
+    {
+        const int64_t logical = static_cast<int64_t>(out_idx) - static_cast<int64_t>(left_pad);
+        const ttwv::ExtendedIndex extended = ttwv::make_extended_index<Mode>(logical, input_length);
+        return ttwv::evaluate_extended_index<Mode>(
+            extended,
+            input_length,
+            CachedSourceReader<SrcAccessor>{
+                .src = src,
+                .cache = cache,
+                .source_length = input_length,
+            });
+    }
 }
 
 template <ttwv::BoundaryMode Mode, typename SrcAccessor>
