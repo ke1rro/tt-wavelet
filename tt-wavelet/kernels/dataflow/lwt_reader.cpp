@@ -165,7 +165,8 @@ ALWI void initialize_lwt_streams(
     const uint32_t even_begin,
     const uint32_t even_length,
     const uint32_t odd_begin,
-    const uint32_t odd_length) {
+    const uint32_t odd_length,
+    const uint32_t input_page) {
     ttwv::kernels::primitives::StickReadCache input_cache{
         cb_input_cache,
         ttwv::device_protocol::kStickBytes,
@@ -173,6 +174,7 @@ ALWI void initialize_lwt_streams(
         ttwv::device_protocol::kLwtCacheStickCount,
         ttwv::kernels::primitives::kInvalidStick,
         0,
+        input_page,
         false};
     auto* even_dst = reinterpret_cast<volatile tt_l1_ptr float*>(even_addr);
     auto* odd_dst = reinterpret_cast<volatile tt_l1_ptr float*>(odd_addr);
@@ -220,7 +222,8 @@ ALWI void initialize_inverse_stream(
     const uint32_t input_begin,
     const uint32_t output_addr,
     const uint32_t output_length,
-    const uint32_t cb_input_cache) {
+    const uint32_t cb_input_cache,
+    const uint32_t input_page) {
     ttwv::kernels::primitives::StickReadCache input_cache{
         cb_input_cache,
         ttwv::device_protocol::kStickBytes,
@@ -228,6 +231,7 @@ ALWI void initialize_inverse_stream(
         ttwv::device_protocol::kLwtCacheStickCount,
         ttwv::kernels::primitives::kInvalidStick,
         0,
+        input_page,
         false};
     auto* output = reinterpret_cast<volatile tt_l1_ptr float*>(output_addr);
     WorkspaceIndexCursor cursor(0);
@@ -580,6 +584,8 @@ void kernel_main() {
     const uint32_t chunk_count = get_arg_val<uint32_t>(8);
     const uint32_t route_count = get_arg_val<uint32_t>(9);
     const uint32_t tile_mirror_offset = get_arg_val<uint32_t>(10);
+    const uint32_t chunks_per_sample = get_arg_val<uint32_t>(11);
+    const uint32_t input_pages_per_sample = get_arg_val<uint32_t>(12);
 
     constexpr uint32_t cb_config = get_compile_time_arg_val(0);
     constexpr uint32_t cb_src_tile0 = get_compile_time_arg_val(1);
@@ -606,7 +612,10 @@ void kernel_main() {
             cb_pop_front(cb_sync, 1);
         }
 
-        const uint32_t global_chunk = chunk_begin + local_chunk;
+        const uint32_t global_work_item = chunk_begin + local_chunk;
+        const uint32_t batch_index = global_work_item / chunks_per_sample;
+        const uint32_t global_chunk = global_work_item - batch_index * chunks_per_sample;
+        const uint32_t input_page = batch_index * input_pages_per_sample;
         const uint32_t* chunk = load_config_page(config_args, chunk_config_addr, cb_config, global_chunk);
         if constexpr (inverse) {
             const auto input1 = TensorAccessor(input1_args, input1_or_length, ttwv::device_protocol::kStickBytes);
@@ -622,9 +631,10 @@ void kernel_main() {
                 approximation_begin,
                 initial_even_addr,
                 approximation_length,
-                cb_input_cache);
+                cb_input_cache,
+                input_page);
             initialize_inverse_stream<tile_native_workspace>(
-                input1, coefficient_length, detail_begin, initial_odd_addr, detail_length, cb_input_cache);
+                input1, coefficient_length, detail_begin, initial_odd_addr, detail_length, cb_input_cache, input_page);
         } else {
             const uint32_t input_length = input1_or_length;
             const uint32_t left_pad = input_length_or_left_pad;
@@ -643,7 +653,8 @@ void kernel_main() {
                 initial_even_begin,
                 initial_even_length,
                 initial_odd_begin,
-                initial_odd_length);
+                initial_odd_length,
+                input_page);
         }
 
         for (uint32_t route_index = 0; route_index < route_count; ++route_index) {

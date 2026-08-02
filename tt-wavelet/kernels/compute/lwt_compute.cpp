@@ -11,10 +11,10 @@
 
 #include "../../tt_wavelet/include/device_protocol/lwt_config.hpp"
 #include "../../tt_wavelet/include/lifting/static_scheme.hpp"
-#include "../sfpi/horizontal_stencil_sfpi.h"
 #include "api/compute/common.h"
 #include "api/compute/eltwise_unary/eltwise_unary.h"
 #include "api/compute/tile_move_copy.h"
+#include "../sfpi/horizontal_stencil_sfpi.h"
 #include TTWV_LWT_SCHEME_HEADER
 
 #ifndef TTWV_INLINE_TERMINAL_SCALE

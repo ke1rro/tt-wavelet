@@ -84,6 +84,7 @@ ALWI void write_band_fragmented(
     const OutputAccessor& output_args,
     const uint32_t output_addr,
     const uint32_t output_tile_columns,
+    const uint32_t output_tile_base,
     const uint32_t plane_addr,
     const uint32_t plane_tile_columns,
     const Rect& source,
@@ -110,7 +111,8 @@ ALWI void write_band_fragmented(
                 (destination_y / kTileSide) * output_tile_columns + destination_x / kTileSide;
             const uint32_t destination_offset =
                 tile_element_offset(destination_y % kTileSide, destination_x % kTileSide) * sizeof(float);
-            const uint64_t destination_noc_addr = output.get_noc_addr(destination_tile) + destination_offset;
+            const uint64_t destination_noc_addr =
+                output.get_noc_addr(output_tile_base + destination_tile) + destination_offset;
             const uint32_t scratch_lane = static_cast<uint32_t>(destination_noc_addr) & 63U;
             auto* staged = reinterpret_cast<volatile tt_l1_ptr float*>(noc_scratch_addr + scratch_lane);
             const auto* source_values = reinterpret_cast<volatile tt_l1_ptr float*>(plane_addr + source_offset);
@@ -129,6 +131,7 @@ template <typename OutputAccessor>
     const OutputAccessor& output_args,
     const uint32_t output_addr,
     const uint32_t output_tile_columns,
+    const uint32_t output_tile_base,
     const uint32_t plane_addr,
     const uint32_t plane_tile_columns,
     const Rect& source,
@@ -154,7 +157,10 @@ template <typename OutputAccessor>
             const uint32_t source_tile = tile_y * plane_tile_columns + tile_x;
             const uint32_t destination_tile =
                 (final_y_begin / kTileSide + tile_y) * output_tile_columns + final_x_begin / kTileSide + tile_x;
-            noc_async_write(plane_addr + source_tile * kTileBytes, output.get_noc_addr(destination_tile), kTileBytes);
+            noc_async_write(
+                plane_addr + source_tile * kTileBytes,
+                output.get_noc_addr(output_tile_base + destination_tile),
+                kTileBytes);
             if (++outstanding == kWriteBatchTiles) {
                 noc_async_write_barrier();
                 outstanding = 0;
@@ -172,6 +178,7 @@ ALWI void write_band(
     const OutputAccessor& output_args,
     const uint32_t output_addr,
     const uint32_t output_tile_columns,
+    const uint32_t output_tile_base,
     const uint32_t plane_addr,
     const uint32_t plane_tile_columns,
     const Rect& source,
@@ -184,6 +191,7 @@ ALWI void write_band(
             output_args,
             output_addr,
             output_tile_columns,
+            output_tile_base,
             plane_addr,
             plane_tile_columns,
             source,
@@ -197,6 +205,7 @@ ALWI void write_band(
         output_args,
         output_addr,
         output_tile_columns,
+        output_tile_base,
         plane_addr,
         plane_tile_columns,
         source,
@@ -316,6 +325,7 @@ ALWI void write_interleaved_output(
     const OutputAccessor& output_args,
     const uint32_t output_addr,
     const uint32_t output_tile_columns,
+    const uint32_t output_tile_base,
     const uint32_t* plane_addrs,
     const uint32_t* plane_tile_columns,
     const uint32_t* parity_slots,
@@ -355,7 +365,8 @@ ALWI void write_interleaved_output(
                     pad_y,
                     pad_x,
                     scratch_addr);
-                noc_async_write(scratch_addr, output.get_noc_addr(destination_tile), kTileBytes);
+                noc_async_write(
+                    scratch_addr, output.get_noc_addr(output_tile_base + destination_tile), kTileBytes);
             } else {
                 for (uint32_t y = std::max(tile_y, final_y_begin); y < y_end; ++y) {
                     const uint32_t padded_y = y + pad_y;
@@ -384,7 +395,7 @@ ALWI void write_interleaved_output(
                         const uint32_t byte_offset = tile_element_offset(y - tile_y, local_x) * sizeof(float);
                         noc_async_write(
                             scratch_addr + byte_offset,
-                            output.get_noc_addr(destination_tile) + byte_offset,
+                            output.get_noc_addr(output_tile_base + destination_tile) + byte_offset,
                             count * sizeof(float));
                         x += count;
                     }
@@ -420,6 +431,11 @@ void kernel_main() {
 #ifdef ILWT_2D
     const uint32_t pad_y = get_arg_val<uint32_t>(plane_arg_count + 10);
     const uint32_t pad_x = get_arg_val<uint32_t>(plane_arg_count + 11);
+    const uint32_t chunks_per_sample = get_arg_val<uint32_t>(plane_arg_count + 12);
+    const uint32_t output_tiles_per_sample = get_arg_val<uint32_t>(plane_arg_count + 13);
+#else
+    const uint32_t chunks_per_sample = get_arg_val<uint32_t>(plane_arg_count + 10);
+    const uint32_t output_tiles_per_sample = get_arg_val<uint32_t>(plane_arg_count + 11);
 #endif
 
     constexpr uint32_t cb_output = get_compile_time_arg_val(0);
@@ -435,7 +451,10 @@ void kernel_main() {
     const uint32_t writer_config_addr = noc_scratch_addr + split_scratch_bytes / 2;
 
     for (uint32_t local_chunk = 0; local_chunk < chunk_count; ++local_chunk) {
-        const uint32_t global_chunk = chunk_begin + local_chunk;
+        const uint32_t global_work_item = chunk_begin + local_chunk;
+        const uint32_t batch_index = global_work_item / chunks_per_sample;
+        const uint32_t global_chunk = global_work_item - batch_index * chunks_per_sample;
+        const uint32_t output_tile_base = batch_index * output_tiles_per_sample;
         // The first packed output proves that split and reader preloading no
         // longer use the shared split scratch. Leave the page in the CB for
         // write_local_output() to consume after descriptor preloading.
@@ -499,6 +518,7 @@ void kernel_main() {
             output_args,
             output_addrs[0],
             output_tile_columns,
+            output_tile_base,
             plane_addrs,
             plane_tile_columns,
             parity_slots,
@@ -521,6 +541,7 @@ void kernel_main() {
                 output_args,
                 output_addrs[band],
                 output_tile_columns,
+                output_tile_base,
                 plane_addrs[source_slot],
                 plane_tile_columns[source_slot],
                 source,

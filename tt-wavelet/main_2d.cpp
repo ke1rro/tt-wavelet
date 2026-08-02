@@ -43,6 +43,7 @@ struct Options {
     size_t repeats{1};
     size_t warmup_runs{1};
     uint32_t core_limit{1};
+    uint32_t batch_count{1};
     ttwv::BoundaryMode boundary_mode{ttwv::BoundaryMode::kSymmetric};
     std::string wavelet;
     size_t height{0};
@@ -52,6 +53,7 @@ struct Options {
 };
 
 struct DeviceBands {
+    uint32_t batch_count{1};
     size_t height{0};
     size_t width{0};
     std::array<std::vector<float>, ttwv::device_protocol::kLwt2DBandCount> values;
@@ -60,7 +62,7 @@ struct DeviceBands {
 [[nodiscard]] std::string usage() {
     return "Usage: lwt_2d "
            "[--boundary-mode zero|constant|symmetric|reflect|periodic|smooth|antisymmetric|antireflect] "
-           "[--binary-input] [--cores N] [--output-prefix PATH] [--quiet] "
+           "[--binary-input] [--cores N] [--batch-count B] [--output-prefix PATH] [--quiet] "
            "[--benchmark [--include-transfers] [--repeats N] [--warmup-runs N]] "
            "WAVELET HEIGHT WIDTH INPUT_FILE";
 }
@@ -99,6 +101,15 @@ struct DeviceBands {
                 throw std::runtime_error("--cores exceeds uint32_t");
             }
             options.core_limit = static_cast<uint32_t>(cores);
+        } else if (argument == "--batch-count") {
+            if (++index >= argc) {
+                throw std::runtime_error("--batch-count requires a value");
+            }
+            const size_t batch_count = parse_unsigned(argv[index], "--batch-count", false);
+            if (batch_count > std::numeric_limits<uint32_t>::max()) {
+                throw std::runtime_error("--batch-count exceeds uint32_t");
+            }
+            options.batch_count = static_cast<uint32_t>(batch_count);
         } else if (argument == "--output-prefix") {
             if (++index >= argc || std::string_view{argv[index]}.empty()) {
                 throw std::runtime_error("--output-prefix requires a path");
@@ -153,7 +164,11 @@ struct DeviceBands {
 }
 
 [[nodiscard]] std::vector<float> read_input(
-    const std::filesystem::path& path, const size_t height, const size_t width, const bool binary) {
+    const std::filesystem::path& path,
+    const size_t height,
+    const size_t width,
+    const uint32_t batch_count,
+    const bool binary) {
     if (height > std::numeric_limits<size_t>::max() / width) {
         throw std::runtime_error("2D input shape overflows size_t");
     }
@@ -161,23 +176,28 @@ struct DeviceBands {
     if (!input.good()) {
         throw std::runtime_error("Failed to open input file: " + path.string());
     }
-    std::vector<float> values(height * width);
+    const size_t sample_elements = height * width;
+    if (sample_elements > std::numeric_limits<size_t>::max() / batch_count) {
+        throw std::runtime_error("2D batched input shape overflows size_t");
+    }
+    const size_t total_elements = static_cast<size_t>(batch_count) * sample_elements;
+    std::vector<float> values(total_elements);
     if (binary) {
         input.read(reinterpret_cast<char*>(values.data()), static_cast<std::streamsize>(values.size() * sizeof(float)));
         if (input.gcount() != static_cast<std::streamsize>(values.size() * sizeof(float))) {
-            throw std::runtime_error("Binary input contains fewer than HEIGHT x WIDTH FP32 values");
+            throw std::runtime_error("Binary input contains fewer than B x HEIGHT x WIDTH FP32 values");
         }
     } else {
         values.clear();
-        values.reserve(height * width);
+        values.reserve(total_elements);
         for (float value = 0.0F; input >> value;) {
             values.push_back(value);
         }
         if (!input.eof()) {
             throw std::runtime_error("Input file contains a non-numeric token");
         }
-        if (values.size() != height * width) {
-            throw std::runtime_error("Input element count does not match HEIGHT x WIDTH");
+        if (values.size() != total_elements) {
+            throw std::runtime_error("Input element count does not match B x HEIGHT x WIDTH");
         }
     }
     return values;
@@ -241,11 +261,11 @@ struct DeviceBands {
 }
 
 [[nodiscard]] std::shared_ptr<tt::tt_metal::distributed::MeshBuffer> create_input(
-    tt::tt_metal::distributed::MeshDevice& mesh_device, const ttwv::Shape2D padded_shape) {
+    tt::tt_metal::distributed::MeshDevice& mesh_device, const ttwv::Shape2D padded_shape, const uint32_t batch_count) {
     const size_t tiles = padded_shape.height / ttwv::kTileHeight2D * (padded_shape.width / ttwv::kTileWidth2D);
     return tt::tt_metal::distributed::MeshBuffer::create(
         tt::tt_metal::distributed::ReplicatedBufferConfig{
-            .size = static_cast<uint64_t>(tiles * ttwv::device_protocol::kLwt2DFullTileBytes),
+            .size = static_cast<uint64_t>(batch_count) * tiles * ttwv::device_protocol::kLwt2DFullTileBytes,
         },
         tt::tt_metal::distributed::DeviceLocalBufferConfig{
             .page_size = ttwv::device_protocol::kLwt2DFullTileBytes,
@@ -290,6 +310,11 @@ void print_telemetry(const ttwv::Lwt2DSchedulerTelemetry& telemetry) {
               << "lwt_2d_boundary_mode: " << ttwv::boundary_mode_name(telemetry.boundary_mode) << '\n'
               << "lwt_2d_available_worker_core_count: " << telemetry.available_worker_core_count << '\n'
               << "lwt_2d_active_core_count: " << telemetry.active_core_count << '\n'
+              << "lwt_2d_batch_count: " << telemetry.batch_count << '\n'
+              << "lwt_2d_chunks_per_sample: " << telemetry.chunks_per_sample << '\n'
+              << "lwt_2d_total_work_items: " << telemetry.total_work_items << '\n'
+              << "lwt_2d_min_work_items_per_core: " << telemetry.min_work_items_per_core << '\n'
+              << "lwt_2d_max_work_items_per_core: " << telemetry.max_work_items_per_core << '\n'
               << "lwt_2d_chunk_count: " << telemetry.chunk_count << '\n'
               << "lwt_2d_chunk_tiles: " << telemetry.chunk_tiles_y << 'x' << telemetry.chunk_tiles_x << '\n'
               << "lwt_2d_route_count: " << telemetry.route_count << '\n'
@@ -314,16 +339,24 @@ void print_telemetry(const ttwv::Lwt2DSchedulerTelemetry& telemetry) {
 [[nodiscard]] DeviceBands read_bands(
     tt::tt_metal::distributed::MeshCommandQueue& queue, ttwv::Lwt2DExecutable& executable) {
     DeviceBands result{
+        .batch_count = executable.buffers.scheduler.batch_count,
         .height = executable.plan.tiling.band.logical.height,
         .width = executable.plan.tiling.band.logical.width,
     };
     for (size_t band = 0; band < result.values.size(); ++band) {
         std::vector<float> tiled;
         tt::tt_metal::distributed::EnqueueReadMeshBuffer(queue, tiled, executable.buffers.outputs[band], true);
-        result.values[band] = crop(
-            untilize_padded(tiled, executable.plan.tiling.band.storage),
-            executable.plan.tiling.band.storage,
-            executable.plan.tiling.band.logical);
+        const size_t tiled_stride = tiled.size() / result.batch_count;
+        for (uint32_t batch = 0; batch < result.batch_count; ++batch) {
+            const std::vector<float> sample(
+                tiled.begin() + static_cast<std::ptrdiff_t>(batch * tiled_stride),
+                tiled.begin() + static_cast<std::ptrdiff_t>((batch + 1) * tiled_stride));
+            auto logical = crop(
+                untilize_padded(sample, executable.plan.tiling.band.storage),
+                executable.plan.tiling.band.storage,
+                executable.plan.tiling.band.logical);
+            result.values[band].insert(result.values[band].end(), logical.begin(), logical.end());
+        }
     }
     return result;
 }
@@ -344,7 +377,11 @@ void write_output_bands(const std::filesystem::path& prefix, const DeviceBands& 
         }
     }
     std::ofstream shape(prefix.string() + "_shape.txt");
-    shape << output.height << ' ' << output.width << '\n';
+    if (output.batch_count == 1) {
+        shape << output.height << ' ' << output.width << '\n';
+    } else {
+        shape << output.batch_count << ' ' << output.height << ' ' << output.width << '\n';
+    }
     if (!shape.good()) {
         throw std::runtime_error("Failed to write device output shape");
     }
@@ -378,7 +415,8 @@ int run(
         options.height,
         options.width,
         options.core_limit,
-        options.boundary_mode);
+        options.boundary_mode,
+        options.batch_count);
     ttwv::prepare_lwt_2d(queue, executable);
 
     const auto execute = [&]() {
@@ -447,21 +485,29 @@ int main(int argc, char** argv) {
     try {
         const Options options = parse_options(argc, argv);
         const std::vector<float> logical_input =
-            read_input(options.input_path, options.height, options.width, options.binary_input);
+            read_input(options.input_path, options.height, options.width, options.batch_count, options.binary_input);
         const ttwv::TiledShape2D input_shape = ttwv::make_tiled_shape_2d({
             .height = options.height,
             .width = options.width,
         });
-        const std::vector<float> padded = ttwv::zero_pad_row_major_to_tiles_2d(logical_input, input_shape.logical);
-        if (!ttwv::has_zero_tile_padding_2d(padded, input_shape)) {
-            throw std::runtime_error("2D input preprocessing violated zero-padding contract");
+        std::vector<float> tiled;
+        const size_t logical_stride = options.height * options.width;
+        for (uint32_t batch = 0; batch < options.batch_count; ++batch) {
+            const std::vector<float> sample(
+                logical_input.begin() + static_cast<std::ptrdiff_t>(batch * logical_stride),
+                logical_input.begin() + static_cast<std::ptrdiff_t>((batch + 1) * logical_stride));
+            const std::vector<float> padded = ttwv::zero_pad_row_major_to_tiles_2d(sample, input_shape.logical);
+            if (!ttwv::has_zero_tile_padding_2d(padded, input_shape)) {
+                throw std::runtime_error("2D input preprocessing violated zero-padding contract");
+            }
+            const std::vector<float> tiled_sample = tilize_padded(padded, input_shape.storage);
+            tiled.insert(tiled.end(), tiled_sample.begin(), tiled_sample.end());
         }
-        const std::vector<float> tiled = tilize_padded(padded, input_shape.storage);
 
         auto mesh_device = tt::tt_metal::distributed::MeshDevice::create_unit_mesh(0);
         mesh_device->enable_program_cache();
         auto& queue = mesh_device->mesh_command_queue();
-        auto input = create_input(*mesh_device, input_shape.storage);
+        auto input = create_input(*mesh_device, input_shape.storage, options.batch_count);
         tt::tt_metal::distributed::EnqueueWriteMeshBuffer(queue, input, tiled, true);
 
         const auto dispatch = [&]<typename Scheme>() {

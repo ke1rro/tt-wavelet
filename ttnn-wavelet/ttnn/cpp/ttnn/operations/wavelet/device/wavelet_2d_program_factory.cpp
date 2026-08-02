@@ -3,8 +3,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "ttnn/operations/wavelet/device/wavelet_2d_program_factory.hpp"
-#include "ttnn/operations/wavelet/planner/inverse_plan_2d.hpp"
-#include "ttnn/operations/wavelet/planner/plan_2d.hpp"
 
 #include <algorithm>
 #include <array>
@@ -17,8 +15,9 @@
 #include <utility>
 #include <vector>
 
-#include "tt-metalium/buffer.hpp"
+#include "tt-logger/tt-logger.hpp"
 #include "tt-metalium/allocator.hpp"
+#include "tt-metalium/buffer.hpp"
 #include "tt-metalium/circular_buffer_constants.h"
 #include "tt-metalium/core_coord.hpp"
 #include "tt-metalium/host_api.hpp"
@@ -28,6 +27,8 @@
 #include "tt-metalium/tile.hpp"
 #include "tt-metalium/workload_descriptor.hpp"
 #include "ttnn/operations/wavelet/common/wavelet_host.hpp"
+#include "ttnn/operations/wavelet/planner/inverse_plan_2d.hpp"
+#include "ttnn/operations/wavelet/planner/plan_2d.hpp"
 #include "ttnn/operations/wavelet/planner/policy.hpp"
 #include "ttnn/tensor/tensor_ops.hpp"
 
@@ -83,9 +84,51 @@ struct CoreChunkWork {
     uint32_t chunk_count{0};
 };
 
+struct Logical2DShape {
+    uint32_t batch_count{1};
+    uint32_t height{0};
+    uint32_t width{0};
+    bool rank_four{false};
+};
+
 [[nodiscard]] uint32_t checked_u32(const size_t value, const char* label) {
     TT_FATAL(value <= std::numeric_limits<uint32_t>::max(), "{} exceeds uint32_t", label);
     return static_cast<uint32_t>(value);
+}
+
+[[nodiscard]] Logical2DShape logical_2d_shape(const Tensor& tensor, const char* tensor_name) {
+    const auto& shape = tensor.logical_shape();
+    if (shape.rank() == 2) {
+        return Logical2DShape{
+            .batch_count = 1,
+            .height = checked_u32(shape[0], tensor_name),
+            .width = checked_u32(shape[1], tensor_name),
+            .rank_four = false,
+        };
+    }
+    TT_FATAL(shape.rank() == 4, "{} must have shape [H,W] or [B,1,H,W], got rank {}", tensor_name, shape.rank());
+    TT_FATAL(shape[0] > 0, "{} batch dimension must be positive", tensor_name);
+    TT_FATAL(shape[1] == 1, "{} requires C == 1, got {}", tensor_name, shape[1]);
+    return Logical2DShape{
+        .batch_count = checked_u32(shape[0], "2D wavelet batch count"),
+        .height = checked_u32(shape[2], tensor_name),
+        .width = checked_u32(shape[3], tensor_name),
+        .rank_four = true,
+    };
+}
+
+[[nodiscard]] uint32_t tile_pages_per_batch_item(
+    const Tensor& tensor, const uint32_t batch_count, const char* tensor_name) {
+    TT_FATAL(batch_count > 0, "{} batch count must be positive", tensor_name);
+    const uint64_t physical_elements = tensor.physical_volume();
+    TT_FATAL(
+        physical_elements % batch_count == 0, "{} physical volume is not divisible by its batch count", tensor_name);
+    const uint64_t elements_per_batch = physical_elements / batch_count;
+    TT_FATAL(
+        elements_per_batch % (kTileHeight2D * kTileWidth2D) == 0,
+        "{} physical batch stride is not tile aligned",
+        tensor_name);
+    return checked_u32(elements_per_batch / (kTileHeight2D * kTileWidth2D), "2D wavelet tiles per batch item");
 }
 
 [[nodiscard]] uint32_t static_workspace_address_2d(
@@ -247,7 +290,9 @@ void replace_plane_tile_counts_with_widths(std::vector<uint32_t>& args, const Pl
     const tt::tt_metal::Buffer& input,
     const Lwt2DExecutionPlan& plan,
     const WorkingBuffers2D& buffers,
-    const CoreChunkWork& work) {
+    const CoreChunkWork& work,
+    const uint32_t chunks_per_sample,
+    const uint32_t input_tiles_per_sample) {
     tt::tt_metal::KernelDescriptor::RTArgList args;
     args.push_back(const_cast<tt::tt_metal::Buffer*>(&input));
     args.append({
@@ -265,11 +310,17 @@ void replace_plane_tile_counts_with_widths(std::vector<uint32_t>& args, const Pl
     args.push_back(work.chunk_begin);
     args.push_back(work.chunk_count);
     args.push_back(checked_u32(plan.chunks.front().routes.size(), "2D route count"));
+    args.push_back(chunks_per_sample);
+    args.push_back(input_tiles_per_sample);
     return args;
 }
 
 [[nodiscard]] tt::tt_metal::KernelDescriptor::RTArgList writer_args(
-    const Lwt2DExecutionPlan& plan, const WorkingBuffers2D& buffers, const CoreChunkWork& work) {
+    const Lwt2DExecutionPlan& plan,
+    const WorkingBuffers2D& buffers,
+    const CoreChunkWork& work,
+    const uint32_t chunks_per_sample,
+    const uint32_t output_tiles_per_sample) {
     std::vector<uint32_t> plane_args = plane_addresses(buffers);
     replace_plane_tile_counts_with_widths(plane_args, plan);
     tt::tt_metal::KernelDescriptor::RTArgList args;
@@ -283,6 +334,8 @@ void replace_plane_tile_counts_with_widths(std::vector<uint32_t>& args, const Pl
     args.push_back(work.chunk_begin);
     args.push_back(work.chunk_count);
     args.push_back(checked_u32(plan.chunks.front().routes.size(), "2D route count"));
+    args.push_back(chunks_per_sample);
+    args.push_back(output_tiles_per_sample);
     return args;
 }
 
@@ -298,7 +351,9 @@ void replace_plane_tile_counts_with_widths(std::vector<uint32_t>& args, const Pl
     const std::array<const tt::tt_metal::Buffer*, device_protocol::kLwt2DBandCount>& bands,
     const Ilwt2DExecutionPlan& plan,
     const WorkingBuffers2D& buffers,
-    const CoreChunkWork& work) {
+    const CoreChunkWork& work,
+    const uint32_t chunks_per_sample,
+    const uint32_t input_tiles_per_sample) {
     const auto& y_forward = plan.y_plan.forward_trace;
     const auto& x_forward = plan.x_plan.forward_trace;
     const int64_t y_canonical_start = static_cast<int64_t>(y_forward.preprocess_layout.pad_config.left + 1) / 2;
@@ -322,11 +377,17 @@ void replace_plane_tile_counts_with_widths(std::vector<uint32_t>& args, const Pl
     args.push_back(work.chunk_begin);
     args.push_back(work.chunk_count);
     args.push_back(checked_u32(plan.chunks.front().routes.size(), "2D ILWT route count"));
+    args.push_back(chunks_per_sample);
+    args.push_back(input_tiles_per_sample);
     return args;
 }
 
 [[nodiscard]] tt::tt_metal::KernelDescriptor::RTArgList inverse_writer_args(
-    const Ilwt2DExecutionPlan& plan, const WorkingBuffers2D& buffers, const CoreChunkWork& work) {
+    const Ilwt2DExecutionPlan& plan,
+    const WorkingBuffers2D& buffers,
+    const CoreChunkWork& work,
+    const uint32_t chunks_per_sample,
+    const uint32_t output_tiles_per_sample) {
     std::vector<uint32_t> plane_args = plane_addresses(buffers);
     replace_plane_tile_counts_with_widths(plane_args, plan);
     tt::tt_metal::KernelDescriptor::RTArgList args;
@@ -342,6 +403,8 @@ void replace_plane_tile_counts_with_widths(std::vector<uint32_t>& args, const Pl
     args.push_back(checked_u32(plan.chunks.front().routes.size(), "2D ILWT route count"));
     args.push_back(plan.y_plan.forward_trace.preprocess_layout.pad_config.left);
     args.push_back(plan.x_plan.forward_trace.preprocess_layout.pad_config.left);
+    args.push_back(chunks_per_sample);
+    args.push_back(output_tiles_per_sample);
     return args;
 }
 
@@ -353,7 +416,7 @@ template <typename Plan>
     args.reserve(1 + static_cast<size_t>(work.chunk_count) * packed_words_per_chunk);
     args.push_back(work.chunk_count);
     for (uint32_t local_chunk = 0; local_chunk < work.chunk_count; ++local_chunk) {
-        const Lwt2DChunkPlan& chunk = plan.chunks[work.chunk_begin + local_chunk];
+        const Lwt2DChunkPlan& chunk = plan.chunks[(work.chunk_begin + local_chunk) % plan.chunks.size()];
         for (size_t route_begin = 0; route_begin < route_count; route_begin += 4) {
             uint32_t packed_counts = 0;
             const size_t route_end = std::min(route_begin + 4, route_count);
@@ -521,7 +584,7 @@ void validate_input_memory_config_2d(const MemoryConfig& memory_config, const ch
         tensor_name);
 }
 
-void validate_rank_two_tensor(const Tensor& tensor, const char* tensor_name) {
+void validate_2d_tensor(const Tensor& tensor, const char* tensor_name) {
     TT_FATAL(tensor.storage_type() == StorageType::DEVICE, "{} must be a device tensor", tensor_name);
     TT_FATAL(
         tensor.is_allocated() && tensor.buffer() != nullptr, "{} must have an allocated device buffer", tensor_name);
@@ -529,16 +592,8 @@ void validate_rank_two_tensor(const Tensor& tensor, const char* tensor_name) {
     TT_FATAL(tensor.device()->num_devices() == 1, "{} must be placed on exactly one physical device", tensor_name);
     TT_FATAL(tensor.dtype() == DataType::FLOAT32, "{} must have FLOAT32 dtype", tensor_name);
     TT_FATAL(tensor.layout() == Layout::TILE, "{} must use TILE layout", tensor_name);
-    TT_FATAL(tensor.logical_shape().rank() == 2, "{} must have exact rank 2", tensor_name);
-    TT_FATAL(
-        tensor.logical_shape()[0] > 0 && tensor.logical_shape()[1] > 0,
-        "{} height and width must be positive",
-        tensor_name);
-    TT_FATAL(
-        tensor.logical_shape()[0] <= std::numeric_limits<uint32_t>::max() &&
-            tensor.logical_shape()[1] <= std::numeric_limits<uint32_t>::max(),
-        "{} dimensions exceed the device uint32 range",
-        tensor_name);
+    const Logical2DShape shape = logical_2d_shape(tensor, tensor_name);
+    TT_FATAL(shape.height > 0 && shape.width > 0, "{} height and width must be positive", tensor_name);
     const auto tile = tensor.tensor_spec().tile();
     TT_FATAL(
         tile.get_height() == kTileHeight2D && tile.get_width() == kTileWidth2D,
@@ -546,13 +601,13 @@ void validate_rank_two_tensor(const Tensor& tensor, const char* tensor_name) {
         tensor_name);
     validate_input_memory_config_2d(tensor.memory_config(), tensor_name);
 
-    const size_t padded_height = round_up(static_cast<size_t>(tensor.logical_shape()[0]), kTileHeight2D);
-    const size_t padded_width = round_up(static_cast<size_t>(tensor.logical_shape()[1]), kTileWidth2D);
+    const size_t padded_height = round_up(static_cast<size_t>(shape.height), kTileHeight2D);
+    const size_t padded_width = round_up(static_cast<size_t>(shape.width), kTileWidth2D);
     TT_FATAL(
         padded_height <= std::numeric_limits<size_t>::max() / padded_width / sizeof(float),
         "{} physical size calculation overflows size_t",
         tensor_name);
-    const size_t required_bytes = padded_height * padded_width * sizeof(float);
+    const size_t required_bytes = static_cast<size_t>(shape.batch_count) * padded_height * padded_width * sizeof(float);
     TT_FATAL(
         tensor.buffer()->size() >= required_bytes,
         "{} physical buffer has {} bytes but its padded tile shape requires {}",
@@ -562,10 +617,12 @@ void validate_rank_two_tensor(const Tensor& tensor, const char* tensor_name) {
     static_cast<void>(make_architecture_policy(tensor.device()->arch()));
 }
 
-[[nodiscard]] tt::tt_metal::TensorSpec rank_two_output_spec(
-    const uint32_t height, const uint32_t width, const MemoryConfig& memory_config) {
+[[nodiscard]] tt::tt_metal::TensorSpec output_spec_2d(
+    const Logical2DShape& input_shape, const uint32_t height, const uint32_t width, const MemoryConfig& memory_config) {
+    const Shape output_shape =
+        input_shape.rank_four ? Shape({input_shape.batch_count, 1, height, width}) : Shape({height, width});
     return tt::tt_metal::TensorSpec(
-        Shape({height, width}),
+        output_shape,
         tt::tt_metal::TensorLayout(DataType::FLOAT32, tt::tt_metal::PageConfig(Layout::TILE), memory_config));
 }
 
@@ -574,7 +631,7 @@ void validate_preallocated_output_2d(
     const tt::tt_metal::TensorSpec& expected_spec,
     const tt::tt_metal::distributed::MeshDevice* expected_device,
     const char* output_name) {
-    validate_rank_two_tensor(output, output_name);
+    validate_2d_tensor(output, output_name);
     validate_output_memory_config_2d(output.memory_config(), output_name);
     TT_FATAL(output.device() == expected_device, "{} must be on the same device as the inputs", output_name);
     TT_FATAL(
@@ -688,15 +745,17 @@ template <typename Scheme>
     const MeshCoordinateRangeSet& tensor_coords) {
     auto& mesh_device = *tensor_args.input.device();
     const auto& input_buffer = *tensor_args.input.buffer();
+    const Logical2DShape input_shape = logical_2d_shape(tensor_args.input, "2D DWT input");
     const std::array<const tt::tt_metal::Buffer*, device_protocol::kLwt2DBandCount> input_buffers = {
         &input_buffer, &input_buffer, &input_buffer, &input_buffer};
     Lwt2DExecutionPlan plan = make_forward_plan_2d<Scheme>(
-        mesh_device,
-        tensor_args.input.logical_shape()[0],
-        tensor_args.input.logical_shape()[1],
-        operation_attributes.boundary_mode);
+        mesh_device, input_shape.height, input_shape.width, operation_attributes.boundary_mode);
 
-    std::vector<tt::tt_metal::CoreCoord> cores = select_cores(mesh_device, plan.active_core_count);
+    const uint32_t chunks_per_sample = checked_u32(plan.chunks.size(), "2D LWT chunks per sample");
+    const uint32_t total_work_items =
+        checked_u32(static_cast<size_t>(chunks_per_sample) * input_shape.batch_count, "2D LWT total batch work items");
+    std::vector<tt::tt_metal::CoreCoord> cores =
+        select_cores(mesh_device, std::min(core_limit_2d(mesh_device), total_work_items));
     tt::tt_metal::WorkloadDescriptor workload;
     const size_t route_count = plan.chunks.front().routes.size();
     const uint32_t scratch_tile_count = noc_scratch_tile_count(operation_attributes.boundary_mode, false, route_count);
@@ -760,12 +819,31 @@ template <typename Scheme>
         compact_boundary_code,
         false,
         scratch_tile_count);
-    const std::vector<CoreChunkWork> work =
-        partition_work(buffers.cores, checked_u32(plan.chunks.size(), "2D LWT chunk count"));
+    const std::vector<CoreChunkWork> work = partition_work(buffers.cores, total_work_items);
+    const auto [min_work, max_work] = std::minmax_element(
+        work.begin(), work.end(), [](const auto& lhs, const auto& rhs) { return lhs.chunk_count < rhs.chunk_count; });
+    log_debug(
+        tt::LogOp,
+        "ttnn::dwt_2d batch scheduler: B={}, chunks_per_sample={}, total_work_items={}, active_cores={}, "
+        "work_items_per_core={}..{}, max_per_core_workspace_bytes={}",
+        input_shape.batch_count,
+        chunks_per_sample,
+        total_work_items,
+        buffers.cores.size(),
+        min_work->chunk_count,
+        max_work->chunk_count,
+        plan.allocated_l1_bytes);
+    const uint32_t input_tiles_per_sample =
+        tile_pages_per_batch_item(tensor_args.input, input_shape.batch_count, "2D LWT input");
+    const uint32_t output_tiles_per_sample =
+        tile_pages_per_batch_item(std::get<0>(tensor_return_value), input_shape.batch_count, "2D LWT output");
     for (const auto& core_work : work) {
-        descriptor.kernels[0].emplace_runtime_args(core_work.core, reader_args(input_buffer, plan, buffers, core_work));
+        descriptor.kernels[0].emplace_runtime_args(
+            core_work.core,
+            reader_args(input_buffer, plan, buffers, core_work, chunks_per_sample, input_tiles_per_sample));
         bind_compute_args_2d(descriptor.kernels[1], plan, core_work);
-        descriptor.kernels[2].emplace_runtime_args(core_work.core, writer_args(plan, buffers, core_work));
+        descriptor.kernels[2].emplace_runtime_args(
+            core_work.core, writer_args(plan, buffers, core_work, chunks_per_sample, output_tiles_per_sample));
     }
     append_programs_2d(workload, std::move(descriptor), tensor_coords);
     return workload;
@@ -778,6 +856,7 @@ template <typename Scheme>
     Tensor& tensor_return_value,
     const MeshCoordinateRangeSet& tensor_coords) {
     auto& mesh_device = *tensor_args.ll.device();
+    const Logical2DShape band_shape = logical_2d_shape(tensor_args.ll, "2D ILWT LL input");
     const std::array<const tt::tt_metal::Buffer*, device_protocol::kLwt2DBandCount> band_buffers = {
         tensor_args.ll.buffer(), tensor_args.lh.buffer(), tensor_args.hl.buffer(), tensor_args.hh.buffer()};
     Ilwt2DExecutionPlan plan = make_inverse_plan_2d<Scheme>(
@@ -786,7 +865,11 @@ template <typename Scheme>
         operation_attributes.output_width,
         operation_attributes.boundary_mode);
 
-    std::vector<tt::tt_metal::CoreCoord> cores = select_cores(mesh_device, plan.active_core_count);
+    const uint32_t chunks_per_sample = checked_u32(plan.chunks.size(), "2D ILWT chunks per sample");
+    const uint32_t total_work_items =
+        checked_u32(static_cast<size_t>(chunks_per_sample) * band_shape.batch_count, "2D ILWT total batch work items");
+    std::vector<tt::tt_metal::CoreCoord> cores =
+        select_cores(mesh_device, std::min(core_limit_2d(mesh_device), total_work_items));
     tt::tt_metal::WorkloadDescriptor workload;
     const size_t route_count = plan.chunks.front().routes.size();
     const uint32_t scratch_tile_count = noc_scratch_tile_count(operation_attributes.boundary_mode, true, route_count);
@@ -845,30 +928,49 @@ template <typename Scheme>
         architecture_policy.compact_2d_reader,
         true,
         scratch_tile_count);
-    const std::vector<CoreChunkWork> work =
-        partition_work(buffers.cores, checked_u32(plan.chunks.size(), "2D ILWT chunk count"));
+    const std::vector<CoreChunkWork> work = partition_work(buffers.cores, total_work_items);
+    const auto [min_work, max_work] = std::minmax_element(
+        work.begin(), work.end(), [](const auto& lhs, const auto& rhs) { return lhs.chunk_count < rhs.chunk_count; });
+    log_debug(
+        tt::LogOp,
+        "ttnn::idwt_2d batch scheduler: B={}, chunks_per_sample={}, total_work_items={}, active_cores={}, "
+        "work_items_per_core={}..{}, max_per_core_workspace_bytes={}",
+        band_shape.batch_count,
+        chunks_per_sample,
+        total_work_items,
+        buffers.cores.size(),
+        min_work->chunk_count,
+        max_work->chunk_count,
+        plan.allocated_l1_bytes);
+    const uint32_t input_tiles_per_sample =
+        tile_pages_per_batch_item(tensor_args.ll, band_shape.batch_count, "2D ILWT input band");
+    const uint32_t output_tiles_per_sample =
+        tile_pages_per_batch_item(tensor_return_value, band_shape.batch_count, "2D ILWT output");
     for (const auto& core_work : work) {
         descriptor.kernels[0].emplace_runtime_args(
-            core_work.core, inverse_reader_args(band_buffers, plan, buffers, core_work));
+            core_work.core,
+            inverse_reader_args(band_buffers, plan, buffers, core_work, chunks_per_sample, input_tiles_per_sample));
         bind_compute_args_2d(descriptor.kernels[1], plan, core_work);
-        descriptor.kernels[2].emplace_runtime_args(core_work.core, inverse_writer_args(plan, buffers, core_work));
+        descriptor.kernels[2].emplace_runtime_args(
+            core_work.core, inverse_writer_args(plan, buffers, core_work, chunks_per_sample, output_tiles_per_sample));
     }
     append_programs_2d(workload, std::move(descriptor), tensor_coords);
     return workload;
 }
 
 void validate_forward_inputs_2d(const Lwt2DParams& operation_attributes, const Lwt2DInputs& tensor_args) {
-    validate_rank_two_tensor(tensor_args.input, "2D LWT input");
-    validate_output_memory_config_2d(operation_attributes.output_memory_config, "2D LWT");
+    validate_2d_tensor(tensor_args.input, "2D DWT input");
+    const Logical2DShape input_shape = logical_2d_shape(tensor_args.input, "2D DWT input");
+    validate_output_memory_config_2d(operation_attributes.output_memory_config, "2D DWT");
     TT_FATAL(
-        operation_attributes.scheme_id != SchemeId::kUnknown, "2D LWT received an invalid wavelet scheme identifier");
+        operation_attributes.scheme_id != SchemeId::kUnknown, "2D DWT received an invalid wavelet scheme identifier");
     TT_FATAL(
         is_supported_lwt_boundary_mode(operation_attributes.boundary_mode),
-        "2D LWT received an unsupported boundary mode");
+        "2D DWT received an unsupported boundary mode");
     TT_FATAL(
         !boundary_mode_requires_multiple_samples(operation_attributes.boundary_mode) ||
-            (tensor_args.input.logical_shape()[0] > 1 && tensor_args.input.logical_shape()[1] > 1),
-        "2D LWT reflect and antireflect modes require both dimensions greater than one");
+            (input_shape.height > 1 && input_shape.width > 1),
+        "2D DWT reflect and antireflect modes require both dimensions greater than one");
 
     if (tensor_args.preallocated_outputs.has_value()) {
         const auto specs = Lwt2DDeviceOperation::compute_output_specs(operation_attributes, tensor_args);
@@ -879,15 +981,15 @@ void validate_forward_inputs_2d(const Lwt2DParams& operation_attributes, const L
                 (*tensor_args.preallocated_outputs)[index],
                 expected[index],
                 tensor_args.input.device(),
-                "2D LWT preallocated output");
+                "2D DWT preallocated output");
             TT_FATAL(
                 (*tensor_args.preallocated_outputs)[index].buffer() != tensor_args.input.buffer(),
-                "2D LWT outputs must not alias the input");
+                "2D DWT outputs must not alias the input");
             for (size_t previous = 0; previous < index; ++previous) {
                 TT_FATAL(
                     (*tensor_args.preallocated_outputs)[index].buffer() !=
                         (*tensor_args.preallocated_outputs)[previous].buffer(),
-                    "2D LWT output bands must not alias each other");
+                    "2D DWT output bands must not alias each other");
             }
         }
     }
@@ -896,39 +998,40 @@ void validate_forward_inputs_2d(const Lwt2DParams& operation_attributes, const L
 void validate_inverse_inputs_2d(const Ilwt2DParams& operation_attributes, const Ilwt2DInputs& tensor_args) {
     const std::array<const Tensor*, 4> inputs = {&tensor_args.ll, &tensor_args.lh, &tensor_args.hl, &tensor_args.hh};
     for (const auto* input : inputs) {
-        validate_rank_two_tensor(*input, "2D ILWT input band");
-        TT_FATAL(input->device() == tensor_args.ll.device(), "All 2D ILWT bands must be on the same device");
+        validate_2d_tensor(*input, "2D IDWT input band");
+        TT_FATAL(input->device() == tensor_args.ll.device(), "All 2D IDWT bands must be on the same device");
         TT_FATAL(
-            input->logical_shape() == tensor_args.ll.logical_shape(), "All 2D ILWT bands must have identical shapes");
+            input->logical_shape() == tensor_args.ll.logical_shape(), "All 2D IDWT bands must have identical shapes");
     }
     for (size_t index = 0; index < inputs.size(); ++index) {
         for (size_t previous = 0; previous < index; ++previous) {
-            TT_FATAL(inputs[index]->buffer() != inputs[previous]->buffer(), "2D ILWT input bands must not alias");
+            TT_FATAL(inputs[index]->buffer() != inputs[previous]->buffer(), "2D IDWT input bands must not alias");
         }
     }
-    validate_output_memory_config_2d(operation_attributes.output_memory_config, "2D ILWT");
+    validate_output_memory_config_2d(operation_attributes.output_memory_config, "2D IDWT");
     TT_FATAL(
         operation_attributes.output_height > 0 && operation_attributes.output_width > 0,
-        "2D ILWT output_shape dimensions must be positive");
+        "2D IDWT output_shape dimensions must be positive");
     TT_FATAL(
-        operation_attributes.scheme_id != SchemeId::kUnknown, "2D ILWT received an invalid wavelet scheme identifier");
+        operation_attributes.scheme_id != SchemeId::kUnknown, "2D IDWT received an invalid wavelet scheme identifier");
     TT_FATAL(
         is_supported_lwt_boundary_mode(operation_attributes.boundary_mode),
-        "2D ILWT received an unsupported boundary mode");
+        "2D IDWT received an unsupported boundary mode");
     TT_FATAL(
         !boundary_mode_requires_multiple_samples(operation_attributes.boundary_mode) ||
             (operation_attributes.output_height > 1 && operation_attributes.output_width > 1),
-        "2D ILWT reflect and antireflect modes require both output dimensions greater than one");
+        "2D IDWT reflect and antireflect modes require both output dimensions greater than one");
 
     const auto& info = scheme_info(operation_attributes.scheme_id);
     const uint64_t expected_height =
         (static_cast<uint64_t>(operation_attributes.output_height) + info.tap_size - 1) / 2;
     const uint64_t expected_width = (static_cast<uint64_t>(operation_attributes.output_width) + info.tap_size - 1) / 2;
+    const Logical2DShape band_shape = logical_2d_shape(tensor_args.ll, "2D IDWT LL input");
     TT_FATAL(
-        tensor_args.ll.logical_shape()[0] == expected_height && tensor_args.ll.logical_shape()[1] == expected_width,
-        "2D ILWT band shape {}x{} does not match expected shape {}x{} for output {}x{}",
-        tensor_args.ll.logical_shape()[0],
-        tensor_args.ll.logical_shape()[1],
+        band_shape.height == expected_height && band_shape.width == expected_width,
+        "2D IDWT band shape {}x{} does not match expected shape {}x{} for output {}x{}",
+        band_shape.height,
+        band_shape.width,
         expected_height,
         expected_width,
         operation_attributes.output_height,
@@ -946,11 +1049,11 @@ void validate_inverse_inputs_2d(const Ilwt2DParams& operation_attributes, const 
             *tensor_args.preallocated_output,
             Ilwt2DDeviceOperation::compute_output_specs(operation_attributes, tensor_args),
             tensor_args.ll.device(),
-            "2D ILWT output");
+            "2D IDWT output");
         for (const auto* input : inputs) {
             TT_FATAL(
                 tensor_args.preallocated_output->buffer() != input->buffer(),
-                "2D ILWT output must not alias an input band");
+                "2D IDWT output must not alias an input band");
         }
     }
 }
@@ -980,13 +1083,17 @@ void Lwt2DDeviceOperation::validate_on_program_cache_hit(
 Lwt2DDeviceOperation::spec_return_value_t Lwt2DDeviceOperation::compute_output_specs(
     const operation_attributes_t& operation_attributes, const tensor_args_t& tensor_args) {
     const auto& info = scheme_info(operation_attributes.scheme_id);
-    const uint64_t height = (static_cast<uint64_t>(tensor_args.input.logical_shape()[0]) + info.tap_size - 1) / 2;
-    const uint64_t width = (static_cast<uint64_t>(tensor_args.input.logical_shape()[1]) + info.tap_size - 1) / 2;
+    const Logical2DShape input_shape = logical_2d_shape(tensor_args.input, "2D DWT input");
+    const uint64_t height = (static_cast<uint64_t>(input_shape.height) + info.tap_size - 1) / 2;
+    const uint64_t width = (static_cast<uint64_t>(input_shape.width) + info.tap_size - 1) / 2;
     TT_FATAL(
         height <= std::numeric_limits<uint32_t>::max() && width <= std::numeric_limits<uint32_t>::max(),
-        "2D LWT output dimensions exceed the device uint32 range");
-    auto spec = rank_two_output_spec(
-        static_cast<uint32_t>(height), static_cast<uint32_t>(width), operation_attributes.output_memory_config);
+        "2D DWT output dimensions exceed the device uint32 range");
+    auto spec = output_spec_2d(
+        input_shape,
+        static_cast<uint32_t>(height),
+        static_cast<uint32_t>(width),
+        operation_attributes.output_memory_config);
     return {spec, spec, spec, spec};
 }
 
@@ -1026,8 +1133,9 @@ void Ilwt2DDeviceOperation::validate_on_program_cache_hit(
 }
 
 Ilwt2DDeviceOperation::spec_return_value_t Ilwt2DDeviceOperation::compute_output_specs(
-    const operation_attributes_t& operation_attributes, const tensor_args_t&) {
-    return rank_two_output_spec(
+    const operation_attributes_t& operation_attributes, const tensor_args_t& tensor_args) {
+    return output_spec_2d(
+        logical_2d_shape(tensor_args.ll, "2D ILWT LL input"),
         operation_attributes.output_height,
         operation_attributes.output_width,
         operation_attributes.output_memory_config);

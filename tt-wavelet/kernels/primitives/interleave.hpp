@@ -12,6 +12,7 @@ namespace ttwv::kernels::primitives {
 template <bool TileNative, uint32_t BatchSticks, typename DstAccessor>
 ALWI void write_reconstructed_signal(
     const DstAccessor& dst,
+    const uint32_t output_page,
     const uint32_t cb_interleave,
     const uint32_t left_pad,
     const uint32_t even_addr,
@@ -56,7 +57,7 @@ ALWI void write_reconstructed_signal(
             }
             noc_async_write(
                 staging_base + batch_stick * ttwv::device_protocol::kStickBytes,
-                dst.get_noc_addr(first_stick + local_stick),
+                dst.get_noc_addr(output_page + first_stick + local_stick),
                 ttwv::device_protocol::kStickBytes);
         }
         noc_async_write_barrier();
@@ -81,6 +82,7 @@ ALWI void write_reconstructed_signal(
 template <bool TileNative, uint32_t BatchSticks, typename DstAccessor>
 ALWI void write_direct_interleaved_signal(
     const DstAccessor& dst,
+    const uint32_t output_page,
     const uint32_t cb_output,
     const uint32_t cb_interleave,
     const uint32_t tile_bytes,
@@ -156,7 +158,7 @@ ALWI void write_direct_interleaved_signal(
                 }
                 noc_async_write(
                     staging_base + batch_stick * ttwv::device_protocol::kStickBytes,
-                    dst.get_noc_addr(first_stick + local_stick),
+                    dst.get_noc_addr(output_page + first_stick + local_stick),
                     ttwv::device_protocol::kStickBytes);
             }
             noc_async_write_barrier();

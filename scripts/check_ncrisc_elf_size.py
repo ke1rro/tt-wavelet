@@ -17,6 +17,7 @@ class ElfTextSize:
     path: Path
     text_bytes: int
     executable_segment_bytes: int
+    elf_bytes: int
 
 
 def architecture_from_dependency_file(path: Path) -> str:
@@ -79,9 +80,12 @@ def collect_elf_sizes(
     pattern = f"**/kernels/{kernel_name}/*/ncrisc/ncrisc.elf"
     for elf_path in sorted(cache_root.glob(pattern)):
         build_directory = elf_path.parents[1]
-        if not (build_directory / ".SUCCESS").is_file():
+        if not (build_directory / ".SUCCESS").is_file() and not (elf_path.parent / ".build_state").is_file():
             continue
-        detected_architecture = architecture_from_dependency_file(elf_path.with_name("ncrisck.d"))
+        dependency_file = elf_path.with_name("ncrisck.d")
+        if not dependency_file.is_file():
+            dependency_file = elf_path.with_name("ncrisck.o.dephash")
+        detected_architecture = architecture_from_dependency_file(dependency_file)
         if detected_architecture != architecture:
             continue
         sizes.append(
@@ -91,6 +95,7 @@ def collect_elf_sizes(
                 path=elf_path,
                 text_bytes=text_size(size_tool, elf_path),
                 executable_segment_bytes=executable_segment_size(readelf_tool, elf_path),
+                elf_bytes=elf_path.stat().st_size,
             )
         )
     return sizes
@@ -101,6 +106,7 @@ def print_result(result: ElfTextSize) -> bool:
     print(f"architecture: {result.architecture}")
     print(f".text bytes: {result.text_bytes}")
     print(f"executable LOAD segment bytes: {result.executable_segment_bytes}")
+    print(f"ELF file bytes: {result.elf_bytes}")
     print(f"limit bytes: {WORMHOLE_TEXT_LIMIT_BYTES}")
     if result.executable_segment_bytes <= WORMHOLE_TEXT_LIMIT_BYTES:
         print("headroom bytes: " f"{WORMHOLE_TEXT_LIMIT_BYTES - result.executable_segment_bytes}")
@@ -109,6 +115,15 @@ def print_result(result: ElfTextSize) -> bool:
     print("overflow bytes: " f"{result.executable_segment_bytes - WORMHOLE_TEXT_LIMIT_BYTES}")
     print("result: FAIL")
     return False
+
+
+def print_blackhole_result(result: ElfTextSize) -> None:
+    print(f"kernel: {result.kernel}")
+    print(f"architecture: {result.architecture}")
+    print(f".text bytes: {result.text_bytes}")
+    print(f"executable LOAD segment bytes: {result.executable_segment_bytes}")
+    print(f"ELF file bytes: {result.elf_bytes}")
+    print("result: REPORT (no Wormhole 0x4000 gate applied)")
 
 
 def main() -> int:
@@ -144,12 +159,6 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    if args.architecture == "blackhole":
-        print(f"kernel: {args.kernel}")
-        print("architecture: blackhole")
-        print("result: SKIP (the Wormhole NCRISC limit does not apply)")
-        return 0
-
     if not args.cache_root.is_dir():
         parser.error(f"TT-Metal cache root not found: {args.cache_root}")
     if not args.size_tool.is_file():
@@ -172,12 +181,18 @@ def main() -> int:
 
     passed = True
     for result in results:
-        passed = print_result(result) and passed
+        if args.architecture == "blackhole":
+            print_blackhole_result(result)
+        else:
+            passed = print_result(result) and passed
     largest = max(results, key=lambda result: result.executable_segment_bytes)
     print(f"checked_ncrisc_elfs: {len(results)}")
     print(f"maximum_text_kernel: {largest.kernel}")
     print(f"maximum_text_bytes: {largest.text_bytes}")
     print(f"maximum_executable_segment_bytes: {largest.executable_segment_bytes}")
+    print(f"maximum_elf_file_bytes: {largest.elf_bytes}")
+    if args.architecture == "blackhole":
+        print("result: PASS (reported only; Blackhole has no Wormhole NCRISC gate)")
     return 0 if passed else 1
 
 

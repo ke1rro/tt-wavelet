@@ -19,10 +19,10 @@ This document uses four evidence labels:
 **Recommendation.** Integrate the transforms as four top-level semantic APIs:
 
 ```text
-ttnn::lwt
-ttnn::ilwt
-ttnn::lwt_2d
-ttnn::ilwt_2d
+ttnn::dwt
+ttnn::idwt
+ttnn::dwt_2d
+ttnn::idwt_2d
 ```
 
 Each public function should normalize a wavelet name, shapes, boundary mode, and output memory request, then launch exactly one internal device operation in `ttnn::prim`. The primitive must preserve the existing fused planners and device programs; decomposing the transform into generic TTNN slicing, padding, gather, and elementwise operations would add materialization and dispatch boundaries and would discard the present dependency-cone and L1 ownership design.
@@ -379,7 +379,7 @@ The alternatives `ttnn::operations::signal_processing::wavelet` and a permanent 
 ### 7.1 Layering
 
 ```text
-Python: ttnn.lwt / ilwt / lwt_2d / ilwt_2d
+Python: ttnn.dwt / ilwt / lwt_2d / ilwt_2d
                           |
                           v
 C++ public ttnn wrapper
@@ -554,14 +554,14 @@ A vector obscures arity; a struct complicates nanobind and differs from normal T
 ### 8.5 Python surface
 
 ```python
-approximation, detail = ttnn.lwt(
+approximation, detail = ttnn.dwt(
     input,
     wavelet="db7",
     mode="symmetric",
     memory_config=ttnn.DRAM_MEMORY_CONFIG,
 )
 
-output = ttnn.ilwt(
+output = ttnn.idwt(
     approximation,
     detail,
     wavelet="db7",
@@ -569,8 +569,8 @@ output = ttnn.ilwt(
     mode="symmetric",
 )
 
-ll, lh, hl, hh = ttnn.lwt_2d(input, wavelet="db7", mode="smooth")
-output = ttnn.ilwt_2d(
+ll, lh, hl, hh = ttnn.dwt_2d(input, wavelet="db7", mode="smooth")
+output = ttnn.idwt_2d(
     ll, lh, hl, hh,
     wavelet="db7",
     output_shape=(64, 64),
@@ -1227,9 +1227,9 @@ The TTNN path becomes authoritative only after parity. Standalone removal, if ev
 1. **Baseline and generated artifacts.** Add a machine-readable scheme manifest, generator reproducibility test, locked standalone numerical/performance reports, known-failure list, and Wormhole ELF report. No TTNN op.
 2. **Shared pure host code.** Move or copy boundary enums, checked shapes, static scheme definitions, and planners into the proposed family with C++ unit tests. Standalone remains buildable.
 3. **1D internal primitives.** Add `ttnn::prim::lwt` and `ttnn::prim::ilwt`, FP32 row-major interleaved DRAM, single device, cache tests, no public Python.
-4. **1D public API and bindings.** Add `ttnn::lwt`, `ttnn::ilwt`, documentation, Python tuples, and standalone-versus-TTNN parity.
+4. **1D public API and bindings.** Add `ttnn::dwt`, `ttnn::idwt`, documentation, Python tuples, and standalone-versus-TTNN parity.
 5. **2D internal primitives.** Port the existing five-plane scheduler and fused interior split; retain boundary fallback, compact reader, architecture policy, and ELF gate.
-6. **2D public API and bindings.** Add `ttnn::lwt_2d`, `ttnn::ilwt_2d`, tuple ordering, explicit output shape, tests, and performance gates.
+6. **2D public API and bindings.** Add `ttnn::dwt_2d`, `ttnn::idwt_2d`, tuple ordering, explicit output shape, tests, and performance gates.
 7. **Stable promotion.** Complete 106-scheme compilation coverage, agreed correctness matrix, WH/BH performance sign-off, and API review; promote if prior PRs incubated under experimental.
 8. **Batch and sharding.** Add leading batch semantics, single-device L1 sharding/resharding where measured, then batch-sharded multi-chip.
 9. **Spatial mesh wavelets.** Add a native mesh workload with explicit fabric halo exchange and output topology.
@@ -1492,7 +1492,7 @@ Each question below materially changes API or implementation. The recommendation
 
 Proceed with integration against pinned tt-metal `bb9bb15`, but do it as a compatibility-preserving series rather than a source dump.
 
-1. **Public API:** `ttnn::lwt`, `ttnn::ilwt`, `ttnn::lwt_2d`, and `ttnn::ilwt_2d`; strings map to private scheme IDs; forward returns fixed tuples; inverse accepts separate tensors and mandatory original/output shape.
+1. **Public API:** `ttnn::dwt`, `ttnn::idwt`, `ttnn::dwt_2d`, and `ttnn::idwt_2d`; strings map to private scheme IDs; forward returns fixed tuples; inverse accepts separate tensors and mandatory original/output shape.
 2. **Namespace:** top-level `ttnn` semantics, `ttnn::prim` device operations, private implementation under `ttnn::operations::wavelet`; no public `ttwv`.
 3. **Directory:** one owned `operations/wavelet` family with common planners, generated registry, four device operations, shared program factories/kernels, nanobind, tests, perf, docs, and generator tooling.
 4. **Layering:** thin public normalization wrapper calling one fused primitive per direction/dimension. Do not expose or materialize split, lift, scale, route, or interleave stages.
@@ -1881,7 +1881,7 @@ Tensor ilwt_2d(
 void bind_wavelet_operations(nb::module_& module) {
     bind_registered_operation(
         module,
-        ttnn::lwt,
+        ttnn::dwt,
         "input"_a,
         "wavelet"_a,
         "mode"_a = "symmetric",
@@ -1891,7 +1891,7 @@ void bind_wavelet_operations(nb::module_& module) {
 
     bind_registered_operation(
         module,
-        ttnn::ilwt,
+        ttnn::idwt,
         "approximation"_a,
         "detail"_a,
         "wavelet"_a,

@@ -1,8 +1,12 @@
-You are currently on server with Wormhole n150. 
 
+
+You are currently on server with blackhole p150. 
+
+The ttnn implementation is in [here](ttnn-wavelet)
+You may move it inside tt-metal for tests which is preferable for this task
 While validating the sfpi code in the [sfpi](tt-wavelet/kernels/sfpi) - check if this contract works with Blackhole (understand that fp is not fully IEEE compratible here this is stated in tt-isa). This sfpi code workis perfectly on wormhole for sanity check use some very big input like 10M samples
 The csv file from wormhole is here 
-To build the whole project we use [timings](wormhole_timings.csv)
+To build the whole project we use 
 
 [tt-metal + tt-wavelet](build.sh) - takes a bit long of time I already built
 
@@ -30,7 +34,7 @@ Really Helpfull maybe the tt-isa-documentation
 [ISA](tt-isa-documentation) for blackhole and wormhole
 
 We use Google style and also tt-metal 
-
+[docs](docs)[text](docs/TTNN_WAVELET_INTEGRATION_DESIGN.md)
 <!-- toc -->
 
 Table of Contents

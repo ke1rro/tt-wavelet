@@ -34,6 +34,7 @@ ALWI void write_dram_half_block(
     const DstAccessor& dst,
     const uint32_t tile_addr,
     const uint32_t row,
+    const uint32_t output_page,
     const uint32_t local_output_index,
     const uint32_t output_offset,
     const uint32_t output_length) {
@@ -46,7 +47,7 @@ ALWI void write_dram_half_block(
     const uint32_t source_offset = row * ttwv::device_protocol::kLwtHalfStickBytes;
     noc_async_write(
         tile_addr + source_offset,
-        dst.get_noc_addr(destination_stick) + destination_lane * sizeof(float),
+        dst.get_noc_addr(output_page + destination_stick) + destination_lane * sizeof(float),
         ttwv::device_protocol::kLwtHalfStickBytes);
 }
 
@@ -55,6 +56,7 @@ ALWI void write_dram_output_groups(
     const DstAccessor& dst,
     const uint32_t cb_output,
     const uint32_t tile_bytes,
+    const uint32_t output_page,
     const uint32_t output_offset,
     const uint32_t output_length,
     const uint32_t group_count) {
@@ -71,6 +73,7 @@ ALWI void write_dram_output_groups(
                     dst,
                     output_tiles + block * tile_bytes,
                     row,
+                    output_page,
                     row_base + block * ttwv::device_protocol::kLwtHalfStickElements,
                     output_offset,
                     output_length);
@@ -229,9 +232,14 @@ void kernel_main() {
         const uint32_t output_addr = get_arg_val<uint32_t>(5);
         const uint32_t left_pad = get_arg_val<uint32_t>(6);
         const uint32_t tile_mirror_offset = get_arg_val<uint32_t>(7);
+        const uint32_t chunks_per_sample = get_arg_val<uint32_t>(8);
+        const uint32_t output_pages_per_sample = get_arg_val<uint32_t>(9);
         const auto output = TensorAccessor(final_args, output_addr, ttwv::device_protocol::kStickBytes);
         for (uint32_t local_chunk = 0; local_chunk < chunk_count; ++local_chunk) {
-            const uint32_t global_chunk = chunk_begin + local_chunk;
+            const uint32_t global_work_item = chunk_begin + local_chunk;
+            const uint32_t batch_index = global_work_item / chunks_per_sample;
+            const uint32_t global_chunk = global_work_item - batch_index * chunks_per_sample;
+            const uint32_t output_page = batch_index * output_pages_per_sample;
             uint32_t chunk_words[ttwv::device_protocol::kLwtChunkConfigWordCount];
             const uint32_t* loaded_chunk = load_route_config(config_args, chunk_config_addr, cb_config, global_chunk);
 #pragma GCC unroll 8
@@ -250,6 +258,7 @@ void kernel_main() {
                 if (direct_interleave) {
                     write_direct_interleaved_signal<tile_native_workspace, interleave_batch_sticks>(
                         output,
+                        output_page,
                         cb_output,
                         cb_interleave,
                         tile_bytes,
@@ -287,6 +296,7 @@ void kernel_main() {
             if (!direct_interleave_written) {
                 write_reconstructed_signal<tile_native_workspace, interleave_batch_sticks>(
                     output,
+                    output_page,
                     cb_interleave,
                     left_pad,
                     chunk_words[ttwv::device_protocol::kIlwtFinalEvenAddr],
@@ -305,10 +315,15 @@ void kernel_main() {
         }
     } else {
         const uint32_t tile_mirror_offset = get_arg_val<uint32_t>(4);
+        const uint32_t chunks_per_sample = get_arg_val<uint32_t>(5);
+        const uint32_t output_pages_per_sample = get_arg_val<uint32_t>(6);
         const uint32_t local_route_count = chunk_count * route_count;
         uint32_t flattened_route = 0;
         for (uint32_t local_chunk = 0; local_chunk < chunk_count; ++local_chunk) {
-            const uint32_t global_chunk = chunk_begin + local_chunk;
+            const uint32_t global_work_item = chunk_begin + local_chunk;
+            const uint32_t batch_index = global_work_item / chunks_per_sample;
+            const uint32_t global_chunk = global_work_item - batch_index * chunks_per_sample;
+            const uint32_t output_page = batch_index * output_pages_per_sample;
             for (uint32_t route_index = 0; route_index < route_count; ++route_index, ++flattened_route) {
                 const uint32_t config_index = global_chunk * route_count + route_index;
                 const uint32_t* route = load_route_config(config_args, route_config_addr, cb_config, config_index);
@@ -320,7 +335,8 @@ void kernel_main() {
                 const bool final_dram = (route_flags & ttwv::device_protocol::kRouteFlagFinalDram) != 0;
                 if (final_dram) {
                     const auto dst = TensorAccessor(final_args, output_addr, ttwv::device_protocol::kStickBytes);
-                    write_dram_output_groups(dst, cb_output, tile_bytes, output_offset, output_length, group_count);
+                    write_dram_output_groups(
+                        dst, cb_output, tile_bytes, output_page, output_offset, output_length, group_count);
                 } else {
                     write_local_output_groups<use_noc_local_write, tile_native_workspace, hybrid_tile_mirror>(
                         output_addr,

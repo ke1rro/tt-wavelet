@@ -192,6 +192,7 @@ template <bool Interior, ttnn::operations::wavelet::BoundaryMode Mode, typename 
     const uint32_t input_height,
     const uint32_t input_width,
     const uint32_t input_tile_columns,
+    const uint32_t input_tile_base,
     const int32_t raw_y_begin,
     const int32_t raw_x_begin,
     const uint32_t scratch_addr) {
@@ -205,7 +206,10 @@ template <bool Interior, ttnn::operations::wavelet::BoundaryMode Mode, typename 
         for (uint32_t tile_x = 0; tile_x < tiles.column_count; ++tile_x) {
             const uint32_t source_tile = tiles.rows[tile_y] * input_tile_columns + tiles.columns[tile_x];
             const uint32_t scratch_tile = tile_y * tiles.column_count + tile_x;
-            noc_async_read(input.get_noc_addr(source_tile), scratch_addr + scratch_tile * kTileBytes, kTileBytes);
+            noc_async_read(
+                input.get_noc_addr(input_tile_base + source_tile),
+                scratch_addr + scratch_tile * kTileBytes,
+                kTileBytes);
         }
     }
     noc_async_read_barrier();
@@ -559,6 +563,7 @@ ALWI void split_macro_tile(
     const uint32_t input_height,
     const uint32_t input_width,
     const uint32_t input_tile_columns,
+    const uint32_t input_tile_base,
     const uint32_t pad_y,
     const uint32_t pad_x,
     const Rect* rectangles,
@@ -570,7 +575,14 @@ ALWI void split_macro_tile(
     const int32_t raw_y_begin = 2 * static_cast<int32_t>(tile_y) - static_cast<int32_t>(pad_y);
     const int32_t raw_x_begin = 2 * static_cast<int32_t>(tile_x) - static_cast<int32_t>(pad_x);
     const SplitSourceTiles<Mode> source_tiles = stage_split_source_tiles<Interior, Mode>(
-        input, input_height, input_width, input_tile_columns, raw_y_begin, raw_x_begin, scratch_addr);
+        input,
+        input_height,
+        input_width,
+        input_tile_columns,
+        input_tile_base,
+        raw_y_begin,
+        raw_x_begin,
+        scratch_addr);
 
     if constexpr (Interior) {
         bool complete = true;
@@ -648,6 +660,7 @@ ALWI void initialize_planes_tiled(
     const uint32_t input_height,
     const uint32_t input_width,
     const uint32_t input_tile_columns,
+    const uint32_t input_tile_base,
     const uint32_t pad_y,
     const uint32_t pad_x,
     const Rect* rectangles,
@@ -687,6 +700,7 @@ ALWI void initialize_planes_tiled(
                     input_height,
                     input_width,
                     input_tile_columns,
+                    input_tile_base,
                     pad_y,
                     pad_x,
                     rectangles,
@@ -701,6 +715,7 @@ ALWI void initialize_planes_tiled(
                     input_height,
                     input_width,
                     input_tile_columns,
+                    input_tile_base,
                     pad_y,
                     pad_x,
                     rectangles,
@@ -722,6 +737,7 @@ ALWI void initialize_inverse_band_plane(
     const uint32_t band_height,
     const uint32_t band_width,
     const uint32_t band_tile_columns,
+    const uint32_t band_tile_base,
     const int32_t y_internal_offset,
     const int32_t x_internal_offset,
     const Rect& rectangle,
@@ -753,7 +769,7 @@ ALWI void initialize_inverse_band_plane(
             if (exact_full_tile) {
                 const uint32_t source_tile = (static_cast<uint32_t>(full_canonical_y) / kTileSide) * band_tile_columns +
                                              static_cast<uint32_t>(full_canonical_x) / kTileSide;
-                noc_async_read(band.get_noc_addr(source_tile), destination_addr, kTileBytes);
+                noc_async_read(band.get_noc_addr(band_tile_base + source_tile), destination_addr, kTileBytes);
                 noc_async_read_barrier();
                 continue;
             }
@@ -791,7 +807,9 @@ ALWI void initialize_inverse_band_plane(
                         (source_tile_y_begin + source_tile_y) * band_tile_columns + source_tile_x_begin + source_tile_x;
                     const uint32_t scratch_tile = source_tile_y * source_tile_columns + source_tile_x;
                     noc_async_read(
-                        band.get_noc_addr(source_tile), scratch_addr + scratch_tile * kTileBytes, kTileBytes);
+                        band.get_noc_addr(band_tile_base + source_tile),
+                        scratch_addr + scratch_tile * kTileBytes,
+                        kTileBytes);
                 }
             }
             noc_async_read_barrier();
@@ -826,6 +844,7 @@ ALWI void initialize_inverse_band_planes(
     const uint32_t band_height,
     const uint32_t band_width,
     const uint32_t band_tile_columns,
+    const uint32_t band_tile_base,
     const int32_t* y_internal_offsets,
     const int32_t* x_internal_offsets,
     const Rect* rectangles,
@@ -841,6 +860,7 @@ ALWI void initialize_inverse_band_planes(
         band_height,
         band_width,
         band_tile_columns,
+        band_tile_base,
         y_internal_offsets[0],
         x_internal_offsets[0],
         rectangles[0],
@@ -854,6 +874,7 @@ ALWI void initialize_inverse_band_planes(
         band_height,
         band_width,
         band_tile_columns,
+        band_tile_base,
         y_internal_offsets[0],
         x_internal_offsets[1],
         rectangles[1],
@@ -867,6 +888,7 @@ ALWI void initialize_inverse_band_planes(
         band_height,
         band_width,
         band_tile_columns,
+        band_tile_base,
         y_internal_offsets[1],
         x_internal_offsets[0],
         rectangles[2],
@@ -880,6 +902,7 @@ ALWI void initialize_inverse_band_planes(
         band_height,
         band_width,
         band_tile_columns,
+        band_tile_base,
         y_internal_offsets[1],
         x_internal_offsets[1],
         rectangles[3],
@@ -1173,6 +1196,8 @@ void kernel_main() {
     const uint32_t chunk_begin = get_arg_val<uint32_t>(plane_arg_base + plane_arg_count + 2);
     const uint32_t chunk_count = get_arg_val<uint32_t>(plane_arg_base + plane_arg_count + 3);
     const uint32_t route_count = get_arg_val<uint32_t>(plane_arg_base + plane_arg_count + 4);
+    const uint32_t chunks_per_sample = get_arg_val<uint32_t>(plane_arg_base + plane_arg_count + 5);
+    const uint32_t input_tiles_per_sample = get_arg_val<uint32_t>(plane_arg_base + plane_arg_count + 6);
 
     constexpr uint32_t cb_source0 = get_compile_time_arg_val(0);
     constexpr uint32_t cb_source1 = get_compile_time_arg_val(1);
@@ -1214,7 +1239,10 @@ void kernel_main() {
     const uint32_t reader_config_addr = noc_scratch_addr;
 
     for (uint32_t local_chunk = 0; local_chunk < chunk_count; ++local_chunk) {
-        const uint32_t global_chunk = chunk_begin + local_chunk;
+        const uint32_t global_work_item = chunk_begin + local_chunk;
+        const uint32_t batch_index = global_work_item / chunks_per_sample;
+        const uint32_t global_chunk = global_work_item - batch_index * chunks_per_sample;
+        const uint32_t input_tile_base = batch_index * input_tiles_per_sample;
         uint32_t chunk_words[ttnn::operations::wavelet::device_protocol::kLwt2DChunkConfigWordCount];
         load_config_page(
             chunk_args,
@@ -1242,6 +1270,7 @@ void kernel_main() {
             input_height,
             input_width,
             input_tile_columns,
+            input_tile_base,
             y_internal_offsets,
             x_internal_offsets,
             stored,
@@ -1255,6 +1284,7 @@ void kernel_main() {
             input_height,
             input_width,
             input_tile_columns,
+            input_tile_base,
             pad_y,
             pad_x,
             stored,

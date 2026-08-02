@@ -48,7 +48,12 @@ if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
 # isort: off
-from compare_timings import TTTimingResult, run_tt_wavelet, sh_quote  # noqa: E402
+from compare_timings import (  # noqa: E402
+    TTTimingResult,
+    run_tt_wavelet,
+    run_tt_wavelet_layout_sweep,
+    sh_quote,
+)
 from runtime_checks import parse_runtime_architecture  # noqa: E402
 from validate_ilwt import DEFAULT_TOLERANCES as ILWT_TOLERANCES  # noqa: E402
 from validate_lwt_boundaries import (  # noqa: E402
@@ -69,6 +74,19 @@ RAW_FIELDS = (
     "signal_length",
     "layout",
     "selected_concrete_layout",
+    "route_count",
+    "active_core_count",
+    "chunk_count",
+    "groups_per_chunk",
+    "workspace_bytes",
+    "max_workspace_bytes",
+    "l1_total_bytes",
+    "max_dependency_overhead",
+    "direct_interleave_enabled",
+    "compact_reader_enabled",
+    "hybrid_tile_mirror",
+    "row_major_noc_staging",
+    "interleave_batch_sticks",
     "warmup_runs",
     "timed_runs",
     "median_ms",
@@ -353,6 +371,7 @@ def build_command(
     boundary_mode: str,
     warmup_runs: int,
     timed_runs: int,
+    layout_sweep: bool = False,
 ) -> str:
     command = [str(binary)]
     if transform == "ilwt":
@@ -370,6 +389,8 @@ def build_command(
             str(output_prefix),
         ]
     )
+    if layout_sweep:
+        command.append("--layout-sweep")
     if transform == "lwt":
         command.extend([wavelet, str(signal_path)])
     else:
@@ -502,6 +523,108 @@ def run_layout_case(
     return case
 
 
+def run_layout_sweep_cases(
+    *,
+    args: argparse.Namespace,
+    transform: str,
+    wavelet: str,
+    signal_length: int,
+    signal_path: Path,
+    approximation_path: Path,
+    detail_path: Path,
+    reference: np.ndarray,
+    temporary_path: Path,
+) -> list[LayoutCase]:
+    """Run all layouts while keeping one MeshDevice open for this group."""
+    cases = [
+        LayoutCase(
+            transform=transform,
+            wavelet=wavelet,
+            signal_length=signal_length,
+            requested_layout=layout,
+            expected_architecture=args.expected_architecture,
+            warmup_runs=args.warmup_runs,
+            timed_runs=args.timed_runs,
+        )
+        for layout in LAYOUTS
+    ]
+    output_prefix = temporary_path / f"{transform}-{wavelet}-{signal_length}-sweep"
+    for layout in LAYOUTS:
+        remove_output_files(Path(str(output_prefix) + f".{layout}"), transform)
+    command = build_command(
+        args.binary,
+        PROJECT_ROOT / "scripts" / "set_env.sh",
+        transform,
+        wavelet,
+        signal_length,
+        signal_path,
+        approximation_path,
+        detail_path,
+        output_prefix,
+        args.boundary_mode,
+        args.warmup_runs,
+        args.timed_runs,
+        layout_sweep=True,
+    )
+    try:
+        timings = run_tt_wavelet_layout_sweep(command, transform)
+        for case in cases:
+            case.timing = timings[case.requested_layout]
+            validate_timing(case)
+            if not case.timing.architecture:
+                case.architecture_failed = True
+                case.fail_correctness("device timing did not report an architecture")
+            else:
+                case.architecture = parse_runtime_architecture(
+                    f"{transform}_architecture: {case.timing.architecture}"
+                )
+                if case.architecture != args.expected_architecture:
+                    case.architecture_failed = True
+                    case.fail_correctness(
+                        "architecture assertion failed: "
+                        f"expected {args.expected_architecture}, observed {case.architecture}"
+                    )
+
+            case.selected_layout = case.timing.layout
+            if case.requested_layout != "auto" and case.selected_layout != case.requested_layout:
+                case.fail_correctness(
+                    "layout override was not honored: "
+                    f"requested {case.requested_layout}, selected {case.selected_layout or '<missing>'}"
+                )
+            if case.requested_layout == "auto" and case.selected_layout not in LAYOUTS[:2]:
+                case.fail_correctness(
+                    "automatic policy did not report a concrete row-major or tile-native layout"
+                )
+
+            case.output = read_output(
+                Path(str(output_prefix) + f".{case.requested_layout}"), transform
+            )
+            case.reference_error = max_abs_error(case.output, reference)
+            if case.output.shape != reference.shape:
+                case.fail_correctness(
+                    f"output shape {case.output.shape} does not match reference {reference.shape}"
+                )
+            if not np.all(np.isfinite(case.output)):
+                case.fail_correctness("device output contains NaN or infinity")
+            tolerance, strict = reference_tolerance(transform, wavelet)
+            if not math.isfinite(case.reference_error):
+                case.fail_correctness("reference maximum absolute error is not finite")
+            elif case.reference_error > tolerance:
+                if strict:
+                    case.fail_correctness(
+                        f"reference error {case.reference_error:.8e} exceeds {tolerance:.8e}"
+                    )
+                else:
+                    case.accepted_fp32_limit = True
+    except Exception as exc:  # noqa: BLE001
+        for case in cases:
+            case.fail_timing(str(exc))
+    finally:
+        for layout in LAYOUTS:
+            remove_output_files(Path(str(output_prefix) + f".{layout}"), transform)
+    return cases
+
+
 def compare_outputs(lhs: LayoutCase, rhs: LayoutCase) -> PairComparison | None:
     if lhs.output is None or rhs.output is None:
         return None
@@ -588,6 +711,43 @@ def raw_row(case: LayoutCase) -> dict[str, object]:
         "signal_length": case.signal_length,
         "layout": case.requested_layout,
         "selected_concrete_layout": case.selected_layout,
+        "route_count": "" if timing is None or timing.route_count is None else timing.route_count,
+        "active_core_count": (
+            "" if timing is None or timing.active_core_count is None else timing.active_core_count
+        ),
+        "chunk_count": "" if timing is None or timing.chunk_count is None else timing.chunk_count,
+        "groups_per_chunk": (
+            "" if timing is None or timing.groups_per_chunk is None else timing.groups_per_chunk
+        ),
+        "workspace_bytes": (
+            "" if timing is None or timing.workspace_elements is None else 4 * timing.workspace_elements
+        ),
+        "max_workspace_bytes": (
+            ""
+            if timing is None or timing.max_workspace_elements is None
+            else 4 * timing.max_workspace_elements
+        ),
+        "l1_total_bytes": "" if timing is None or timing.l1_total_bytes is None else timing.l1_total_bytes,
+        "max_dependency_overhead": format_number(
+            None if timing is None else timing.max_dependency_overhead
+        ),
+        "direct_interleave_enabled": (
+            ""
+            if timing is None or timing.inverse_final_interleave_direct is None
+            else timing.inverse_final_interleave_direct
+        ),
+        "compact_reader_enabled": (
+            "" if timing is None or timing.compact_reader is None else timing.compact_reader
+        ),
+        "hybrid_tile_mirror": (
+            "" if timing is None or timing.hybrid_tile_mirror is None else timing.hybrid_tile_mirror
+        ),
+        "row_major_noc_staging": (
+            "" if timing is None or timing.row_major_noc_staging is None else timing.row_major_noc_staging
+        ),
+        "interleave_batch_sticks": (
+            "" if timing is None or timing.interleave_batch_sticks is None else timing.interleave_batch_sticks
+        ),
         "warmup_runs": case.warmup_runs,
         "timed_runs": case.timed_runs,
         "median_ms": format_number(seconds_to_ms(timing.median_s) if timing is not None else None),
@@ -834,43 +994,24 @@ def main() -> int:
                     for transform in transforms:
                         group_index += 1
                         reference = lwt_reference if transform == "lwt" else ilwt_reference
-                        cases: list[LayoutCase] = []
-                        for layout in LAYOUTS:
-                            print(
-                                f"[{group_index}/{group_total}] {transform} {wavelet} "
-                                f"N={signal_length} layout={layout}",
-                                flush=True,
-                            )
-                            case = run_layout_case(
-                                args=args,
-                                transform=transform,
-                                wavelet=wavelet,
-                                signal_length=signal_length,
-                                requested_layout=layout,
-                                signal_path=signal_path,
-                                approximation_path=approximation_path,
-                                detail_path=detail_path,
-                                reference=reference,
-                                temporary_path=temporary_path,
-                            )
-                            cases.append(case)
-                            if case.architecture_failed:
-                                architecture_failed = True
-                                break
-
-                        if len(cases) < len(LAYOUTS):
-                            for layout in LAYOUTS[len(cases) :]:
-                                skipped = LayoutCase(
-                                    transform=transform,
-                                    wavelet=wavelet,
-                                    signal_length=signal_length,
-                                    requested_layout=layout,
-                                    expected_architecture=args.expected_architecture,
-                                    warmup_runs=args.warmup_runs,
-                                    timed_runs=args.timed_runs,
-                                )
-                                skipped.fail_timing("skipped after architecture assertion failure")
-                                cases.append(skipped)
+                        print(
+                            f"[{group_index}/{group_total}] {transform} {wavelet} "
+                            f"N={signal_length} layouts=all",
+                            flush=True,
+                        )
+                        cases = run_layout_sweep_cases(
+                            args=args,
+                            transform=transform,
+                            wavelet=wavelet,
+                            signal_length=signal_length,
+                            signal_path=signal_path,
+                            approximation_path=approximation_path,
+                            detail_path=detail_path,
+                            reference=reference,
+                            temporary_path=temporary_path,
+                        )
+                        if any(case.architecture_failed for case in cases):
+                            architecture_failed = True
 
                         comparisons = add_peer_comparisons(cases)
                         for comparison in comparisons:

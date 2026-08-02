@@ -80,6 +80,7 @@ class TTTimingResult:
     max_group_count: int | None = None
     active_core_count: int | None = None
     chunk_count: int | None = None
+    route_count: int | None = None
     groups_per_chunk: int | None = None
     workspace_elements: int | None = None
     max_workspace_elements: int | None = None
@@ -87,6 +88,10 @@ class TTTimingResult:
     terminal_scale_inline: int | None = None
     inverse_scale_inline: int | None = None
     inverse_final_interleave_direct: int | None = None
+    compact_reader: int | None = None
+    hybrid_tile_mirror: int | None = None
+    row_major_noc_staging: int | None = None
+    interleave_batch_sticks: int | None = None
     l1_total_bytes: int | None = None
     l1_capacity_bytes: int | None = None
     l1_headroom_bytes: int | None = None
@@ -455,6 +460,9 @@ def run_tt_wavelet(
         max_group_count=optional_pattern_int(TT_MAX_GROUP_COUNT_PATTERN, completed.stderr),
         active_core_count=optional_pattern_int(TT_ACTIVE_CORE_COUNT_PATTERN, completed.stderr),
         chunk_count=optional_pattern_int(TT_CHUNK_COUNT_PATTERN, completed.stderr),
+        route_count=optional_pattern_int(
+            re.compile(rf"{TT_PREFIX}_route_count:\s*(\d+)"), completed.stderr
+        ),
         groups_per_chunk=optional_pattern_int(TT_GROUPS_PER_CHUNK_PATTERN, completed.stderr),
         workspace_elements=optional_pattern_int(TT_WORKSPACE_ELEMENTS_PATTERN, completed.stderr),
         max_workspace_elements=optional_pattern_int(
@@ -472,10 +480,89 @@ def run_tt_wavelet(
         inverse_final_interleave_direct=optional_pattern_int(
             TT_INVERSE_FINAL_INTERLEAVE_DIRECT_PATTERN, completed.stderr
         ),
+        compact_reader=optional_pattern_int(
+            re.compile(rf"{TT_PREFIX}_compact_reader:\s*(\d+)"), completed.stderr
+        ),
+        hybrid_tile_mirror=optional_pattern_int(
+            re.compile(rf"{TT_PREFIX}_hybrid_tile_mirror:\s*(\d+)"), completed.stderr
+        ),
+        row_major_noc_staging=optional_pattern_int(
+            re.compile(rf"{TT_PREFIX}_row_major_noc_staging:\s*(\d+)"), completed.stderr
+        ),
+        interleave_batch_sticks=optional_pattern_int(
+            re.compile(rf"{TT_PREFIX}_interleave_batch_sticks:\s*(\d+)"), completed.stderr
+        ),
         l1_total_bytes=optional_pattern_int(TT_L1_TOTAL_BYTES_PATTERN, completed.stderr),
         l1_capacity_bytes=optional_pattern_int(TT_L1_CAPACITY_BYTES_PATTERN, completed.stderr),
         l1_headroom_bytes=optional_pattern_int(TT_L1_HEADROOM_BYTES_PATTERN, completed.stderr),
     )
+
+
+def run_tt_wavelet_layout_sweep(command: str, transform: str) -> dict[str, TTTimingResult]:
+    """Run row-major, tile-native, and auto in one device process."""
+    environment = tt_benchmark_env()
+    completed = subprocess.run(
+        ["bash", "-lc", command],
+        cwd=PROJECT_ROOT,
+        env=environment,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(
+            f"TT-wavelet layout sweep failed with exit code {completed.returncode}.\n{completed.stderr}"
+        )
+
+    def float_value(prefix: str, field: str, scale: float = 1.0) -> float | None:
+        match = re.search(rf"{re.escape(prefix)}_{field}:\s*([0-9eE+.\-]+)", completed.stderr)
+        return None if match is None else float(match.group(1)) * scale
+
+    def int_value(prefix: str, field: str) -> int | None:
+        match = re.search(rf"{re.escape(prefix)}_{field}:\s*(\d+)", completed.stderr)
+        return None if match is None else int(match.group(1))
+
+    def string_value(prefix: str, field: str) -> str:
+        match = re.search(rf"{re.escape(prefix)}_{field}:\s*(\S+)", completed.stderr)
+        return "" if match is None else match.group(1)
+
+    results: dict[str, TTTimingResult] = {}
+    for layout, suffix in (("row-major", "row_major"), ("tile-native", "tile_native"), ("auto", "auto")):
+        prefix = f"{transform}_{suffix}"
+        mean_s = float_value(prefix, "execution_time_ms", 0.001)
+        if mean_s is None:
+            raise RuntimeError(f"TT-wavelet layout sweep omitted {prefix} timing output")
+        min_s = float_value(prefix, "min_time_ms", 0.001)
+        results[layout] = TTTimingResult(
+            mean_s=mean_s,
+            min_s=mean_s if min_s is None else min_s,
+            architecture=string_value(prefix, "architecture"),
+            layout=string_value(prefix, "layout"),
+            median_s=float_value(prefix, "median_time_ms", 0.001),
+            p10_s=float_value(prefix, "p10_time_ms", 0.001),
+            p90_s=float_value(prefix, "p90_time_ms", 0.001),
+            stddev_s=float_value(prefix, "stddev_time_ms", 0.001),
+            max_group_count=int_value(prefix, "max_group_count"),
+            active_core_count=int_value(prefix, "active_core_count"),
+            chunk_count=int_value(prefix, "chunk_count"),
+            route_count=int_value(prefix, "route_count"),
+            groups_per_chunk=int_value(prefix, "groups_per_chunk"),
+            workspace_elements=int_value(prefix, "workspace_elements"),
+            max_workspace_elements=int_value(prefix, "max_workspace_elements"),
+            max_dependency_overhead=float_value(prefix, "max_dependency_overhead"),
+            terminal_scale_inline=int_value(prefix, "terminal_scale_inline"),
+            inverse_scale_inline=int_value(prefix, "inverse_scale_inline"),
+            inverse_final_interleave_direct=int_value(prefix, "inverse_final_interleave_direct"),
+            compact_reader=int_value(prefix, "compact_reader"),
+            hybrid_tile_mirror=int_value(prefix, "hybrid_tile_mirror"),
+            row_major_noc_staging=int_value(prefix, "row_major_noc_staging"),
+            interleave_batch_sticks=int_value(prefix, "interleave_batch_sticks"),
+            l1_total_bytes=int_value(prefix, "l1_total_bytes"),
+            l1_capacity_bytes=int_value(prefix, "l1_capacity_bytes"),
+            l1_headroom_bytes=int_value(prefix, "l1_headroom_bytes"),
+        )
+    return results
 
 
 def time_repeats(

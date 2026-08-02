@@ -12,7 +12,7 @@
 
 namespace ttnn {
 
-std::tuple<Tensor, Tensor> lwt(
+std::tuple<Tensor, Tensor> dwt(
     const Tensor& input,
     const std::string_view wavelet,
     const std::string_view boundary_mode,
@@ -28,7 +28,7 @@ std::tuple<Tensor, Tensor> lwt(
         output_tensors);
 }
 
-Tensor ilwt(
+Tensor idwt(
     const Tensor& approximation,
     const Tensor& detail,
     const std::string_view wavelet,
@@ -48,7 +48,7 @@ Tensor ilwt(
         output_tensor);
 }
 
-std::tuple<Tensor, Tensor, Tensor, Tensor> lwt_2d(
+std::tuple<Tensor, Tensor, Tensor, Tensor> dwt_2d(
     const Tensor& input,
     const std::string_view wavelet,
     const std::string_view boundary_mode,
@@ -64,7 +64,7 @@ std::tuple<Tensor, Tensor, Tensor, Tensor> lwt_2d(
         output_tensors);
 }
 
-Tensor ilwt_2d(
+Tensor idwt_2d(
     const Tensor& ll,
     const Tensor& lh,
     const Tensor& hl,

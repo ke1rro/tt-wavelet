@@ -10,7 +10,6 @@ TARGET=${2:-lwt}
 
 log INFO "Updating tt-wavelet only (target: $TARGET)"
 ensure_upd_deps
-apply_cmake_fixes
 configure_project "$BUILD_TYPE"
 build_tt_wavelet_target "$TARGET"
 

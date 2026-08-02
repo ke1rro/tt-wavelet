@@ -39,6 +39,7 @@ struct Options {
     std::array<std::filesystem::path, 4> bands;
     std::filesystem::path output{"ilwt_2d_output.f32"};
     uint32_t core_limit{1};
+    uint32_t batch_count{1};
     size_t repeats{1};
     size_t warmup_runs{0};
     ttwv::BoundaryMode boundary_mode{ttwv::BoundaryMode::kSymmetric};
@@ -73,6 +74,15 @@ struct Options {
                 throw std::runtime_error("--cores exceeds uint32_t");
             }
             options.core_limit = static_cast<uint32_t>(value);
+        } else if (argument == "--batch-count") {
+            if (++index >= argc) {
+                throw std::runtime_error("--batch-count requires a value");
+            }
+            const size_t value = parse_positive(argv[index], "--batch-count");
+            if (value > std::numeric_limits<uint32_t>::max()) {
+                throw std::runtime_error("--batch-count exceeds uint32_t");
+            }
+            options.batch_count = static_cast<uint32_t>(value);
         } else if (argument == "--output") {
             if (++index >= argc) {
                 throw std::runtime_error("--output requires a path");
@@ -89,7 +99,7 @@ struct Options {
             }
             options.warmup_runs = static_cast<size_t>(std::stoull(argv[index]));
         } else if (argument == "--help" || argument == "-h") {
-            std::cout << "Usage: ilwt_2d [--boundary-mode MODE] [--cores N] [--output PATH] "
+            std::cout << "Usage: ilwt_2d [--boundary-mode MODE] [--cores N] [--batch-count B] [--output PATH] "
                          "[--repeats N] [--warmup-runs N] "
                          "WAVELET HEIGHT WIDTH LL.f32 LH.f32 HL.f32 HH.f32\n";
             std::exit(EXIT_SUCCESS);
@@ -172,11 +182,11 @@ struct Options {
 }
 
 [[nodiscard]] std::shared_ptr<tt::tt_metal::distributed::MeshBuffer> create_tiled_dram(
-    tt::tt_metal::distributed::MeshDevice& mesh_device, const ttwv::Shape2D shape) {
+    tt::tt_metal::distributed::MeshDevice& mesh_device, const ttwv::Shape2D shape, const uint32_t batch_count) {
     const size_t tiles = shape.height / ttwv::kTileHeight2D * (shape.width / ttwv::kTileWidth2D);
     return tt::tt_metal::distributed::MeshBuffer::create(
         tt::tt_metal::distributed::ReplicatedBufferConfig{
-            .size = static_cast<uint64_t>(tiles * ttwv::device_protocol::kLwt2DFullTileBytes),
+            .size = static_cast<uint64_t>(batch_count) * tiles * ttwv::device_protocol::kLwt2DFullTileBytes,
         },
         tt::tt_metal::distributed::DeviceLocalBufferConfig{
             .page_size = ttwv::device_protocol::kLwt2DFullTileBytes,
@@ -191,11 +201,19 @@ int run(const Options& options) {
         options.height, options.width, options.core_limit, 768 * 1024, options.boundary_mode);
     std::array<std::vector<float>, 4> tiled_bands;
     for (size_t band = 0; band < tiled_bands.size(); ++band) {
-        const std::vector<float> logical =
-            read_binary(options.bands[band], host_plan.band_height * host_plan.band_width);
-        tiled_bands[band] = tilize_padded(
-            ttwv::zero_pad_row_major_to_tiles_2d(logical, host_plan.tiling.band.logical),
-            host_plan.tiling.band.storage);
+        const std::vector<float> logical = read_binary(
+            options.bands[band],
+            static_cast<size_t>(options.batch_count) * host_plan.band_height * host_plan.band_width);
+        const size_t logical_stride = host_plan.band_height * host_plan.band_width;
+        for (uint32_t batch = 0; batch < options.batch_count; ++batch) {
+            const std::vector<float> sample(
+                logical.begin() + static_cast<std::ptrdiff_t>(batch * logical_stride),
+                logical.begin() + static_cast<std::ptrdiff_t>((batch + 1) * logical_stride));
+            auto tiled_sample = tilize_padded(
+                ttwv::zero_pad_row_major_to_tiles_2d(sample, host_plan.tiling.band.logical),
+                host_plan.tiling.band.storage);
+            tiled_bands[band].insert(tiled_bands[band].end(), tiled_sample.begin(), tiled_sample.end());
+        }
     }
 
     auto mesh_device = tt::tt_metal::distributed::MeshDevice::create_unit_mesh(0);
@@ -203,7 +221,7 @@ int run(const Options& options) {
     auto& queue = mesh_device->mesh_command_queue();
     std::array<std::shared_ptr<tt::tt_metal::distributed::MeshBuffer>, 4> band_buffers;
     for (size_t band = 0; band < band_buffers.size(); ++band) {
-        band_buffers[band] = create_tiled_dram(*mesh_device, host_plan.tiling.band.storage);
+        band_buffers[band] = create_tiled_dram(*mesh_device, host_plan.tiling.band.storage, options.batch_count);
         tt::tt_metal::distributed::EnqueueWriteMeshBuffer(queue, band_buffers[band], tiled_bands[band], false);
     }
     tt::tt_metal::distributed::Finish(queue);
@@ -218,7 +236,8 @@ int run(const Options& options) {
         options.height,
         options.width,
         options.core_limit,
-        options.boundary_mode);
+        options.boundary_mode,
+        options.batch_count);
     ttwv::prepare_ilwt_2d(queue, executable);
     for (size_t warmup = 0; warmup < options.warmup_runs; ++warmup) {
         ttwv::execute_ilwt_2d(*mesh_device, queue, executable);
@@ -233,13 +252,21 @@ int run(const Options& options) {
 
     std::vector<float> tiled_output;
     tt::tt_metal::distributed::EnqueueReadMeshBuffer(queue, tiled_output, executable.buffers.outputs[0], true);
-    const std::vector<float> padded = untilize_padded(tiled_output, executable.plan.tiling.input.storage);
-    std::vector<float> logical(options.height * options.width);
-    for (size_t row = 0; row < options.height; ++row) {
-        std::copy_n(
-            padded.begin() + static_cast<std::ptrdiff_t>(row * executable.plan.tiling.input.storage.width),
-            options.width,
-            logical.begin() + static_cast<std::ptrdiff_t>(row * options.width));
+    std::vector<float> logical;
+    logical.reserve(static_cast<size_t>(options.batch_count) * options.height * options.width);
+    const size_t tiled_stride = tiled_output.size() / options.batch_count;
+    for (uint32_t batch = 0; batch < options.batch_count; ++batch) {
+        const std::vector<float> tiled_sample(
+            tiled_output.begin() + static_cast<std::ptrdiff_t>(batch * tiled_stride),
+            tiled_output.begin() + static_cast<std::ptrdiff_t>((batch + 1) * tiled_stride));
+        const std::vector<float> padded = untilize_padded(tiled_sample, executable.plan.tiling.input.storage);
+        for (size_t row = 0; row < options.height; ++row) {
+            logical.insert(
+                logical.end(),
+                padded.begin() + static_cast<std::ptrdiff_t>(row * executable.plan.tiling.input.storage.width),
+                padded.begin() +
+                    static_cast<std::ptrdiff_t>(row * executable.plan.tiling.input.storage.width + options.width));
+        }
     }
     if (!options.output.parent_path().empty()) {
         std::filesystem::create_directories(options.output.parent_path());
@@ -287,7 +314,12 @@ int run(const Options& options) {
               << "ilwt_2d_p10_time_ms: " << percentile(0.1) << '\n'
               << "ilwt_2d_p90_time_ms: " << percentile(0.9) << '\n'
               << "ilwt_2d_stddev_time_ms: " << std::sqrt(squared_error / static_cast<double>(times.size())) << '\n'
-              << "ilwt_2d_active_core_count: " << executable.plan.active_core_count << '\n'
+              << "ilwt_2d_active_core_count: " << executable.buffers.scheduler.active_core_count << '\n'
+              << "ilwt_2d_batch_count: " << executable.buffers.scheduler.batch_count << '\n'
+              << "ilwt_2d_chunks_per_sample: " << executable.buffers.scheduler.chunks_per_sample << '\n'
+              << "ilwt_2d_total_work_items: " << executable.buffers.scheduler.total_work_items << '\n'
+              << "ilwt_2d_min_work_items_per_core: " << executable.buffers.scheduler.min_work_items_per_core << '\n'
+              << "ilwt_2d_max_work_items_per_core: " << executable.buffers.scheduler.max_work_items_per_core << '\n'
               << "ilwt_2d_chunk_count: " << executable.plan.chunks.size() << '\n'
               << "ilwt_2d_chunk_tiles: " << executable.plan.chunk_tiles_y << 'x' << executable.plan.chunk_tiles_x
               << '\n'

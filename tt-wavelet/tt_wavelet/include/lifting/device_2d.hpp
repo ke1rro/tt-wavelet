@@ -33,6 +33,11 @@ struct Lwt2DSchedulerTelemetry {
     Shape2D padded_band{};
     uint32_t available_worker_core_count{0};
     uint32_t active_core_count{0};
+    uint32_t batch_count{1};
+    uint32_t chunks_per_sample{0};
+    uint32_t total_work_items{0};
+    uint32_t min_work_items_per_core{0};
+    uint32_t max_work_items_per_core{0};
     uint32_t chunk_count{0};
     uint32_t chunk_tiles_y{0};
     uint32_t chunk_tiles_x{0};
@@ -82,6 +87,8 @@ struct Ilwt2DExecutable {
     const std::filesystem::path& kernel_root,
     tt::tt_metal::distributed::MeshDevice& mesh_device,
     const tt::tt_metal::Buffer& input_buffer,
+    uint32_t batch_count,
+    uint32_t core_limit,
     Lwt2DExecutionPlan plan,
     const char* compute_scheme_header,
     const char* compute_scheme_type);
@@ -94,8 +101,10 @@ template <typename Scheme>
     const size_t logical_height,
     const size_t logical_width,
     const uint32_t core_limit = 1,
-    const BoundaryMode boundary_mode = BoundaryMode::kSymmetric) {
+    const BoundaryMode boundary_mode = BoundaryMode::kSymmetric,
+    const uint32_t batch_count = 1) {
     TT_FATAL(logical_height > 0 && logical_width > 0, "2D LWT input shape must be positive");
+    TT_FATAL(batch_count > 0, "2D LWT batch count must be positive");
     Lwt2DExecutionPlan plan = make_lwt_2d_execution_plan<Scheme>(
         logical_height,
         logical_width,
@@ -106,12 +115,15 @@ template <typename Scheme>
         true,
         Lwt2DRouteDomainPolicy::kExact);
     TT_FATAL(
-        input_buffer.size() >= checked_shape_area_2d(plan.tiling.input.storage, "2D input storage") * sizeof(float),
+        input_buffer.size() >= static_cast<uint64_t>(batch_count) *
+                                   checked_shape_area_2d(plan.tiling.input.storage, "2D input storage") * sizeof(float),
         "2D input buffer is smaller than its padded tile shape");
     return create_lwt_2d_executable_impl(
         kernel_root,
         mesh_device,
         input_buffer,
+        batch_count,
+        core_limit,
         std::move(plan),
         Scheme::compute_scheme_header,
         Scheme::compute_scheme_type);
@@ -128,6 +140,8 @@ void execute_lwt_2d(
     const std::filesystem::path& kernel_root,
     tt::tt_metal::distributed::MeshDevice& mesh_device,
     const std::array<const tt::tt_metal::Buffer*, device_protocol::kLwt2DBandCount>& band_buffers,
+    uint32_t batch_count,
+    uint32_t core_limit,
     Ilwt2DExecutionPlan plan,
     const char* inverse_compute_scheme_header,
     const char* inverse_compute_scheme_type);
@@ -143,7 +157,9 @@ template <typename Scheme>
     const size_t output_height,
     const size_t output_width,
     const uint32_t core_limit = 1,
-    const BoundaryMode boundary_mode = BoundaryMode::kSymmetric) {
+    const BoundaryMode boundary_mode = BoundaryMode::kSymmetric,
+    const uint32_t batch_count = 1) {
+    TT_FATAL(batch_count > 0, "2D ILWT batch count must be positive");
     using InverseScheme = typename Scheme::inverse;
     Ilwt2DExecutionPlan plan =
         make_ilwt_2d_execution_plan<Scheme>(output_height, output_width, core_limit, 768 * 1024, boundary_mode);
@@ -151,12 +167,16 @@ template <typename Scheme>
         checked_shape_area_2d(plan.tiling.band.storage, "2D ILWT band storage") * sizeof(float);
     const std::array<const tt::tt_metal::Buffer*, device_protocol::kLwt2DBandCount> bands = {&ll, &lh, &hl, &hh};
     for (const auto* band : bands) {
-        TT_FATAL(band->size() >= required_band_bytes, "2D ILWT input band is smaller than its tiled storage shape");
+        TT_FATAL(
+            band->size() >= static_cast<uint64_t>(batch_count) * required_band_bytes,
+            "2D ILWT input band is smaller than its batched tiled storage shape");
     }
     return create_ilwt_2d_executable_impl(
         kernel_root,
         mesh_device,
         bands,
+        batch_count,
+        core_limit,
         std::move(plan),
         InverseScheme::compute_scheme_header,
         InverseScheme::compute_scheme_type);

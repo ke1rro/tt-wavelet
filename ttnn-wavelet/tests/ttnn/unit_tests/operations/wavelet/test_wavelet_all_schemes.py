@@ -23,8 +23,8 @@ def test_all_106_discrete_schemes_jit_forward_inverse(device):
         memory_config=ttnn.DRAM_MEMORY_CONFIG,
     )
     for scheme in schemes:
-        approximation, detail = ttnn.lwt(input_tensor, scheme, boundary_mode="symmetric")
-        reconstructed = ttnn.ilwt(
+        approximation, detail = ttnn.dwt(input_tensor, scheme, boundary_mode="symmetric")
+        reconstructed = ttnn.idwt(
             approximation,
             detail,
             scheme,
@@ -62,8 +62,8 @@ def test_all_106_discrete_schemes_jit_forward_inverse_2d(device):
     )
 
     for scheme in schemes:
-        outputs = ttnn.lwt_2d(input_tensor, scheme, boundary_mode="symmetric")
-        reconstructed = ttnn.ilwt_2d(
+        outputs = ttnn.dwt_2d(input_tensor, scheme, boundary_mode="symmetric")
+        reconstructed = ttnn.idwt_2d(
             *outputs,
             scheme,
             shape,

@@ -2,8 +2,8 @@
 
 This directory implements native, single-level FP32 lifting wavelet transforms:
 
-- `ttnn.lwt` and `ttnn.ilwt` for one-dimensional signals;
-- `ttnn.lwt_2d` and `ttnn.ilwt_2d` for two-dimensional signals.
+- `ttnn.dwt` and `ttnn.idwt` for one-dimensional signals;
+- `ttnn.dwt_2d` and `ttnn.idwt_2d` for two-dimensional signals.
 
 The TTNN port preserves the standalone `tt-wavelet` lifting arithmetic,
 dependency-cone planners, chunk scheduling, boundary extension, SFPI compute
@@ -14,7 +14,7 @@ device primitives live in `ttnn::prim`.
 ## Python API
 
 ```python
-approximation, detail = ttnn.lwt(
+approximation, detail = ttnn.dwt(
     input,
     "bior1.3",
     boundary_mode="symmetric",
@@ -22,7 +22,7 @@ approximation, detail = ttnn.lwt(
     output_tensors=None,
 )
 
-reconstructed = ttnn.ilwt(
+reconstructed = ttnn.idwt(
     approximation,
     detail,
     "bior1.3",
@@ -32,7 +32,7 @@ reconstructed = ttnn.ilwt(
     output_tensor=None,
 )
 
-ll, lh, hl, hh = ttnn.lwt_2d(
+ll, lh, hl, hh = ttnn.dwt_2d(
     input_2d,
     "bior1.3",
     boundary_mode="symmetric",
@@ -40,7 +40,7 @@ ll, lh, hl, hh = ttnn.lwt_2d(
     output_tensors=None,
 )
 
-reconstructed_2d = ttnn.ilwt_2d(
+reconstructed_2d = ttnn.idwt_2d(
     ll,
     lh,
     hl,
@@ -67,10 +67,10 @@ alias inputs or sibling outputs.
 
 | Operation | Rank and tensor layout | Memory | Output |
 | --- | --- | --- | --- |
-| `lwt` | exact rank 1, row-major, FLOAT32 | interleaved DRAM or L1 input, one physical device | two row-major interleaved DRAM coefficient tensors |
-| `ilwt` | two equal exact-rank-1 row-major FLOAT32 tensors | independently interleaved DRAM or L1 inputs, one physical device | one row-major interleaved DRAM signal tensor |
-| `lwt_2d` | exact rank 2, standard 32x32 tile layout, FLOAT32 | interleaved DRAM or L1 input, one physical device | four tile-layout interleaved DRAM band tensors |
-| `ilwt_2d` | four equal exact-rank-2 standard-tile FLOAT32 tensors | independently interleaved DRAM or L1 inputs, one physical device | one tile-layout interleaved DRAM image tensor |
+| `dwt` | `[W]` or `[B,1,1,W]`, row-major, FLOAT32 | interleaved DRAM or L1 input, one physical device | two rank-preserving row-major interleaved DRAM coefficient tensors |
+| `idwt` | two equal `[Wc]` or `[B,1,1,Wc]` row-major FLOAT32 tensors | independently interleaved DRAM or L1 inputs, one physical device | one rank-preserving row-major interleaved DRAM signal tensor |
+| `dwt_2d` | `[H,W]` or `[B,1,H,W]`, standard 32x32 tile layout, FLOAT32 | interleaved DRAM or L1 input, one physical device | four rank-preserving tile-layout interleaved DRAM band tensors |
+| `idwt_2d` | four equal `[Hc,Wc]` or `[B,1,Hc,Wc]` standard-tile FLOAT32 tensors | independently interleaved DRAM or L1 inputs, one physical device | one rank-preserving tile-layout interleaved DRAM image tensor |
 
 All 106 discrete PyWavelets scheme names are registered. The generated registry
 and headers under `generated/schemes/` are the source of truth for scheme IDs,
@@ -83,9 +83,10 @@ All eight standalone boundary modes are supported: `zero`, `constant`,
 `antireflect`. Reflect and antireflect require every transformed dimension to
 contain more than one logical sample.
 
-The first version intentionally rejects host tensors, multi-device tensors,
-sharded memory layouts (including sharded L1), BFLOAT16, rank promotion, and
-nonstandard 2D tiles. Inputs larger than one core's active L1 working set are
+Rank-4 inputs require `C == 1`; 1D rank-4 inputs additionally require `H == 1`.
+The operation intentionally rejects host tensors, multi-device tensors,
+sharded memory layouts (including sharded L1), BFLOAT16, arbitrary channels,
+and nonstandard 2D tiles. Inputs larger than one core's active L1 working set are
 chunked by the existing dependency-cone planner. The full input may reside in
 interleaved DRAM or interleaved L1; external L1 storage is still staged through
 the reader into dependency-local static-CB workspace and is not used as that

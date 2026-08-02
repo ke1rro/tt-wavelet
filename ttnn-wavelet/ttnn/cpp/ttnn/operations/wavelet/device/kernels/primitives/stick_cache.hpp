@@ -30,6 +30,7 @@ struct StickReadCache {
     uint32_t stick_capacity;
     uint32_t cached_stick_id;
     uint32_t cached_stick_count;
+    uint32_t source_page;
     bool valid;
 };
 
@@ -69,7 +70,9 @@ ALWI void cache_source_sticks(
             cache_words[word] = 0;
         }
         noc_async_read(
-            src.get_noc_addr(0, stick * cache.stick_nbytes), cache_l1_addr + i * cache.stick_nbytes, read_bytes);
+            src.get_noc_addr(cache.source_page, stick * cache.stick_nbytes),
+            cache_l1_addr + i * cache.stick_nbytes,
+            read_bytes);
     }
     noc_async_read_barrier();
     cb_push_back(cache.cb_id, reserve_sticks);

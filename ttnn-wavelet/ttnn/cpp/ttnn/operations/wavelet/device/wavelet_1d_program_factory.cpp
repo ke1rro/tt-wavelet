@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+#include "ttnn/operations/wavelet/device/wavelet_1d_program_factory.hpp"
+
 #include <algorithm>
 #include <array>
 #include <cstddef>
@@ -14,6 +16,7 @@
 #include <utility>
 #include <vector>
 
+#include "tt-logger/tt-logger.hpp"
 #include "tt-metalium/allocator.hpp"
 #include "tt-metalium/buffer.hpp"
 #include "tt-metalium/circular_buffer_constants.h"
@@ -25,9 +28,8 @@
 #include "tt-metalium/workload_descriptor.hpp"
 #include "ttnn/operations/wavelet/common/wavelet_host.hpp"
 #include "ttnn/operations/wavelet/device/protocol/lwt_config.hpp"
-#include "ttnn/operations/wavelet/device/wavelet_1d_program_factory.hpp"
-#include "ttnn/operations/wavelet/planner/l1_accounting.hpp"
 #include "ttnn/operations/wavelet/planner/inverse_plan.hpp"
+#include "ttnn/operations/wavelet/planner/l1_accounting.hpp"
 #include "ttnn/operations/wavelet/planner/policy.hpp"
 #include "ttnn/tensor/tensor_ops.hpp"
 
@@ -54,7 +56,16 @@ constexpr uint32_t kReaderConfigCb = tt::CBIndex::c_6;
 constexpr uint32_t kWriterConfigCb = tt::CBIndex::c_7;
 constexpr uint32_t kWorkspaceCb = tt::CBIndex::c_8;
 constexpr uint32_t kTileGroupBuffering = 2;
+constexpr uint32_t kIlwtInterleaveBatchSticks = 96;
+constexpr uint32_t kAlignedNocMaxRouteCount = 5;
+constexpr uint32_t kAlignedNocMinGroupsPerChunk = 2;
+constexpr uint32_t kWormholeSingleGroupLwtTileMinRouteCount = 4;
+constexpr uint32_t kWormholeSingleGroupIlwtTileMinRouteCount = 7;
 constexpr uint32_t kDefaultL1SignalBudgetBytes = 768 * 1024;
+
+static_assert(
+    kIlwtInterleaveBatchSticks <= device_protocol::kIlwtGroupOutputElements / kStickWidth,
+    "ILWT interleave batch must fit in one output group");
 
 struct LwtWorkingBuffers {
     std::array<uint32_t, 3> slot_addresses{};
@@ -92,13 +103,76 @@ struct CoreChunkWork {
     uint32_t chunk_count{0};
 };
 
+struct Logical1DShape {
+    uint32_t batch_count{1};
+    uint32_t length{0};
+    bool rank_four{false};
+};
+
 [[nodiscard]] uint32_t checked_u32(const size_t value, const char* label) {
     TT_FATAL(
         value <= static_cast<size_t>(std::numeric_limits<uint32_t>::max()), "{} {} overflows uint32_t", label, value);
     return static_cast<uint32_t>(value);
 }
 
-[[nodiscard]] uint32_t static_workspace_address(tt::tt_metal::distributed::MeshDevice& mesh_device) {
+[[nodiscard]] Logical1DShape logical_1d_shape(const Tensor& tensor, const char* tensor_name) {
+    const auto& shape = tensor.logical_shape();
+    if (shape.rank() == 1) {
+        return Logical1DShape{
+            .batch_count = 1,
+            .length = checked_u32(shape[0], tensor_name),
+            .rank_four = false,
+        };
+    }
+    TT_FATAL(shape.rank() == 4, "{} must have shape [W] or [B,1,1,W], got rank {}", tensor_name, shape.rank());
+    TT_FATAL(shape[0] > 0, "{} batch dimension must be positive", tensor_name);
+    TT_FATAL(shape[1] == 1, "{} requires C == 1, got {}", tensor_name, shape[1]);
+    TT_FATAL(shape[2] == 1, "{} requires H == 1, got {}", tensor_name, shape[2]);
+    return Logical1DShape{
+        .batch_count = checked_u32(shape[0], "1D wavelet batch count"),
+        .length = checked_u32(shape[3], tensor_name),
+        .rank_four = true,
+    };
+}
+
+[[nodiscard]] uint32_t pages_per_batch_item(const Tensor& tensor, const uint32_t batch_count, const char* tensor_name) {
+    TT_FATAL(batch_count > 0, "{} batch count must be positive", tensor_name);
+    const uint64_t physical_bytes = static_cast<uint64_t>(tensor.physical_volume()) * sizeof(float);
+    TT_FATAL(physical_bytes % batch_count == 0, "{} physical volume is not divisible by its batch count", tensor_name);
+    const uint64_t bytes_per_batch = physical_bytes / batch_count;
+    const uint32_t page_size = tensor.buffer()->page_size();
+    TT_FATAL(
+        page_size > 0 && bytes_per_batch % page_size == 0,
+        "{} physical batch stride {} bytes is not page aligned to {} bytes",
+        tensor_name,
+        bytes_per_batch,
+        page_size);
+    return checked_u32(bytes_per_batch / page_size, "1D wavelet pages per batch item");
+}
+
+[[nodiscard]] uint32_t ilwt_interleave_batch_sticks(const tt::ARCH architecture) {
+    // B96 was measured on Wormhole. Keep Blackhole on its existing one-stick
+    // path until the architecture has independent correctness and timing data.
+    return architecture == tt::ARCH::WORMHOLE_B0 ? kIlwtInterleaveBatchSticks : 1U;
+}
+
+[[nodiscard]] bool supports_hybrid_tile_mirror(const tt::ARCH architecture, const WorkspaceLayout layout) {
+    // The tile-shadow path is a Wormhole KEEP result. Blackhole keeps its
+    // independently calibrated tile-native policy.
+    return architecture == tt::ARCH::WORMHOLE_B0 && layout == WorkspaceLayout::kRowMajor;
+}
+
+[[nodiscard]] uint32_t tile_mirror_elements(const uint32_t workspace_elements, const bool hybrid_tile_mirror) {
+    return hybrid_tile_mirror
+               ? checked_u32(
+                     ceil_div(workspace_elements, static_cast<uint32_t>(device_protocol::kLwtGroupOutputElements)) *
+                         device_protocol::kLwtGroupOutputElements,
+                     "hybrid tile mirror elements")
+               : 0U;
+}
+
+[[nodiscard]] uint32_t static_workspace_address(
+    tt::tt_metal::distributed::MeshDevice& mesh_device, const uint32_t interleave_batch_sticks) {
     const size_t alignment = mesh_device.allocator()->get_alignment(tt::tt_metal::BufferType::DRAM);
     size_t address = mesh_device.allocator()->get_base_allocator_addr(tt::tt_metal::HalMemType::L1);
     const auto reserve_cb = [&](const size_t bytes) {
@@ -113,7 +187,7 @@ struct CoreChunkWork {
     reserve_cb(3 * kTileGroupBuffering * device_protocol::kLwtNarrowTileBytes);
     reserve_cb(3 * kTileGroupBuffering * device_protocol::kLwtNarrowTileBytes);
     reserve_cb(device_protocol::kLwtCacheStickCount * device_protocol::kStickBytes);
-    reserve_cb(device_protocol::kStickBytes);
+    reserve_cb(static_cast<size_t>(interleave_batch_sticks) * device_protocol::kStickBytes);
     reserve_cb(kNocAlignmentBytes);
     reserve_cb(device_protocol::kRouteConfigPageBytes);
     reserve_cb(device_protocol::kRouteConfigPageBytes);
@@ -121,15 +195,19 @@ struct CoreChunkWork {
 }
 
 [[nodiscard]] std::array<uint32_t, 3> workspace_slot_addresses(
-    tt::tt_metal::distributed::MeshDevice& mesh_device, const uint32_t workspace_elements) {
+    tt::tt_metal::distributed::MeshDevice& mesh_device,
+    const uint32_t workspace_elements,
+    const bool hybrid_tile_mirror,
+    const uint32_t interleave_batch_sticks) {
     TT_FATAL(workspace_elements > 0, "LWT workspace must contain at least one element");
     TT_FATAL(
         workspace_elements % kStickWidth == 0,
         "LWT workspace length {} is not a multiple of the {}-element stick width",
         workspace_elements,
         kStickWidth);
-    const size_t base = static_workspace_address(mesh_device);
-    const size_t slot_bytes = static_cast<size_t>(workspace_elements) * sizeof(float);
+    const size_t base = static_workspace_address(mesh_device, interleave_batch_sticks);
+    const uint32_t mirror_elements = tile_mirror_elements(workspace_elements, hybrid_tile_mirror);
+    const size_t slot_bytes = static_cast<size_t>(workspace_elements + mirror_elements) * sizeof(float);
     TT_FATAL(base <= std::numeric_limits<uint32_t>::max(), "LWT workspace base address overflows uint32_t");
     TT_FATAL(
         slot_bytes <= (std::numeric_limits<uint32_t>::max() - base) / 3,
@@ -154,25 +232,41 @@ struct CoreChunkWork {
         ceil_div(output_length, static_cast<size_t>(device_protocol::kLwtGroupOutputElements)), "LWT group count");
 }
 
-[[nodiscard]] uint32_t l1_signal_budget_bytes(
-    tt::tt_metal::distributed::MeshDevice& mesh_device, const uint32_t architecture_scratch_bytes) {
-    const uint64_t fixed_bytes = l1_detail::kSourceTileCircularBuffersBytes + l1_detail::kBaseTileCircularBufferBytes +
-                                 l1_detail::kOutputTileCircularBufferBytes + l1_detail::kInterleaveOutputBytes +
-                                 l1_detail::kCacheBytes + l1_detail::kSynchronizationBytes + l1_detail::kMetadataBytes +
-                                 architecture_scratch_bytes;
-    const uint64_t available_bytes = available_static_l1_bytes(mesh_device);
+[[nodiscard]] uint32_t planner_signal_budget_bytes(
+    tt::tt_metal::distributed::MeshDevice& mesh_device,
+    const ArchitecturePolicy& policy,
+    const bool hybrid_tile_mirror,
+    const uint32_t interleave_batch_sticks) {
+    const uint32_t available_bytes = available_static_l1_bytes(mesh_device);
+    const L1Accounting fixed =
+        make_l1_accounting(0, 0, 0, interleave_batch_sticks, policy.l1_scratch_bytes, available_bytes);
+    constexpr uint64_t mirror_rounding_reserve =
+        uint64_t{3} * (device_protocol::kLwtGroupOutputElements - 1U) * sizeof(float);
+    const uint64_t physical_workspace_multiplier = hybrid_tile_mirror ? 2U : 1U;
+    const uint64_t rounding_reserve = hybrid_tile_mirror ? mirror_rounding_reserve : 0U;
     TT_FATAL(
-        available_bytes >= fixed_bytes + 3 * device_protocol::kStickBytes,
+        available_bytes >= fixed.total_bytes + rounding_reserve + 3 * device_protocol::kStickBytes,
         "LWT requires at least {} bytes of free per-core L1 after external L1 tensor allocation, but only {} remain",
-        fixed_bytes + 3 * device_protocol::kStickBytes,
+        fixed.total_bytes + rounding_reserve + 3 * device_protocol::kStickBytes,
         available_bytes);
-    return checked_u32(
-        std::min<uint64_t>(kDefaultL1SignalBudgetBytes, available_bytes - fixed_bytes), "LWT signal workspace budget");
+    const uint64_t capacity_limited_budget =
+        (available_bytes - fixed.total_bytes - rounding_reserve) / physical_workspace_multiplier;
+    return checked_u32(std::min<uint64_t>(kDefaultL1SignalBudgetBytes, capacity_limited_budget), "LWT signal budget");
 }
 
 [[nodiscard]] std::optional<WorkspaceLayout> workspace_layout_override() { return std::nullopt; }
 
-[[nodiscard]] bool prefer_tile_native_workspace(const LwtExecutionPlan& plan) {
+[[nodiscard]] bool prefer_tile_native_workspace(const LwtExecutionPlan& plan, const tt::ARCH architecture) {
+    TT_FATAL(!plan.chunks.empty(), "LWT workspace selection requires at least one chunk");
+    if (architecture == tt::ARCH::BLACKHOLE) {
+        return true;
+    }
+
+    if (architecture == tt::ARCH::WORMHOLE_B0 && plan.chunks.size() > 1 && plan.groups_per_chunk == 1 &&
+        plan.chunks.front().routes.size() >= kWormholeSingleGroupLwtTileMinRouteCount) {
+        return true;
+    }
+
     // Tile-native persistence makes an aligned base a three-page transfer and
     // makes every output write three pages instead of 96 half-sticks.  A
     // shifted base still needs a tile/row remap, so keep row-major storage for
@@ -180,7 +274,6 @@ struct CoreChunkWork {
     // path.  The override above keeps this policy directly benchmarkable.
     uint32_t predict_update_count = 0;
     uint32_t aligned_base_count = 0;
-    TT_FATAL(!plan.chunks.empty(), "LWT workspace selection requires at least one chunk");
     for (const auto& route : plan.chunks.front().routes) {
         if (!is_predict_update_step(route.type)) {
             continue;
@@ -189,6 +282,26 @@ struct CoreChunkWork {
         aligned_base_count += route.base_offset_elements == 0 ? 1U : 0U;
     }
     return predict_update_count > 0 && 2U * aligned_base_count >= predict_update_count;
+}
+
+[[nodiscard]] bool prefer_tile_native_inverse_workspace(const IlwtExecutionPlan& plan, const tt::ARCH architecture) {
+    TT_FATAL(!plan.chunks.empty(), "ILWT workspace selection requires at least one chunk");
+    if (architecture == tt::ARCH::BLACKHOLE) {
+        const uint32_t route_count = checked_u32(plan.chunks.front().routes.size(), "ILWT route count");
+        const bool row_major_crossover = (plan.output_groups_per_chunk >= 2 && route_count <= 2) ||
+                                         (plan.output_groups_per_chunk >= 3 && route_count <= 3);
+        return !row_major_crossover;
+    }
+    return architecture == tt::ARCH::WORMHOLE_B0 && plan.chunks.size() > 1 && plan.output_groups_per_chunk == 1 &&
+           plan.chunks.front().routes.size() >= kWormholeSingleGroupIlwtTileMinRouteCount;
+}
+
+template <typename Plan>
+[[nodiscard]] bool prefer_aligned_row_major_noc_staging(
+    const Plan& plan, const uint32_t groups_per_chunk, const bool hybrid_tile_mirror) {
+    TT_FATAL(!plan.chunks.empty(), "LWT NoC staging selection requires at least one chunk");
+    return hybrid_tile_mirror && groups_per_chunk >= kAlignedNocMinGroupsPerChunk &&
+           plan.chunks.front().routes.size() <= kAlignedNocMaxRouteCount;
 }
 
 [[nodiscard]] uint32_t core_limit(tt::tt_metal::distributed::MeshDevice& mesh_device) {
@@ -325,6 +438,7 @@ void add_narrow_tile_circular_buffer(
 
     for (size_t chunk_index = 0; chunk_index < plan.chunks.size(); ++chunk_index) {
         const auto& chunk = plan.chunks[chunk_index];
+        std::array<bool, 3> tile_mirror_valid{};
         TT_FATAL(chunk.routes.size() == route_count, "LWT chunks have inconsistent route counts");
         for (size_t route_index = 0; route_index < route_count; ++route_index) {
             const auto& route = chunk.routes[route_index];
@@ -354,6 +468,17 @@ void add_narrow_tile_circular_buffer(
             } else if (route.output.storage == RouteOutputStorage::kFinalOddDram) {
                 route_flags = device_protocol::kRouteFlagFinalDram | device_protocol::kRouteFlagFinalOdd;
             }
+            route_flags |= tile_mirror_valid[static_cast<size_t>(route.source.slot)]
+                               ? device_protocol::kRouteFlagSourceTileMirror
+                               : 0U;
+            route_flags |= tile_mirror_valid[static_cast<size_t>(route.base.slot)]
+                               ? device_protocol::kRouteFlagBaseTileMirror
+                               : 0U;
+            if (route.output.storage == RouteOutputStorage::kWorkspaceSlot) {
+                const bool produces_tile_mirror = output_offset % device_protocol::kLwtGroupOutputElements == 0;
+                route_flags |= produces_tile_mirror ? device_protocol::kRouteFlagOutputTileMirror : 0U;
+                tile_mirror_valid[static_cast<size_t>(route.output.slot)] = produces_tile_mirror;
+            }
             words[word_offset + device_protocol::kRouteFlags] = route_flags;
         }
     }
@@ -364,7 +489,9 @@ void add_narrow_tile_circular_buffer(
     const LwtExecutionPlan& plan,
     const LwtWorkingBuffers& buffers,
     const tt::tt_metal::Buffer& input_buffer,
-    const CoreChunkWork& work) {
+    const CoreChunkWork& work,
+    const uint32_t chunks_per_sample,
+    const uint32_t input_pages_per_sample) {
     tt::tt_metal::KernelDescriptor::RTArgList args;
     args.reserve(10);
     args.push_back(const_cast<tt::tt_metal::Buffer*>(&input_buffer));
@@ -377,11 +504,18 @@ void add_narrow_tile_circular_buffer(
     args.push_back(work.chunk_begin);
     args.push_back(work.chunk_count);
     args.push_back(checked_u32(plan.chunks.front().routes.size(), "LWT route count"));
+    args.push_back(checked_u32(plan.workspace_elements * sizeof(float), "LWT tile mirror offset"));
+    args.push_back(chunks_per_sample);
+    args.push_back(input_pages_per_sample);
     return args;
 }
 
 [[nodiscard]] tt::tt_metal::KernelDescriptor::RTArgList writer_runtime_args(
-    const LwtExecutionPlan& plan, const LwtWorkingBuffers& buffers, const CoreChunkWork& work) {
+    const LwtExecutionPlan& plan,
+    const LwtWorkingBuffers& buffers,
+    const CoreChunkWork& work,
+    const uint32_t chunks_per_sample,
+    const uint32_t output_pages_per_sample) {
     tt::tt_metal::KernelDescriptor::RTArgList args;
     args.reserve(6);
     args.push_back(buffers.route_config->get_backing_buffer());
@@ -390,6 +524,9 @@ void add_narrow_tile_circular_buffer(
     args.push_back(checked_u32(plan.chunks.front().routes.size(), "LWT route count"));
     args.push_back(buffers.final_even);
     args.push_back(buffers.final_odd);
+    args.push_back(checked_u32(plan.workspace_elements * sizeof(float), "LWT tile mirror offset"));
+    args.push_back(chunks_per_sample);
+    args.push_back(output_pages_per_sample);
     return args;
 }
 
@@ -399,7 +536,7 @@ void add_narrow_tile_circular_buffer(
     args.reserve(1 + static_cast<size_t>(work.chunk_count) * route_count);
     args.push_back(work.chunk_count);
     for (uint32_t local_chunk = 0; local_chunk < work.chunk_count; ++local_chunk) {
-        const auto& chunk = plan.chunks[work.chunk_begin + local_chunk];
+        const auto& chunk = plan.chunks[(work.chunk_begin + local_chunk) % plan.chunks.size()];
         for (const auto& route : chunk.routes) {
             args.push_back(output_group_count(route.output_length));
         }
@@ -413,10 +550,15 @@ void add_narrow_tile_circular_buffer(
     const LwtWorkingBuffers& buffers,
     const LwtExecutionPlan& plan,
     const WorkspaceLayout workspace_layout,
+    const bool hybrid_tile_mirror,
+    const bool row_major_noc_staging,
     const BoundaryMode boundary_mode,
     const char* compute_scheme_header,
     const char* compute_scheme_type,
-    const std::vector<CoreChunkWork>& work) {
+    const std::vector<CoreChunkWork>& work,
+    const uint32_t chunks_per_sample,
+    const uint32_t input_pages_per_sample,
+    const uint32_t output_pages_per_sample) {
     tt::tt_metal::ProgramDescriptor descriptor;
     add_narrow_tile_circular_buffer(descriptor, cores, kSrcTile0Cb, 2 * kTileGroupBuffering);
     add_narrow_tile_circular_buffer(descriptor, cores, kSrcTile1Cb, 2 * kTileGroupBuffering);
@@ -432,7 +574,12 @@ void add_narrow_tile_circular_buffer(
         descriptor,
         cores,
         kWorkspaceCb,
-        checked_u32(3 * static_cast<size_t>(plan.workspace_elements) / kStickWidth, "LWT workspace stick count"),
+        checked_u32(
+            3 *
+                static_cast<size_t>(
+                    plan.workspace_elements + tile_mirror_elements(plan.workspace_elements, hybrid_tile_mirror)) /
+                kStickWidth,
+            "LWT workspace stick count"),
         device_protocol::kStickBytes);
 
     const auto& config_buffer = *buffers.route_config->get_backing_buffer();
@@ -448,6 +595,8 @@ void add_narrow_tile_circular_buffer(
         0U,
         static_cast<uint32_t>(boundary_mode),
         input_buffer.page_size(),
+        static_cast<uint32_t>(row_major_noc_staging),
+        static_cast<uint32_t>(hybrid_tile_mirror),
     };
     tt::tt_metal::TensorAccessorArgs(config_buffer).append_to(reader_compile_args);
     tt::tt_metal::TensorAccessorArgs(input_buffer).append_to(reader_compile_args);
@@ -462,6 +611,8 @@ void add_narrow_tile_circular_buffer(
         0U,
         kInterleaveCb,
         buffers.final_even->page_size(),
+        1U,
+        static_cast<uint32_t>(hybrid_tile_mirror),
     };
     tt::tt_metal::TensorAccessorArgs(config_buffer).append_to(writer_compile_args);
     tt::tt_metal::TensorAccessorArgs(*buffers.final_even).append_to(writer_compile_args);
@@ -505,11 +656,13 @@ void add_narrow_tile_circular_buffer(
 
     for (const auto& core_work : work) {
         reader_descriptor.emplace_runtime_args(
-            core_work.core, reader_runtime_args(plan, buffers, input_buffer, core_work));
+            core_work.core,
+            reader_runtime_args(plan, buffers, input_buffer, core_work, chunks_per_sample, input_pages_per_sample));
         tt::tt_metal::KernelDescriptor::RTArgList compute_args;
         compute_args.append(compute_runtime_args(plan, core_work));
         compute_descriptor.emplace_runtime_args(core_work.core, compute_args);
-        writer_descriptor.emplace_runtime_args(core_work.core, writer_runtime_args(plan, buffers, core_work));
+        writer_descriptor.emplace_runtime_args(
+            core_work.core, writer_runtime_args(plan, buffers, core_work, chunks_per_sample, output_pages_per_sample));
     }
 
     descriptor.kernels.push_back(std::move(reader_descriptor));
@@ -565,6 +718,7 @@ void add_narrow_tile_circular_buffer(
         std::max(plan.chunks.size() * route_count, size_t{1}) * device_protocol::kRouteConfigWordCount, 0);
     for (size_t chunk_index = 0; chunk_index < plan.chunks.size(); ++chunk_index) {
         const auto& chunk = plan.chunks[chunk_index];
+        std::array<bool, 3> tile_mirror_valid{};
         TT_FATAL(chunk.routes.size() == route_count, "ILWT chunks have inconsistent route counts");
         for (size_t route_index = 0; route_index < route_count; ++route_index) {
             const auto& route = chunk.routes[route_index];
@@ -591,10 +745,18 @@ void add_narrow_tile_circular_buffer(
             words[word_offset + device_protocol::kRouteSourceLeftPad] = route.source_left_pad_elements;
             words[word_offset + device_protocol::kRouteOutputOffset] = 0;
             words[word_offset + device_protocol::kRouteGroupCount] = output_group_count(route.output_length);
-            words[word_offset + device_protocol::kRouteFlags] =
-                plan.final_interleave_direct && route_index + 1 == route_count
-                    ? device_protocol::kRouteFlagIlwtFinalInterleave
-                    : 0U;
+            uint32_t route_flags = plan.final_interleave_direct && route_index + 1 == route_count
+                                       ? device_protocol::kRouteFlagIlwtFinalInterleave
+                                       : 0U;
+            route_flags |= tile_mirror_valid[static_cast<size_t>(route.source.slot)]
+                               ? device_protocol::kRouteFlagSourceTileMirror
+                               : 0U;
+            route_flags |= tile_mirror_valid[static_cast<size_t>(route.base.slot)]
+                               ? device_protocol::kRouteFlagBaseTileMirror
+                               : 0U;
+            route_flags |= device_protocol::kRouteFlagOutputTileMirror;
+            tile_mirror_valid[static_cast<size_t>(route.output.slot)] = true;
+            words[word_offset + device_protocol::kRouteFlags] = route_flags;
         }
     }
     return words;
@@ -605,7 +767,9 @@ void add_narrow_tile_circular_buffer(
     const IlwtWorkingBuffers& buffers,
     const tt::tt_metal::Buffer& approximation_buffer,
     const tt::tt_metal::Buffer& detail_buffer,
-    const CoreChunkWork& work) {
+    const CoreChunkWork& work,
+    const uint32_t chunks_per_sample,
+    const uint32_t input_pages_per_sample) {
     tt::tt_metal::KernelDescriptor::RTArgList args;
     args.reserve(10);
     args.push_back(const_cast<tt::tt_metal::Buffer*>(&approximation_buffer));
@@ -618,11 +782,18 @@ void add_narrow_tile_circular_buffer(
     args.push_back(work.chunk_begin);
     args.push_back(work.chunk_count);
     args.push_back(checked_u32(plan.chunks.front().routes.size(), "ILWT route count"));
+    args.push_back(checked_u32(plan.workspace_elements * sizeof(float), "ILWT tile mirror offset"));
+    args.push_back(chunks_per_sample);
+    args.push_back(input_pages_per_sample);
     return args;
 }
 
 [[nodiscard]] tt::tt_metal::KernelDescriptor::RTArgList inverse_writer_runtime_args(
-    const IlwtExecutionPlan& plan, const IlwtWorkingBuffers& buffers, const CoreChunkWork& work) {
+    const IlwtExecutionPlan& plan,
+    const IlwtWorkingBuffers& buffers,
+    const CoreChunkWork& work,
+    const uint32_t chunks_per_sample,
+    const uint32_t output_pages_per_sample) {
     tt::tt_metal::KernelDescriptor::RTArgList args;
     args.reserve(7);
     args.push_back(buffers.route_config->get_backing_buffer());
@@ -632,6 +803,9 @@ void add_narrow_tile_circular_buffer(
     args.push_back(buffers.chunk_config->get_backing_buffer());
     args.push_back(buffers.output);
     args.push_back(plan.full_plan.forward_trace.preprocess_layout.pad_config.left);
+    args.push_back(checked_u32(plan.workspace_elements * sizeof(float), "ILWT tile mirror offset"));
+    args.push_back(chunks_per_sample);
+    args.push_back(output_pages_per_sample);
     return args;
 }
 
@@ -642,7 +816,7 @@ void add_narrow_tile_circular_buffer(
     args.reserve(1 + static_cast<size_t>(work.chunk_count) * route_count);
     args.push_back(work.chunk_count);
     for (uint32_t local_chunk = 0; local_chunk < work.chunk_count; ++local_chunk) {
-        const auto& chunk = plan.chunks[work.chunk_begin + local_chunk];
+        const auto& chunk = plan.chunks[(work.chunk_begin + local_chunk) % plan.chunks.size()];
         for (const auto& route : chunk.routes) {
             args.push_back(output_group_count(route.output_length));
         }
@@ -657,9 +831,15 @@ void add_narrow_tile_circular_buffer(
     const IlwtWorkingBuffers& buffers,
     const IlwtExecutionPlan& plan,
     const WorkspaceLayout workspace_layout,
+    const bool hybrid_tile_mirror,
+    const bool row_major_noc_staging,
+    const uint32_t interleave_batch_sticks,
     const char* compute_scheme_header,
     const char* compute_scheme_type,
-    const std::vector<CoreChunkWork>& work) {
+    const std::vector<CoreChunkWork>& work,
+    const uint32_t chunks_per_sample,
+    const uint32_t input_pages_per_sample,
+    const uint32_t output_pages_per_sample) {
     tt::tt_metal::ProgramDescriptor descriptor;
     add_narrow_tile_circular_buffer(descriptor, cores, kSrcTile0Cb, 2 * kTileGroupBuffering);
     add_narrow_tile_circular_buffer(descriptor, cores, kSrcTile1Cb, 2 * kTileGroupBuffering);
@@ -667,7 +847,7 @@ void add_narrow_tile_circular_buffer(
     add_narrow_tile_circular_buffer(descriptor, cores, kOutputCb, 3 * kTileGroupBuffering);
     add_circular_buffer(
         descriptor, cores, kSrcCacheCb, device_protocol::kLwtCacheStickCount, device_protocol::kStickBytes);
-    add_circular_buffer(descriptor, cores, kInterleaveCb, 1, device_protocol::kStickBytes);
+    add_circular_buffer(descriptor, cores, kInterleaveCb, interleave_batch_sticks, device_protocol::kStickBytes);
     add_circular_buffer(descriptor, cores, kSyncCb, 1, kNocAlignmentBytes);
     add_circular_buffer(descriptor, cores, kReaderConfigCb, 1, device_protocol::kRouteConfigPageBytes);
     add_circular_buffer(descriptor, cores, kWriterConfigCb, 1, device_protocol::kRouteConfigPageBytes);
@@ -675,7 +855,12 @@ void add_narrow_tile_circular_buffer(
         descriptor,
         cores,
         kWorkspaceCb,
-        checked_u32(3 * static_cast<size_t>(plan.workspace_elements) / kStickWidth, "ILWT workspace stick count"),
+        checked_u32(
+            3 *
+                static_cast<size_t>(
+                    plan.workspace_elements + tile_mirror_elements(plan.workspace_elements, hybrid_tile_mirror)) /
+                kStickWidth,
+            "ILWT workspace stick count"),
         device_protocol::kStickBytes);
 
     const auto& config_buffer = *buffers.route_config->get_backing_buffer();
@@ -693,6 +878,8 @@ void add_narrow_tile_circular_buffer(
         // so every ILWT mode reuses the same device binary.
         static_cast<uint32_t>(BoundaryMode::kSymmetric),
         approximation_buffer.page_size(),
+        static_cast<uint32_t>(row_major_noc_staging),
+        static_cast<uint32_t>(hybrid_tile_mirror),
     };
     tt::tt_metal::TensorAccessorArgs(config_buffer).append_to(reader_compile_args);
     tt::tt_metal::TensorAccessorArgs(approximation_buffer).append_to(reader_compile_args);
@@ -707,6 +894,8 @@ void add_narrow_tile_circular_buffer(
         1U,
         kInterleaveCb,
         buffers.output->page_size(),
+        interleave_batch_sticks,
+        static_cast<uint32_t>(hybrid_tile_mirror),
     };
     tt::tt_metal::TensorAccessorArgs(config_buffer).append_to(writer_compile_args);
     tt::tt_metal::TensorAccessorArgs(*buffers.output).append_to(writer_compile_args);
@@ -750,11 +939,21 @@ void add_narrow_tile_circular_buffer(
 
     for (const auto& core_work : work) {
         reader_descriptor.emplace_runtime_args(
-            core_work.core, inverse_reader_runtime_args(plan, buffers, approximation_buffer, detail_buffer, core_work));
+            core_work.core,
+            inverse_reader_runtime_args(
+                plan,
+                buffers,
+                approximation_buffer,
+                detail_buffer,
+                core_work,
+                chunks_per_sample,
+                input_pages_per_sample));
         tt::tt_metal::KernelDescriptor::RTArgList compute_args;
         compute_args.append(inverse_compute_runtime_args(plan, core_work));
         compute_descriptor.emplace_runtime_args(core_work.core, compute_args);
-        writer_descriptor.emplace_runtime_args(core_work.core, inverse_writer_runtime_args(plan, buffers, core_work));
+        writer_descriptor.emplace_runtime_args(
+            core_work.core,
+            inverse_writer_runtime_args(plan, buffers, core_work, chunks_per_sample, output_pages_per_sample));
     }
 
     descriptor.kernels.push_back(std::move(reader_descriptor));
@@ -785,7 +984,7 @@ void validate_input_memory_config(const MemoryConfig& memory_config, const char*
         tensor_name);
 }
 
-void validate_rank_one_tensor(const Tensor& tensor, const char* tensor_name) {
+void validate_1d_tensor(const Tensor& tensor, const char* tensor_name) {
     TT_FATAL(tensor.storage_type() == StorageType::DEVICE, "{} must be a device tensor", tensor_name);
     TT_FATAL(
         tensor.is_allocated() && tensor.buffer() != nullptr, "{} must have an allocated device buffer", tensor_name);
@@ -793,16 +992,11 @@ void validate_rank_one_tensor(const Tensor& tensor, const char* tensor_name) {
     TT_FATAL(tensor.device()->num_devices() == 1, "{} must be placed on exactly one physical device", tensor_name);
     TT_FATAL(tensor.dtype() == DataType::FLOAT32, "{} must have FLOAT32 dtype", tensor_name);
     TT_FATAL(tensor.layout() == Layout::ROW_MAJOR, "{} must use ROW_MAJOR layout", tensor_name);
-    TT_FATAL(tensor.logical_shape().rank() == 1, "{} must have exact rank 1", tensor_name);
-    TT_FATAL(tensor.logical_shape()[0] > 0, "{} must be non-empty", tensor_name);
-    TT_FATAL(
-        tensor.logical_shape()[0] <= std::numeric_limits<uint32_t>::max(),
-        "{} length {} exceeds the device uint32 range",
-        tensor_name,
-        tensor.logical_shape()[0]);
+    const Logical1DShape shape = logical_1d_shape(tensor, tensor_name);
+    TT_FATAL(shape.length > 0, "{} must be non-empty", tensor_name);
     validate_input_memory_config(tensor.memory_config(), tensor_name);
 
-    const uint64_t required_bytes = static_cast<uint64_t>(tensor.logical_shape()[0]) * sizeof(float);
+    const uint64_t required_bytes = static_cast<uint64_t>(shape.batch_count) * shape.length * sizeof(float);
     TT_FATAL(
         tensor.buffer()->size() >= required_bytes,
         "{} physical buffer has {} bytes but the logical signal requires at least {} bytes",
@@ -812,9 +1006,11 @@ void validate_rank_one_tensor(const Tensor& tensor, const char* tensor_name) {
     static_cast<void>(make_architecture_policy(tensor.device()->arch()));
 }
 
-[[nodiscard]] tt::tt_metal::TensorSpec rank_one_output_spec(const uint32_t length, const MemoryConfig& memory_config) {
+[[nodiscard]] tt::tt_metal::TensorSpec output_spec_1d(
+    const Logical1DShape& input_shape, const uint32_t length, const MemoryConfig& memory_config) {
+    const Shape output_shape = input_shape.rank_four ? Shape({input_shape.batch_count, 1, 1, length}) : Shape({length});
     return tt::tt_metal::TensorSpec(
-        Shape({length}),
+        output_shape,
         tt::tt_metal::TensorLayout(
             DataType::FLOAT32,
             tt::tt_metal::PageConfig(Layout::ROW_MAJOR),
@@ -827,7 +1023,7 @@ void validate_preallocated_output(
     const tt::tt_metal::TensorSpec& expected_spec,
     const tt::tt_metal::distributed::MeshDevice* expected_device,
     const char* output_name) {
-    validate_rank_one_tensor(output, output_name);
+    validate_1d_tensor(output, output_name);
     validate_output_memory_config(output.memory_config(), output_name);
     TT_FATAL(output.device() == expected_device, "{} must be on the same device as the inputs", output_name);
     TT_FATAL(
@@ -889,18 +1085,28 @@ template <typename Scheme>
 
     const uint32_t max_cores = core_limit(mesh_device);
     const ArchitecturePolicy architecture_policy = make_architecture_policy(mesh_device.arch());
-    const uint32_t signal_budget_bytes = l1_signal_budget_bytes(mesh_device, architecture_policy.l1_scratch_bytes);
     const std::optional<WorkspaceLayout> workspace_override = workspace_layout_override();
     const WorkspaceLayout initial_layout = workspace_override.value_or(WorkspaceLayout::kRowMajor);
+    const bool initial_hybrid_tile_mirror =
+        supports_hybrid_tile_mirror(architecture_policy.architecture, initial_layout);
+    const uint32_t signal_budget_bytes =
+        planner_signal_budget_bytes(mesh_device, architecture_policy, initial_hybrid_tile_mirror, 1U);
     LwtExecutionPlan plan =
         make_lwt_execution_plan(std::move(full_plan), max_cores, signal_budget_bytes, initial_layout);
-    if (!workspace_override.has_value() && prefer_tile_native_workspace(plan)) {
+    const bool tile_native_preferred = prefer_tile_native_workspace(plan, architecture_policy.architecture);
+    const bool hybrid_has_steady_state = plan.groups_per_chunk >= kAlignedNocMinGroupsPerChunk;
+    if (!workspace_override.has_value() && tile_native_preferred &&
+        (!initial_hybrid_tile_mirror || !hybrid_has_steady_state)) {
         plan = make_lwt_execution_plan(
             std::move(plan.full_plan), max_cores, signal_budget_bytes, WorkspaceLayout::kTileNative);
     }
+    const bool hybrid_tile_mirror =
+        supports_hybrid_tile_mirror(architecture_policy.architecture, plan.workspace_layout);
     static_cast<void>(make_l1_accounting(
         plan.workspace_elements,
         plan.max_workspace_elements,
+        tile_mirror_elements(plan.workspace_elements, hybrid_tile_mirror),
+        1U,
         architecture_policy.l1_scratch_bytes,
         available_static_l1_bytes(mesh_device)));
     return plan;
@@ -914,16 +1120,38 @@ template <typename Scheme>
     const BoundaryMode boundary_mode) {
     const std::optional<WorkspaceLayout> workspace_override = workspace_layout_override();
     const ArchitecturePolicy architecture_policy = make_architecture_policy(mesh_device.arch(), workspace_override);
+    const uint32_t interleave_batch_sticks = ilwt_interleave_batch_sticks(architecture_policy.architecture);
+    const bool initial_hybrid_tile_mirror =
+        supports_hybrid_tile_mirror(architecture_policy.architecture, architecture_policy.ilwt_layout);
+    const uint32_t signal_budget_bytes = planner_signal_budget_bytes(
+        mesh_device, architecture_policy, initial_hybrid_tile_mirror, interleave_batch_sticks);
     TT_FATAL(architecture_policy.inverse_scale_inline, "ILWT must preserve inline FP32 inverse scaling");
     IlwtExecutionPlan plan = make_ilwt_execution_plan(
         make_inverse_lifting_plan<Scheme>(original_length, coefficient_length, boundary_mode),
         core_limit(mesh_device),
-        l1_signal_budget_bytes(mesh_device, architecture_policy.l1_scratch_bytes),
+        signal_budget_bytes,
         architecture_policy.ilwt_layout,
         architecture_policy.final_interleave_direct);
+    const WorkspaceLayout preferred_layout =
+        prefer_tile_native_inverse_workspace(plan, architecture_policy.architecture) ? WorkspaceLayout::kTileNative
+                                                                                     : WorkspaceLayout::kRowMajor;
+    if (!workspace_override.has_value() && plan.workspace_layout != preferred_layout) {
+        const ArchitecturePolicy preferred_policy =
+            make_architecture_policy(architecture_policy.architecture, preferred_layout);
+        plan = make_ilwt_execution_plan(
+            std::move(plan.full_plan),
+            core_limit(mesh_device),
+            signal_budget_bytes,
+            preferred_layout,
+            preferred_policy.final_interleave_direct);
+    }
+    const bool hybrid_tile_mirror =
+        supports_hybrid_tile_mirror(architecture_policy.architecture, plan.workspace_layout);
     static_cast<void>(make_l1_accounting(
         plan.workspace_elements,
         plan.max_workspace_elements,
+        tile_mirror_elements(plan.workspace_elements, hybrid_tile_mirror),
+        interleave_batch_sticks,
         architecture_policy.l1_scratch_bytes,
         available_static_l1_bytes(mesh_device)));
     return plan;
@@ -937,18 +1165,28 @@ template <typename Scheme>
     const MeshCoordinateRangeSet& tensor_coords) {
     auto& mesh_device = *tensor_args.input.device();
     const auto& input_buffer = *tensor_args.input.buffer();
-    LwtExecutionPlan plan = make_forward_execution_plan<Scheme>(
-        mesh_device, tensor_args.input.logical_shape()[0], operation_attributes.boundary_mode);
+    const Logical1DShape input_shape = logical_1d_shape(tensor_args.input, "DWT input");
+    LwtExecutionPlan plan =
+        make_forward_execution_plan<Scheme>(mesh_device, input_shape.length, operation_attributes.boundary_mode);
+    const ArchitecturePolicy architecture_policy = make_architecture_policy(mesh_device.arch());
+    const bool hybrid_tile_mirror =
+        supports_hybrid_tile_mirror(architecture_policy.architecture, plan.workspace_layout);
+    const bool row_major_noc_staging =
+        prefer_aligned_row_major_noc_staging(plan, plan.groups_per_chunk, hybrid_tile_mirror);
 
     tt::tt_metal::WorkloadDescriptor workload;
-    std::vector<tt::tt_metal::CoreCoord> cores = select_cores(mesh_device, plan.active_core_count);
+    const uint32_t chunks_per_sample = checked_u32(plan.chunks.size(), "LWT chunks per sample");
+    const uint32_t total_work_items =
+        checked_u32(static_cast<size_t>(chunks_per_sample) * input_shape.batch_count, "LWT total batch work items");
+    std::vector<tt::tt_metal::CoreCoord> cores =
+        select_cores(mesh_device, std::min(core_limit(mesh_device), total_work_items));
 
     const size_t route_count = plan.chunks.front().routes.size();
     auto route_config =
         create_dram_buffer(mesh_device, plan.chunks.size() * route_count, device_protocol::kRouteConfigPageBytes);
     auto chunk_config = create_dram_buffer(mesh_device, plan.chunks.size(), device_protocol::kLwtChunkConfigPageBytes);
     LwtWorkingBuffers buffers{
-        .slot_addresses = workspace_slot_addresses(mesh_device, plan.workspace_elements),
+        .slot_addresses = workspace_slot_addresses(mesh_device, plan.workspace_elements, hybrid_tile_mirror, 1U),
         .final_even = std::get<0>(tensor_return_value).buffer(),
         .final_odd = std::get<1>(tensor_return_value).buffer(),
         .route_config = route_config,
@@ -974,18 +1212,51 @@ template <typename Scheme>
     buffers.route_config = upload_metadata(
         mesh_device, plan.chunks.size() * route_count, device_protocol::kRouteConfigPageBytes, route_words, workload);
 
-    const std::vector<CoreChunkWork> work =
-        partition_chunk_work(buffers.cores, checked_u32(plan.chunks.size(), "LWT chunk count"));
+    const std::vector<CoreChunkWork> work = partition_chunk_work(buffers.cores, total_work_items);
+    const auto [min_work, max_work] = std::minmax_element(
+        work.begin(), work.end(), [](const auto& lhs, const auto& rhs) { return lhs.chunk_count < rhs.chunk_count; });
+    log_debug(
+        tt::LogOp,
+        "ttnn::dwt batch scheduler: B={}, chunks_per_sample={}, total_work_items={}, active_cores={}, "
+        "work_items_per_core={}..{}, max_per_core_workspace_bytes={}, arch={}, scheme={}, layout={}, "
+        "routes={}, groups_per_chunk={}, dependency_overhead={}, hybrid_tile_mirror={}, row_major_noc_staging={}",
+        input_shape.batch_count,
+        chunks_per_sample,
+        total_work_items,
+        buffers.cores.size(),
+        min_work->chunk_count,
+        max_work->chunk_count,
+        3 *
+            static_cast<uint64_t>(
+                plan.workspace_elements + tile_mirror_elements(plan.workspace_elements, hybrid_tile_mirror)) *
+            sizeof(float),
+        static_cast<uint32_t>(architecture_policy.architecture),
+        Scheme::name,
+        static_cast<uint32_t>(plan.workspace_layout),
+        route_count,
+        plan.groups_per_chunk,
+        plan.max_dependency_overhead,
+        hybrid_tile_mirror,
+        row_major_noc_staging);
+    const uint32_t input_pages_per_sample =
+        pages_per_batch_item(tensor_args.input, input_shape.batch_count, "LWT input");
+    const uint32_t output_pages_per_sample =
+        pages_per_batch_item(std::get<0>(tensor_return_value), input_shape.batch_count, "LWT approximation output");
     auto descriptor = create_forward_program_descriptor(
         core_range_set(buffers.cores),
         input_buffer,
         buffers,
         plan,
         plan.workspace_layout,
+        hybrid_tile_mirror,
+        row_major_noc_staging,
         operation_attributes.boundary_mode,
         Scheme::compute_scheme_header,
         Scheme::compute_scheme_type,
-        work);
+        work,
+        chunks_per_sample,
+        input_pages_per_sample,
+        output_pages_per_sample);
     append_programs(workload, std::move(descriptor), tensor_coords);
     return workload;
 }
@@ -999,21 +1270,34 @@ template <typename Scheme>
     auto& mesh_device = *tensor_args.approximation.device();
     const auto& approximation_buffer = *tensor_args.approximation.buffer();
     const auto& detail_buffer = *tensor_args.detail.buffer();
+    const Logical1DShape coefficient_shape = logical_1d_shape(tensor_args.approximation, "IDWT approximation");
     IlwtExecutionPlan plan = make_inverse_execution_plan<Scheme>(
         mesh_device,
         operation_attributes.original_length,
-        tensor_args.approximation.logical_shape()[0],
+        coefficient_shape.length,
         operation_attributes.boundary_mode);
+    using InverseScheme = typename Scheme::inverse;
+    const ArchitecturePolicy architecture_policy = make_architecture_policy(mesh_device.arch());
+    const uint32_t interleave_batch_sticks = ilwt_interleave_batch_sticks(architecture_policy.architecture);
+    const bool hybrid_tile_mirror =
+        supports_hybrid_tile_mirror(architecture_policy.architecture, plan.workspace_layout);
+    const bool row_major_noc_staging =
+        prefer_aligned_row_major_noc_staging(plan, plan.output_groups_per_chunk, hybrid_tile_mirror);
 
     tt::tt_metal::WorkloadDescriptor workload;
-    std::vector<tt::tt_metal::CoreCoord> cores = select_cores(mesh_device, plan.active_core_count);
+    const uint32_t chunks_per_sample = checked_u32(plan.chunks.size(), "ILWT chunks per sample");
+    const uint32_t total_work_items = checked_u32(
+        static_cast<size_t>(chunks_per_sample) * coefficient_shape.batch_count, "ILWT total batch work items");
+    std::vector<tt::tt_metal::CoreCoord> cores =
+        select_cores(mesh_device, std::min(core_limit(mesh_device), total_work_items));
 
     const size_t route_count = plan.chunks.front().routes.size();
     auto route_config =
         create_dram_buffer(mesh_device, plan.chunks.size() * route_count, device_protocol::kRouteConfigPageBytes);
     auto chunk_config = create_dram_buffer(mesh_device, plan.chunks.size(), device_protocol::kLwtChunkConfigPageBytes);
     IlwtWorkingBuffers buffers{
-        .slot_addresses = workspace_slot_addresses(mesh_device, plan.workspace_elements),
+        .slot_addresses =
+            workspace_slot_addresses(mesh_device, plan.workspace_elements, hybrid_tile_mirror, interleave_batch_sticks),
         .output = tensor_return_value.buffer(),
         .route_config = route_config,
         .chunk_config = chunk_config,
@@ -1027,9 +1311,38 @@ template <typename Scheme>
     buffers.route_config = upload_metadata(
         mesh_device, plan.chunks.size() * route_count, device_protocol::kRouteConfigPageBytes, route_words, workload);
 
-    const std::vector<CoreChunkWork> work =
-        partition_chunk_work(buffers.cores, checked_u32(plan.chunks.size(), "ILWT chunk count"));
-    using InverseScheme = typename Scheme::inverse;
+    const std::vector<CoreChunkWork> work = partition_chunk_work(buffers.cores, total_work_items);
+    const auto [min_work, max_work] = std::minmax_element(
+        work.begin(), work.end(), [](const auto& lhs, const auto& rhs) { return lhs.chunk_count < rhs.chunk_count; });
+    log_debug(
+        tt::LogOp,
+        "ttnn::idwt batch scheduler: B={}, chunks_per_sample={}, total_work_items={}, active_cores={}, "
+        "work_items_per_core={}..{}, max_per_core_workspace_bytes={}, arch={}, scheme={}, layout={}, "
+        "routes={}, groups_per_chunk={}, dependency_overhead={}, hybrid_tile_mirror={}, row_major_noc_staging={}, "
+        "interleave_batch_sticks={}",
+        coefficient_shape.batch_count,
+        chunks_per_sample,
+        total_work_items,
+        buffers.cores.size(),
+        min_work->chunk_count,
+        max_work->chunk_count,
+        3 *
+            static_cast<uint64_t>(
+                plan.workspace_elements + tile_mirror_elements(plan.workspace_elements, hybrid_tile_mirror)) *
+            sizeof(float),
+        static_cast<uint32_t>(architecture_policy.architecture),
+        InverseScheme::name,
+        static_cast<uint32_t>(plan.workspace_layout),
+        route_count,
+        plan.output_groups_per_chunk,
+        plan.max_dependency_overhead,
+        hybrid_tile_mirror,
+        row_major_noc_staging,
+        interleave_batch_sticks);
+    const uint32_t input_pages_per_sample =
+        pages_per_batch_item(tensor_args.approximation, coefficient_shape.batch_count, "ILWT approximation");
+    const uint32_t output_pages_per_sample =
+        pages_per_batch_item(tensor_return_value, coefficient_shape.batch_count, "ILWT output");
     auto descriptor = create_inverse_program_descriptor(
         core_range_set(buffers.cores),
         approximation_buffer,
@@ -1037,24 +1350,30 @@ template <typename Scheme>
         buffers,
         plan,
         plan.workspace_layout,
+        hybrid_tile_mirror,
+        row_major_noc_staging,
+        interleave_batch_sticks,
         InverseScheme::compute_scheme_header,
         InverseScheme::compute_scheme_type,
-        work);
+        work,
+        chunks_per_sample,
+        input_pages_per_sample,
+        output_pages_per_sample);
     append_programs(workload, std::move(descriptor), tensor_coords);
     return workload;
 }
 
 void validate_forward_inputs(const Lwt1DParams& operation_attributes, const Lwt1DInputs& tensor_args) {
-    validate_rank_one_tensor(tensor_args.input, "LWT input");
-    validate_output_memory_config(operation_attributes.output_memory_config, "LWT");
-    TT_FATAL(operation_attributes.scheme_id != SchemeId::kUnknown, "LWT received an invalid wavelet scheme identifier");
+    validate_1d_tensor(tensor_args.input, "DWT input");
+    const Logical1DShape input_shape = logical_1d_shape(tensor_args.input, "DWT input");
+    validate_output_memory_config(operation_attributes.output_memory_config, "DWT");
+    TT_FATAL(operation_attributes.scheme_id != SchemeId::kUnknown, "DWT received an invalid wavelet scheme identifier");
     TT_FATAL(
         is_supported_lwt_boundary_mode(operation_attributes.boundary_mode),
-        "LWT received an unsupported boundary mode");
+        "DWT received an unsupported boundary mode");
     TT_FATAL(
-        !boundary_mode_requires_multiple_samples(operation_attributes.boundary_mode) ||
-            tensor_args.input.logical_shape()[0] > 1,
-        "LWT reflect and antireflect modes require an input length greater than one");
+        !boundary_mode_requires_multiple_samples(operation_attributes.boundary_mode) || input_shape.length > 1,
+        "DWT reflect and antireflect modes require an input length greater than one");
 
     const auto expected_specs = Lwt1DDeviceOperation::compute_output_specs(operation_attributes, tensor_args);
     if (tensor_args.preallocated_outputs.has_value()) {
@@ -1062,48 +1381,47 @@ void validate_forward_inputs(const Lwt1DParams& operation_attributes, const Lwt1
             std::get<0>(*tensor_args.preallocated_outputs),
             std::get<0>(expected_specs),
             tensor_args.input.device(),
-            "LWT approximation output");
+            "DWT approximation output");
         validate_preallocated_output(
             std::get<1>(*tensor_args.preallocated_outputs),
             std::get<1>(expected_specs),
             tensor_args.input.device(),
-            "LWT detail output");
+            "DWT detail output");
         TT_FATAL(
             std::get<0>(*tensor_args.preallocated_outputs).buffer() !=
                 std::get<1>(*tensor_args.preallocated_outputs).buffer(),
-            "LWT approximation and detail outputs must not alias");
+            "DWT approximation and detail outputs must not alias");
     }
 }
 
 void validate_inverse_inputs(const Ilwt1DParams& operation_attributes, const Ilwt1DInputs& tensor_args) {
-    validate_rank_one_tensor(tensor_args.approximation, "ILWT approximation input");
-    validate_rank_one_tensor(tensor_args.detail, "ILWT detail input");
-    validate_output_memory_config(operation_attributes.output_memory_config, "ILWT");
+    validate_1d_tensor(tensor_args.approximation, "IDWT approximation input");
+    validate_1d_tensor(tensor_args.detail, "IDWT detail input");
+    const Logical1DShape coefficient_shape = logical_1d_shape(tensor_args.approximation, "IDWT approximation input");
+    validate_output_memory_config(operation_attributes.output_memory_config, "IDWT");
     TT_FATAL(
         tensor_args.approximation.device() == tensor_args.detail.device(),
-        "ILWT approximation and detail inputs must be on the same device");
+        "IDWT approximation and detail inputs must be on the same device");
     TT_FATAL(
         tensor_args.approximation.logical_shape() == tensor_args.detail.logical_shape(),
-        "ILWT approximation and detail inputs must have identical shapes");
+        "IDWT approximation and detail inputs must have identical shapes");
     TT_FATAL(
         tensor_args.approximation.buffer() != tensor_args.detail.buffer(),
-        "ILWT approximation and detail inputs must not alias");
-    TT_FATAL(operation_attributes.original_length > 0, "ILWT original_length must be greater than zero");
+        "IDWT approximation and detail inputs must not alias");
+    TT_FATAL(operation_attributes.original_length > 0, "IDWT original_length must be greater than zero");
     TT_FATAL(
-        operation_attributes.scheme_id != SchemeId::kUnknown, "ILWT received an invalid wavelet scheme identifier");
+        operation_attributes.scheme_id != SchemeId::kUnknown, "IDWT received an invalid wavelet scheme identifier");
     TT_FATAL(
         is_supported_lwt_boundary_mode(operation_attributes.boundary_mode),
-        "ILWT received an unsupported boundary mode");
+        "IDWT received an unsupported boundary mode");
     TT_FATAL(
         !boundary_mode_requires_multiple_samples(operation_attributes.boundary_mode) ||
             operation_attributes.original_length > 1,
-        "ILWT reflect and antireflect modes require original_length greater than one");
+        "IDWT reflect and antireflect modes require original_length greater than one");
 
     dispatch_scheme(operation_attributes.scheme_id, [&]<typename Scheme>() {
         static_cast<void>(make_inverse_lifting_plan<Scheme>(
-            operation_attributes.original_length,
-            tensor_args.approximation.logical_shape()[0],
-            operation_attributes.boundary_mode));
+            operation_attributes.original_length, coefficient_shape.length, operation_attributes.boundary_mode));
     });
 
     if (tensor_args.preallocated_output.has_value()) {
@@ -1111,11 +1429,11 @@ void validate_inverse_inputs(const Ilwt1DParams& operation_attributes, const Ilw
             *tensor_args.preallocated_output,
             Ilwt1DDeviceOperation::compute_output_specs(operation_attributes, tensor_args),
             tensor_args.approximation.device(),
-            "ILWT output");
+            "IDWT output");
         TT_FATAL(
             tensor_args.preallocated_output->buffer() != tensor_args.approximation.buffer() &&
                 tensor_args.preallocated_output->buffer() != tensor_args.detail.buffer(),
-            "ILWT output must not alias an input");
+            "IDWT output must not alias an input");
     }
 }
 
@@ -1144,14 +1462,15 @@ void Lwt1DDeviceOperation::validate_on_program_cache_hit(
 Lwt1DDeviceOperation::spec_return_value_t Lwt1DDeviceOperation::compute_output_specs(
     const operation_attributes_t& operation_attributes, const tensor_args_t& tensor_args) {
     const auto& info = scheme_info(operation_attributes.scheme_id);
-    const uint64_t input_length = tensor_args.input.logical_shape()[0];
+    const Logical1DShape input_shape = logical_1d_shape(tensor_args.input, "DWT input");
+    const uint64_t input_length = input_shape.length;
     const uint64_t coefficient_length = (input_length + info.tap_size - 1) / 2;
     TT_FATAL(
         coefficient_length <= std::numeric_limits<uint32_t>::max(),
-        "LWT coefficient length {} exceeds the device uint32 range",
+        "DWT coefficient length {} exceeds the device uint32 range",
         coefficient_length);
-    auto spec =
-        rank_one_output_spec(static_cast<uint32_t>(coefficient_length), operation_attributes.output_memory_config);
+    auto spec = output_spec_1d(
+        input_shape, static_cast<uint32_t>(coefficient_length), operation_attributes.output_memory_config);
     return {spec, spec};
 }
 
@@ -1188,8 +1507,11 @@ void Ilwt1DDeviceOperation::validate_on_program_cache_hit(
 }
 
 Ilwt1DDeviceOperation::spec_return_value_t Ilwt1DDeviceOperation::compute_output_specs(
-    const operation_attributes_t& operation_attributes, const tensor_args_t&) {
-    return rank_one_output_spec(operation_attributes.original_length, operation_attributes.output_memory_config);
+    const operation_attributes_t& operation_attributes, const tensor_args_t& tensor_args) {
+    return output_spec_1d(
+        logical_1d_shape(tensor_args.approximation, "IDWT approximation"),
+        operation_attributes.original_length,
+        operation_attributes.output_memory_config);
 }
 
 Ilwt1DDeviceOperation::tensor_return_value_t Ilwt1DDeviceOperation::create_output_tensors(

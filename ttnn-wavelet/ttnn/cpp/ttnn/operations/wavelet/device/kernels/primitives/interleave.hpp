@@ -6,16 +6,17 @@
 
 #include <cstdint>
 
+#include "api/dataflow/dataflow_api.h"
 #include "ttnn/operations/wavelet/device/protocol/lwt_config.hpp"
 #include "ttnn/operations/wavelet/planner/step.hpp"
-#include "api/dataflow/dataflow_api.h"
 #include "workspace_layout.hpp"
 
 namespace ttnn::operations::wavelet::kernels::primitives {
 
-template <bool TileNative, typename DstAccessor>
+template <bool TileNative, uint32_t BatchSticks, typename DstAccessor>
 ALWI void write_reconstructed_signal(
     const DstAccessor& dst,
+    const uint32_t output_page,
     const uint32_t cb_interleave,
     const uint32_t left_pad,
     const uint32_t even_addr,
@@ -33,35 +34,43 @@ ALWI void write_reconstructed_signal(
     const uint32_t stick_count =
         (output_length + ttnn::operations::wavelet::kStickWidth - 1U) / ttnn::operations::wavelet::kStickWidth;
 
-    for (uint32_t local_stick = 0; local_stick < stick_count; ++local_stick) {
-        cb_reserve_back(cb_interleave, 1);
-        auto* staging = reinterpret_cast<float*>(get_write_ptr(cb_interleave));
-        const uint32_t signal_base = output_begin + local_stick * ttnn::operations::wavelet::kStickWidth;
+    static_assert(BatchSticks > 0, "ILWT interleave batch must be non-zero");
+    for (uint32_t batch_begin = 0; batch_begin < stick_count; batch_begin += BatchSticks) {
+        const uint32_t batch_count = stick_count - batch_begin < BatchSticks ? stick_count - batch_begin : BatchSticks;
+        cb_reserve_back(cb_interleave, batch_count);
+        const uint32_t staging_base = get_write_ptr(cb_interleave);
+        for (uint32_t batch_stick = 0; batch_stick < batch_count; ++batch_stick) {
+            const uint32_t local_stick = batch_begin + batch_stick;
+            auto* staging = reinterpret_cast<float*>(
+                staging_base + batch_stick * ttnn::operations::wavelet::device_protocol::kStickBytes);
+            const uint32_t signal_base = output_begin + local_stick * ttnn::operations::wavelet::kStickWidth;
 #pragma GCC unroll 8
-        for (uint32_t lane = 0; lane < ttnn::operations::wavelet::kStickWidth; ++lane) {
-            const uint32_t signal_index = signal_base + lane;
-            float value = 0.0F;
-            if (signal_index < output_end) {
-                const uint32_t padded_index = left_pad + signal_index;
-                const uint32_t split_index = padded_index / 2U;
-                if ((padded_index & 1U) == 0) {
-                    const uint32_t logical_index = even_offset + split_index - even_begin;
-                    value = even[workspace_physical_index<TileNative>(logical_index)];
-                } else {
-                    const uint32_t logical_index = odd_offset + split_index - odd_begin;
-                    value = odd[workspace_physical_index<TileNative>(logical_index)];
+            for (uint32_t lane = 0; lane < ttnn::operations::wavelet::kStickWidth; ++lane) {
+                const uint32_t signal_index = signal_base + lane;
+                float value = 0.0F;
+                if (signal_index < output_end) {
+                    const uint32_t padded_index = left_pad + signal_index;
+                    const uint32_t split_index = padded_index / 2U;
+                    if ((padded_index & 1U) == 0) {
+                        const uint32_t logical_index = even_offset + split_index - even_begin;
+                        value = even[workspace_physical_index<TileNative>(logical_index)];
+                    } else {
+                        const uint32_t logical_index = odd_offset + split_index - odd_begin;
+                        value = odd[workspace_physical_index<TileNative>(logical_index)];
+                    }
                 }
+                staging[lane] = value;
             }
-            staging[lane] = value;
+            noc_async_write(
+                staging_base + batch_stick * ttnn::operations::wavelet::device_protocol::kStickBytes,
+                dst.get_noc_addr(
+                    output_page, (first_stick + local_stick) * ttnn::operations::wavelet::device_protocol::kStickBytes),
+                ttnn::operations::wavelet::device_protocol::kStickBytes);
         }
-        noc_async_write(
-            get_write_ptr(cb_interleave),
-            dst.get_noc_addr(0, (first_stick + local_stick) * ttnn::operations::wavelet::device_protocol::kStickBytes),
-            ttnn::operations::wavelet::device_protocol::kStickBytes);
         noc_async_write_barrier();
-        cb_push_back(cb_interleave, 1);
-        cb_wait_front(cb_interleave, 1);
-        cb_pop_front(cb_interleave, 1);
+        cb_push_back(cb_interleave, batch_count);
+        cb_wait_front(cb_interleave, batch_count);
+        cb_pop_front(cb_interleave, batch_count);
     }
 }
 
@@ -77,9 +86,10 @@ ALWI void write_reconstructed_signal(
     return tile[row * ttnn::operations::wavelet::device_protocol::kLwtHalfStickElements + lane];
 }
 
-template <bool TileNative, typename DstAccessor>
+template <bool TileNative, uint32_t BatchSticks, typename DstAccessor>
 ALWI void write_direct_interleaved_signal(
     const DstAccessor& dst,
+    const uint32_t output_page,
     const uint32_t cb_output,
     const uint32_t cb_interleave,
     const uint32_t tile_bytes,
@@ -117,46 +127,55 @@ ALWI void write_direct_interleaved_signal(
                                      ttnn::operations::wavelet::kStickWidth;
         const uint32_t first_stick = (output_begin + group_signal_offset) / ttnn::operations::wavelet::kStickWidth;
 
-        for (uint32_t local_stick = 0; local_stick < stick_count; ++local_stick) {
-            cb_reserve_back(cb_interleave, 1);
-            auto* staging = reinterpret_cast<float*>(get_write_ptr(cb_interleave));
-            const uint32_t local_signal_base =
-                group_signal_offset + local_stick * ttnn::operations::wavelet::kStickWidth;
+        static_assert(BatchSticks > 0, "ILWT direct-interleave batch must be non-zero");
+        for (uint32_t batch_begin = 0; batch_begin < stick_count; batch_begin += BatchSticks) {
+            const uint32_t batch_count =
+                stick_count - batch_begin < BatchSticks ? stick_count - batch_begin : BatchSticks;
+            cb_reserve_back(cb_interleave, batch_count);
+            const uint32_t staging_base = get_write_ptr(cb_interleave);
+            for (uint32_t batch_stick = 0; batch_stick < batch_count; ++batch_stick) {
+                const uint32_t local_stick = batch_begin + batch_stick;
+                auto* staging = reinterpret_cast<float*>(
+                    staging_base + batch_stick * ttnn::operations::wavelet::device_protocol::kStickBytes);
+                const uint32_t local_signal_base =
+                    group_signal_offset + local_stick * ttnn::operations::wavelet::kStickWidth;
 #pragma GCC unroll 8
-            for (uint32_t lane = 0; lane < ttnn::operations::wavelet::kStickWidth; ++lane) {
-                const uint32_t local_signal_index = local_signal_base + lane;
-                float value = 0.0F;
-                if (local_signal_index < output_length) {
-                    const uint32_t signal_index = output_begin + local_signal_index;
-                    const uint32_t padded_index = left_pad + signal_index;
-                    const uint32_t split_index = padded_index / 2U;
-                    const bool is_even = (padded_index & 1U) == 0;
-                    if (is_even == updates_even) {
-                        const uint32_t updated_begin = updates_even ? even_begin : odd_begin;
-                        const uint32_t local_updated_index = split_index - updated_begin;
-                        const uint32_t group_updated_index = local_updated_index - group * split_group_elements;
-                        value = has_updated_values
-                                    ? read_direct_output_value(output_tiles, tile_bytes, group_updated_index)
-                                    : 0.0F;
-                    } else if (is_even) {
-                        const uint32_t logical_index = even_offset + split_index - even_begin;
-                        value = even[workspace_physical_index<TileNative>(logical_index)];
-                    } else {
-                        const uint32_t logical_index = odd_offset + split_index - odd_begin;
-                        value = odd[workspace_physical_index<TileNative>(logical_index)];
+                for (uint32_t lane = 0; lane < ttnn::operations::wavelet::kStickWidth; ++lane) {
+                    const uint32_t local_signal_index = local_signal_base + lane;
+                    float value = 0.0F;
+                    if (local_signal_index < output_length) {
+                        const uint32_t signal_index = output_begin + local_signal_index;
+                        const uint32_t padded_index = left_pad + signal_index;
+                        const uint32_t split_index = padded_index / 2U;
+                        const bool is_even = (padded_index & 1U) == 0;
+                        if (is_even == updates_even) {
+                            const uint32_t updated_begin = updates_even ? even_begin : odd_begin;
+                            const uint32_t local_updated_index = split_index - updated_begin;
+                            const uint32_t group_updated_index = local_updated_index - group * split_group_elements;
+                            value = has_updated_values
+                                        ? read_direct_output_value(output_tiles, tile_bytes, group_updated_index)
+                                        : 0.0F;
+                        } else if (is_even) {
+                            const uint32_t logical_index = even_offset + split_index - even_begin;
+                            value = even[workspace_physical_index<TileNative>(logical_index)];
+                        } else {
+                            const uint32_t logical_index = odd_offset + split_index - odd_begin;
+                            value = odd[workspace_physical_index<TileNative>(logical_index)];
+                        }
                     }
+                    staging[lane] = value;
                 }
-                staging[lane] = value;
+                noc_async_write(
+                    staging_base + batch_stick * ttnn::operations::wavelet::device_protocol::kStickBytes,
+                    dst.get_noc_addr(
+                        output_page,
+                        (first_stick + local_stick) * ttnn::operations::wavelet::device_protocol::kStickBytes),
+                    ttnn::operations::wavelet::device_protocol::kStickBytes);
             }
-            noc_async_write(
-                get_write_ptr(cb_interleave),
-                dst.get_noc_addr(
-                    0, (first_stick + local_stick) * ttnn::operations::wavelet::device_protocol::kStickBytes),
-                ttnn::operations::wavelet::device_protocol::kStickBytes);
             noc_async_write_barrier();
-            cb_push_back(cb_interleave, 1);
-            cb_wait_front(cb_interleave, 1);
-            cb_pop_front(cb_interleave, 1);
+            cb_push_back(cb_interleave, batch_count);
+            cb_wait_front(cb_interleave, batch_count);
+            cb_pop_front(cb_interleave, batch_count);
         }
 
         if (has_updated_values) {
