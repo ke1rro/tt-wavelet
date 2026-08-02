@@ -9,7 +9,6 @@ from pathlib import Path
 
 import numpy as np
 import pywt
-
 from runtime_checks import (
     check_consistent_architecture,
     parse_runtime_architecture,
@@ -38,9 +37,9 @@ def parse_coefficients(stdout: str, label: str) -> np.ndarray:
 
 def make_signal(length: int) -> np.ndarray:
     index = np.arange(length, dtype=np.float32)
-    return (
-        0.7 * np.sin(index * 0.071) + 0.2 * np.cos(index * 0.013) + index * 1.0e-4
-    ).astype(np.float32)
+    return (0.7 * np.sin(index * 0.071) + 0.2 * np.cos(index * 0.013) + index * 1.0e-4).astype(
+        np.float32
+    )
 
 
 def run_case(
@@ -60,9 +59,7 @@ def run_case(
         wavelet,
         str(signal_path),
     ]
-    result = subprocess.run(
-        command, text=True, capture_output=True, env=environment, check=False
-    )
+    result = subprocess.run(command, text=True, capture_output=True, env=environment, check=False)
     if result.returncode != 0:
         raise RuntimeError(
             f"LWT failed for {wavelet}, mode={mode}, layout={layout}:\n"
@@ -88,9 +85,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--binary", type=Path, default=root / "build" / "lwt")
     parser.add_argument("--schemes-dir", type=Path, default=root / "wavelets")
-    parser.add_argument(
-        "--wavelets", nargs="+", default=["db1", "db2", "db7", "bior3.9"]
-    )
+    parser.add_argument("--wavelets", nargs="+", default=["db1", "db2", "db7", "bior3.9"])
     parser.add_argument(
         "--all-schemes",
         action="store_true",
@@ -171,8 +166,7 @@ def main() -> None:
                         )
                         continue
                     expected_a, expected_d = (
-                        values.astype(np.float64)
-                        for values in pywt.dwt(signal, wavelet, mode=mode)
+                        values.astype(np.float64) for values in pywt.dwt(signal, wavelet, mode=mode)
                     )
                     reference_layout = ""
                     reference_a: np.ndarray | None = None
@@ -230,12 +224,7 @@ def main() -> None:
                                     reference_d.view(np.uint32),
                                 )
                             )
-                        if (
-                            shape_mismatch
-                            or non_finite
-                            or tolerance_failure
-                            or layout_mismatch
-                        ):
+                        if shape_mismatch or non_finite or tolerance_failure or layout_mismatch:
                             failures.append(
                                 f"{wavelet} N={length} mode={mode} layout={layout}: "
                                 f"shapes {candidate_a.shape}/{candidate_d.shape} vs "

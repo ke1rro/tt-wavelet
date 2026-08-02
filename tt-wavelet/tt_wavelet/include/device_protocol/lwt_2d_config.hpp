@@ -31,8 +31,7 @@ inline constexpr uint32_t kLwt2DSymmetricSplitScratchTileRows = 3;
 inline constexpr uint32_t kLwt2DSymmetricSplitScratchTileColumns = 3;
 inline constexpr uint32_t kLwt2DSymmetricSplitScratchTileCount =
     kLwt2DSymmetricSplitScratchTileRows * kLwt2DSymmetricSplitScratchTileColumns;
-inline constexpr uint32_t kLwt2DSymmetricSplitScratchBytes =
-    kLwt2DSymmetricSplitScratchTileCount * kLwt2DFullTileBytes;
+inline constexpr uint32_t kLwt2DSymmetricSplitScratchBytes = kLwt2DSymmetricSplitScratchTileCount * kLwt2DFullTileBytes;
 
 // One chunk page describes both the exact logical dependency cone and the
 // padded tile region owned by the worker.

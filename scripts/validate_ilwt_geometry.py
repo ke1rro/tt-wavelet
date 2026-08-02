@@ -87,14 +87,10 @@ def make_forward_trace(
                 source_shift, source_length = odd_shift, odd_length
                 base_shift, base_length = even_shift, even_length
 
-            convolution_shift = (
-                source_shift + int(step["shift"]) + min(source_length, k) - 1
-            )
+            convolution_shift = source_shift + int(step["shift"]) + min(source_length, k) - 1
             convolution_length = max(source_length - k + 1, 0)
             output_shift = max(base_shift, convolution_shift)
-            output_end = min(
-                base_shift + base_length, convolution_shift + convolution_length
-            )
+            output_end = min(base_shift + base_length, convolution_shift + convolution_length)
             output_length = max(output_end - output_shift, 0)
             source_offset = output_shift - convolution_shift
             base_offset = output_shift - base_shift
@@ -115,9 +111,7 @@ def make_forward_trace(
                 even_shift, even_length = output_shift, output_length
         elif kind in ("scale-even", "scale-odd"):
             source_length = even_length if kind == "scale-even" else odd_length
-            routes.append(
-                Route(kind, source_length, source_length, 0, 0, source_length, 1)
-            )
+            routes.append(Route(kind, source_length, source_length, 0, 0, source_length, 1))
         elif kind == "swap":
             routes.append(Route(kind, even_length, odd_length, 0, 0, 0, 0))
             even_shift, odd_shift = odd_shift, even_shift
@@ -142,9 +136,7 @@ def validate_chunk(scheme: dict, signal_length: int, output: Interval) -> float:
         validate(before_even, even_length)
         validate(before_odd, odd_length)
         if route.kind == "predict":
-            assert (
-                even_length == route.source_length and odd_length == route.base_length
-            )
+            assert even_length == route.source_length and odd_length == route.base_length
             assert contains(
                 Interval(route.base_offset, route.base_offset + route.output_length),
                 before_odd,
@@ -153,17 +145,13 @@ def validate_chunk(scheme: dict, signal_length: int, output: Interval) -> float:
             after = (
                 hull(
                     before_even,
-                    translated(
-                        target, route.source_offset, route.coefficient_count - 1
-                    ),
+                    translated(target, route.source_offset, route.coefficient_count - 1),
                 ),
                 target,
             )
             even_length, odd_length = route.source_length, route.output_length
         elif route.kind == "update":
-            assert (
-                odd_length == route.source_length and even_length == route.base_length
-            )
+            assert odd_length == route.source_length and even_length == route.base_length
             assert contains(
                 Interval(route.base_offset, route.base_offset + route.output_length),
                 before_even,
@@ -173,9 +161,7 @@ def validate_chunk(scheme: dict, signal_length: int, output: Interval) -> float:
                 target,
                 hull(
                     before_odd,
-                    translated(
-                        target, route.source_offset, route.coefficient_count - 1
-                    ),
+                    translated(target, route.source_offset, route.coefficient_count - 1),
                 ),
             )
             even_length, odd_length = route.output_length, route.source_length
@@ -205,9 +191,7 @@ def validate_chunk(scheme: dict, signal_length: int, output: Interval) -> float:
         elif route.kind in ("predict", "update"):
             output_interval = before[1] if route.kind == "predict" else before[0]
             target = subtract_offset(output_interval, route.base_offset)
-            source_required = translated(
-                target, route.source_offset, route.coefficient_count - 1
-            )
+            source_required = translated(target, route.source_offset, route.coefficient_count - 1)
             source = active_even if route.kind == "predict" else active_odd
             base = active_odd if route.kind == "predict" else active_even
             assert contains(source, source_required) and contains(base, target)

@@ -124,11 +124,12 @@ struct CoreChunkWork {
     uint32_t begin = 0;
     for (uint32_t core = 0; core < core_count; ++core) {
         const uint32_t count = base + (core < extra ? 1U : 0U);
-        work.push_back(CoreChunkWork{
-            .core = cores[core],
-            .chunk_begin = begin,
-            .chunk_count = count,
-        });
+        work.push_back(
+            CoreChunkWork{
+                .core = cores[core],
+                .chunk_begin = begin,
+                .chunk_count = count,
+            });
         begin += count;
     }
     TT_FATAL(begin == chunk_count, "2D LWT chunk partition is incomplete");

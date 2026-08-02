@@ -190,8 +190,7 @@ struct DeviceBands {
         for (size_t tile_x = 0; tile_x < shape.width / ttwv::kTileWidth2D; ++tile_x) {
             std::vector<float> tile(ttwv::kTileHeight2D * ttwv::kTileWidth2D);
             for (size_t row = 0; row < ttwv::kTileHeight2D; ++row) {
-                const size_t source =
-                    (tile_y * ttwv::kTileHeight2D + row) * shape.width + tile_x * ttwv::kTileWidth2D;
+                const size_t source = (tile_y * ttwv::kTileHeight2D + row) * shape.width + tile_x * ttwv::kTileWidth2D;
                 std::copy_n(
                     row_major.begin() + static_cast<std::ptrdiff_t>(source),
                     ttwv::kTileWidth2D,
@@ -211,13 +210,11 @@ struct DeviceBands {
         for (size_t tile_x = 0; tile_x < shape.width / ttwv::kTileWidth2D; ++tile_x, ++tile_index) {
             const auto begin =
                 tiled.begin() + static_cast<std::ptrdiff_t>(tile_index * ttwv::kTileHeight2D * ttwv::kTileWidth2D);
-            const std::vector<float> tile =
-                untilize_nfaces(std::vector<float>(
-                                    begin,
-                                    begin + static_cast<std::ptrdiff_t>(
-                                                ttwv::kTileHeight2D * ttwv::kTileWidth2D)),
-                                32,
-                                32);
+            const std::vector<float> tile = untilize_nfaces(
+                std::vector<float>(
+                    begin, begin + static_cast<std::ptrdiff_t>(ttwv::kTileHeight2D * ttwv::kTileWidth2D)),
+                32,
+                32);
             for (size_t row = 0; row < ttwv::kTileHeight2D; ++row) {
                 const size_t destination =
                     (tile_y * ttwv::kTileHeight2D + row) * shape.width + tile_x * ttwv::kTileWidth2D;
@@ -245,8 +242,7 @@ struct DeviceBands {
 
 [[nodiscard]] std::shared_ptr<tt::tt_metal::distributed::MeshBuffer> create_input(
     tt::tt_metal::distributed::MeshDevice& mesh_device, const ttwv::Shape2D padded_shape) {
-    const size_t tiles =
-        padded_shape.height / ttwv::kTileHeight2D * (padded_shape.width / ttwv::kTileWidth2D);
+    const size_t tiles = padded_shape.height / ttwv::kTileHeight2D * (padded_shape.width / ttwv::kTileWidth2D);
     return tt::tt_metal::distributed::MeshBuffer::create(
         tt::tt_metal::distributed::ReplicatedBufferConfig{
             .size = static_cast<uint64_t>(tiles * ttwv::device_protocol::kLwt2DFullTileBytes),
@@ -283,8 +279,7 @@ void print_timings(const std::string_view prefix, std::vector<double> times) {
               << prefix << "_median_time_ms: " << percentile(times, 0.5) << '\n'
               << prefix << "_p10_time_ms: " << percentile(times, 0.1) << '\n'
               << prefix << "_p90_time_ms: " << percentile(times, 0.9) << '\n'
-              << prefix << "_stddev_time_ms: "
-              << std::sqrt(squared_error / static_cast<double>(times.size())) << '\n';
+              << prefix << "_stddev_time_ms: " << std::sqrt(squared_error / static_cast<double>(times.size())) << '\n';
 }
 
 void print_telemetry(const ttwv::Lwt2DSchedulerTelemetry& telemetry) {
@@ -457,8 +452,7 @@ int main(int argc, char** argv) {
             .height = options.height,
             .width = options.width,
         });
-        const std::vector<float> padded =
-            ttwv::zero_pad_row_major_to_tiles_2d(logical_input, input_shape.logical);
+        const std::vector<float> padded = ttwv::zero_pad_row_major_to_tiles_2d(logical_input, input_shape.logical);
         if (!ttwv::has_zero_tile_padding_2d(padded, input_shape)) {
             throw std::runtime_error("2D input preprocessing violated zero-padding contract");
         }

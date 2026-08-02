@@ -25,8 +25,7 @@ def valid_contract() -> dict:
             for name in ("P0", "P1", "P2", "P3", "Scratch")
         ],
         "outputs": [
-            {"name": name, "shape": [32, 64], "layout": "tile"}
-            for name in ("LL", "LH", "HL", "HH")
+            {"name": name, "shape": [32, 64], "layout": "tile"} for name in ("LL", "LH", "HL", "HH")
         ],
     }
 

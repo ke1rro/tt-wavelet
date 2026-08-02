@@ -816,9 +816,12 @@ ALWI void initialize_inverse_band_plane(
     }
 }
 
-template <typename BandAccessor>
+template <typename LlAccessor, typename LhAccessor, typename HlAccessor, typename HhAccessor>
 ALWI void initialize_inverse_band_planes(
-    const BandAccessor& band_args,
+    const LlAccessor& ll_args,
+    const LhAccessor& lh_args,
+    const HlAccessor& hl_args,
+    const HhAccessor& hh_args,
     const uint32_t* band_addrs,
     const uint32_t band_height,
     const uint32_t band_width,
@@ -832,23 +835,58 @@ ALWI void initialize_inverse_band_planes(
     const uint32_t zero_tile_addr) {
     // LL, LH, HL, HH map to (low-y,low-x), (low-y,high-x),
     // (high-y,low-x), and (high-y,high-x), respectively.
-    constexpr uint32_t y_stream[4] = {0, 0, 1, 1};
-    constexpr uint32_t x_stream[4] = {0, 1, 0, 1};
-    for (uint32_t plane = 0; plane < 4; ++plane) {
-        initialize_inverse_band_plane(
-            band_args,
-            band_addrs[plane],
-            band_height,
-            band_width,
-            band_tile_columns,
-            y_internal_offsets[y_stream[plane]],
-            x_internal_offsets[x_stream[plane]],
-            rectangles[plane],
-            plane_addrs[plane],
-            plane_tile_columns[plane],
-            scratch_addr,
-            zero_tile_addr);
-    }
+    initialize_inverse_band_plane(
+        ll_args,
+        band_addrs[0],
+        band_height,
+        band_width,
+        band_tile_columns,
+        y_internal_offsets[0],
+        x_internal_offsets[0],
+        rectangles[0],
+        plane_addrs[0],
+        plane_tile_columns[0],
+        scratch_addr,
+        zero_tile_addr);
+    initialize_inverse_band_plane(
+        lh_args,
+        band_addrs[1],
+        band_height,
+        band_width,
+        band_tile_columns,
+        y_internal_offsets[0],
+        x_internal_offsets[1],
+        rectangles[1],
+        plane_addrs[1],
+        plane_tile_columns[1],
+        scratch_addr,
+        zero_tile_addr);
+    initialize_inverse_band_plane(
+        hl_args,
+        band_addrs[2],
+        band_height,
+        band_width,
+        band_tile_columns,
+        y_internal_offsets[1],
+        x_internal_offsets[0],
+        rectangles[2],
+        plane_addrs[2],
+        plane_tile_columns[2],
+        scratch_addr,
+        zero_tile_addr);
+    initialize_inverse_band_plane(
+        hh_args,
+        band_addrs[3],
+        band_height,
+        band_width,
+        band_tile_columns,
+        y_internal_offsets[1],
+        x_internal_offsets[1],
+        rectangles[3],
+        plane_addrs[3],
+        plane_tile_columns[3],
+        scratch_addr,
+        zero_tile_addr);
 }
 #endif
 
@@ -1143,8 +1181,16 @@ void kernel_main() {
     constexpr uint32_t cb_chunk_config = get_compile_time_arg_val(4);
     constexpr uint32_t cb_noc_scratch = get_compile_time_arg_val(5);
     constexpr uint32_t cb_route_zero = get_compile_time_arg_val(6);
+#ifdef ILWT_2D
+    constexpr auto ll_args = TensorAccessorArgs<7>();
+    constexpr auto lh_args = TensorAccessorArgs<ll_args.next_compile_time_args_offset()>();
+    constexpr auto hl_args = TensorAccessorArgs<lh_args.next_compile_time_args_offset()>();
+    constexpr auto hh_args = TensorAccessorArgs<hl_args.next_compile_time_args_offset()>();
+    constexpr auto chunk_args = TensorAccessorArgs<hh_args.next_compile_time_args_offset()>();
+#else
     constexpr auto input_args = TensorAccessorArgs<7>();
     constexpr auto chunk_args = TensorAccessorArgs<input_args.next_compile_time_args_offset()>();
+#endif
     constexpr auto route_args = TensorAccessorArgs<chunk_args.next_compile_time_args_offset()>();
     constexpr uint32_t boundary_mode_arg_offset = route_args.next_compile_time_args_offset();
     constexpr auto boundary_mode =
@@ -1188,7 +1234,10 @@ void kernel_main() {
 
 #ifdef ILWT_2D
         initialize_inverse_band_planes(
-            input_args,
+            ll_args,
+            lh_args,
+            hl_args,
+            hh_args,
             band_addrs,
             input_height,
             input_width,

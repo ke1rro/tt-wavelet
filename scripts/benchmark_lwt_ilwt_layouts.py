@@ -210,10 +210,7 @@ def parse_args() -> argparse.Namespace:
         "--output-prefix",
         type=Path,
         default=PROJECT_ROOT / "benchmark_results" / "lwt_ilwt_layout",
-        help=(
-            "Prefix for <prefix>_raw.csv and <prefix>_summary.csv "
-            "(default: %(default)s)."
-        ),
+        help=("Prefix for <prefix>_raw.csv and <prefix>_summary.csv " "(default: %(default)s)."),
     )
     args = parser.parse_args()
 
@@ -223,17 +220,12 @@ def parse_args() -> argparse.Namespace:
         parser.error("--warmup-runs cannot be negative")
     if args.timed_runs <= 0:
         parser.error("--timed-runs must be positive")
-    if (
-        not math.isfinite(args.tie_threshold_percent)
-        or args.tie_threshold_percent < 0.0
-    ):
+    if not math.isfinite(args.tie_threshold_percent) or args.tie_threshold_percent < 0.0:
         parser.error("--tie-threshold-percent must be finite and non-negative")
     if args.boundary_mode in {"reflect", "antireflect"} and any(
         length == 1 for length in args.lengths
     ):
-        parser.error(
-            "reflect and antireflect require every signal length to be greater than one"
-        )
+        parser.error("reflect and antireflect require every signal length to be greater than one")
     return args
 
 
@@ -265,9 +257,7 @@ def load_supported_wavelets(schemes_dir: Path, registry: Path) -> list[str]:
     return sorted(registry_names)
 
 
-def selected_wavelets(
-    all_wavelets: Sequence[str], requested: Sequence[str] | None
-) -> list[str]:
+def selected_wavelets(all_wavelets: Sequence[str], requested: Sequence[str] | None) -> list[str]:
     if requested is None:
         return list(all_wavelets)
     duplicates = sorted({name for name in requested if requested.count(name) > 1})
@@ -311,9 +301,7 @@ def make_benchmark_signal(length: int) -> np.ndarray:
     """Return a deterministic bounded signal suitable for absolute tolerances."""
     index = np.arange(length, dtype=np.float32)
     return (
-        0.7 * np.sin(index * 0.071)
-        + 0.2 * np.cos(index * 0.013)
-        + 0.1 * np.sin(index * 0.003)
+        0.7 * np.sin(index * 0.071) + 0.2 * np.cos(index * 0.013) + 0.1 * np.sin(index * 0.003)
     ).astype(np.float32)
 
 
@@ -397,10 +385,7 @@ def build_command(
             ]
         )
     quoted_command = " ".join(sh_quote(argument) for argument in command)
-    return (
-        f"unset ARCH_NAME && source {sh_quote(str(environment_script))} "
-        f"&& {quoted_command}"
-    )
+    return f"unset ARCH_NAME && source {sh_quote(str(environment_script))} " f"&& {quoted_command}"
 
 
 def validate_timing(case: LayoutCase) -> None:
@@ -415,9 +400,7 @@ def validate_timing(case: LayoutCase) -> None:
     }
     missing = [name for name, value in required.items() if value is None]
     non_finite = [
-        name
-        for name, value in required.items()
-        if value is not None and not math.isfinite(value)
+        name for name, value in required.items() if value is not None and not math.isfinite(value)
     ]
     if missing:
         case.fail_timing("missing timing statistics: " + ", ".join(missing))
@@ -447,9 +430,7 @@ def run_layout_case(
         warmup_runs=args.warmup_runs,
         timed_runs=args.timed_runs,
     )
-    output_prefix = temporary_path / (
-        f"{transform}-{wavelet}-{signal_length}-{requested_layout}"
-    )
+    output_prefix = temporary_path / (f"{transform}-{wavelet}-{signal_length}-{requested_layout}")
     remove_output_files(output_prefix, transform)
     command = build_command(
         args.binary,
@@ -563,9 +544,7 @@ def add_peer_comparisons(cases: list[LayoutCase]) -> list[PairComparison]:
         ]
         if len(peers) != len(LAYOUTS) - 1:
             continue
-        case.peer_max_difference = max(
-            comparison.max_abs_difference for comparison in peers
-        )
+        case.peer_max_difference = max(comparison.max_abs_difference for comparison in peers)
         case.peer_bit_identical = all(comparison.bit_identical for comparison in peers)
         mismatch_indices = [
             comparison.first_mismatch
@@ -611,24 +590,12 @@ def raw_row(case: LayoutCase) -> dict[str, object]:
         "selected_concrete_layout": case.selected_layout,
         "warmup_runs": case.warmup_runs,
         "timed_runs": case.timed_runs,
-        "median_ms": format_number(
-            seconds_to_ms(timing.median_s) if timing is not None else None
-        ),
-        "min_ms": format_number(
-            seconds_to_ms(timing.min_s) if timing is not None else None
-        ),
-        "mean_ms": format_number(
-            seconds_to_ms(timing.mean_s) if timing is not None else None
-        ),
-        "p10_ms": format_number(
-            seconds_to_ms(timing.p10_s) if timing is not None else None
-        ),
-        "p90_ms": format_number(
-            seconds_to_ms(timing.p90_s) if timing is not None else None
-        ),
-        "stddev_ms": format_number(
-            seconds_to_ms(timing.stddev_s) if timing is not None else None
-        ),
+        "median_ms": format_number(seconds_to_ms(timing.median_s) if timing is not None else None),
+        "min_ms": format_number(seconds_to_ms(timing.min_s) if timing is not None else None),
+        "mean_ms": format_number(seconds_to_ms(timing.mean_s) if timing is not None else None),
+        "p10_ms": format_number(seconds_to_ms(timing.p10_s) if timing is not None else None),
+        "p90_ms": format_number(seconds_to_ms(timing.p90_s) if timing is not None else None),
+        "stddev_ms": format_number(seconds_to_ms(timing.stddev_s) if timing is not None else None),
         "reference_max_abs_error": format_number(case.reference_error),
         "peer_layout_max_abs_difference": format_number(case.peer_max_difference),
         "peer_layout_bit_identical": bool_field(case.peer_bit_identical),
@@ -710,17 +677,11 @@ def make_summary_row(
         "winner": winner,
         "auto_selected_layout": auto_selected,
         "tie_threshold_percent": format_number(tie_threshold_percent),
-        "row_major_reference_error": format_number(
-            by_layout["row-major"].reference_error
-        ),
-        "tile_native_reference_error": format_number(
-            by_layout["tile-native"].reference_error
-        ),
+        "row_major_reference_error": format_number(by_layout["row-major"].reference_error),
+        "tile_native_reference_error": format_number(by_layout["tile-native"].reference_error),
         "auto_reference_error": format_number(by_layout["auto"].reference_error),
         "layout_max_abs_difference": format_number(layout_max_difference),
-        "layout_bit_identical": bool_field(
-            layout_identical if complete_comparison else None
-        ),
+        "layout_bit_identical": bool_field(layout_identical if complete_comparison else None),
         "correctness_status": correctness_status,
         "auto_result": auto_result,
     }
@@ -767,10 +728,7 @@ def print_transform_summary(
         if not candidates:
             return "none"
         advantage, row = max(candidates, key=lambda item: item[0])
-        return (
-            f"{row['wavelet']} N={row['signal_length']} "
-            f"({advantage:.3f}% lower median)"
-        )
+        return f"{row['wavelet']} N={row['signal_length']} " f"({advantage:.3f}% lower median)"
 
     print()
     print(f"{transform.upper()} summary")
@@ -779,13 +737,9 @@ def print_transform_summary(
         "completed_cases: "
         f"{sum(not case.timing_failed and case.output is not None for case in transform_cases)}"
     )
+    print("row_major_wins: " f"{sum(row['winner'] == 'row-major' for row in transform_summaries)}")
     print(
-        "row_major_wins: "
-        f"{sum(row['winner'] == 'row-major' for row in transform_summaries)}"
-    )
-    print(
-        "tile_native_wins: "
-        f"{sum(row['winner'] == 'tile-native' for row in transform_summaries)}"
+        "tile_native_wins: " f"{sum(row['winner'] == 'tile-native' for row in transform_summaries)}"
     )
     print(f"ties: {sum(row['winner'] == 'tie' for row in transform_summaries)}")
     print(
@@ -796,21 +750,13 @@ def print_transform_summary(
         "auto_not_best_count: "
         f"{sum(row['auto_result'] == 'auto-not-best' for row in transform_summaries)}"
     )
-    print(
-        "correctness_failures: "
-        f"{sum(case.correctness_failed for case in transform_cases)}"
-    )
+    print("correctness_failures: " f"{sum(case.correctness_failed for case in transform_cases)}")
     print(f"runtime_failures: {sum(case.timing_failed for case in transform_cases)}")
     print("geomean_tile_over_row_speedup: " f"{format_number(geometric_mean(ratios))}")
-    print(
-        "geomean_auto_over_best_forced_speedup: "
-        f"{format_number(geometric_mean(auto_ratios))}"
-    )
+    print("geomean_auto_over_best_forced_speedup: " f"{format_number(geometric_mean(auto_ratios))}")
     print(f"largest_row_major_advantage: {largest_advantage(True)}")
     print(f"largest_tile_native_advantage: {largest_advantage(False)}")
-    matching_pairs = [
-        pair for pair in non_identical_pairs if pair.startswith(f"{transform} ")
-    ]
+    matching_pairs = [pair for pair in non_identical_pairs if pair.startswith(f"{transform} ")]
     if matching_pairs:
         print("non_bit_identical_layout_pairs:")
         for pair in matching_pairs:
@@ -887,9 +833,7 @@ def main() -> int:
 
                     for transform in transforms:
                         group_index += 1
-                        reference = (
-                            lwt_reference if transform == "lwt" else ilwt_reference
-                        )
+                        reference = lwt_reference if transform == "lwt" else ilwt_reference
                         cases: list[LayoutCase] = []
                         for layout in LAYOUTS:
                             print(
@@ -925,9 +869,7 @@ def main() -> int:
                                     warmup_runs=args.warmup_runs,
                                     timed_runs=args.timed_runs,
                                 )
-                                skipped.fail_timing(
-                                    "skipped after architecture assertion failure"
-                                )
+                                skipped.fail_timing("skipped after architecture assertion failure")
                                 cases.append(skipped)
 
                         comparisons = add_peer_comparisons(cases)

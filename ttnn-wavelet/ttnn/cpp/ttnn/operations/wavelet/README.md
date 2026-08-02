@@ -67,10 +67,10 @@ alias inputs or sibling outputs.
 
 | Operation | Rank and tensor layout | Memory | Output |
 | --- | --- | --- | --- |
-| `lwt` | exact rank 1, row-major, FLOAT32 | DRAM interleaved, one physical device | two row-major coefficient tensors |
-| `ilwt` | two equal exact-rank-1 row-major FLOAT32 tensors | DRAM interleaved, one physical device | one row-major signal tensor |
-| `lwt_2d` | exact rank 2, standard 32x32 tile layout, FLOAT32 | DRAM interleaved, one physical device | four tile-layout band tensors |
-| `ilwt_2d` | four equal exact-rank-2 standard-tile FLOAT32 tensors | DRAM interleaved, one physical device | one tile-layout image tensor |
+| `lwt` | exact rank 1, row-major, FLOAT32 | interleaved DRAM or L1 input, one physical device | two row-major interleaved DRAM coefficient tensors |
+| `ilwt` | two equal exact-rank-1 row-major FLOAT32 tensors | independently interleaved DRAM or L1 inputs, one physical device | one row-major interleaved DRAM signal tensor |
+| `lwt_2d` | exact rank 2, standard 32x32 tile layout, FLOAT32 | interleaved DRAM or L1 input, one physical device | four tile-layout interleaved DRAM band tensors |
+| `ilwt_2d` | four equal exact-rank-2 standard-tile FLOAT32 tensors | independently interleaved DRAM or L1 inputs, one physical device | one tile-layout interleaved DRAM image tensor |
 
 All 106 discrete PyWavelets scheme names are registered. The generated registry
 and headers under `generated/schemes/` are the source of truth for scheme IDs,
@@ -84,19 +84,24 @@ All eight standalone boundary modes are supported: `zero`, `constant`,
 contain more than one logical sample.
 
 The first version intentionally rejects host tensors, multi-device tensors,
-L1-resident public tensors, sharded memory layouts, BFLOAT16, rank promotion,
-and nonstandard 2D tiles. Inputs larger than one core's active L1 working set
-are chunked by the existing dependency-cone planner while the full tensor stays
-in DRAM. Inputs that do not fit device DRAM require application-level streaming
-and are not an implicit part of this contract.
+sharded memory layouts (including sharded L1), BFLOAT16, rank promotion, and
+nonstandard 2D tiles. Inputs larger than one core's active L1 working set are
+chunked by the existing dependency-cone planner. The full input may reside in
+interleaved DRAM or interleaved L1; external L1 storage is still staged through
+the reader into dependency-local static-CB workspace and is not used as that
+workspace. Inputs that fit neither device DRAM nor aggregate interleaved L1
+require application-level streaming and are not an implicit part of this
+contract.
 
 ## Device execution and cache behavior
 
 Each registered primitive builds one fused Metalium workload with the original
 reader, SFPI compute, and writer kernels. Tensor addresses and per-core chunk
-ranges are runtime arguments. Scheme, boundary specialization, tensor specs,
-workspace geometry, and compute configuration participate in program
-specialization through the ordinary TTNN device-operation cache.
+ranges are runtime arguments. Scheme, boundary specialization, tensor specs
+(including DRAM versus L1 placement), workspace geometry, and compute
+configuration participate in program specialization through the ordinary TTNN
+device-operation cache. Tensor addresses remain runtime arguments, so new
+buffers with unchanged specs reuse the cached program.
 
 Per-core intermediate planes are static circular-buffer storage. The 1D
 program reserves one contiguous region containing three stick-addressed slots;
@@ -106,7 +111,12 @@ standalone implementation. This avoids retaining allocator-owned L1
 `MeshBuffer`s in every cached workload without adding address calculations to
 the device hot path. The workspace reservation follows the latency-sensitive
 source, base, output, synchronization, metadata, and scratch CBs, preserving
-their low-L1 placement.
+their low-L1 placement. Static CBs grow from the allocator's unreserved L1 base;
+ordinary L1 tensors occupy the opposite frontier. Planning subtracts the live
+allocator frontier and fixed CB overhead, and Metalium validates the final CB
+region against live allocator occupancy before launch. A configuration that
+cannot safely hold the external L1 tensor and required workspace fails instead
+of overlapping them.
 
 The generated compute headers remain compile-time specializations so tap loops,
 step structure, coefficients, and SFPI unroll factors are visible to the device
@@ -119,8 +129,11 @@ FP32 comparison uses PyWavelets as the semantic reference plus direct
 LWT-to-ILWT round trips. The fast suite covers lengths 20, 31, 32, and 33,
 external inverse coefficients shorter than one 32-value stick, odd and even 2D
 shapes, every boundary mode, preallocation, cache behavior, and validation
-failures. Slow tests JIT and execute forward and inverse transforms for all 106
-schemes in both dimensions.
+failures. Focused placement tests compare DRAM and interleaved-L1 results
+exactly for odd, boundary-touching, multi-chunk 1D and 2D cases; they also cover
+all-L1 and mixed-placement inverse inputs, cache separation, address override,
+and sharded-input rejection. Slow tests JIT and execute forward and inverse
+transforms for all 106 schemes in both dimensions.
 
 High-order schemes such as `db38`, `coif17`, and `dmey` can amplify FP32 error
 substantially. This is inherited from the standalone arithmetic and is not

@@ -160,9 +160,7 @@ def parse_args() -> argparse.Namespace:
 def run_device(command: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
     quoted = " ".join(shlex.quote(item) for item in command)
     shell_command = (
-        f"source {shlex.quote(str(SET_ENV))} && "
-        "export TT_LOGGER_LEVEL=FATAL && "
-        f"{quoted}"
+        f"source {shlex.quote(str(SET_ENV))} && " "export TT_LOGGER_LEVEL=FATAL && " f"{quoted}"
     )
     completed = subprocess.run(
         ["bash", "-lc", shell_command],
@@ -189,22 +187,18 @@ def make_input(
 ) -> np.ndarray:
     row, column = np.indices((height, width))
     if input_type == "ramp":
-        return np.linspace(
-            -1.0, 1.0, num=height * width, dtype=np.float32
-        ).reshape(height, width)
+        return np.linspace(-1.0, 1.0, num=height * width, dtype=np.float32).reshape(height, width)
     if input_type == "alternating":
         magnitude = 0.25 + (row * width + column) / max(1, height * width)
         return np.where((row + column) & 1, -magnitude, magnitude).astype(np.float32)
     if input_type == "constant":
         return np.full((height, width), np.float32(0.375), dtype=np.float32)
     if input_type == "random":
-        return np.random.default_rng(seed).uniform(
-            -1.0, 1.0, size=(height, width)
-        ).astype(np.float32)
-    if input_type == "large-finite":
-        values = np.random.default_rng(seed).uniform(
-            -4096.0, 4096.0, size=(height, width)
+        return (
+            np.random.default_rng(seed).uniform(-1.0, 1.0, size=(height, width)).astype(np.float32)
         )
+    if input_type == "large-finite":
+        values = np.random.default_rng(seed).uniform(-4096.0, 4096.0, size=(height, width))
         return values.astype(np.float32)
     result = np.zeros((height, width), dtype=np.float32)
     impulses = (
@@ -219,10 +213,7 @@ def make_input(
 
 
 def read_device_bands(prefix: Path) -> dict[str, np.ndarray]:
-    return {
-        band: np.fromfile(Path(f"{prefix}_{band}.f32"), dtype=np.float32)
-        for band in BANDS
-    }
+    return {band: np.fromfile(Path(f"{prefix}_{band}.f32"), dtype=np.float32) for band in BANDS}
 
 
 def run_lwt(
@@ -290,9 +281,7 @@ def pywavelets_bands(
     scheme: str,
     mode: str,
 ) -> tuple[dict[str, np.ndarray], np.ndarray]:
-    approximation, (horizontal, vertical, diagonal) = pywt.dwt2(
-        signal, scheme, mode=mode
-    )
+    approximation, (horizontal, vertical, diagonal) = pywt.dwt2(signal, scheme, mode=mode)
     # Project convention: first band letter is the vertical transform.
     bands = {
         "LL": np.asarray(approximation, dtype=np.float32),
@@ -323,9 +312,7 @@ def error_metrics(
         return float("inf"), float("inf"), -1
     if candidate_flat.size == 0:
         return 0.0, 0.0, 0
-    difference = np.abs(
-        candidate_flat.astype(np.float64) - reference_flat.astype(np.float64)
-    )
+    difference = np.abs(candidate_flat.astype(np.float64) - reference_flat.astype(np.float64))
     worst = int(np.argmax(difference))
     denominator = np.maximum(np.abs(reference_flat.astype(np.float64)), 1.0e-30)
     relative = difference / denominator
@@ -403,6 +390,7 @@ def write_json(path: Path, rows: list[dict[str, Any]], tolerance: float) -> None
         "rows": rows,
     }
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
 
 def merge_rows(
     existing: list[dict[str, Any]], updates: list[dict[str, Any]]
@@ -485,18 +473,12 @@ def main() -> int:
     roundtrip_rows: list[dict[str, Any]] = []
     case_pairs = [(scheme, mode) for scheme in schemes for mode in modes]
     if args.case_numbers:
-        requested_numbers = [
-            int(value) for value in parse_csv_values(args.case_numbers)
-        ]
+        requested_numbers = [int(value) for value in parse_csv_values(args.case_numbers)]
         invalid_numbers = [
-            number
-            for number in requested_numbers
-            if number < 1 or number > len(case_pairs)
+            number for number in requested_numbers if number < 1 or number > len(case_pairs)
         ]
         if invalid_numbers:
-            raise ValueError(
-                f"case numbers outside 1..{len(case_pairs)}: {invalid_numbers}"
-            )
+            raise ValueError(f"case numbers outside 1..{len(case_pairs)}: {invalid_numbers}")
         case_pairs = [case_pairs[number - 1] for number in requested_numbers]
     if args.max_cases is not None:
         case_pairs = case_pairs[: args.max_cases]
@@ -515,9 +497,9 @@ def main() -> int:
                     )
                 valid_shapes = [shape for shape in SHAPES if min(shape) > 1]
                 height, width = valid_shapes[(scheme_index + mode_index) % len(valid_shapes)]
-            input_type = args.input_type or INPUT_TYPES[
-                (scheme_index + mode_index) % len(INPUT_TYPES)
-            ]
+            input_type = (
+                args.input_type or INPUT_TYPES[(scheme_index + mode_index) % len(INPUT_TYPES)]
+            )
             signal = make_input(
                 height,
                 width,
@@ -537,9 +519,7 @@ def main() -> int:
             roundtrip_row_count = len(roundtrip_rows)
 
             try:
-                pywt_bands, pywt_reconstruction = pywavelets_bands(
-                    signal, scheme, mode
-                )
+                pywt_bands, pywt_reconstruction = pywavelets_bands(signal, scheme, mode)
                 device_bands = run_lwt(
                     scheme,
                     mode,
@@ -595,11 +575,7 @@ def main() -> int:
                         "input_type": input_type,
                         "layout": "tile-native",
                         "architecture": args.architecture,
-                        "status": (
-                            "pass"
-                            if roundtrip_metrics[0] <= args.tolerance
-                            else "fail"
-                        ),
+                        "status": ("pass" if roundtrip_metrics[0] <= args.tolerance else "fail"),
                         "max_abs_error": roundtrip_metrics[0],
                         "max_rel_error": roundtrip_metrics[1],
                         "worst_band": "reconstruction",
@@ -632,9 +608,7 @@ def main() -> int:
                         "input_type": "pywavelets-coefficients",
                         "layout": "tile-native",
                         "architecture": args.architecture,
-                        "status": (
-                            "pass" if ilwt_metrics[0] <= args.tolerance else "fail"
-                        ),
+                        "status": ("pass" if ilwt_metrics[0] <= args.tolerance else "fail"),
                         "max_abs_error": ilwt_metrics[0],
                         "max_rel_error": ilwt_metrics[1],
                         "worst_band": "reconstruction",
@@ -718,9 +692,7 @@ def main() -> int:
             )
         if roundtrip_csv.is_file():
             with roundtrip_csv.open(newline="", encoding="utf-8") as file:
-                roundtrip_rows = merge_rows(
-                    list(csv.DictReader(file)), roundtrip_rows
-                )
+                roundtrip_rows = merge_rows(list(csv.DictReader(file)), roundtrip_rows)
     write_csv(lwt_csv, lwt_rows, CORRECTNESS_FIELDS)
     write_json(lwt_json, lwt_rows, args.tolerance)
     write_csv(ilwt_csv, ilwt_rows, CORRECTNESS_FIELDS)

@@ -7,7 +7,6 @@ import subprocess
 from pathlib import Path
 
 import numpy as np
-
 from runtime_checks import (
     check_consistent_architecture,
     parse_runtime_architecture,
@@ -119,9 +118,7 @@ def main() -> None:
                     f"exceeds {args.tolerance:.8e}"
                 )
             if not layout_identical:
-                failures.append(
-                    f"layout={layout} N={length}: output differs from the first layout"
-                )
+                failures.append(f"layout={layout} N={length}: output differs from the first layout")
 
     print(f"validated_device_cases: {case_count}")
     print(f"max_abs_roundtrip_error: {max_abs_error:.8e}")

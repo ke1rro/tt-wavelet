@@ -15,18 +15,13 @@ def parse_runtime_architecture(output: str) -> str:
         return "wormhole_b0"
     if architecture == "blackhole":
         return architecture
-    raise RuntimeError(
-        f"unsupported device architecture in runtime output: {architecture}"
-    )
+    raise RuntimeError(f"unsupported device architecture in runtime output: {architecture}")
 
 
 def check_consistent_architecture(
     observed_architecture: str | None, candidate_architecture: str
 ) -> str:
-    if (
-        observed_architecture is not None
-        and observed_architecture != candidate_architecture
-    ):
+    if observed_architecture is not None and observed_architecture != candidate_architecture:
         raise RuntimeError(
             "hardware architecture changed during validation: "
             f"{observed_architecture} -> {candidate_architecture}"
@@ -48,6 +43,4 @@ def run_ncrisc_elf_gate(project_root: Path, architecture: str) -> None:
     )
     print(result.stdout, end="")
     if result.returncode != 0:
-        raise RuntimeError(
-            "NCRISC ELF-size gate failed:\n" + result.stdout + result.stderr
-        )
+        raise RuntimeError("NCRISC ELF-size gate failed:\n" + result.stdout + result.stderr)

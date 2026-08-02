@@ -55,10 +55,7 @@ ALWI void preload_config_pages(
 }
 
 ALWI void write_local_output(
-    const uint32_t cb_output,
-    const uint32_t plane_addr,
-    const uint32_t plane_tile_columns,
-    const Rect& output) {
+    const uint32_t cb_output, const uint32_t plane_addr, const uint32_t plane_tile_columns, const Rect& output) {
     const uint32_t tile_rows =
         (aligned_end(output.y_begin, output.y_length) - aligned_begin(output.y_begin)) / kTileSide;
     const uint32_t tile_columns =
@@ -341,12 +338,10 @@ ALWI void write_interleaved_output(
         for (uint32_t tile_x = tile_x_begin; tile_x < tile_x_end; tile_x += kTileSide) {
             const uint32_t y_end = std::min(tile_y + kTileSide, final_y_begin + final_y_length);
             const uint32_t x_end = std::min(tile_x + kTileSide, final_x_begin + final_x_length);
-            const uint32_t destination_tile =
-                (tile_y / kTileSide) * output_tile_columns + tile_x / kTileSide;
-            const bool complete =
-                tile_y >= final_y_begin && tile_x >= final_x_begin &&
-                tile_y + kTileSide <= final_y_begin + final_y_length &&
-                tile_x + kTileSide <= final_x_begin + final_x_length;
+            const uint32_t destination_tile = (tile_y / kTileSide) * output_tile_columns + tile_x / kTileSide;
+            const bool complete = tile_y >= final_y_begin && tile_x >= final_x_begin &&
+                                  tile_y + kTileSide <= final_y_begin + final_y_length &&
+                                  tile_x + kTileSide <= final_x_begin + final_x_length;
             if (complete) {
                 // Complete tiles fill every lane. Partial tiles write only
                 // their valid fragments, so neither path needs a scratch clear.
@@ -386,8 +381,7 @@ ALWI void write_interleaved_output(
                     for (uint32_t x = valid_x_begin; x < x_end;) {
                         const uint32_t local_x = x - tile_x;
                         const uint32_t count = std::min(x_end - x, kFaceSide - local_x % kFaceSide);
-                        const uint32_t byte_offset =
-                            tile_element_offset(y - tile_y, local_x) * sizeof(float);
+                        const uint32_t byte_offset = tile_element_offset(y - tile_y, local_x) * sizeof(float);
                         noc_async_write(
                             scratch_addr + byte_offset,
                             output.get_noc_addr(destination_tile) + byte_offset,
@@ -401,7 +395,6 @@ ALWI void write_interleaved_output(
     }
 }
 #endif
-
 
 }  // namespace
 
@@ -463,11 +456,7 @@ void kernel_main() {
             }
             const uint32_t output_slot = route_words[ttwv::device_protocol::kLwt2DRouteOutputSlot];
             const Rect output = load_rect(route_words, ttwv::device_protocol::kLwt2DRouteOutputRect);
-            write_local_output(
-                cb_output,
-                plane_addrs[output_slot],
-                plane_tile_columns[output_slot],
-                output);
+            write_local_output(cb_output, plane_addrs[output_slot], plane_tile_columns[output_slot], output);
             cb_reserve_back(cb_sync, 1);
             cb_push_back(cb_sync, 1);
         }
@@ -496,10 +485,8 @@ void kernel_main() {
         Rect parity_sources[4];
         for (uint32_t parity = 0; parity < 4; ++parity) {
             const uint32_t band_offset = band_offsets[parity];
-            parity_slots[parity] =
-                band_words[band_offset + ttwv::device_protocol::kLwt2DBandSourceSlot];
-            parity_sources[parity] =
-                load_rect(band_words, band_offset + ttwv::device_protocol::kLwt2DBandSourceRect);
+            parity_slots[parity] = band_words[band_offset + ttwv::device_protocol::kLwt2DBandSourceSlot];
+            parity_sources[parity] = load_rect(band_words, band_offset + ttwv::device_protocol::kLwt2DBandSourceRect);
         }
         write_interleaved_output(
             output_args,

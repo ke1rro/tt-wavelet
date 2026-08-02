@@ -146,8 +146,7 @@ template <typename Scheme>
     const BoundaryMode boundary_mode = BoundaryMode::kSymmetric) {
     using InverseScheme = typename Scheme::inverse;
     Ilwt2DExecutionPlan plan =
-        make_ilwt_2d_execution_plan<Scheme>(
-            output_height, output_width, core_limit, 768 * 1024, boundary_mode);
+        make_ilwt_2d_execution_plan<Scheme>(output_height, output_width, core_limit, 768 * 1024, boundary_mode);
     const size_t required_band_bytes =
         checked_shape_area_2d(plan.tiling.band.storage, "2D ILWT band storage") * sizeof(float);
     const std::array<const tt::tt_metal::Buffer*, device_protocol::kLwt2DBandCount> bands = {&ll, &lh, &hl, &hh};
@@ -163,8 +162,7 @@ template <typename Scheme>
         InverseScheme::compute_scheme_type);
 }
 
-void prepare_ilwt_2d(
-    tt::tt_metal::distributed::MeshCommandQueue& command_queue, Ilwt2DExecutable& executable);
+void prepare_ilwt_2d(tt::tt_metal::distributed::MeshCommandQueue& command_queue, Ilwt2DExecutable& executable);
 
 void execute_ilwt_2d(
     tt::tt_metal::distributed::MeshDevice& mesh_device,

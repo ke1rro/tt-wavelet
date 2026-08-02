@@ -20,8 +20,7 @@ namespace ttwv {
     return "unsupported";
 }
 
-[[nodiscard]] constexpr bool parse_boundary_mode(
-    const std::string_view name, BoundaryMode& mode) noexcept {
+[[nodiscard]] constexpr bool parse_boundary_mode(const std::string_view name, BoundaryMode& mode) noexcept {
     if (name == "zero") {
         mode = BoundaryMode::kZero;
     } else if (name == "constant") {

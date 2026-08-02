@@ -2,7 +2,6 @@
 
 #include <optional>
 #include <tt_stl/assert.hpp>
-
 #include <umd/device/types/arch.hpp>
 
 #include "tt_wavelet/include/lifting/execution_plan.hpp"

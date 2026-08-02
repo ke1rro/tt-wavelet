@@ -114,9 +114,7 @@ def validate_preprocessing(contract: dict[str, Any]) -> None:
         raise ContractError("zero_pad must precede split2d")
 
 
-def validate_named_tensors(
-    contract: dict[str, Any], field: str, require_layout: bool
-) -> list[str]:
+def validate_named_tensors(contract: dict[str, Any], field: str, require_layout: bool) -> list[str]:
     tensors = require_sequence(contract.get(field), field)
     names: list[str] = []
     for index, raw_tensor in enumerate(tensors):
@@ -137,9 +135,7 @@ def validate_contract(contract: dict[str, Any]) -> None:
     validate_input(contract)
     validate_named_tensors(contract, "kernel_shapes", require_layout=False)
     validate_named_tensors(contract, "intermediates", require_layout=True)
-    output_names = set(
-        validate_named_tensors(contract, "outputs", require_layout=True)
-    )
+    output_names = set(validate_named_tensors(contract, "outputs", require_layout=True))
     if output_names != OUTPUT_NAMES:
         missing = sorted(OUTPUT_NAMES - output_names)
         extra = sorted(output_names - OUTPUT_NAMES)

@@ -111,6 +111,17 @@ struct CoreChunkWork {
     return checked_u32(round_up(address, alignment), "2D wavelet workspace address");
 }
 
+[[nodiscard]] uint64_t available_static_l1_bytes_2d(tt::tt_metal::distributed::MeshDevice& mesh_device) {
+    const uint64_t base = mesh_device.allocator()->get_base_allocator_addr(tt::tt_metal::HalMemType::L1);
+    const uint64_t frontier = mesh_device.lowest_occupied_compute_l1_address().value_or(mesh_device.l1_size_per_core());
+    TT_FATAL(
+        frontier >= base,
+        "2D wavelet allocator reports occupied L1 frontier {} below unreserved base {}",
+        frontier,
+        base);
+    return frontier - base;
+}
+
 [[nodiscard]] uint32_t noc_scratch_tile_count(
     const BoundaryMode boundary_mode, const bool inverse, const size_t route_count) {
     TT_FATAL(
@@ -360,7 +371,7 @@ template <typename Plan>
 
 [[nodiscard]] tt::tt_metal::ProgramDescriptor create_program_descriptor(
     const tt::tt_metal::CoreRangeSet& cores,
-    const tt::tt_metal::Buffer& input,
+    const std::array<const tt::tt_metal::Buffer*, device_protocol::kLwt2DBandCount>& inputs,
     const WorkingBuffers2D& buffers,
     const char* compute_scheme_header,
     const char* compute_scheme_type,
@@ -396,7 +407,15 @@ template <typename Plan>
         kNocScratchCb,
         kRouteZeroCb,
     };
-    tt::tt_metal::TensorAccessorArgs(input).append_to(reader_compile_args);
+    if (inverse) {
+        for (const auto* input : inputs) {
+            TT_FATAL(input != nullptr, "2D ILWT input buffer must be allocated");
+            tt::tt_metal::TensorAccessorArgs(*input).append_to(reader_compile_args);
+        }
+    } else {
+        TT_FATAL(inputs.front() != nullptr, "2D LWT input buffer must be allocated");
+        tt::tt_metal::TensorAccessorArgs(*inputs.front()).append_to(reader_compile_args);
+    }
     tt::tt_metal::TensorAccessorArgs(*buffers.chunk_config->get_backing_buffer()).append_to(reader_compile_args);
     tt::tt_metal::TensorAccessorArgs(*buffers.route_config->get_backing_buffer()).append_to(reader_compile_args);
     reader_compile_args.push_back(static_cast<uint32_t>(boundary_mode));
@@ -488,8 +507,18 @@ void validate_output_memory_config_2d(const MemoryConfig& memory_config, const c
     TT_FATAL(
         memory_config.memory_layout() == tt::tt_metal::TensorMemoryLayout::INTERLEAVED &&
             memory_config.buffer_type() == tt::tt_metal::BufferType::DRAM && !memory_config.is_sharded(),
-        "{} supports only DRAM-interleaved tensors in its first TTNN version",
+        "{} supports only DRAM-interleaved outputs in its first TTNN version",
         operation_name);
+}
+
+void validate_input_memory_config_2d(const MemoryConfig& memory_config, const char* tensor_name) {
+    const bool supported_buffer = memory_config.buffer_type() == tt::tt_metal::BufferType::DRAM ||
+                                  memory_config.buffer_type() == tt::tt_metal::BufferType::L1;
+    TT_FATAL(
+        memory_config.memory_layout() == tt::tt_metal::TensorMemoryLayout::INTERLEAVED && supported_buffer &&
+            !memory_config.is_sharded(),
+        "{} must use INTERLEAVED memory with DRAM or L1 storage; sharded inputs are unsupported",
+        tensor_name);
 }
 
 void validate_rank_two_tensor(const Tensor& tensor, const char* tensor_name) {
@@ -515,7 +544,7 @@ void validate_rank_two_tensor(const Tensor& tensor, const char* tensor_name) {
         tile.get_height() == kTileHeight2D && tile.get_width() == kTileWidth2D,
         "{} must use standard 32x32 TTNN tiles",
         tensor_name);
-    validate_output_memory_config_2d(tensor.memory_config(), tensor_name);
+    validate_input_memory_config_2d(tensor.memory_config(), tensor_name);
 
     const size_t padded_height = round_up(static_cast<size_t>(tensor.logical_shape()[0]), kTileHeight2D);
     const size_t padded_width = round_up(static_cast<size_t>(tensor.logical_shape()[1]), kTileWidth2D);
@@ -546,6 +575,7 @@ void validate_preallocated_output_2d(
     const tt::tt_metal::distributed::MeshDevice* expected_device,
     const char* output_name) {
     validate_rank_two_tensor(output, output_name);
+    validate_output_memory_config_2d(output.memory_config(), output_name);
     TT_FATAL(output.device() == expected_device, "{} must be on the same device as the inputs", output_name);
     TT_FATAL(
         output.tensor_spec() == expected_spec,
@@ -595,11 +625,13 @@ template <typename Scheme>
     const uint32_t height,
     const uint32_t width,
     const BoundaryMode boundary_mode) {
+    const uint64_t l1_budget_bytes =
+        std::min<uint64_t>(kL1SignalBudgetBytes2D, available_static_l1_bytes_2d(mesh_device));
     Lwt2DExecutionPlan plan = make_lwt_2d_execution_plan<Scheme>(
         height,
         width,
         core_limit_2d(mesh_device),
-        kL1SignalBudgetBytes2D,
+        l1_budget_bytes,
         boundary_mode,
         true,
         true,
@@ -610,10 +642,10 @@ template <typename Scheme>
             plan.input_width <= static_cast<size_t>(std::numeric_limits<int32_t>::max() / 2),
         "2D LWT input dimensions exceed the signed boundary-index range");
     TT_FATAL(
-        plan.allocated_l1_bytes <= mesh_device.l1_size_per_core(),
-        "2D LWT allocation requires {} L1 bytes but hardware exposes {}",
+        plan.allocated_l1_bytes <= available_static_l1_bytes_2d(mesh_device),
+        "2D LWT allocation requires {} L1 bytes but only {} remain below allocator-managed L1 tensors",
         plan.allocated_l1_bytes,
-        mesh_device.l1_size_per_core());
+        available_static_l1_bytes_2d(mesh_device));
     return plan;
 }
 
@@ -623,18 +655,20 @@ template <typename Scheme>
     const uint32_t height,
     const uint32_t width,
     const BoundaryMode boundary_mode) {
-    Ilwt2DExecutionPlan plan = make_ilwt_2d_execution_plan<Scheme>(
-        height, width, core_limit_2d(mesh_device), kL1SignalBudgetBytes2D, boundary_mode);
+    const uint64_t l1_budget_bytes =
+        std::min<uint64_t>(kL1SignalBudgetBytes2D, available_static_l1_bytes_2d(mesh_device));
+    Ilwt2DExecutionPlan plan =
+        make_ilwt_2d_execution_plan<Scheme>(height, width, core_limit_2d(mesh_device), l1_budget_bytes, boundary_mode);
     TT_FATAL(!plan.chunks.empty(), "2D ILWT requires at least one planned chunk");
     TT_FATAL(
         plan.output_height <= static_cast<size_t>(std::numeric_limits<int32_t>::max() / 2) &&
             plan.output_width <= static_cast<size_t>(std::numeric_limits<int32_t>::max() / 2),
         "2D ILWT output dimensions exceed the signed boundary-index range");
     TT_FATAL(
-        plan.allocated_l1_bytes <= mesh_device.l1_size_per_core(),
-        "2D ILWT allocation requires {} L1 bytes but hardware exposes {}",
+        plan.allocated_l1_bytes <= available_static_l1_bytes_2d(mesh_device),
+        "2D ILWT allocation requires {} L1 bytes but only {} remain below allocator-managed L1 tensors",
         plan.allocated_l1_bytes,
-        mesh_device.l1_size_per_core());
+        available_static_l1_bytes_2d(mesh_device));
     return plan;
 }
 
@@ -654,6 +688,8 @@ template <typename Scheme>
     const MeshCoordinateRangeSet& tensor_coords) {
     auto& mesh_device = *tensor_args.input.device();
     const auto& input_buffer = *tensor_args.input.buffer();
+    const std::array<const tt::tt_metal::Buffer*, device_protocol::kLwt2DBandCount> input_buffers = {
+        &input_buffer, &input_buffer, &input_buffer, &input_buffer};
     Lwt2DExecutionPlan plan = make_forward_plan_2d<Scheme>(
         mesh_device,
         tensor_args.input.logical_shape()[0],
@@ -716,7 +752,7 @@ template <typename Scheme>
                                        operation_attributes.boundary_mode == BoundaryMode::kAntireflect;
     auto descriptor = create_program_descriptor(
         core_set(buffers.cores),
-        input_buffer,
+        input_buffers,
         buffers,
         Scheme::compute_scheme_header,
         Scheme::compute_scheme_type,
@@ -801,7 +837,7 @@ template <typename Scheme>
     const ArchitecturePolicy architecture_policy = make_architecture_policy(mesh_device.arch());
     auto descriptor = create_program_descriptor(
         core_set(buffers.cores),
-        *band_buffers[0],
+        band_buffers,
         buffers,
         InverseScheme::compute_scheme_header,
         InverseScheme::compute_scheme_type,

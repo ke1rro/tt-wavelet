@@ -359,11 +359,12 @@ void create_narrow_tile_circular_buffer(
     work.reserve(cores.size());
     for (uint32_t core_index = 0; core_index < active_core_count; ++core_index) {
         const uint32_t count = base_chunks + (core_index < extra_chunks ? 1U : 0U);
-        work.push_back(CoreChunkWork{
-            .core = cores[core_index],
-            .chunk_begin = chunk_begin,
-            .chunk_count = count,
-        });
+        work.push_back(
+            CoreChunkWork{
+                .core = cores[core_index],
+                .chunk_begin = chunk_begin,
+                .chunk_count = count,
+            });
         chunk_begin += count;
     }
     TT_FATAL(chunk_begin == chunk_count, "LWT chunk partition is incomplete");

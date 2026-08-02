@@ -22,8 +22,9 @@ void bind_wavelet_operations(nb::module_& mod) {
         R"doc(
 Compute one level of the FP32 1D lifting wavelet transform.
 
-``input`` must be an exact-rank-1, row-major, DRAM-interleaved FLOAT32 tensor
-on one physical device. ``wavelet`` names one of the 106 discrete PyWavelets
+``input`` must be an exact-rank-1, row-major, INTERLEAVED FLOAT32 tensor in
+DRAM or L1 on one physical device. Outputs remain INTERLEAVED DRAM tensors.
+``wavelet`` names one of the 106 discrete PyWavelets
 schemes and ``boundary_mode`` is one of ``zero``, ``constant``, ``symmetric``,
 ``reflect``, ``periodic``, ``smooth``, ``antisymmetric``, or ``antireflect``.
 
@@ -46,7 +47,8 @@ specification.
 Compute one level of the FP32 1D inverse lifting wavelet transform.
 
 ``approximation`` and ``detail`` must be non-aliasing, equal-shaped exact-rank-1
-row-major DRAM-interleaved FLOAT32 tensors on the same physical device.
+row-major INTERLEAVED FLOAT32 tensors in DRAM or L1 on the same physical device.
+Their placements may differ. The output remains an INTERLEAVED DRAM tensor.
 ``original_length`` restores the exact odd or even logical length and must be
 consistent with the coefficient shape, wavelet, and boundary mode.
 
@@ -68,8 +70,9 @@ preallocated storage and must not alias either input.
         R"doc(
 Compute one level of the FP32 separable 2D lifting wavelet transform.
 
-``input`` must be an exact-rank-2, standard 32x32 tile-layout,
-DRAM-interleaved FLOAT32 tensor on one physical device. The operation preserves
+``input`` must be an exact-rank-2, standard 32x32 tile-layout, INTERLEAVED
+FLOAT32 tensor in DRAM or L1 on one physical device. Outputs remain INTERLEAVED
+DRAM tensors. The operation preserves
 the standalone vertical-first execution order and returns ``(LL, LH, HL, HH)``.
 This order corresponds to ``(cA, cV, cH, cD)`` in PyWavelets terminology.
 
@@ -90,8 +93,9 @@ inferred specifications.
 Compute one level of the FP32 separable 2D inverse lifting wavelet transform.
 
 ``ll``, ``lh``, ``hl``, and ``hh`` must be pairwise non-aliasing, equal-shaped,
-standard 32x32 tile-layout, DRAM-interleaved FLOAT32 tensors on the same physical
-device. ``output_shape=(height, width)`` restores the exact odd or even logical
+standard 32x32 tile-layout, INTERLEAVED FLOAT32 tensors in DRAM or L1 on the
+same physical device. Their placements may differ. The output remains an
+INTERLEAVED DRAM tensor. ``output_shape=(height, width)`` restores the exact odd or even logical
 dimensions and must be consistent with the coefficient shape.
 
 Returns one exact-rank-2 tensor. ``output_tensor`` may provide exact-spec

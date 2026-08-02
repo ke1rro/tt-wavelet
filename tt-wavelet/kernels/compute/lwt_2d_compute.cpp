@@ -235,14 +235,7 @@ inline void run_step(
             run_scale(tile_count, cb_source0, cb_output, Step::coeff_bits[0]);
         }
     } else {
-        run_stencil<
-            Step::k,
-            Vertical,
-            InlineTerminalScale,
-            ScaleSource,
-            ScaleBase,
-            SourceScaleBits,
-            BaseScaleBits>(
+        run_stencil<Step::k, Vertical, InlineTerminalScale, ScaleSource, ScaleBase, SourceScaleBits, BaseScaleBits>(
             tile_count, cb_source0, cb_source1, cb_base, cb_output, Step::coeff_bits);
     }
 }
@@ -268,30 +261,16 @@ __attribute__((noinline)) void run_axis(
         const uint32_t tile_count = (packed_counts >> (8 * (route_index % 4))) & 0xFFU;
         constexpr bool predict = Step::type == ttwv::StepType::kPredict;
         constexpr bool scale_source =
-            kInverse && ttwv::is_predict_update_step(Step::type) &&
-            (predict ? EvenNeedsScale : OddNeedsScale);
+            kInverse && ttwv::is_predict_update_step(Step::type) && (predict ? EvenNeedsScale : OddNeedsScale);
         constexpr bool scale_base =
-            kInverse && ttwv::is_predict_update_step(Step::type) &&
-            (predict ? OddNeedsScale : EvenNeedsScale);
+            kInverse && ttwv::is_predict_update_step(Step::type) && (predict ? OddNeedsScale : EvenNeedsScale);
         constexpr uint32_t source_scale_bits = predict ? EvenScaleBits : OddScaleBits;
         constexpr uint32_t base_scale_bits = predict ? OddScaleBits : EvenScaleBits;
         constexpr bool inline_terminal_scale = !kInverse && StepIndex == last_predict_update_step_index();
-        run_step<
-            Step,
-            Vertical,
-            inline_terminal_scale,
-            scale_source,
-            scale_base,
-            source_scale_bits,
-            base_scale_bits>(tile_count, cb_source0, cb_source1, cb_base, cb_output);
+        run_step<Step, Vertical, inline_terminal_scale, scale_source, scale_base, source_scale_bits, base_scale_bits>(
+            tile_count, cb_source0, cb_source1, cb_base, cb_output);
         if constexpr (Step::type == ttwv::StepType::kSwap) {
-            run_axis<
-                Vertical,
-                OddNeedsScale,
-                EvenNeedsScale,
-                OddScaleBits,
-                EvenScaleBits,
-                StepIndex + 1>(
+            run_axis<Vertical, OddNeedsScale, EvenNeedsScale, OddScaleBits, EvenScaleBits, StepIndex + 1>(
                 runtime_arg_base, route_offset, cb_source0, cb_source1, cb_base, cb_output);
         } else if constexpr (ttwv::is_predict_update_step(Step::type)) {
             run_axis<
@@ -300,22 +279,15 @@ __attribute__((noinline)) void run_axis(
                 predict ? false : OddNeedsScale,
                 EvenScaleBits,
                 OddScaleBits,
-                StepIndex + 1>(
-                runtime_arg_base, route_offset, cb_source0, cb_source1, cb_base, cb_output);
+                StepIndex + 1>(runtime_arg_base, route_offset, cb_source0, cb_source1, cb_base, cb_output);
         } else {
-            run_axis<
-                Vertical,
-                EvenNeedsScale,
-                OddNeedsScale,
-                EvenScaleBits,
-                OddScaleBits,
-                StepIndex + 1>(
+            run_axis<Vertical, EvenNeedsScale, OddNeedsScale, EvenScaleBits, OddScaleBits, StepIndex + 1>(
                 runtime_arg_base, route_offset, cb_source0, cb_source1, cb_base, cb_output);
         }
     } else {
         static_assert(
-            !kInverse || ((!EvenNeedsScale || EvenScaleBits == 0x3f800000U) &&
-                         (!OddNeedsScale || OddScaleBits == 0x3f800000U)),
+            !kInverse ||
+                ((!EvenNeedsScale || EvenScaleBits == 0x3f800000U) && (!OddNeedsScale || OddScaleBits == 0x3f800000U)),
             "2D inline inverse scaling left a final stream unscaled");
     }
 }
@@ -337,23 +309,23 @@ void kernel_main() {
     ckernel::init_sfpu(cb_base, cb_output);
     for (uint32_t chunk = 0; chunk < chunk_count; ++chunk) {
         const uint32_t runtime_arg_base = 1 + chunk * packed_words_per_chunk;
-    if constexpr (kInverse) {
-        run_axis<false, true, true, inverse_even_scale, inverse_odd_scale>(
-            runtime_arg_base, 0, cb_source0, cb_source1, cb_base, cb_output);
-        run_axis<false, true, true, inverse_even_scale, inverse_odd_scale>(
-            runtime_arg_base, routes_per_axis, cb_source0, cb_source1, cb_base, cb_output);
-        run_axis<true, true, true, inverse_even_scale, inverse_odd_scale>(
-            runtime_arg_base, 2 * routes_per_axis, cb_source0, cb_source1, cb_base, cb_output);
-        run_axis<true, true, true, inverse_even_scale, inverse_odd_scale>(
-            runtime_arg_base, 3 * routes_per_axis, cb_source0, cb_source1, cb_base, cb_output);
-    } else {
-        run_axis<true, false, false, 0, 0>(runtime_arg_base, 0, cb_source0, cb_source1, cb_base, cb_output);
-        run_axis<true, false, false, 0, 0>(
-            runtime_arg_base, routes_per_axis, cb_source0, cb_source1, cb_base, cb_output);
-        run_axis<false, false, false, 0, 0>(
-            runtime_arg_base, 2 * routes_per_axis, cb_source0, cb_source1, cb_base, cb_output);
-        run_axis<false, false, false, 0, 0>(
-            runtime_arg_base, 3 * routes_per_axis, cb_source0, cb_source1, cb_base, cb_output);
-    }
+        if constexpr (kInverse) {
+            run_axis<false, true, true, inverse_even_scale, inverse_odd_scale>(
+                runtime_arg_base, 0, cb_source0, cb_source1, cb_base, cb_output);
+            run_axis<false, true, true, inverse_even_scale, inverse_odd_scale>(
+                runtime_arg_base, routes_per_axis, cb_source0, cb_source1, cb_base, cb_output);
+            run_axis<true, true, true, inverse_even_scale, inverse_odd_scale>(
+                runtime_arg_base, 2 * routes_per_axis, cb_source0, cb_source1, cb_base, cb_output);
+            run_axis<true, true, true, inverse_even_scale, inverse_odd_scale>(
+                runtime_arg_base, 3 * routes_per_axis, cb_source0, cb_source1, cb_base, cb_output);
+        } else {
+            run_axis<true, false, false, 0, 0>(runtime_arg_base, 0, cb_source0, cb_source1, cb_base, cb_output);
+            run_axis<true, false, false, 0, 0>(
+                runtime_arg_base, routes_per_axis, cb_source0, cb_source1, cb_base, cb_output);
+            run_axis<false, false, false, 0, 0>(
+                runtime_arg_base, 2 * routes_per_axis, cb_source0, cb_source1, cb_base, cb_output);
+            run_axis<false, false, false, 0, 0>(
+                runtime_arg_base, 3 * routes_per_axis, cb_source0, cb_source1, cb_base, cb_output);
+        }
     }
 }

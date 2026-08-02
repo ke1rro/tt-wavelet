@@ -153,8 +153,7 @@ def read_reconstruction(reference: np.ndarray, path: Path) -> np.ndarray:
     reconstructed = np.fromfile(path, dtype=np.float32)
     if reconstructed.size != reference.size:
         raise RuntimeError(
-            f"reconstructed output has {reconstructed.size} elements; "
-            f"expected {reference.size}"
+            f"reconstructed output has {reconstructed.size} elements; " f"expected {reference.size}"
         )
     reconstructed = reconstructed.reshape(reference.shape)
     if not np.all(np.isfinite(reconstructed)):
@@ -172,14 +171,10 @@ def pywavelets_check(root: Path, mode: str, timeout: float) -> float:
 
     height, width = 33, 35
     signal = np.random.default_rng(17).normal(size=(height, width)).astype(np.float32)
-    approximation, (horizontal, vertical, diagonal) = pywt.dwt2(
-        signal, "db1", mode=mode
-    )
+    approximation, (horizontal, vertical, diagonal) = pywt.dwt2(signal, "db1", mode=mode)
     prefix = root / "pywt"
     # Device convention is (low-y,high-x)=LH and (high-y,low-x)=HL.
-    for name, values in zip(
-        BANDS, (approximation, vertical, horizontal, diagonal), strict=True
-    ):
+    for name, values in zip(BANDS, (approximation, vertical, horizontal, diagonal), strict=True):
         np.asarray(values, dtype=np.float32).tofile(Path(f"{prefix}_{name}.f32"))
     output = root / "pywt_output.f32"
     inverse("db1", mode, height, width, prefix, output, 1, timeout)
@@ -208,11 +203,17 @@ def main() -> int:
             for mode_index, mode in enumerate(modes):
                 for shape_index, (height, width) in enumerate(shapes):
                     if mode in {"reflect", "antireflect"} and min(height, width) <= 1:
-                        print(f"UNSUPPORTED {scheme} {mode} {height}x{width}: both dimensions must exceed one")
+                        print(
+                            f"UNSUPPORTED {scheme} {mode} {height}x{width}: both dimensions must exceed one"
+                        )
                         continue
-                    signal = np.random.default_rng(
-                        args.seed + 1000 * scheme_index + 100 * mode_index + shape_index
-                    ).uniform(-1.0, 1.0, size=(height, width)).astype(np.float32)
+                    signal = (
+                        np.random.default_rng(
+                            args.seed + 1000 * scheme_index + 100 * mode_index + shape_index
+                        )
+                        .uniform(-1.0, 1.0, size=(height, width))
+                        .astype(np.float32)
+                    )
                     stem = f"{scheme}_{mode}_{height}x{width}"
                     input_path = root / f"{stem}_input.f32"
                     prefix = root / stem
@@ -259,7 +260,9 @@ def main() -> int:
                         single_error = max_error(signal, single_output)
                         multi = np.fromfile(output, dtype=np.float32)
                         single = np.fromfile(single_output, dtype=np.float32)
-                        bit_identical = np.array_equal(multi.view(np.uint32), single.view(np.uint32))
+                        bit_identical = np.array_equal(
+                            multi.view(np.uint32), single.view(np.uint32)
+                        )
                         print(
                             "PASS" if bit_identical and single_error <= args.tolerance else "FAIL",
                             f"db7 {mode} 33x35 single-vs-multi-core",

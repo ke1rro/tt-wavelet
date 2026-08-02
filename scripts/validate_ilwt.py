@@ -9,7 +9,6 @@ from pathlib import Path
 
 import numpy as np
 import pywt
-
 from runtime_checks import (
     check_consistent_architecture,
     parse_runtime_architecture,

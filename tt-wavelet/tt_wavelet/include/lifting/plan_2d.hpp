@@ -360,18 +360,19 @@ inline void append_axis_routes(
     for (size_t route_index = 0; route_index < cone.routes.size(); ++route_index) {
         const AxisRouteRequirement& requirement = cone.routes[route_index];
         if (requirement.type == StepType::kSwap) {
-            routes.push_back(Lwt2DRoutePlan{
-                .axis = axis,
-                .axis_route_index = route_index,
-                .type = requirement.type,
-                .source_slot = slots.even,
-                .base_slot = slots.odd,
-                .output_slot = slots.even,
-                .source = axis_rectangle(axis, requirement.before.even, transverse),
-                .base = axis_rectangle(axis, requirement.before.odd, transverse),
-                .output = {},
-                .in_place = true,
-            });
+            routes.push_back(
+                Lwt2DRoutePlan{
+                    .axis = axis,
+                    .axis_route_index = route_index,
+                    .type = requirement.type,
+                    .source_slot = slots.even,
+                    .base_slot = slots.odd,
+                    .output_slot = slots.even,
+                    .source = axis_rectangle(axis, requirement.before.even, transverse),
+                    .base = axis_rectangle(axis, requirement.before.odd, transverse),
+                    .output = {},
+                    .in_place = true,
+                });
             std::swap(slots.even, slots.odd);
             continue;
         }
@@ -394,19 +395,20 @@ inline void append_axis_routes(
         const Lwt2DPlaneSlot base_slot = predict ? slots.odd : update ? slots.even : source_slot;
         const Lwt2DPlaneSlot output_slot =
             predict || update ? (aligned_in_place ? base_slot : slots.free) : source_slot;
-        routes.push_back(Lwt2DRoutePlan{
-            .axis = axis,
-            .axis_route_index = route_index,
-            .type = requirement.type,
-            .source_slot = source_slot,
-            .base_slot = base_slot,
-            .output_slot = output_slot,
-            .source = axis_rectangle(axis, requirement.source, transverse),
-            .base = axis_rectangle(axis, requirement.base, transverse),
-            .output = fused_scale_route ? IndexRectangle{} : axis_rectangle(axis, requirement.output, transverse),
-            .in_place = output_slot == base_slot,
-            .inline_terminal_scale = inline_terminal_scale,
-        });
+        routes.push_back(
+            Lwt2DRoutePlan{
+                .axis = axis,
+                .axis_route_index = route_index,
+                .type = requirement.type,
+                .source_slot = source_slot,
+                .base_slot = base_slot,
+                .output_slot = output_slot,
+                .source = axis_rectangle(axis, requirement.source, transverse),
+                .base = axis_rectangle(axis, requirement.base, transverse),
+                .output = fused_scale_route ? IndexRectangle{} : axis_rectangle(axis, requirement.output, transverse),
+                .in_place = output_slot == base_slot,
+                .inline_terminal_scale = inline_terminal_scale,
+            });
 
         if (!predict && !update) {
             continue;
@@ -524,14 +526,12 @@ inline void append_axis_routes(
 
     const AxisConePlan exact_y_cone = build_axis_cone(y_plan, final_y_even, final_y_odd);
     const AxisConePlan exact_x_cone = build_axis_cone(x_plan, final_x_even, final_x_odd);
-    AxisConePlan y_cone =
-        route_domain == Lwt2DRouteDomainPolicy::kTileClosed
-            ? build_axis_cone(y_plan, final_y_even, final_y_odd, kTileHeight)
-            : exact_y_cone;
-    AxisConePlan x_cone =
-        route_domain == Lwt2DRouteDomainPolicy::kTileClosed
-            ? build_axis_cone(x_plan, final_x_even, final_x_odd, kTileWidth)
-            : exact_x_cone;
+    AxisConePlan y_cone = route_domain == Lwt2DRouteDomainPolicy::kTileClosed
+                              ? build_axis_cone(y_plan, final_y_even, final_y_odd, kTileHeight)
+                              : exact_y_cone;
+    AxisConePlan x_cone = route_domain == Lwt2DRouteDomainPolicy::kTileClosed
+                              ? build_axis_cone(x_plan, final_x_even, final_x_odd, kTileWidth)
+                              : exact_x_cone;
     const PolyphaseDependencyRectangles initial{
         .ee = interval_product(y_cone.initial_even, x_cone.initial_even),
         .eo = interval_product(y_cone.initial_even, x_cone.initial_odd),
@@ -927,9 +927,8 @@ enum class AlignmentCostClass : uint8_t {
     bool found = false;
     for (uint32_t tiles_y = 1; tiles_y <= band_tiles_y; ++tiles_y) {
         for (uint32_t tiles_x = 1; tiles_x <= band_tiles_x; ++tiles_x) {
-            std::vector<Lwt2DChunkPlan> chunks =
-                plan_2d_detail::build_chunks(
-                    y_plan, x_plan, tiles_y, tiles_x, l1_budget_bytes, fuse_terminal_scale, route_domain);
+            std::vector<Lwt2DChunkPlan> chunks = plan_2d_detail::build_chunks(
+                y_plan, x_plan, tiles_y, tiles_x, l1_budget_bytes, fuse_terminal_scale, route_domain);
             uint64_t max_l1_bytes = 0;
             double max_dependency_overhead = 0.0;
             bool fits = true;

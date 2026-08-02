@@ -136,8 +136,7 @@ struct Options {
         for (size_t tile_x = 0; tile_x < shape.width / ttwv::kTileWidth2D; ++tile_x) {
             std::vector<float> tile(ttwv::kTileHeight2D * ttwv::kTileWidth2D);
             for (size_t row = 0; row < ttwv::kTileHeight2D; ++row) {
-                const size_t source =
-                    (tile_y * ttwv::kTileHeight2D + row) * shape.width + tile_x * ttwv::kTileWidth2D;
+                const size_t source = (tile_y * ttwv::kTileHeight2D + row) * shape.width + tile_x * ttwv::kTileWidth2D;
                 std::copy_n(
                     row_major.begin() + static_cast<std::ptrdiff_t>(source),
                     ttwv::kTileWidth2D,
@@ -188,9 +187,8 @@ struct Options {
 
 template <typename Scheme>
 int run(const Options& options) {
-    const ttwv::Ilwt2DExecutionPlan host_plan =
-        ttwv::make_ilwt_2d_execution_plan<Scheme>(
-            options.height, options.width, options.core_limit, 768 * 1024, options.boundary_mode);
+    const ttwv::Ilwt2DExecutionPlan host_plan = ttwv::make_ilwt_2d_execution_plan<Scheme>(
+        options.height, options.width, options.core_limit, 768 * 1024, options.boundary_mode);
     std::array<std::vector<float>, 4> tiled_bands;
     for (size_t band = 0; band < tiled_bands.size(); ++band) {
         const std::vector<float> logical =
@@ -268,8 +266,8 @@ int run(const Options& options) {
             return sum + difference * difference;
         });
     for (size_t repeat = 0; repeat < times.size(); ++repeat) {
-        std::cerr << std::fixed << std::setprecision(6) << "ilwt_2d_repeat_time_ms[" << repeat
-                  << "]: " << times[repeat] << '\n';
+        std::cerr << std::fixed << std::setprecision(6) << "ilwt_2d_repeat_time_ms[" << repeat << "]: " << times[repeat]
+                  << '\n';
     }
     const size_t route_count = executable.plan.chunks.empty() ? 0 : executable.plan.chunks.front().routes.size();
     const size_t scale_routes_removed =
@@ -279,22 +277,20 @@ int run(const Options& options) {
                   executable.plan.chunks.front().routes.begin(),
                   executable.plan.chunks.front().routes.end(),
                   [](const ttwv::Lwt2DRoutePlan& route) { return ttwv::is_scale_step(route.type); }));
-    std::cerr << "ilwt_2d_architecture: "
-              << tt::arch_to_str(executable.buffers.scheduler.architecture) << '\n'
+    std::cerr << "ilwt_2d_architecture: " << tt::arch_to_str(executable.buffers.scheduler.architecture) << '\n'
               << "ilwt_2d_boundary_mode: " << ttwv::boundary_mode_name(options.boundary_mode) << '\n'
-              << "ilwt_2d_available_worker_core_count: "
-              << executable.buffers.scheduler.available_worker_core_count << '\n'
+              << "ilwt_2d_available_worker_core_count: " << executable.buffers.scheduler.available_worker_core_count
+              << '\n'
               << std::fixed << std::setprecision(6) << "ilwt_2d_execution_time_ms: " << mean << '\n'
               << "ilwt_2d_min_execution_time_ms: " << sorted_times.front() << '\n'
               << "ilwt_2d_median_time_ms: " << percentile(0.5) << '\n'
               << "ilwt_2d_p10_time_ms: " << percentile(0.1) << '\n'
               << "ilwt_2d_p90_time_ms: " << percentile(0.9) << '\n'
-              << "ilwt_2d_stddev_time_ms: "
-              << std::sqrt(squared_error / static_cast<double>(times.size())) << '\n'
+              << "ilwt_2d_stddev_time_ms: " << std::sqrt(squared_error / static_cast<double>(times.size())) << '\n'
               << "ilwt_2d_active_core_count: " << executable.plan.active_core_count << '\n'
               << "ilwt_2d_chunk_count: " << executable.plan.chunks.size() << '\n'
-              << "ilwt_2d_chunk_tiles: " << executable.plan.chunk_tiles_y << 'x'
-              << executable.plan.chunk_tiles_x << '\n'
+              << "ilwt_2d_chunk_tiles: " << executable.plan.chunk_tiles_y << 'x' << executable.plan.chunk_tiles_x
+              << '\n'
               << "ilwt_2d_estimated_latency_cycles: " << executable.plan.estimated_latency_cycles << '\n'
               << "ilwt_2d_route_count: " << route_count << '\n'
               << "ilwt_2d_executable_route_count: " << executable.plan.executable_route_count << '\n'

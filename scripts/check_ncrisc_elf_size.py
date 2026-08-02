@@ -7,7 +7,6 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-
 WORMHOLE_TEXT_LIMIT_BYTES = 0x4000
 
 
@@ -39,9 +38,7 @@ def text_size(size_tool: Path, elf_path: Path) -> int:
         check=False,
     )
     if result.returncode != 0:
-        raise RuntimeError(
-            f"ELF size tool failed for {elf_path}:\n{result.stdout}{result.stderr}"
-        )
+        raise RuntimeError(f"ELF size tool failed for {elf_path}:\n{result.stdout}{result.stderr}")
     match = re.search(r"^\.text\s+(\d+)\s+", result.stdout, flags=re.MULTILINE)
     if match is None:
         raise RuntimeError(f"ELF metadata has no .text section: {elf_path}")
@@ -57,8 +54,7 @@ def executable_segment_size(readelf_tool: Path, elf_path: Path) -> int:
     )
     if result.returncode != 0:
         raise RuntimeError(
-            f"ELF readelf tool failed for {elf_path}:\n"
-            f"{result.stdout}{result.stderr}"
+            f"ELF readelf tool failed for {elf_path}:\n" f"{result.stdout}{result.stderr}"
         )
 
     executable_sizes: list[int] = []
@@ -85,9 +81,7 @@ def collect_elf_sizes(
         build_directory = elf_path.parents[1]
         if not (build_directory / ".SUCCESS").is_file():
             continue
-        detected_architecture = architecture_from_dependency_file(
-            elf_path.with_name("ncrisck.d")
-        )
+        detected_architecture = architecture_from_dependency_file(elf_path.with_name("ncrisck.d"))
         if detected_architecture != architecture:
             continue
         sizes.append(
@@ -96,9 +90,7 @@ def collect_elf_sizes(
                 architecture=detected_architecture,
                 path=elf_path,
                 text_bytes=text_size(size_tool, elf_path),
-                executable_segment_bytes=executable_segment_size(
-                    readelf_tool, elf_path
-                ),
+                executable_segment_bytes=executable_segment_size(readelf_tool, elf_path),
             )
         )
     return sizes
@@ -111,16 +103,10 @@ def print_result(result: ElfTextSize) -> bool:
     print(f"executable LOAD segment bytes: {result.executable_segment_bytes}")
     print(f"limit bytes: {WORMHOLE_TEXT_LIMIT_BYTES}")
     if result.executable_segment_bytes <= WORMHOLE_TEXT_LIMIT_BYTES:
-        print(
-            "headroom bytes: "
-            f"{WORMHOLE_TEXT_LIMIT_BYTES - result.executable_segment_bytes}"
-        )
+        print("headroom bytes: " f"{WORMHOLE_TEXT_LIMIT_BYTES - result.executable_segment_bytes}")
         print("result: PASS")
         return True
-    print(
-        "overflow bytes: "
-        f"{result.executable_segment_bytes - WORMHOLE_TEXT_LIMIT_BYTES}"
-    )
+    print("overflow bytes: " f"{result.executable_segment_bytes - WORMHOLE_TEXT_LIMIT_BYTES}")
     print("result: FAIL")
     return False
 
@@ -143,13 +129,7 @@ def main() -> int:
     parser.add_argument(
         "--size-tool",
         type=Path,
-        default=root
-        / "tt-metal"
-        / "runtime"
-        / "sfpi"
-        / "compiler"
-        / "bin"
-        / "riscv-tt-elf-size",
+        default=root / "tt-metal" / "runtime" / "sfpi" / "compiler" / "bin" / "riscv-tt-elf-size",
     )
     parser.add_argument(
         "--readelf-tool",

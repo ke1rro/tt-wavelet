@@ -3,9 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import pytest
-import torch
-
 import pywt
+import torch
 import ttnn
 
 
@@ -33,7 +32,9 @@ def test_all_106_discrete_schemes_jit_forward_inverse(device):
             boundary_mode="symmetric",
         )
 
-        coefficient_length = pywt.dwt_coeff_len(signal.numel(), pywt.Wavelet(scheme).dec_len, mode="symmetric")
+        coefficient_length = pywt.dwt_coeff_len(
+            signal.numel(), pywt.Wavelet(scheme).dec_len, mode="symmetric"
+        )
         assert tuple(approximation.shape) == (coefficient_length,)
         assert tuple(detail.shape) == (coefficient_length,)
         assert tuple(reconstructed.shape) == tuple(signal.shape)

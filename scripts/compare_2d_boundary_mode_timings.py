@@ -161,9 +161,7 @@ def run_device(command: list[str], timeout: float) -> str:
     return output
 
 
-def timed_samples(
-    operation: Callable[[], Any], repeats: int, warmup_runs: int
-) -> list[float]:
+def timed_samples(operation: Callable[[], Any], repeats: int, warmup_runs: int) -> list[float]:
     for _ in range(warmup_runs):
         operation()
     samples: list[float] = []
@@ -237,11 +235,7 @@ def tt_command(
             str(LWT),
             "--binary-input",
             "--benchmark",
-            *(
-                ["--output-prefix", str(output_prefix)]
-                if output_prefix is not None
-                else []
-            ),
+            *(["--output-prefix", str(output_prefix)] if output_prefix is not None else []),
             *common,
             args.wavelet,
             str(height),
@@ -261,10 +255,7 @@ def tt_command(
 
 
 def parse_tt_output(output: str, expected_repeats: int) -> tuple[list[float], dict[str, int | str]]:
-    samples = [
-        float(match.group("latency"))
-        for match in REPEAT_PATTERN.finditer(output)
-    ]
+    samples = [float(match.group("latency")) for match in REPEAT_PATTERN.finditer(output)]
     if len(samples) != expected_repeats:
         raise RuntimeError(
             f"TT output contained {len(samples)} repeat timings, expected {expected_repeats}"
@@ -404,9 +395,7 @@ def run_core_sweep(
         signal_path = root / f"core_{args.height}x{width}.f32"
         signal.tofile(signal_path)
         prefix = root / f"core_{args.height}x{width}"
-        band_paths = prepare_tt_bands(
-            args, mode, args.height, width, signal_path, prefix
-        )
+        band_paths = prepare_tt_bands(args, mode, args.height, width, signal_path, prefix)
         output_path = root / f"core_{args.height}x{width}_ilwt.f32"
         band_height = pywt.dwt_coeff_len(args.height, wavelet.dec_len, mode)
         band_width = pywt.dwt_coeff_len(width, wavelet.dec_len, mode)
@@ -570,9 +559,7 @@ def main() -> int:
 
                     try:
                         for transform in ("lwt", "ilwt"):
-                            band_paths = [
-                                Path(f"{prefix}_{band}.f32") for band in BANDS
-                            ]
+                            band_paths = [Path(f"{prefix}_{band}.f32") for band in BANDS]
                             output = run_device(
                                 tt_command(
                                     args,

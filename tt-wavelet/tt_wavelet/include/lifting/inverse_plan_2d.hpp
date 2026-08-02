@@ -9,10 +9,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <tt_stl/assert.hpp>
 #include <utility>
 #include <vector>
-
-#include <tt_stl/assert.hpp>
 
 #include "tt_wavelet/include/lifting/inverse_plan.hpp"
 #include "tt_wavelet/include/lifting/plan_2d.hpp"
@@ -92,8 +91,7 @@ namespace inverse_2d_detail {
         const IndexInterval base =
             inverse_detail::subtract_offset(output, route.base_offset, "2D inverse predict/update");
         const uint32_t k = execution_detail::coefficient_count(route);
-        requirement.source =
-            execution_detail::translated(base, route.source_offset, static_cast<size_t>(k - 1));
+        requirement.source = execution_detail::translated(base, route.source_offset, static_cast<size_t>(k - 1));
         requirement.base = base;
         requirement.output = output;
         cone.max_workspace_elements = std::max(cone.max_workspace_elements, output.length());
@@ -113,37 +111,39 @@ inline void append_axis_routes(
         const AxisRouteRequirement& requirement = cone.routes[inverse_index];
         const size_t forward_index = route_count - inverse_index - 1;
         if (requirement.type == StepType::kSwap) {
-            routes.push_back(Lwt2DRoutePlan{
-                .axis = axis,
-                .axis_route_index = forward_index,
-                .type = requirement.type,
-                .source_slot = slots.even,
-                .base_slot = slots.odd,
-                .output_slot = slots.even,
-                .source = plan_2d_detail::axis_rectangle(axis, requirement.before.even, transverse),
-                .base = plan_2d_detail::axis_rectangle(axis, requirement.before.odd, transverse),
-                .output = {},
-                .in_place = true,
-            });
+            routes.push_back(
+                Lwt2DRoutePlan{
+                    .axis = axis,
+                    .axis_route_index = forward_index,
+                    .type = requirement.type,
+                    .source_slot = slots.even,
+                    .base_slot = slots.odd,
+                    .output_slot = slots.even,
+                    .source = plan_2d_detail::axis_rectangle(axis, requirement.before.even, transverse),
+                    .base = plan_2d_detail::axis_rectangle(axis, requirement.before.odd, transverse),
+                    .output = {},
+                    .in_place = true,
+                });
             std::swap(slots.even, slots.odd);
             continue;
         }
         if (is_scale_step(requirement.type)) {
             const bool even = requirement.type == StepType::kScaleEven;
             const Lwt2DPlaneSlot slot = even ? slots.even : slots.odd;
-            routes.push_back(Lwt2DRoutePlan{
-                .axis = axis,
-                .axis_route_index = forward_index,
-                .type = requirement.type,
-                .source_slot = slot,
-                .base_slot = slot,
-                .output_slot = slot,
-                .source = plan_2d_detail::axis_rectangle(
-                    axis, even ? requirement.before.even : requirement.before.odd, transverse),
-                .base = {},
-                .output = {},
-                .in_place = true,
-            });
+            routes.push_back(
+                Lwt2DRoutePlan{
+                    .axis = axis,
+                    .axis_route_index = forward_index,
+                    .type = requirement.type,
+                    .source_slot = slot,
+                    .base_slot = slot,
+                    .output_slot = slot,
+                    .source = plan_2d_detail::axis_rectangle(
+                        axis, even ? requirement.before.even : requirement.before.odd, transverse),
+                    .base = {},
+                    .output = {},
+                    .in_place = true,
+                });
             continue;
         }
 
@@ -151,18 +151,19 @@ inline void append_axis_routes(
         const Lwt2DPlaneSlot source_slot = predict ? slots.even : slots.odd;
         const Lwt2DPlaneSlot base_slot = predict ? slots.odd : slots.even;
         const Lwt2DPlaneSlot output_slot = slots.free;
-        routes.push_back(Lwt2DRoutePlan{
-            .axis = axis,
-            .axis_route_index = forward_index,
-            .type = requirement.type,
-            .source_slot = source_slot,
-            .base_slot = base_slot,
-            .output_slot = output_slot,
-            .source = plan_2d_detail::axis_rectangle(axis, requirement.source, transverse),
-            .base = plan_2d_detail::axis_rectangle(axis, requirement.base, transverse),
-            .output = plan_2d_detail::axis_rectangle(axis, requirement.output, transverse),
-            .in_place = false,
-        });
+        routes.push_back(
+            Lwt2DRoutePlan{
+                .axis = axis,
+                .axis_route_index = forward_index,
+                .type = requirement.type,
+                .source_slot = source_slot,
+                .base_slot = base_slot,
+                .output_slot = output_slot,
+                .source = plan_2d_detail::axis_rectangle(axis, requirement.source, transverse),
+                .base = plan_2d_detail::axis_rectangle(axis, requirement.base, transverse),
+                .output = plan_2d_detail::axis_rectangle(axis, requirement.output, transverse),
+                .in_place = false,
+            });
         if (predict) {
             slots.free = slots.odd;
             slots.odd = output_slot;
@@ -296,10 +297,10 @@ inline void append_axis_routes(
         .internal_initial_elements = dependency_elements,
         .exact_route_elements = route_elements,
         .internal_route_elements = route_elements,
-        .exact_final_elements = parity_sources.ll.area() + parity_sources.lh.area() + parity_sources.hl.area() +
-                                parity_sources.hh.area(),
-        .internal_final_elements = parity_sources.ll.area() + parity_sources.lh.area() + parity_sources.hl.area() +
-                                   parity_sources.hh.area(),
+        .exact_final_elements =
+            parity_sources.ll.area() + parity_sources.lh.area() + parity_sources.hl.area() + parity_sources.hh.area(),
+        .internal_final_elements =
+            parity_sources.ll.area() + parity_sources.lh.area() + parity_sources.hl.area() + parity_sources.hh.area(),
     };
 }
 
@@ -333,10 +334,7 @@ inline void append_axis_routes(
 }  // namespace inverse_2d_detail
 
 [[nodiscard]] inline Ilwt2DExecutionPlan make_ilwt_2d_execution_plan(
-    LiftingInversePlan y_plan,
-    LiftingInversePlan x_plan,
-    const uint32_t core_limit,
-    const uint64_t l1_budget_bytes) {
+    LiftingInversePlan y_plan, LiftingInversePlan x_plan, const uint32_t core_limit, const uint64_t l1_budget_bytes) {
     TT_FATAL(core_limit > 0, "2D ILWT requires at least one worker core");
     TT_FATAL(y_plan.original_length > 0 && x_plan.original_length > 0, "2D ILWT output shape must be positive");
 
@@ -397,8 +395,7 @@ inline void append_axis_routes(
         workspace_bytes += slot_bytes[slot];
     }
     constexpr uint64_t fixed_bytes =
-        plan_2d_detail::kCircularBufferBytes + plan_2d_detail::kMetadataBytes +
-        plan_2d_detail::kSynchronizationBytes;
+        plan_2d_detail::kCircularBufferBytes + plan_2d_detail::kMetadataBytes + plan_2d_detail::kSynchronizationBytes;
     const uint64_t total_l1_bytes = workspace_bytes + fixed_bytes;
     TT_FATAL(total_l1_bytes <= l1_budget_bytes, "2D ILWT uniform L1 allocation exceeds its budget");
 
@@ -442,8 +439,10 @@ template <typename Scheme>
     const uint32_t core_limit,
     const uint64_t l1_budget_bytes,
     const BoundaryMode boundary_mode = BoundaryMode::kSymmetric) {
-    const SignalBuffer y_signal{.length = output_height, .stick_width = kStickWidth, .element_size_bytes = sizeof(float)};
-    const SignalBuffer x_signal{.length = output_width, .stick_width = kStickWidth, .element_size_bytes = sizeof(float)};
+    const SignalBuffer y_signal{
+        .length = output_height, .stick_width = kStickWidth, .element_size_bytes = sizeof(float)};
+    const SignalBuffer x_signal{
+        .length = output_width, .stick_width = kStickWidth, .element_size_bytes = sizeof(float)};
     LiftingForwardPlan y_forward = make_forward_lifting_plan<Scheme>(y_signal, 0, 0, boundary_mode);
     LiftingForwardPlan x_forward = make_forward_lifting_plan<Scheme>(x_signal, 0, 0, boundary_mode);
     const size_t y_coefficients = y_forward.output_length;
@@ -514,8 +513,7 @@ template <typename Scheme>
             words[offset + device_protocol::kLwt2DRouteOutputSlot] = static_cast<uint32_t>(route.output_slot);
             plan_2d_detail::write_protocol_rectangle(
                 words, offset + device_protocol::kLwt2DRouteSourceRect, route.source);
-            plan_2d_detail::write_protocol_rectangle(
-                words, offset + device_protocol::kLwt2DRouteBaseRect, route.base);
+            plan_2d_detail::write_protocol_rectangle(words, offset + device_protocol::kLwt2DRouteBaseRect, route.base);
             plan_2d_detail::write_protocol_rectangle(
                 words, offset + device_protocol::kLwt2DRouteOutputRect, route.output);
             uint32_t flags = 0;
@@ -549,8 +547,7 @@ template <typename Scheme>
             plan_2d_detail::checked_u32(chunk.final_band_rect.width(), "2D ILWT output width");
         const auto write_parity =
             [&](const size_t parity_offset, const Lwt2DPlaneSlot slot, const IndexRectangle source) {
-                words[offset + parity_offset + device_protocol::kLwt2DBandSourceSlot] =
-                    static_cast<uint32_t>(slot);
+                words[offset + parity_offset + device_protocol::kLwt2DBandSourceSlot] = static_cast<uint32_t>(slot);
                 plan_2d_detail::write_protocol_rectangle(
                     words, offset + parity_offset + device_protocol::kLwt2DBandSourceRect, source);
             };

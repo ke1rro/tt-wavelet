@@ -208,10 +208,9 @@ inline void validate_interval(const IndexInterval interval, const size_t stream_
             return interval;
         }
         const size_t begin = (interval.begin / closure_extent) * closure_extent;
-        const size_t rounded_end =
-            interval.end > std::numeric_limits<size_t>::max() - (closure_extent - 1)
-                ? stream_length
-                : round_up(interval.end, closure_extent);
+        const size_t rounded_end = interval.end > std::numeric_limits<size_t>::max() - (closure_extent - 1)
+                                       ? stream_length
+                                       : round_up(interval.end, closure_extent);
         return IndexInterval{.begin = begin, .end = std::min(rounded_end, stream_length)};
     };
     std::vector<RequiredStreams> required(plan.routes.size() + 1);
@@ -341,19 +340,20 @@ inline void validate_interval(const IndexInterval interval, const size_t stream_
                 inline_scale_route ? RouteOutputRef{.storage = inline_scale.final_storage, .slot = free_slot}
                                    : detail::workspace_output(free_slot);
 
-            routes.push_back(LwtStepRoute{
-                .type = full_route.type,
-                .source = StreamRef{.slot = source.slot},
-                .base = StreamRef{.slot = base.slot},
-                .output = output_ref,
-                .source_storage_length = source.storage.length(),
-                .base_storage_length = base.storage.length(),
-                .source_offset_elements = local_offset(source.storage, source_required),
-                .base_offset_elements = local_offset(base.storage, base_required),
-                .source_left_pad_elements = full_route.source_left_pad,
-                .output_length = output.length(),
-                .output_offset_elements = inline_scale_route && !output.empty() ? output.begin : 0,
-            });
+            routes.push_back(
+                LwtStepRoute{
+                    .type = full_route.type,
+                    .source = StreamRef{.slot = source.slot},
+                    .base = StreamRef{.slot = base.slot},
+                    .output = output_ref,
+                    .source_storage_length = source.storage.length(),
+                    .base_storage_length = base.storage.length(),
+                    .source_offset_elements = local_offset(source.storage, source_required),
+                    .base_offset_elements = local_offset(base.storage, base_required),
+                    .source_left_pad_elements = full_route.source_left_pad,
+                    .output_length = output.length(),
+                    .output_offset_elements = inline_scale_route && !output.empty() ? output.begin : 0,
+                });
 
             const StoredStream replacement{.slot = free_slot, .storage = output};
             max_workspace_elements = std::max(max_workspace_elements, output.length());
@@ -375,19 +375,20 @@ inline void validate_interval(const IndexInterval interval, const size_t stream_
         const StoredStream& source = scale_even ? active_even : active_odd;
         const IndexInterval output = scale_even ? after.even : after.odd;
         const auto final_storage = scale_even ? RouteOutputStorage::kFinalEvenDram : RouteOutputStorage::kFinalOddDram;
-        routes.push_back(LwtStepRoute{
-            .type = full_route.type,
-            .source = StreamRef{.slot = source.slot},
-            .base = StreamRef{.slot = source.slot},
-            .output = RouteOutputRef{.storage = final_storage, .slot = source.slot},
-            .source_storage_length = source.storage.length(),
-            .base_storage_length = source.storage.length(),
-            .source_offset_elements = local_offset(source.storage, output),
-            .base_offset_elements = local_offset(source.storage, output),
-            .source_left_pad_elements = 0,
-            .output_length = output.length(),
-            .output_offset_elements = output.empty() ? 0 : output.begin,
-        });
+        routes.push_back(
+            LwtStepRoute{
+                .type = full_route.type,
+                .source = StreamRef{.slot = source.slot},
+                .base = StreamRef{.slot = source.slot},
+                .output = RouteOutputRef{.storage = final_storage, .slot = source.slot},
+                .source_storage_length = source.storage.length(),
+                .base_storage_length = source.storage.length(),
+                .source_offset_elements = local_offset(source.storage, output),
+                .base_offset_elements = local_offset(source.storage, output),
+                .source_left_pad_elements = 0,
+                .output_length = output.length(),
+                .output_offset_elements = output.empty() ? 0 : output.begin,
+            });
     }
 
     const IndexInterval initial_even = required.front().even;

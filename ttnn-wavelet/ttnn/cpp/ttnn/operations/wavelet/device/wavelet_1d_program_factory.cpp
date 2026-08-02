@@ -141,12 +141,34 @@ struct CoreChunkWork {
     };
 }
 
+[[nodiscard]] uint32_t available_static_l1_bytes(tt::tt_metal::distributed::MeshDevice& mesh_device) {
+    const uint64_t base = mesh_device.allocator()->get_base_allocator_addr(tt::tt_metal::HalMemType::L1);
+    const uint64_t frontier = mesh_device.lowest_occupied_compute_l1_address().value_or(mesh_device.l1_size_per_core());
+    TT_FATAL(
+        frontier >= base, "LWT allocator reports occupied L1 frontier {} below unreserved base {}", frontier, base);
+    return checked_u32(frontier - base, "LWT available static L1 bytes");
+}
+
 [[nodiscard]] uint32_t output_group_count(const size_t output_length) {
     return checked_u32(
         ceil_div(output_length, static_cast<size_t>(device_protocol::kLwtGroupOutputElements)), "LWT group count");
 }
 
-[[nodiscard]] uint32_t l1_signal_budget_bytes() { return kDefaultL1SignalBudgetBytes; }
+[[nodiscard]] uint32_t l1_signal_budget_bytes(
+    tt::tt_metal::distributed::MeshDevice& mesh_device, const uint32_t architecture_scratch_bytes) {
+    const uint64_t fixed_bytes = l1_detail::kSourceTileCircularBuffersBytes + l1_detail::kBaseTileCircularBufferBytes +
+                                 l1_detail::kOutputTileCircularBufferBytes + l1_detail::kInterleaveOutputBytes +
+                                 l1_detail::kCacheBytes + l1_detail::kSynchronizationBytes + l1_detail::kMetadataBytes +
+                                 architecture_scratch_bytes;
+    const uint64_t available_bytes = available_static_l1_bytes(mesh_device);
+    TT_FATAL(
+        available_bytes >= fixed_bytes + 3 * device_protocol::kStickBytes,
+        "LWT requires at least {} bytes of free per-core L1 after external L1 tensor allocation, but only {} remain",
+        fixed_bytes + 3 * device_protocol::kStickBytes,
+        available_bytes);
+    return checked_u32(
+        std::min<uint64_t>(kDefaultL1SignalBudgetBytes, available_bytes - fixed_bytes), "LWT signal workspace budget");
+}
 
 [[nodiscard]] std::optional<WorkspaceLayout> workspace_layout_override() { return std::nullopt; }
 
@@ -753,6 +775,16 @@ void validate_output_memory_config(const MemoryConfig& memory_config, const char
         operation_name);
 }
 
+void validate_input_memory_config(const MemoryConfig& memory_config, const char* tensor_name) {
+    const bool supported_buffer = memory_config.buffer_type() == tt::tt_metal::BufferType::DRAM ||
+                                  memory_config.buffer_type() == tt::tt_metal::BufferType::L1;
+    TT_FATAL(
+        memory_config.memory_layout() == tt::tt_metal::TensorMemoryLayout::INTERLEAVED && supported_buffer &&
+            !memory_config.is_sharded(),
+        "{} must use INTERLEAVED memory with DRAM or L1 storage; sharded inputs are unsupported",
+        tensor_name);
+}
+
 void validate_rank_one_tensor(const Tensor& tensor, const char* tensor_name) {
     TT_FATAL(tensor.storage_type() == StorageType::DEVICE, "{} must be a device tensor", tensor_name);
     TT_FATAL(
@@ -768,7 +800,7 @@ void validate_rank_one_tensor(const Tensor& tensor, const char* tensor_name) {
         "{} length {} exceeds the device uint32 range",
         tensor_name,
         tensor.logical_shape()[0]);
-    validate_output_memory_config(tensor.memory_config(), tensor_name);
+    validate_input_memory_config(tensor.memory_config(), tensor_name);
 
     const uint64_t required_bytes = static_cast<uint64_t>(tensor.logical_shape()[0]) * sizeof(float);
     TT_FATAL(
@@ -796,6 +828,7 @@ void validate_preallocated_output(
     const tt::tt_metal::distributed::MeshDevice* expected_device,
     const char* output_name) {
     validate_rank_one_tensor(output, output_name);
+    validate_output_memory_config(output.memory_config(), output_name);
     TT_FATAL(output.device() == expected_device, "{} must be on the same device as the inputs", output_name);
     TT_FATAL(
         output.tensor_spec() == expected_spec,
@@ -855,8 +888,8 @@ template <typename Scheme>
         "LWT padded input length exceeds the device signed-index range");
 
     const uint32_t max_cores = core_limit(mesh_device);
-    const uint32_t signal_budget_bytes = l1_signal_budget_bytes();
     const ArchitecturePolicy architecture_policy = make_architecture_policy(mesh_device.arch());
+    const uint32_t signal_budget_bytes = l1_signal_budget_bytes(mesh_device, architecture_policy.l1_scratch_bytes);
     const std::optional<WorkspaceLayout> workspace_override = workspace_layout_override();
     const WorkspaceLayout initial_layout = workspace_override.value_or(WorkspaceLayout::kRowMajor);
     LwtExecutionPlan plan =
@@ -869,7 +902,7 @@ template <typename Scheme>
         plan.workspace_elements,
         plan.max_workspace_elements,
         architecture_policy.l1_scratch_bytes,
-        mesh_device.l1_size_per_core()));
+        available_static_l1_bytes(mesh_device)));
     return plan;
 }
 
@@ -885,14 +918,14 @@ template <typename Scheme>
     IlwtExecutionPlan plan = make_ilwt_execution_plan(
         make_inverse_lifting_plan<Scheme>(original_length, coefficient_length, boundary_mode),
         core_limit(mesh_device),
-        l1_signal_budget_bytes(),
+        l1_signal_budget_bytes(mesh_device, architecture_policy.l1_scratch_bytes),
         architecture_policy.ilwt_layout,
         architecture_policy.final_interleave_direct);
     static_cast<void>(make_l1_accounting(
         plan.workspace_elements,
         plan.max_workspace_elements,
         architecture_policy.l1_scratch_bytes,
-        mesh_device.l1_size_per_core()));
+        available_static_l1_bytes(mesh_device)));
     return plan;
 }
 

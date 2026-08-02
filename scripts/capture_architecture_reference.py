@@ -11,9 +11,7 @@ from typing import Any
 
 import numpy as np
 import pywt
-
 from runtime_checks import parse_runtime_architecture
-
 
 FORMAT_VERSION = 1
 
@@ -59,9 +57,7 @@ def run_device(command: list[str], layout: str) -> str:
     )
     output = result.stdout + result.stderr
     if result.returncode != 0:
-        raise RuntimeError(
-            f"device command failed with exit code {result.returncode}:\n{output}"
-        )
+        raise RuntimeError(f"device command failed with exit code {result.returncode}:\n{output}")
     return output
 
 
@@ -71,8 +67,7 @@ def generated_inputs(
     generator = np.random.Generator(np.random.PCG64(seed))
     signal = generator.uniform(-1.0, 1.0, size=length).astype(np.float32)
     approximation, detail = (
-        values.astype(np.float32)
-        for values in pywt.dwt(signal, wavelet, mode=boundary_mode)
+        values.astype(np.float32) for values in pywt.dwt(signal, wavelet, mode=boundary_mode)
     )
     return signal, approximation, detail
 
@@ -113,9 +108,7 @@ def capture(args: argparse.Namespace) -> int:
         seed = args.seed
         length = args.length
         boundary_mode = args.boundary_mode
-        signal, approximation, detail = generated_inputs(
-            wavelet, seed, length, boundary_mode
-        )
+        signal, approximation, detail = generated_inputs(wavelet, seed, length, boundary_mode)
 
     with tempfile.TemporaryDirectory(prefix="ttwv-arch-capture-") as temporary:
         temporary_path = Path(temporary)
@@ -155,13 +148,8 @@ def capture(args: argparse.Namespace) -> int:
 
     detected_forward = parse_runtime_architecture(forward_output)
     detected_inverse = parse_runtime_architecture(inverse_output)
-    expected_architecture = (
-        "wormhole_b0" if args.architecture == "wormhole" else args.architecture
-    )
-    if (
-        detected_forward != expected_architecture
-        or detected_inverse != expected_architecture
-    ):
+    expected_architecture = "wormhole_b0" if args.architecture == "wormhole" else args.architecture
+    if detected_forward != expected_architecture or detected_inverse != expected_architecture:
         raise RuntimeError(
             "capture label does not match hardware: "
             f"label={expected_architecture}, forward={detected_forward}, inverse={detected_inverse}"
@@ -209,9 +197,7 @@ def capture(args: argparse.Namespace) -> int:
     return 0
 
 
-def compare_array(
-    label: str, reference_bits: list[str], candidate_bits: list[str]
-) -> bool:
+def compare_array(label: str, reference_bits: list[str], candidate_bits: list[str]) -> bool:
     reference = bits_float32(reference_bits)
     candidate = bits_float32(candidate_bits)
     if reference.shape != candidate.shape:
@@ -223,8 +209,7 @@ def compare_array(
     finite_pair = np.isfinite(reference) & np.isfinite(candidate)
     absolute = np.full(reference.shape, np.nan, dtype=np.float64)
     absolute[finite_pair] = np.abs(
-        candidate[finite_pair].astype(np.float64)
-        - reference[finite_pair].astype(np.float64)
+        candidate[finite_pair].astype(np.float64) - reference[finite_pair].astype(np.float64)
     )
     denominator = np.abs(reference.astype(np.float64))
     relative = np.full(reference.shape, np.nan, dtype=np.float64)
@@ -312,9 +297,7 @@ def compare(args: argparse.Namespace) -> int:
         "ilwt_signal_bits",
     ):
         output_match = (
-            compare_array(
-                field, reference["outputs"][field], candidate["outputs"][field]
-            )
+            compare_array(field, reference["outputs"][field], candidate["outputs"][field])
             and output_match
         )
 
@@ -323,11 +306,7 @@ def compare(args: argparse.Namespace) -> int:
     print(f"metadata_result: {'PASS' if metadata_match else 'FAIL'}")
     print(f"identical_inputs_result: {'PASS' if input_match else 'FAIL'}")
     print(f"bitwise_output_result: {'PASS' if output_match else 'FAIL'}")
-    return (
-        0
-        if metadata_match and input_match and (output_match or args.allow_differences)
-        else 1
-    )
+    return 0 if metadata_match and input_match and (output_match or args.allow_differences) else 1
 
 
 def parse_args() -> argparse.Namespace:
@@ -337,9 +316,7 @@ def parse_args() -> argparse.Namespace:
 
     capture_parser = subparsers.add_parser("capture")
     capture_parser.add_argument("--binary", type=Path, default=root / "build" / "lwt")
-    capture_parser.add_argument(
-        "--architecture", choices=["wormhole", "blackhole"], required=True
-    )
+    capture_parser.add_argument("--architecture", choices=["wormhole", "blackhole"], required=True)
     capture_parser.add_argument("--wavelet", default="bior3.9")
     capture_parser.add_argument("--seed", type=int, default=20260719)
     capture_parser.add_argument("--length", type=int, default=3073)

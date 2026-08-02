@@ -62,8 +62,8 @@ struct SmoothIndexI32 {
     bool affine{false};
 };
 
-[[nodiscard]] TTWV_EXTENSION_ALWI uint32_t extension_positive_mod_i32(
-    const int32_t index, const uint32_t period) noexcept {
+[[nodiscard]] TTWV_EXTENSION_ALWI uint32_t
+extension_positive_mod_i32(const int32_t index, const uint32_t period) noexcept {
     if (index >= 0) {
         return static_cast<uint32_t>(index) % period;
     }
@@ -72,8 +72,8 @@ struct SmoothIndexI32 {
     return tail == 0 ? 0U : period - tail;
 }
 
-[[nodiscard]] TTWV_EXTENSION_ALWI uint32_t make_symmetric_index_i32(
-    const int32_t index, const uint32_t length) noexcept {
+[[nodiscard]] TTWV_EXTENSION_ALWI uint32_t
+make_symmetric_index_i32(const int32_t index, const uint32_t length) noexcept {
     if (index >= 0 && static_cast<uint32_t>(index) < length) {
         return static_cast<uint32_t>(index);
     }
@@ -86,12 +86,11 @@ struct SmoothIndexI32 {
     if (phase < 0) {
         phase += period;
     }
-    return static_cast<uint32_t>(
-        phase < signed_length ? phase : period - 1 - phase);
+    return static_cast<uint32_t>(phase < signed_length ? phase : period - 1 - phase);
 }
 
-[[nodiscard]] TTWV_EXTENSION_ALWI SignedExtensionPeriod decompose_extension_period(
-    const int64_t index, const uint64_t period) noexcept {
+[[nodiscard]] TTWV_EXTENSION_ALWI SignedExtensionPeriod
+decompose_extension_period(const int64_t index, const uint64_t period) noexcept {
     if (period == 0) {
         return {};
     }
@@ -108,14 +107,13 @@ struct SmoothIndexI32 {
     };
 }
 
-[[nodiscard]] TTWV_EXTENSION_ALWI uint32_t extension_positive_mod(
-    const int64_t index, const uint32_t length) noexcept {
+[[nodiscard]] TTWV_EXTENSION_ALWI uint32_t extension_positive_mod(const int64_t index, const uint32_t length) noexcept {
     return static_cast<uint32_t>(decompose_extension_period(index, length).remainder);
 }
 
 template <BoundaryMode Mode>
-[[nodiscard]] TTWV_EXTENSION_ALWI ExtendedIndex make_extended_index(
-    const int64_t index, const uint32_t length) noexcept {
+[[nodiscard]] TTWV_EXTENSION_ALWI ExtendedIndex
+make_extended_index(const int64_t index, const uint32_t length) noexcept {
     static_assert(is_supported_lwt_boundary_mode(Mode), "Unsupported signal-extension mode");
 
     if (length == 0) {
@@ -144,8 +142,7 @@ template <BoundaryMode Mode>
         const uint64_t period = 2U * static_cast<uint64_t>(length);
         const uint64_t phase = decompose_extension_period(index, period).remainder;
         return ExtendedIndex{
-            .source_index =
-                phase < length ? static_cast<uint32_t>(phase) : static_cast<uint32_t>(period - 1U - phase),
+            .source_index = phase < length ? static_cast<uint32_t>(phase) : static_cast<uint32_t>(period - 1U - phase),
             .operation = ExtensionOperation::kSample,
         };
     } else if constexpr (Mode == BoundaryMode::kAntisymmetric) {
@@ -184,9 +181,8 @@ template <BoundaryMode Mode>
             };
         }
         const bool left = index < 0;
-        const uint64_t distance =
-            left ? static_cast<uint64_t>(-(index + 1)) + 1U
-                 : static_cast<uint64_t>(index) - static_cast<uint64_t>(length - 1U);
+        const uint64_t distance = left ? static_cast<uint64_t>(-(index + 1)) + 1U
+                                       : static_cast<uint64_t>(index) - static_cast<uint64_t>(length - 1U);
         return ExtendedIndex{
             .source_index = left ? 0U : length - 1U,
             .auxiliary_index = left ? 1U : length - 2U,
@@ -204,8 +200,7 @@ template <BoundaryMode Mode>
         const uint64_t period = 2U * last;
         const uint64_t phase = decompose_extension_period(index, period).remainder;
         return ExtendedIndex{
-            .source_index = phase <= last ? static_cast<uint32_t>(phase)
-                                          : static_cast<uint32_t>(period - phase),
+            .source_index = phase <= last ? static_cast<uint32_t>(phase) : static_cast<uint32_t>(period - phase),
             .operation = ExtensionOperation::kSample,
         };
     } else {
@@ -221,8 +216,8 @@ template <BoundaryMode Mode>
         const SignedExtensionPeriod mapped = decompose_extension_period(index, period);
         const bool reflected = mapped.remainder > last;
         return ExtendedIndex{
-            .source_index = reflected ? static_cast<uint32_t>(period - mapped.remainder)
-                                      : static_cast<uint32_t>(mapped.remainder),
+            .source_index =
+                reflected ? static_cast<uint32_t>(period - mapped.remainder) : static_cast<uint32_t>(mapped.remainder),
             .period_quotient = mapped.quotient,
             .operation = ExtensionOperation::kAntireflect,
             .reflected = reflected,
@@ -230,8 +225,8 @@ template <BoundaryMode Mode>
     }
 }
 
-[[nodiscard]] inline __attribute__((noinline)) AntireflectIndexI32 make_antireflect_index_i32(
-    const int32_t index, const uint32_t length) noexcept {
+[[nodiscard]] inline __attribute__((noinline)) AntireflectIndexI32
+make_antireflect_index_i32(const int32_t index, const uint32_t length) noexcept {
     if (length == 0) {
         return {};
     }
@@ -274,8 +269,8 @@ template <BoundaryMode Mode>
     };
 }
 
-[[nodiscard]] inline __attribute__((noinline)) SmoothIndexI32 make_smooth_index_i32(
-    const int32_t index, const uint32_t length) noexcept {
+[[nodiscard]] inline __attribute__((noinline)) SmoothIndexI32
+make_smooth_index_i32(const int32_t index, const uint32_t length) noexcept {
     if (length == 0) {
         return {};
     }
@@ -291,14 +286,13 @@ template <BoundaryMode Mode>
     return SmoothIndexI32{
         .source_index = left ? 0U : length - 1U,
         .auxiliary_index = left ? 1U : length - 2U,
-        .distance = left ? 0U - static_cast<uint32_t>(index)
-                         : static_cast<uint32_t>(index) - (length - 1U),
+        .distance = left ? 0U - static_cast<uint32_t>(index) : static_cast<uint32_t>(index) - (length - 1U),
         .affine = true,
     };
 }
 
-[[nodiscard]] TTWV_EXTENSION_ALWI ExtendedIndex make_extended_index(
-    const BoundaryMode mode, const int64_t index, const uint32_t length) noexcept {
+[[nodiscard]] TTWV_EXTENSION_ALWI ExtendedIndex
+make_extended_index(const BoundaryMode mode, const int64_t index, const uint32_t length) noexcept {
     switch (mode) {
         case BoundaryMode::kZero: return make_extended_index<BoundaryMode::kZero>(index, length);
         case BoundaryMode::kConstant: return make_extended_index<BoundaryMode::kConstant>(index, length);
@@ -350,8 +344,8 @@ template <BoundaryMode Mode, typename SourceReader>
     if constexpr (Mode == BoundaryMode::kZero) {
         return extended.operation == ExtensionOperation::kZero ? 0.0F : read_source(extended.source_index);
     } else if constexpr (
-        Mode == BoundaryMode::kConstant || Mode == BoundaryMode::kSymmetric ||
-        Mode == BoundaryMode::kReflect || Mode == BoundaryMode::kPeriodic) {
+        Mode == BoundaryMode::kConstant || Mode == BoundaryMode::kSymmetric || Mode == BoundaryMode::kReflect ||
+        Mode == BoundaryMode::kPeriodic) {
         return read_source(extended.source_index);
     } else if constexpr (Mode == BoundaryMode::kAntisymmetric) {
         const float source = read_source(extended.source_index);
@@ -406,9 +400,7 @@ TTWV_EXTENSION_ALWI void visit_extended_source_indices(
     switch (extended.operation) {
         case ExtensionOperation::kZero: return;
         case ExtensionOperation::kSample:
-        case ExtensionOperation::kNegatedSample:
-            consume(extended.source_index);
-            return;
+        case ExtensionOperation::kNegatedSample: consume(extended.source_index); return;
         case ExtensionOperation::kSmooth:
             consume(extended.source_index);
             consume(extended.auxiliary_index);
