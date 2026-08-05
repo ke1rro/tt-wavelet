@@ -63,8 +63,7 @@ ALWI void write_reconstructed_signal(
             }
             noc_async_write(
                 staging_base + batch_stick * ttnn::operations::wavelet::device_protocol::kStickBytes,
-                dst.get_noc_addr(
-                    output_page, (first_stick + local_stick) * ttnn::operations::wavelet::device_protocol::kStickBytes),
+                dst.get_noc_addr(output_page + first_stick + local_stick),
                 ttnn::operations::wavelet::device_protocol::kStickBytes);
         }
         noc_async_write_barrier();
@@ -167,9 +166,7 @@ ALWI void write_direct_interleaved_signal(
                 }
                 noc_async_write(
                     staging_base + batch_stick * ttnn::operations::wavelet::device_protocol::kStickBytes,
-                    dst.get_noc_addr(
-                        output_page,
-                        (first_stick + local_stick) * ttnn::operations::wavelet::device_protocol::kStickBytes),
+                    dst.get_noc_addr(output_page + first_stick + local_stick),
                     ttnn::operations::wavelet::device_protocol::kStickBytes);
             }
             noc_async_write_barrier();

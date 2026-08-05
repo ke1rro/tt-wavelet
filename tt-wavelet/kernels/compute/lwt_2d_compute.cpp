@@ -2,13 +2,13 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+#include <array>
 #include <cstdint>
 
 // clang-format off
 #include "api/compute/common.h"
 #include "api/compute/eltwise_unary/eltwise_unary.h"
 #include "api/compute/tile_move_copy.h"
-#include "tt_metal/fabric/hw/inc/edm_fabric/compile_time_arg_tmp.hpp"
 
 #include "../../tt_wavelet/include/device_protocol/lwt_2d_config.hpp"
 #include "../../tt_wavelet/include/lifting/static_scheme.hpp"
@@ -33,6 +33,16 @@ using Scheme = TTWV_LWT_2D_SCHEME_TYPE;
 constexpr bool kInverse = true;
 #else
 constexpr bool kInverse = false;
+#endif
+
+#if defined(TTWV_ILWT_2D) && defined(ARCH_WORMHOLE)
+constexpr bool kCompactInverseCodegen = true;
+#define TTWV_LWT_2D_STENCIL_ATTRIBUTES __attribute__((noinline, noclone, optimize("Os")))
+#define TTWV_LWT_2D_AXIS_ATTRIBUTES __attribute__((noinline, noclone))
+#else
+constexpr bool kCompactInverseCodegen = false;
+#define TTWV_LWT_2D_STENCIL_ATTRIBUTES __attribute__((noinline))
+#define TTWV_LWT_2D_AXIS_ATTRIBUTES __attribute__((noinline))
 #endif
 
 template <uint32_t Index = 0>
@@ -147,20 +157,42 @@ __attribute__((noinline)) void run_scale(
     }
 }
 
-template <
-    uint8_t K,
-    bool Vertical,
-    bool InlineTerminalScale,
-    bool ScaleSource,
-    bool ScaleBase,
-    uint32_t SourceScaleBits,
-    uint32_t BaseScaleBits>
-__attribute__((noinline)) void run_stencil(
+struct CompactInverseScalePolicy {
+    uint32_t source_scale_bits;
+    uint32_t base_scale_bits;
+
+    inline void apply(const uint32_t source0, const uint32_t source1, const uint32_t base) const {
+        if (source_scale_bits != 0) {
+            scale_tile(source0, source_scale_bits);
+            scale_tile(source1, source_scale_bits);
+        }
+        if (base_scale_bits != 0) {
+            scale_tile(base, base_scale_bits);
+        }
+    }
+};
+
+template <bool ScaleSource, bool ScaleBase, uint32_t SourceScaleBits, uint32_t BaseScaleBits>
+struct SpecializedScalePolicy {
+    inline void apply(const uint32_t source0, const uint32_t source1, const uint32_t base) const {
+        if constexpr (ScaleSource) {
+            scale_tile(source0, SourceScaleBits);
+            scale_tile(source1, SourceScaleBits);
+        }
+        if constexpr (ScaleBase) {
+            scale_tile(base, BaseScaleBits);
+        }
+    }
+};
+
+template <uint8_t K, bool Vertical, bool InlineTerminalScale, typename ScalePolicy>
+TTWV_LWT_2D_STENCIL_ATTRIBUTES void run_stencil(
     const uint32_t tile_count,
     const uint32_t cb_source0,
     const uint32_t cb_source1,
     const uint32_t cb_base,
     const uint32_t cb_output,
+    const ScalePolicy scale_policy,
     const std::array<uint32_t, K> coefficients) {
     for (uint32_t tile = 0; tile < tile_count; ++tile) {
         tile_regs_acquire();
@@ -179,13 +211,7 @@ __attribute__((noinline)) void run_stencil(
         copy_tile(cb_base, 0, 2);
         cb_pop_front(cb_base, 1);
 
-        if constexpr (ScaleSource) {
-            scale_tile(0, SourceScaleBits);
-            scale_tile(1, SourceScaleBits);
-        }
-        if constexpr (ScaleBase) {
-            scale_tile(2, BaseScaleBits);
-        }
+        scale_policy.apply(0, 1, 2);
         if constexpr (Vertical) {
             vstencil_init();
             vstencil_tile<K>(coefficients, 0, 1, 3, 2);
@@ -235,8 +261,28 @@ inline void run_step(
             run_scale(tile_count, cb_source0, cb_output, Step::coeff_bits[0]);
         }
     } else {
-        run_stencil<Step::k, Vertical, InlineTerminalScale, ScaleSource, ScaleBase, SourceScaleBits, BaseScaleBits>(
-            tile_count, cb_source0, cb_source1, cb_base, cb_output, Step::coeff_bits);
+        if constexpr (kCompactInverseCodegen) {
+            run_stencil<Step::k, Vertical, InlineTerminalScale>(
+                tile_count,
+                cb_source0,
+                cb_source1,
+                cb_base,
+                cb_output,
+                CompactInverseScalePolicy{
+                    .source_scale_bits = ScaleSource ? SourceScaleBits : 0,
+                    .base_scale_bits = ScaleBase ? BaseScaleBits : 0,
+                },
+                Step::coeff_bits);
+        } else {
+            run_stencil<Step::k, Vertical, InlineTerminalScale>(
+                tile_count,
+                cb_source0,
+                cb_source1,
+                cb_base,
+                cb_output,
+                SpecializedScalePolicy<ScaleSource, ScaleBase, SourceScaleBits, BaseScaleBits>{},
+                Step::coeff_bits);
+        }
     }
 }
 
@@ -247,7 +293,7 @@ template <
     uint32_t EvenScaleBits,
     uint32_t OddScaleBits,
     size_t StepIndex = 0>
-__attribute__((noinline)) void run_axis(
+TTWV_LWT_2D_AXIS_ATTRIBUTES void run_axis(
     const uint32_t runtime_arg_base,
     const uint32_t route_offset,
     const uint32_t cb_source0,
@@ -329,3 +375,6 @@ void kernel_main() {
         }
     }
 }
+
+#undef TTWV_LWT_2D_STENCIL_ATTRIBUTES
+#undef TTWV_LWT_2D_AXIS_ATTRIBUTES

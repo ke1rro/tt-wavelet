@@ -117,6 +117,25 @@ struct Logical1DShape {
 
 [[nodiscard]] Logical1DShape logical_1d_shape(const Tensor& tensor, const char* tensor_name) {
     const auto& shape = tensor.logical_shape();
+    // Stick-native shape: [S, 32] or [B, 1, S, 32] where S = ceil(N/32).
+    // The logical signal length N is stored in the tensor metadata; here we
+    // reconstruct it from the stick shape since the last dimension is always
+    // kStickWidth.  For tensors produced by output_spec_1d the physical
+    // stick count may exceed the minimum needed (the last stick contains
+    // zero-padded elements), so we report the full capacity.
+    if (shape.rank() == 2) {
+        TT_FATAL(
+            shape[1] == kStickWidth,
+            "{} stick-native rank-2 shape requires W == {}, got {}",
+            tensor_name,
+            kStickWidth,
+            shape[1]);
+        return Logical1DShape{
+            .batch_count = 1,
+            .length = checked_u32(static_cast<uint64_t>(shape[0]) * shape[1], tensor_name),
+            .rank_four = false,
+        };
+    }
     if (shape.rank() == 1) {
         return Logical1DShape{
             .batch_count = 1,
@@ -124,9 +143,21 @@ struct Logical1DShape {
             .rank_four = false,
         };
     }
-    TT_FATAL(shape.rank() == 4, "{} must have shape [W] or [B,1,1,W], got rank {}", tensor_name, shape.rank());
+    TT_FATAL(
+        shape.rank() == 4,
+        "{} must have shape [S,32], [W], [B,1,S,32], or [B,1,1,W], got rank {}",
+        tensor_name,
+        shape.rank());
     TT_FATAL(shape[0] > 0, "{} batch dimension must be positive", tensor_name);
     TT_FATAL(shape[1] == 1, "{} requires C == 1, got {}", tensor_name, shape[1]);
+    if (shape[3] == kStickWidth && shape[2] > 1) {
+        // Stick-native rank-4: [B, 1, S, 32]
+        return Logical1DShape{
+            .batch_count = checked_u32(shape[0], "1D wavelet batch count"),
+            .length = checked_u32(static_cast<uint64_t>(shape[2]) * shape[3], tensor_name),
+            .rank_four = true,
+        };
+    }
     TT_FATAL(shape[2] == 1, "{} requires H == 1, got {}", tensor_name, shape[2]);
     return Logical1DShape{
         .batch_count = checked_u32(shape[0], "1D wavelet batch count"),
@@ -996,19 +1027,26 @@ void validate_1d_tensor(const Tensor& tensor, const char* tensor_name) {
     TT_FATAL(shape.length > 0, "{} must be non-empty", tensor_name);
     validate_input_memory_config(tensor.memory_config(), tensor_name);
 
-    const uint64_t required_bytes = static_cast<uint64_t>(shape.batch_count) * shape.length * sizeof(float);
+    // With stick-native shapes the physical buffer includes zero-padded tail
+    // elements, so use the physical volume rather than logical length.
+    const uint64_t physical_bytes = static_cast<uint64_t>(tensor.physical_volume()) * sizeof(float);
     TT_FATAL(
-        tensor.buffer()->size() >= required_bytes,
-        "{} physical buffer has {} bytes but the logical signal requires at least {} bytes",
+        tensor.buffer()->size() >= physical_bytes,
+        "{} physical buffer has {} bytes but the physical volume requires at least {} bytes",
         tensor_name,
         tensor.buffer()->size(),
-        required_bytes);
+        physical_bytes);
     static_cast<void>(make_architecture_policy(tensor.device()->arch()));
 }
 
 [[nodiscard]] tt::tt_metal::TensorSpec output_spec_1d(
     const Logical1DShape& input_shape, const uint32_t length, const MemoryConfig& memory_config) {
-    const Shape output_shape = input_shape.rank_four ? Shape({input_shape.batch_count, 1, 1, length}) : Shape({length});
+    // Use stick-native shape so each DRAM page is exactly kStickWidth * 4 = 128
+    // bytes.  This reproduces the standalone buffer geometry and enables
+    // page-per-stick addressing with full DRAM bank interleaving.
+    const uint32_t stick_count = checked_u32(ceil_div(length, kStickWidth), "1D wavelet output stick count");
+    const Shape output_shape =
+        input_shape.rank_four ? Shape({input_shape.batch_count, 1, stick_count, kStickWidth}) : Shape({stick_count, kStickWidth});
     return tt::tt_metal::TensorSpec(
         output_shape,
         tt::tt_metal::TensorLayout(

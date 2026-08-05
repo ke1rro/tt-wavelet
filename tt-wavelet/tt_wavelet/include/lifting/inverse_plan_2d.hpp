@@ -334,7 +334,11 @@ inline void append_axis_routes(
 }  // namespace inverse_2d_detail
 
 [[nodiscard]] inline Ilwt2DExecutionPlan make_ilwt_2d_execution_plan(
-    LiftingInversePlan y_plan, LiftingInversePlan x_plan, const uint32_t core_limit, const uint64_t l1_budget_bytes) {
+    LiftingInversePlan y_plan,
+    LiftingInversePlan x_plan,
+    const uint32_t core_limit,
+    const uint64_t l1_budget_bytes,
+    const uint64_t inverse_coordination_penalty_cycles_per_core = 0) {
     TT_FATAL(core_limit > 0, "2D ILWT requires at least one worker core");
     TT_FATAL(y_plan.original_length > 0 && x_plan.original_length > 0, "2D ILWT output shape must be positive");
 
@@ -370,7 +374,8 @@ inline void append_axis_routes(
                     static_cast<uint32_t>(std::min(chunks.size(), static_cast<size_t>(core_limit))),
                     y_plan.forward_trace,
                     x_plan.forward_trace,
-                    true),
+                    true,
+                    inverse_coordination_penalty_cycles_per_core),
                 .chunks = std::move(chunks),
             };
             if (!found || plan_2d_detail::is_better_candidate(candidate, best, true)) {
@@ -438,7 +443,8 @@ template <typename Scheme>
     const size_t output_width,
     const uint32_t core_limit,
     const uint64_t l1_budget_bytes,
-    const BoundaryMode boundary_mode = BoundaryMode::kSymmetric) {
+    const BoundaryMode boundary_mode = BoundaryMode::kSymmetric,
+    const uint64_t inverse_coordination_penalty_cycles_per_core = 0) {
     const SignalBuffer y_signal{
         .length = output_height, .stick_width = kStickWidth, .element_size_bytes = sizeof(float)};
     const SignalBuffer x_signal{
@@ -459,7 +465,8 @@ template <typename Scheme>
             .coefficient_length = x_coefficients,
         },
         core_limit,
-        l1_budget_bytes);
+        l1_budget_bytes,
+        inverse_coordination_penalty_cycles_per_core);
 }
 
 [[nodiscard]] inline std::vector<uint32_t> build_ilwt_2d_chunk_config_words(const Ilwt2DExecutionPlan& plan) {

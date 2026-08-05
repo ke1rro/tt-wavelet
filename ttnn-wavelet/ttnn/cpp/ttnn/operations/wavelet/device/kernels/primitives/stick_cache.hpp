@@ -43,12 +43,11 @@ ALWI bool cache_contains_stick(const StickReadCache& cache, const uint32_t sourc
 
 template <typename SrcAccessor>
 ALWI void cache_source_sticks(
-    const SrcAccessor& src, StickReadCache& cache, const uint32_t source_stick, const uint32_t source_length) {
+    const SrcAccessor& src, StickReadCache& cache, const uint32_t source_stick, const uint32_t source_stick_count) {
     if (cache.valid) {
         cb_pop_front(cache.cb_id, cache.cached_stick_count);
     }
 
-    const uint32_t source_stick_count = (source_length + cache.stick_width - 1U) / cache.stick_width;
     const uint32_t available_sticks = source_stick_count - source_stick;
     const uint32_t reserve_sticks = min_u32(cache.stick_capacity, available_sticks);
 
@@ -56,23 +55,8 @@ ALWI void cache_source_sticks(
     const uint32_t cache_l1_addr = get_write_ptr(cache.cb_id);
 #pragma GCC unroll 8
     for (uint32_t i = 0; i < reserve_sticks; ++i) {
-        const uint32_t stick = source_stick + i;
-        const uint32_t stick_begin = stick * cache.stick_width;
-        const uint32_t valid_elements = min_u32(cache.stick_width, source_length - stick_begin);
-        // Rank-1 TTNN row-major tensors use one exact-size page.  The final
-        // logical stick therefore has no guaranteed 32-byte tail padding;
-        // read only the bytes owned by the tensor and leave the zero-filled
-        // remainder of the cache stick untouched.
-        const uint32_t read_bytes = valid_elements * sizeof(float);
-        auto* cache_words = reinterpret_cast<volatile tt_l1_ptr uint32_t*>(cache_l1_addr + i * cache.stick_nbytes);
-#pragma GCC unroll 8
-        for (uint32_t word = 0; word < cache.stick_nbytes / sizeof(uint32_t); ++word) {
-            cache_words[word] = 0;
-        }
-        noc_async_read(
-            src.get_noc_addr(cache.source_page, stick * cache.stick_nbytes),
-            cache_l1_addr + i * cache.stick_nbytes,
-            read_bytes);
+        const uint64_t src_noc_addr = src.get_noc_addr(cache.source_page + source_stick + i);
+        noc_async_read(src_noc_addr, cache_l1_addr + i * cache.stick_nbytes, cache.stick_nbytes);
     }
     noc_async_read_barrier();
     cb_push_back(cache.cb_id, reserve_sticks);
@@ -88,8 +72,10 @@ ALWI float read_source_value(
     const SrcAccessor& src, StickReadCache& cache, const uint32_t source_index, const uint32_t source_length) {
     const uint32_t source_stick = source_index / cache.stick_width;
     const uint32_t source_lane = source_index % cache.stick_width;
+    const uint32_t source_stick_count = (source_length + cache.stick_width - 1) / cache.stick_width;
+
     if (!cache_contains_stick(cache, source_stick)) {
-        cache_source_sticks(src, cache, source_stick, source_length);
+        cache_source_sticks(src, cache, source_stick, source_stick_count);
     }
 
     const auto* cached_values = reinterpret_cast<const float*>(get_read_ptr(cache.cb_id));

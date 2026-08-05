@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <optional>
 #include <tt_stl/assert.hpp>
 #include <umd/device/types/arch.hpp>
@@ -14,11 +15,15 @@ struct ArchitecturePolicy {
     bool inverse_scale_inline{true};
     bool final_interleave_direct{false};
     bool compact_2d_reader{false};
+    uint64_t inverse_2d_coordination_penalty_cycles_per_core{0};
     uint32_t l1_scratch_bytes{0};
 };
 
 [[nodiscard]] inline ArchitecturePolicy make_architecture_policy(
     const tt::ARCH architecture, const std::optional<WorkspaceLayout> ilwt_layout_override = std::nullopt) {
+    // Device measurements show that Wormhole benefits from 70--72 inverse-2D workers, while
+    // Blackhole pays a repeatable coordination cost above 64. This is a planner cost, not a core cap.
+    constexpr uint64_t kBlackholeInverse2DCoordinationPenaltyCyclesPerCore = 6'000;
     switch (architecture) {
         case tt::ARCH::WORMHOLE_B0:
             return ArchitecturePolicy{
@@ -27,6 +32,7 @@ struct ArchitecturePolicy {
                 .inverse_scale_inline = true,
                 .final_interleave_direct = false,
                 .compact_2d_reader = true,
+                .inverse_2d_coordination_penalty_cycles_per_core = 0,
                 .l1_scratch_bytes = 0,
             };
         case tt::ARCH::BLACKHOLE: {
@@ -37,6 +43,8 @@ struct ArchitecturePolicy {
                 .inverse_scale_inline = true,
                 .final_interleave_direct = layout == WorkspaceLayout::kTileNative,
                 .compact_2d_reader = false,
+                .inverse_2d_coordination_penalty_cycles_per_core =
+                    kBlackholeInverse2DCoordinationPenaltyCyclesPerCore,
                 .l1_scratch_bytes = 0,
             };
         }

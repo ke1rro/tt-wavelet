@@ -820,7 +820,8 @@ enum class AlignmentCostClass : uint8_t {
     const uint32_t active_core_count,
     const LiftingForwardPlan& y_plan,
     const LiftingForwardPlan& x_plan,
-    const bool inverse = false) {
+    const bool inverse = false,
+    const uint64_t inverse_coordination_penalty_cycles_per_core = 0) {
     std::vector<uint64_t> chunk_costs;
     chunk_costs.reserve(chunks.size());
     for (const Lwt2DChunkPlan& chunk : chunks) {
@@ -839,11 +840,9 @@ enum class AlignmentCostClass : uint8_t {
         maximum = std::max(maximum, core_cycles);
         begin += count;
     }
-    if (inverse && active_core_count > 64) {
-        // Blackhole measurements show a repeatable coordination penalty once
-        // the inverse program expands beyond 64 workers. Wormhole exposes at
-        // most 64 workers, so this term is naturally inactive there.
-        maximum += static_cast<uint64_t>(active_core_count - 64) * 6'000;
+    if (inverse && inverse_coordination_penalty_cycles_per_core > 0 && active_core_count > 64) {
+        maximum +=
+            static_cast<uint64_t>(active_core_count - 64) * inverse_coordination_penalty_cycles_per_core;
     }
     return maximum;
 }

@@ -42,15 +42,16 @@ ALWI void write_dram_half_block(
     if (local_output_index >= output_length) {
         return;
     }
-
     constexpr uint32_t block_elements = ttnn::operations::wavelet::device_protocol::kLwtHalfStickElements;
     const uint32_t remaining = output_length - local_output_index;
     const uint32_t logical_block_elements = remaining < block_elements ? remaining : block_elements;
     const uint32_t destination_index = output_offset + local_output_index;
+    const uint32_t destination_stick = destination_index / ttnn::operations::wavelet::kStickWidth;
+    const uint32_t destination_lane = destination_index % ttnn::operations::wavelet::kStickWidth;
     const uint32_t source_offset = row * ttnn::operations::wavelet::device_protocol::kLwtHalfStickBytes;
     noc_async_write(
         tile_addr + source_offset,
-        dst.get_noc_addr(output_page, destination_index * sizeof(float)),
+        dst.get_noc_addr(output_page + destination_stick) + destination_lane * sizeof(float),
         logical_block_elements * sizeof(float));
 }
 

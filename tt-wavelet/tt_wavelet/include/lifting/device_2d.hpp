@@ -20,6 +20,7 @@
 #include "tt-metalium/mesh_device.hpp"
 #include "tt_wavelet/include/lifting/inverse_plan_2d.hpp"
 #include "tt_wavelet/include/lifting/plan_2d.hpp"
+#include "tt_wavelet/include/lifting/policy.hpp"
 #include "tt_wavelet/include/lifting/static_scheme.hpp"
 
 namespace ttwv {
@@ -161,8 +162,14 @@ template <typename Scheme>
     const uint32_t batch_count = 1) {
     TT_FATAL(batch_count > 0, "2D ILWT batch count must be positive");
     using InverseScheme = typename Scheme::inverse;
-    Ilwt2DExecutionPlan plan =
-        make_ilwt_2d_execution_plan<Scheme>(output_height, output_width, core_limit, 768 * 1024, boundary_mode);
+    const ArchitecturePolicy architecture_policy = make_architecture_policy(mesh_device.arch());
+    Ilwt2DExecutionPlan plan = make_ilwt_2d_execution_plan<Scheme>(
+        output_height,
+        output_width,
+        core_limit,
+        768 * 1024,
+        boundary_mode,
+        architecture_policy.inverse_2d_coordination_penalty_cycles_per_core);
     const size_t required_band_bytes =
         checked_shape_area_2d(plan.tiling.band.storage, "2D ILWT band storage") * sizeof(float);
     const std::array<const tt::tt_metal::Buffer*, device_protocol::kLwt2DBandCount> bands = {&ll, &lh, &hl, &hh};

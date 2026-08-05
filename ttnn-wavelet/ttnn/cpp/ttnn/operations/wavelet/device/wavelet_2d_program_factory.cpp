@@ -714,8 +714,14 @@ template <typename Scheme>
     const BoundaryMode boundary_mode) {
     const uint64_t l1_budget_bytes =
         std::min<uint64_t>(kL1SignalBudgetBytes2D, available_static_l1_bytes_2d(mesh_device));
-    Ilwt2DExecutionPlan plan =
-        make_ilwt_2d_execution_plan<Scheme>(height, width, core_limit_2d(mesh_device), l1_budget_bytes, boundary_mode);
+    const ArchitecturePolicy architecture_policy = make_architecture_policy(mesh_device.arch());
+    Ilwt2DExecutionPlan plan = make_ilwt_2d_execution_plan<Scheme>(
+        height,
+        width,
+        core_limit_2d(mesh_device),
+        l1_budget_bytes,
+        boundary_mode,
+        architecture_policy.inverse_2d_coordination_penalty_cycles_per_core);
     TT_FATAL(!plan.chunks.empty(), "2D ILWT requires at least one planned chunk");
     TT_FATAL(
         plan.output_height <= static_cast<size_t>(std::numeric_limits<int32_t>::max() / 2) &&
