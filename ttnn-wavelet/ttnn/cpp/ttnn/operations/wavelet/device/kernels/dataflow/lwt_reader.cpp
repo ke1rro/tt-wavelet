@@ -175,7 +175,8 @@ ALWI void initialize_lwt_streams(
     const uint32_t even_length,
     const uint32_t odd_begin,
     const uint32_t odd_length,
-    const uint32_t input_page) {
+    const uint32_t input_page,
+    const uint32_t input_page_size) {
     ttnn::operations::wavelet::kernels::primitives::StickReadCache input_cache{
         cb_input_cache,
         ttnn::operations::wavelet::device_protocol::kStickBytes,
@@ -184,7 +185,8 @@ ALWI void initialize_lwt_streams(
         ttnn::operations::wavelet::kernels::primitives::kInvalidStick,
         0,
         input_page,
-        false};
+        false,
+        input_page_size};
     auto* even_dst = reinterpret_cast<volatile tt_l1_ptr float*>(even_addr);
     auto* odd_dst = reinterpret_cast<volatile tt_l1_ptr float*>(odd_addr);
     uint32_t even_written = 0;
@@ -232,7 +234,8 @@ ALWI void initialize_inverse_stream(
     const uint32_t output_addr,
     const uint32_t output_length,
     const uint32_t cb_input_cache,
-    const uint32_t input_page) {
+    const uint32_t input_page,
+    const uint32_t input_page_size) {
     ttnn::operations::wavelet::kernels::primitives::StickReadCache input_cache{
         cb_input_cache,
         ttnn::operations::wavelet::device_protocol::kStickBytes,
@@ -241,7 +244,8 @@ ALWI void initialize_inverse_stream(
         ttnn::operations::wavelet::kernels::primitives::kInvalidStick,
         0,
         input_page,
-        false};
+        false,
+        input_page_size};
     auto* output = reinterpret_cast<volatile tt_l1_ptr float*>(output_addr);
     WorkspaceIndexCursor cursor(0);
     for (uint32_t index = 0; index < output_length; ++index) {
@@ -645,9 +649,17 @@ void kernel_main() {
                 initial_even_addr,
                 approximation_length,
                 cb_input_cache,
-                input_page);
+                input_page,
+                input_page_size);
             initialize_inverse_stream<tile_native_workspace>(
-                input1, coefficient_length, detail_begin, initial_odd_addr, detail_length, cb_input_cache, input_page);
+                input1,
+                coefficient_length,
+                detail_begin,
+                initial_odd_addr,
+                detail_length,
+                cb_input_cache,
+                input_page,
+                input_page_size);
         } else {
             const uint32_t input_length = input1_or_length;
             const uint32_t left_pad = input_length_or_left_pad;
@@ -668,7 +680,8 @@ void kernel_main() {
                 initial_even_length,
                 initial_odd_begin,
                 initial_odd_length,
-                input_page);
+                input_page,
+                input_page_size);
         }
 
         for (uint32_t route_index = 0; route_index < route_count; ++route_index) {
