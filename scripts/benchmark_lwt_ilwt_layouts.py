@@ -38,8 +38,10 @@ try:
     from tqdm import tqdm
 except ModuleNotFoundError as exc:
 
-    if VENV_PYTHON.exists() and Path(sys.executable).resolve() != VENV_PYTHON.resolve():
-        os.execv(str(VENV_PYTHON), [str(VENV_PYTHON), __file__, *sys.argv[1:]])
+    if "VENV_PYTHON" in os.environ:
+        venv_python = Path(os.environ["VENV_PYTHON"])
+        if venv_python.exists() and Path(sys.executable).resolve() != venv_python.resolve():
+            os.execv(str(venv_python), [str(venv_python), __file__, *sys.argv[1:]])
     raise ModuleNotFoundError(
         "Missing benchmark dependencies. Activate .venv or install numpy and PyWavelets."
     ) from exc

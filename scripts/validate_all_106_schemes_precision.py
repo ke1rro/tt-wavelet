@@ -33,9 +33,10 @@ from pathlib import Path
 import numpy as np
 
 # Ensure venv packages are available
-VENV_PYTHON = Path(os.environ.get("VENV_PYTHON", "/home/user/tt-wavelet/.venv/bin/python3"))
-if VENV_PYTHON.exists() and Path(sys.executable) != VENV_PYTHON:
-    os.execv(str(VENV_PYTHON), [str(VENV_PYTHON), __file__, *sys.argv[1:]])
+if "VENV_PYTHON" in os.environ:
+    venv_python = Path(os.environ["VENV_PYTHON"])
+    if venv_python.exists() and Path(sys.executable) != venv_python:
+        os.execv(str(venv_python), [str(venv_python), __file__, *sys.argv[1:]])
 
 try:
     import torch

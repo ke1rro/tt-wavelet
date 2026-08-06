@@ -20,6 +20,14 @@ PRECISION_DIR="$SCRIPT_DIR/benchmarks/precision"
 PERFORMANCE_DIR="$SCRIPT_DIR/benchmarks/performance"
 PLOTS_DIR="$PERFORMANCE_DIR/plots"
 
+if [[ -n "${PYTHON:-}" ]]; then
+  PYTHON_BIN="$PYTHON"
+elif [[ -x "$SCRIPT_DIR/.venv/bin/python3" ]] && "$SCRIPT_DIR/.venv/bin/python3" -c "import torch, ttnn" &>/dev/null; then
+  PYTHON_BIN="$SCRIPT_DIR/.venv/bin/python3"
+else
+  PYTHON_BIN="python3"
+fi
+
 mkdir -p "$PRECISION_DIR" "$PERFORMANCE_DIR" "$PLOTS_DIR"
 
 # Randomly select 1 compact, 1 medium, 1 large scheme, plus coif17 for 1D
@@ -47,14 +55,14 @@ echo "Selected 2D Schemes: ${PERF_SCHEMES_2D[*]}"
 if [[ "$IS_TEST_RUN" -eq 1 ]]; then
   echo "[Mode] TEST / VERIFICATION RUN"
   echo "--- Phase 1: Precision Test (1D) ---"
-  "$SCRIPT_DIR/scripts/set_env.sh" "$SCRIPT_DIR/.venv/bin/python3" "$SCRIPT_DIR/scripts/validate_all_106_schemes_precision.py" \
+  "$SCRIPT_DIR/scripts/set_env.sh" "$PYTHON_BIN" "$SCRIPT_DIR/scripts/validate_all_106_schemes_precision.py" \
     --schemes db1 bior3.9 \
     --boundary-modes symmetric zero \
     --output-json "$PRECISION_DIR/precision_results.json" \
     --output-tsv "$PRECISION_DIR/precision_results.tsv"
 
   echo "--- Phase 2: 1D Performance Benchmark (100k - 400k) ---"
-  "$SCRIPT_DIR/scripts/set_env.sh" "$SCRIPT_DIR/.venv/bin/python3" "$SCRIPT_DIR/scripts/benchmark_ttnn_vs_standalone_vs_pywt.py" \
+  "$SCRIPT_DIR/scripts/set_env.sh" "$PYTHON_BIN" "$SCRIPT_DIR/scripts/benchmark_ttnn_vs_standalone_vs_pywt.py" \
     --dim 1d \
     --backends ttnn standalone pywt \
     --schemes "${PERF_SCHEMES_1D[@]}" \
@@ -64,7 +72,7 @@ if [[ "$IS_TEST_RUN" -eq 1 ]]; then
     --output-dir "$PERFORMANCE_DIR"
 
   echo "--- Phase 3: 2D Performance Benchmark (256x256 - 512x512) ---"
-  "$SCRIPT_DIR/scripts/set_env.sh" "$SCRIPT_DIR/.venv/bin/python3" "$SCRIPT_DIR/scripts/benchmark_ttnn_vs_standalone_vs_pywt.py" \
+  "$SCRIPT_DIR/scripts/set_env.sh" "$PYTHON_BIN" "$SCRIPT_DIR/scripts/benchmark_ttnn_vs_standalone_vs_pywt.py" \
     --dim 2d \
     --backends ttnn standalone pywt \
     --schemes "${PERF_SCHEMES_2D[@]}" \
@@ -75,21 +83,21 @@ if [[ "$IS_TEST_RUN" -eq 1 ]]; then
 else
   echo "[Mode] FULL PRODUCTION SWEEP RUN"
   echo "--- Phase 1: Full Precision Test (All 106 schemes x 8 boundary modes) ---"
-  "$SCRIPT_DIR/scripts/set_env.sh" "$SCRIPT_DIR/.venv/bin/python3" "$SCRIPT_DIR/scripts/validate_all_106_schemes_precision.py" \
+  "$SCRIPT_DIR/scripts/set_env.sh" "$PYTHON_BIN" "$SCRIPT_DIR/scripts/validate_all_106_schemes_precision.py" \
     --output-json "$PRECISION_DIR/precision_results.json" \
     --output-tsv "$PRECISION_DIR/precision_results.tsv"
 
-  echo "--- Phase 2: 1D Performance Benchmark (4 schemes x 8 modes x 100k-1M) ---"
-  "$SCRIPT_DIR/scripts/set_env.sh" "$SCRIPT_DIR/.venv/bin/python3" "$SCRIPT_DIR/scripts/benchmark_ttnn_vs_standalone_vs_pywt.py" \
+  echo "--- Phase 2: 1D Performance Benchmark (4 schemes x 8 modes x 100k-1M, step 10k) ---"
+  "$SCRIPT_DIR/scripts/set_env.sh" "$PYTHON_BIN" "$SCRIPT_DIR/scripts/benchmark_ttnn_vs_standalone_vs_pywt.py" \
     --dim 1d \
     --backends ttnn standalone pywt \
     --schemes "${PERF_SCHEMES_1D[@]}" \
-    --length-start 100000 --length-stop 1000000 --length-step 300000 \
+    --length-start 100000 --length-stop 1000000 --length-step 10000 \
     --repeats 20 \
     --output-dir "$PERFORMANCE_DIR"
 
   echo "--- Phase 3: 2D Performance Benchmark (4 schemes x 8 modes x 256-1024) ---"
-  "$SCRIPT_DIR/scripts/set_env.sh" "$SCRIPT_DIR/.venv/bin/python3" "$SCRIPT_DIR/scripts/benchmark_ttnn_vs_standalone_vs_pywt.py" \
+  "$SCRIPT_DIR/scripts/set_env.sh" "$PYTHON_BIN" "$SCRIPT_DIR/scripts/benchmark_ttnn_vs_standalone_vs_pywt.py" \
     --dim 2d \
     --backends ttnn standalone pywt \
     --schemes "${PERF_SCHEMES_2D[@]}" \
@@ -100,12 +108,12 @@ fi
 
 echo "--- Phase 4: Plot Generation (1D & 2D) ---"
 if [[ -f "$PERFORMANCE_DIR/summary_1d.tsv" ]]; then
-  "$SCRIPT_DIR/scripts/set_env.sh" "$SCRIPT_DIR/.venv/bin/python3" "$SCRIPT_DIR/scripts/generate_benchmark_plots.py" \
+  "$SCRIPT_DIR/scripts/set_env.sh" "$PYTHON_BIN" "$SCRIPT_DIR/scripts/generate_benchmark_plots.py" \
     --summary-tsv "$PERFORMANCE_DIR/summary_1d.tsv" \
     --output-dir "$PLOTS_DIR"
 fi
 if [[ -f "$PERFORMANCE_DIR/summary_2d.tsv" ]]; then
-  "$SCRIPT_DIR/scripts/set_env.sh" "$SCRIPT_DIR/.venv/bin/python3" "$SCRIPT_DIR/scripts/generate_benchmark_plots.py" \
+  "$SCRIPT_DIR/scripts/set_env.sh" "$PYTHON_BIN" "$SCRIPT_DIR/scripts/generate_benchmark_plots.py" \
     --summary-tsv "$PERFORMANCE_DIR/summary_2d.tsv" \
     --output-dir "$PLOTS_DIR"
 fi

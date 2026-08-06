@@ -17,9 +17,10 @@ import numpy as np
 
 
 # Ensure venv packages are available
-VENV_PYTHON = Path(os.environ.get("VENV_PYTHON", "/home/user/tt-wavelet/.venv/bin/python3"))
-if VENV_PYTHON.exists() and Path(sys.executable) != VENV_PYTHON:
-    os.execv(str(VENV_PYTHON), [str(VENV_PYTHON), __file__, *sys.argv[1:]])
+if "VENV_PYTHON" in os.environ:
+    venv_python = Path(os.environ["VENV_PYTHON"])
+    if venv_python.exists() and Path(sys.executable) != venv_python:
+        os.execv(str(venv_python), [str(venv_python), __file__, *sys.argv[1:]])
 
 try:
     import torch
@@ -249,8 +250,9 @@ def main():
 
     # Phase 3: TTNN Benchmark (Single open_device context)
     if "ttnn" in backends:
-        print(f"\n--- Running TTNN Operations {args.dim.upper()} Benchmarks ---")
-        device = ttnn.open_device(device_id=0)
+        open_device_fn = getattr(ttnn, "open_device", getattr(getattr(ttnn, "_ttnn", None), "device", None).open_device)
+        close_device_fn = getattr(ttnn, "close_device", getattr(getattr(ttnn, "_ttnn", None), "device", None).close_device)
+        device = open_device_fn(device_id=0)
         pbar = tqdm(total=total_runs, desc=f"TTNN Device ({args.dim.upper()})")
         try:
             for wavelet in args.schemes:
@@ -260,7 +262,7 @@ def main():
                         pbar.update(1)
         finally:
             pbar.close()
-            ttnn.close_device(device)
+            close_device_fn(device)
 
     # Phase 4: Write summaries and logs
     summary_name = f"summary_{args.dim}.tsv"

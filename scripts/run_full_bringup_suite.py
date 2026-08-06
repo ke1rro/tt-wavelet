@@ -25,9 +25,10 @@ import numpy as np
 
 # Ensure venv packages are available
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-VENV_PYTHON = PROJECT_ROOT / ".venv" / "bin" / "python3"
-if VENV_PYTHON.exists() and Path(sys.executable).resolve() != VENV_PYTHON.resolve():
-    os.execv(str(VENV_PYTHON), [str(VENV_PYTHON), __file__, *sys.argv[1:]])
+if "VENV_PYTHON" in os.environ:
+    venv_python = Path(os.environ["VENV_PYTHON"])
+    if venv_python.exists() and Path(sys.executable).resolve() != venv_python.resolve():
+        os.execv(str(venv_python), [str(venv_python), __file__, *sys.argv[1:]])
 
 try:
     import torch
