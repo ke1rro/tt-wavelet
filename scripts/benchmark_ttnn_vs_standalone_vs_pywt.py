@@ -86,27 +86,28 @@ def measure_standalone_timing(wavelet_name, boundary_mode, signal_len, repeats=2
 
 def measure_ttnn_timing(wavelet_name, boundary_mode, signal_len, device, repeats=20):
     try:
+        import ttnn._ttnn as _ttnn
         s_sticks = (signal_len + 31) // 32
         padded_len = s_sticks * 32
         sig = torch.sin(torch.linspace(0, 10 * torch.pi, padded_len, dtype=torch.float32)).reshape(s_sticks, 32)
-        inp = ttnn.from_torch(sig, dtype=ttnn.float32, layout=ttnn.ROW_MAJOR_LAYOUT, device=device)
+        inp = _ttnn.tensor.Tensor(sig, _ttnn.tensor.DataType.FLOAT32).to(_ttnn.tensor.Layout.ROW_MAJOR).to(device)
         
         for _ in range(2):
-            app, det = ttnn.dwt(inp, wavelet_name, boundary_mode=boundary_mode)
-            rec = ttnn.idwt(app, det, wavelet_name, padded_len, boundary_mode=boundary_mode)
-            ttnn.synchronize_device(device)
+            app, det = _ttnn.operations.dwt(inp, wavelet_name, boundary_mode=boundary_mode)
+            rec = _ttnn.operations.idwt(app, det, wavelet_name, padded_len, boundary_mode=boundary_mode)
+            _ttnn.device.synchronize_device(device)
             
         t0 = time.perf_counter()
         for _ in range(repeats):
-            app, det = ttnn.dwt(inp, wavelet_name, boundary_mode=boundary_mode)
-        ttnn.synchronize_device(device)
+            app, det = _ttnn.operations.dwt(inp, wavelet_name, boundary_mode=boundary_mode)
+        _ttnn.device.synchronize_device(device)
         t1 = time.perf_counter()
         dwt_ms = (t1 - t0) * 1000.0 / repeats
 
         t0 = time.perf_counter()
         for _ in range(repeats):
-            rec = ttnn.idwt(app, det, wavelet_name, padded_len, boundary_mode=boundary_mode)
-        ttnn.synchronize_device(device)
+            rec = _ttnn.operations.idwt(app, det, wavelet_name, padded_len, boundary_mode=boundary_mode)
+        _ttnn.device.synchronize_device(device)
         t1 = time.perf_counter()
         idwt_ms = (t1 - t0) * 1000.0 / repeats
 
@@ -250,9 +251,8 @@ def main():
 
     # Phase 3: TTNN Benchmark (Single open_device context)
     if "ttnn" in backends:
-        open_device_fn = getattr(ttnn, "open_device", getattr(getattr(ttnn, "_ttnn", None), "device", None).open_device)
-        close_device_fn = getattr(ttnn, "close_device", getattr(getattr(ttnn, "_ttnn", None), "device", None).close_device)
-        device = open_device_fn(device_id=0)
+        import ttnn._ttnn as _ttnn
+        device = _ttnn.device.open_device(device_id=0)
         pbar = tqdm(total=total_runs, desc=f"TTNN Device ({args.dim.upper()})")
         try:
             for wavelet in args.schemes:
@@ -262,7 +262,7 @@ def main():
                         pbar.update(1)
         finally:
             pbar.close()
-            close_device_fn(device)
+            _ttnn.device.close_device(device)
 
     # Phase 4: Write summaries and logs
     summary_name = f"summary_{args.dim}.tsv"

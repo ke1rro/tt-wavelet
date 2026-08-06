@@ -219,12 +219,12 @@ def test_wavelet_precision(wavelet_name, boundary_mode, signal_len=1024, device=
     ttnn_rec_np = None
     if "ttnn" in backends and device is not None:
         try:
-            inp_tensor = ttnn.from_torch(
-                torch.from_numpy(x.reshape(s_sticks, 32)), dtype=ttnn.float32, layout=ttnn.ROW_MAJOR_LAYOUT, device=device
-            )
-            ttnn_app, ttnn_det = ttnn.dwt(inp_tensor, wavelet_name, boundary_mode=boundary_mode)
-            ttnn_rec = ttnn.idwt(ttnn_app, ttnn_det, wavelet_name, padded_len, boundary_mode=boundary_mode)
-            ttnn_rec_np = ttnn.to_torch(ttnn_rec).numpy().flatten()[:signal_len]
+            import ttnn._ttnn as _ttnn
+            t_torch = torch.from_numpy(x.reshape(s_sticks, 32))
+            inp_tensor = _ttnn.tensor.Tensor(t_torch, _ttnn.tensor.DataType.FLOAT32).to(_ttnn.tensor.Layout.ROW_MAJOR).to(device)
+            ttnn_app, ttnn_det = _ttnn.operations.dwt(inp_tensor, wavelet_name, boundary_mode=boundary_mode)
+            ttnn_rec = _ttnn.operations.idwt(ttnn_app, ttnn_det, wavelet_name, padded_len, boundary_mode=boundary_mode)
+            ttnn_rec_np = ttnn_rec.cpu().to(_ttnn.tensor.Layout.ROW_MAJOR).to_torch().numpy().flatten()[:signal_len]
         except Exception as exc:
             print(f"[Precision Warn] {wavelet_name} {boundary_mode}: {exc}")
 
@@ -258,9 +258,13 @@ def main():
     wavelets_to_test = args.schemes if args.schemes else list(WAVELET_CATEGORIES.keys())
     modes_to_test = args.boundary_modes if args.boundary_modes else ALL_BOUNDARY_MODES
 
-    open_device_fn = getattr(ttnn, "open_device", getattr(getattr(ttnn, "_ttnn", None), "device", None).open_device if hasattr(ttnn, "_ttnn") else None)
-    close_device_fn = getattr(ttnn, "close_device", getattr(getattr(ttnn, "_ttnn", None), "device", None).close_device if hasattr(ttnn, "_ttnn") else None)
-    device = open_device_fn(device_id=0) if ("ttnn" in args.backends and open_device_fn is not None) else None
+    device = None
+    if "ttnn" in args.backends:
+        try:
+            import ttnn._ttnn as _ttnn
+            device = _ttnn.device.open_device(device_id=0)
+        except Exception:
+            device = getattr(ttnn, "open_device", lambda device_id: None)(device_id=0)
     print(f"Testing {len(wavelets_to_test)} wavelets x {len(modes_to_test)} boundary modes on backends: {args.backends}...")
 
     results = []
@@ -280,8 +284,12 @@ def main():
             pbar.update(1)
 
     pbar.close()
-    if device is not None and close_device_fn is not None:
-        close_device_fn(device)
+    if device is not None:
+        try:
+            import ttnn._ttnn as _ttnn
+            _ttnn.device.close_device(device)
+        except Exception:
+            pass
 
     args.output_json.parent.mkdir(parents=True, exist_ok=True)
 
