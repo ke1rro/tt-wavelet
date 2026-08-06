@@ -42,7 +42,7 @@ struct Options {
     bool quiet{false};
     size_t repeats{1};
     size_t warmup_runs{1};
-    uint32_t core_limit{1};
+    uint32_t core_limit{0};
     uint32_t batch_count{1};
     ttwv::BoundaryMode boundary_mode{ttwv::BoundaryMode::kSymmetric};
     std::string wavelet;
@@ -408,13 +408,16 @@ int run(
     tt::tt_metal::distributed::MeshCommandQueue& queue,
     std::shared_ptr<tt::tt_metal::distributed::MeshBuffer>& input,
     const std::vector<float>& tiled_input) {
+    const uint32_t effective_cores = (options.core_limit > 0)
+        ? options.core_limit
+        : static_cast<uint32_t>(mesh_device.compute_with_storage_grid_size().x * mesh_device.compute_with_storage_grid_size().y);
     ttwv::Lwt2DExecutable executable = ttwv::create_lwt_2d_executable<Scheme>(
         TT_WAVELET_SOURCE_DIR,
         mesh_device,
         *input->get_backing_buffer(),
         options.height,
         options.width,
-        options.core_limit,
+        effective_cores,
         options.boundary_mode,
         options.batch_count);
     ttwv::prepare_lwt_2d(queue, executable);

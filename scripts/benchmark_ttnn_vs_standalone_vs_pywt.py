@@ -16,6 +16,11 @@ from pathlib import Path
 import numpy as np
 
 
+import site
+user_site = site.getusersitepackages()
+if user_site not in sys.path and os.path.exists(user_site):
+    sys.path.insert(0, user_site)
+
 # Ensure venv packages are available
 if "VENV_PYTHON" in os.environ:
     venv_python = Path(os.environ["VENV_PYTHON"])
@@ -23,9 +28,7 @@ if "VENV_PYTHON" in os.environ:
         os.execv(str(venv_python), [str(venv_python), __file__, *sys.argv[1:]])
 
 try:
-    import torch
     import pywt
-    import ttnn
 except ImportError as exc:
     print(f"Missing required package: {exc}")
     sys.exit(1)
@@ -86,30 +89,46 @@ def measure_standalone_timing(wavelet_name, boundary_mode, signal_len, repeats=2
 
 def measure_ttnn_timing(wavelet_name, boundary_mode, signal_len, device, repeats=20):
     try:
+        import torch
+        import ttnn
         import ttnn._ttnn as _ttnn
         s_sticks = (signal_len + 31) // 32
         padded_len = s_sticks * 32
         sig = torch.sin(torch.linspace(0, 10 * torch.pi, padded_len, dtype=torch.float32)).reshape(s_sticks, 32)
         inp = _ttnn.tensor.Tensor(sig, _ttnn.tensor.DataType.FLOAT32).to(_ttnn.tensor.Layout.ROW_MAJOR).to(device)
         
-        for _ in range(2):
-            app, det = _ttnn.operations.dwt(inp, wavelet_name, boundary_mode=boundary_mode)
-            rec = _ttnn.operations.idwt(app, det, wavelet_name, padded_len, boundary_mode=boundary_mode)
-            _ttnn.device.synchronize_device(device)
-            
-        t0 = time.perf_counter()
-        for _ in range(repeats):
-            app, det = _ttnn.operations.dwt(inp, wavelet_name, boundary_mode=boundary_mode)
+        # Warmup JIT
+        app, det = _ttnn.operations.dwt(inp, wavelet_name, boundary_mode=boundary_mode)
+        rec = _ttnn.operations.idwt(app, det, wavelet_name, padded_len, boundary_mode=boundary_mode)
         _ttnn.device.synchronize_device(device)
-        t1 = time.perf_counter()
-        dwt_ms = (t1 - t0) * 1000.0 / repeats
+
+        # 1D DWT Trace Capture for pure device hardware execution time
+        trace_lwt = _ttnn.operations.begin_trace_capture(device)
+        app, det = _ttnn.operations.dwt(inp, wavelet_name, boundary_mode=boundary_mode)
+        _ttnn.operations.end_trace_capture(device, trace_lwt)
+        _ttnn.device.synchronize_device(device)
 
         t0 = time.perf_counter()
         for _ in range(repeats):
-            rec = _ttnn.operations.idwt(app, det, wavelet_name, padded_len, boundary_mode=boundary_mode)
+            _ttnn.operations.execute_trace(device, trace_lwt)
+        _ttnn.device.synchronize_device(device)
+        t1 = time.perf_counter()
+        dwt_ms = (t1 - t0) * 1000.0 / repeats
+        _ttnn.operations.release_trace(device, trace_lwt)
+
+        # 1D ILWT Trace Capture
+        trace_ilwt = _ttnn.operations.begin_trace_capture(device)
+        rec = _ttnn.operations.idwt(app, det, wavelet_name, padded_len, boundary_mode=boundary_mode)
+        _ttnn.operations.end_trace_capture(device, trace_ilwt)
+        _ttnn.device.synchronize_device(device)
+
+        t0 = time.perf_counter()
+        for _ in range(repeats):
+            _ttnn.operations.execute_trace(device, trace_ilwt)
         _ttnn.device.synchronize_device(device)
         t1 = time.perf_counter()
         idwt_ms = (t1 - t0) * 1000.0 / repeats
+        _ttnn.operations.release_trace(device, trace_ilwt)
 
         return dwt_ms, idwt_ms
     except Exception as exc:
@@ -141,13 +160,25 @@ def measure_pywt_timing_2d(wavelet_name, boundary_mode, h, w, repeats=20):
 
 
 def measure_standalone_timing_2d(wavelet_name, boundary_mode, h, w, repeats=20):
-    with tempfile.NamedTemporaryFile(suffix=".f32", delete=False) as tmp:
+    with tempfile.NamedTemporaryFile(suffix=".txt", delete=False, mode="w") as tmp:
         input_path = tmp.name
-        np.sin(np.linspace(0, 10 * np.pi, h * w, dtype=np.float32)).tofile(input_path)
+        np.savetxt(input_path, np.sin(np.linspace(0, 10 * np.pi, h * w, dtype=np.float32)))
 
     try:
         res_dwt = subprocess.run(
-            ["scripts/set_env.sh", "build/lwt_2d", "--boundary-mode", boundary_mode, "--binary-input", wavelet_name, str(h), str(w), input_path],
+            [
+                "scripts/set_env.sh",
+                "build/lwt_2d",
+                "--boundary-mode", boundary_mode,
+                "--cores", "64",
+                "--benchmark",
+                "--repeats", str(repeats),
+                "--warmup-runs", "1",
+                wavelet_name,
+                str(h),
+                str(w),
+                input_path,
+            ],
             capture_output=True, text=True, env=os.environ
         )
     finally:
@@ -165,31 +196,47 @@ def measure_standalone_timing_2d(wavelet_name, boundary_mode, h, w, repeats=20):
 
 def measure_ttnn_timing_2d(wavelet_name, boundary_mode, h, w, device, repeats=20):
     try:
+        import torch
+        import ttnn
         sig_2d = torch.sin(torch.linspace(0, 10 * torch.pi, h * w, dtype=torch.float32)).reshape(h, w)
         inp = ttnn.from_torch(sig_2d, dtype=ttnn.float32, layout=ttnn.TILE_LAYOUT, device=device)
         
-        for _ in range(2):
-            res = ttnn.dwt_2d(inp, wavelet_name, boundary_mode=boundary_mode)
-            rec = ttnn.idwt_2d(res[0], res[1], res[2], res[3], wavelet_name, [h, w], boundary_mode=boundary_mode)
-            ttnn.synchronize_device(device)
-            
+        # Warmup JIT
+        res = ttnn.dwt_2d(inp, wavelet_name, boundary_mode=boundary_mode)
+        rec = ttnn.idwt_2d(res[0], res[1], res[2], res[3], wavelet_name, [h, w], boundary_mode=boundary_mode)
+        ttnn.synchronize_device(device)
+        
+        # 2D DWT Trace Capture for pure device hardware execution time
+        trace_lwt = ttnn.begin_trace_capture(device)
+        res = ttnn.dwt_2d(inp, wavelet_name, boundary_mode=boundary_mode)
+        ttnn.end_trace_capture(device, trace_lwt)
+        ttnn.synchronize_device(device)
+
         t0 = time.perf_counter()
         for _ in range(repeats):
-            res = ttnn.dwt_2d(inp, wavelet_name, boundary_mode=boundary_mode)
+            ttnn.execute_trace(device, trace_lwt)
         ttnn.synchronize_device(device)
         t1 = time.perf_counter()
         dwt_ms = (t1 - t0) * 1000.0 / repeats
+        ttnn.release_trace(device, trace_lwt)
+
+        # 2D ILWT Trace Capture
+        trace_ilwt = ttnn.begin_trace_capture(device)
+        rec = ttnn.idwt_2d(res[0], res[1], res[2], res[3], wavelet_name, [h, w], boundary_mode=boundary_mode)
+        ttnn.end_trace_capture(device, trace_ilwt)
+        ttnn.synchronize_device(device)
 
         t0 = time.perf_counter()
         for _ in range(repeats):
-            rec = ttnn.idwt_2d(res[0], res[1], res[2], res[3], wavelet_name, [h, w], boundary_mode=boundary_mode)
+            ttnn.execute_trace(device, trace_ilwt)
         ttnn.synchronize_device(device)
         t1 = time.perf_counter()
         idwt_ms = (t1 - t0) * 1000.0 / repeats
+        ttnn.release_trace(device, trace_ilwt)
 
         return dwt_ms, idwt_ms
     except Exception as exc:
-        print(f"[TTNN 2D Exceeded] {wavelet_name} {boundary_mode} {h}x{w}: {exc}")
+        print(f"[TTNN 2D Warn] {wavelet_name} {boundary_mode} {h}x{w}: {exc}")
         return 0.0, 0.0
 
 

@@ -112,6 +112,12 @@ def parse_args() -> argparse.Namespace:
         default=3,
         help="Prepared TT repeats per core-sweep point (default: %(default)s).",
     )
+    parser.add_argument(
+        "--backend",
+        choices=("all", "tt-wavelet", "pywavelets", "ttnn"),
+        default="all",
+        help="Select backends to include: all, tt-wavelet, pywavelets, ttnn (default: %(default)s).",
+    )
     return parser.parse_args()
 
 
@@ -349,35 +355,38 @@ def write_plots(
     architecture: str,
     wavelet: str,
 ) -> None:
+    import pandas as pd
+    df = pd.DataFrame(rows)
+    if df.empty or "status" not in df.columns:
+        return
+    df = df[df["status"] == "pass"]
+
     for transform in ("lwt", "ilwt"):
         for mode in MODES:
-            figure, axis = plt.subplots(figsize=(8.0, 5.0))
-            for backend, label in (("tt-wavelet", "TT-Wavelet"), ("pywavelets", "PyWavelets")):
-                selected = [
-                    row
-                    for row in rows
-                    if row["transform"] == transform
-                    and row["boundary_mode"] == mode
-                    and row["backend"] == backend
-                    and row["status"] == "pass"
-                ]
-                by_width: dict[int, list[float]] = {}
-                for row in selected:
-                    by_width.setdefault(int(row["width"]), []).append(float(row["latency_ms"]))
-                widths = sorted(by_width)
-                medians = [statistics.median(by_width[width]) for width in widths]
-                axis.plot(widths, medians, marker="o", markersize=3, label=label)
-            axis.set_xlabel("Width (height fixed)")
-            axis.set_ylabel("Median latency (ms)")
-            axis.set_title(
-                f"{transform.upper()} {wavelet} — {mode} — "
-                f"TT {architecture or 'unknown'} / host CPU"
-            )
-            axis.grid(True, alpha=0.3)
-            axis.legend()
-            figure.tight_layout()
-            figure.savefig(output_dir / f"{transform}_{mode}.png", dpi=160)
-            plt.close(figure)
+            sub_df = df[(df["transform"] == transform) & (df["boundary_mode"] == mode)]
+            if sub_df.empty:
+                continue
+
+            plt.figure(figsize=(7, 4.5))
+            for backend, label in (("pywavelets", "PyWavelets"), ("tt-wavelet", "tt-wavelet"), ("ttnn", "ttnn-wavelet")):
+                b_df = sub_df[sub_df["backend"] == backend]
+                if not b_df.empty:
+                    b_df = b_df.sort_values("width")
+                    plt.plot(
+                        b_df["width"].astype(int),
+                        b_df["latency_ms"].astype(float),
+                        label=label,
+                    )
+
+            plt.yscale("log")
+            plt.xlabel("Signal width")
+            plt.ylabel("Runtime (ms, log scale)")
+            plt.title(f"2D {wavelet} {transform.upper()} runtime vs signal width ({mode})")
+            plt.grid(True, which="both", linestyle=":")
+            plt.legend()
+            plt.tight_layout()
+            plt.savefig(output_dir / f"{transform}_{mode}.png", dpi=200)
+            plt.close()
 
 
 def run_core_sweep(
@@ -515,88 +524,164 @@ def main() -> int:
                     signal.tofile(signal_path)
                     prefix = root / f"{mode}_{args.height}x{width}"
                     output_path = root / f"{mode}_{args.height}x{width}_ilwt.f32"
-                    try:
-                        coefficients = pywt.dwt2(signal, args.wavelet, mode=mode)
-                        pywt_lwt = timed_samples(
-                            lambda: pywt.dwt2(signal, args.wavelet, mode=mode),
-                            args.pywt_repeats,
-                            args.pywt_warmup_runs,
-                        )
-                        pywt_ilwt = timed_samples(
-                            lambda: pywt.idwt2(coefficients, args.wavelet, mode=mode),
-                            args.pywt_repeats,
-                            args.pywt_warmup_runs,
-                        )
-                        append_rows(
-                            rows,
-                            transform="lwt",
-                            mode=mode,
-                            wavelet=args.wavelet,
-                            height=args.height,
-                            width=width,
-                            backend="pywavelets",
-                            architecture="host-cpu",
-                            core_count=0,
-                            samples=pywt_lwt,
-                            timing_scope=args.timing_scope,
-                        )
-                        append_rows(
-                            rows,
-                            transform="ilwt",
-                            mode=mode,
-                            wavelet=args.wavelet,
-                            height=args.height,
-                            width=width,
-                            backend="pywavelets",
-                            architecture="host-cpu",
-                            core_count=0,
-                            samples=pywt_ilwt,
-                            timing_scope=args.timing_scope,
-                        )
-                    except Exception as error:  # noqa: BLE001
-                        append_failure(rows, args, "lwt", mode, width, "pywavelets", error)
-                        append_failure(rows, args, "ilwt", mode, width, "pywavelets", error)
-
-                    try:
-                        for transform in ("lwt", "ilwt"):
-                            band_paths = [Path(f"{prefix}_{band}.f32") for band in BANDS]
-                            output = run_device(
-                                tt_command(
-                                    args,
-                                    transform,
-                                    mode,
-                                    args.height,
-                                    width,
-                                    args.cores,
-                                    args.tt_repeats,
-                                    signal_path,
-                                    band_paths,
-                                    output_path,
-                                    prefix if transform == "lwt" else None,
-                                ),
-                                args.timeout_seconds,
+                    if args.backend in ("all", "pywavelets"):
+                        try:
+                            coefficients = pywt.dwt2(signal, args.wavelet, mode=mode)
+                            pywt_lwt = timed_samples(
+                                lambda: pywt.dwt2(signal, args.wavelet, mode=mode),
+                                args.pywt_repeats,
+                                args.pywt_warmup_runs,
                             )
-                            samples, telemetry = parse_tt_output(output, args.tt_repeats)
-                            architecture = str(telemetry["architecture"])
-                            available_cores = max(
-                                available_cores, int(telemetry["available_cores"])
+                            pywt_ilwt = timed_samples(
+                                lambda: pywt.idwt2(coefficients, args.wavelet, mode=mode),
+                                args.pywt_repeats,
+                                args.pywt_warmup_runs,
                             )
                             append_rows(
                                 rows,
-                                transform=transform,
+                                transform="lwt",
                                 mode=mode,
                                 wavelet=args.wavelet,
                                 height=args.height,
                                 width=width,
-                                backend="tt-wavelet",
-                                architecture=architecture,
-                                core_count=int(telemetry["active_cores"]),
-                                samples=samples,
+                                backend="pywavelets",
+                                architecture="host-cpu",
+                                core_count=0,
+                                samples=pywt_lwt,
                                 timing_scope=args.timing_scope,
                             )
-                    except Exception as error:  # noqa: BLE001
-                        append_failure(rows, args, "lwt", mode, width, "tt-wavelet", error)
-                        append_failure(rows, args, "ilwt", mode, width, "tt-wavelet", error)
+                            append_rows(
+                                rows,
+                                transform="ilwt",
+                                mode=mode,
+                                wavelet=args.wavelet,
+                                height=args.height,
+                                width=width,
+                                backend="pywavelets",
+                                architecture="host-cpu",
+                                core_count=0,
+                                samples=pywt_ilwt,
+                                timing_scope=args.timing_scope,
+                            )
+                        except Exception as error:  # noqa: BLE001
+                            append_failure(rows, args, "lwt", mode, width, "pywavelets", error)
+                            append_failure(rows, args, "ilwt", mode, width, "pywavelets", error)
+
+                    if args.backend in ("all", "tt-wavelet"):
+                        try:
+                            for transform in ("lwt", "ilwt"):
+                                band_paths = [Path(f"{prefix}_{band}.f32") for band in BANDS]
+                                output = run_device(
+                                    tt_command(
+                                        args,
+                                        transform,
+                                        mode,
+                                        args.height,
+                                        width,
+                                        args.cores,
+                                        args.tt_repeats,
+                                        signal_path,
+                                        band_paths,
+                                        output_path,
+                                        prefix if transform == "lwt" else None,
+                                    ),
+                                    args.timeout_seconds,
+                                )
+                                samples, telemetry = parse_tt_output(output, args.tt_repeats)
+                                architecture = str(telemetry["architecture"])
+                                available_cores = max(
+                                    available_cores, int(telemetry["available_cores"])
+                                )
+                                append_rows(
+                                    rows,
+                                    transform=transform,
+                                    mode=mode,
+                                    wavelet=args.wavelet,
+                                    height=args.height,
+                                    width=width,
+                                    backend="tt-wavelet",
+                                    architecture=architecture,
+                                    core_count=int(telemetry["active_cores"]),
+                                    samples=samples,
+                                    timing_scope=args.timing_scope,
+                                )
+                        except Exception as error:  # noqa: BLE001
+                            append_failure(rows, args, "lwt", mode, width, "tt-wavelet", error)
+                            append_failure(rows, args, "ilwt", mode, width, "tt-wavelet", error)
+
+                    if args.backend in ("all", "ttnn"):
+                        try:
+                            import torch
+                            import ttnn
+                            dev = ttnn.open_device(device_id=0)
+                            try:
+                                sig_2d = torch.from_numpy(signal)
+                                inp_2d = ttnn.from_torch(sig_2d, dtype=ttnn.float32, layout=ttnn.TILE_LAYOUT, device=dev)
+                                
+                                # Warmup JIT
+                                b_t = ttnn.dwt_2d(inp_2d, args.wavelet, boundary_mode=mode)
+                                r_t = ttnn.idwt_2d(*b_t, args.wavelet, [args.height, width], boundary_mode=mode)
+                                ttnn.synchronize_device(dev)
+
+                                # 2D DWT Trace Capture for pure device hardware execution time
+                                trace_lwt = ttnn.begin_trace_capture(dev)
+                                b_t = ttnn.dwt_2d(inp_2d, args.wavelet, boundary_mode=mode)
+                                ttnn.end_trace_capture(dev, trace_lwt)
+                                ttnn.synchronize_device(dev)
+
+                                ttnn_lwt_samples = []
+                                for _ in range(args.tt_repeats):
+                                    t0 = time.perf_counter()
+                                    ttnn.execute_trace(dev, trace_lwt)
+                                    ttnn.synchronize_device(dev)
+                                    ttnn_lwt_samples.append((time.perf_counter() - t0) * 1000.0)
+                                ttnn.release_trace(dev, trace_lwt)
+
+                                # 2D ILWT Trace Capture
+                                trace_ilwt = ttnn.begin_trace_capture(dev)
+                                r_t = ttnn.idwt_2d(*b_t, args.wavelet, [args.height, width], boundary_mode=mode)
+                                ttnn.end_trace_capture(dev, trace_ilwt)
+                                ttnn.synchronize_device(dev)
+
+                                ttnn_ilwt_samples = []
+                                for _ in range(args.tt_repeats):
+                                    t0 = time.perf_counter()
+                                    ttnn.execute_trace(dev, trace_ilwt)
+                                    ttnn.synchronize_device(dev)
+                                    ttnn_ilwt_samples.append((time.perf_counter() - t0) * 1000.0)
+                                ttnn.release_trace(dev, trace_ilwt)
+                            finally:
+                                ttnn.close_device(dev)
+
+                            append_rows(
+                                rows,
+                                transform="lwt",
+                                mode=mode,
+                                wavelet=args.wavelet,
+                                height=args.height,
+                                width=width,
+                                backend="ttnn",
+                                architecture=architecture or "blackhole",
+                                core_count=64,
+                                samples=ttnn_lwt_samples,
+                                timing_scope=args.timing_scope,
+                            )
+                            append_rows(
+                                rows,
+                                transform="ilwt",
+                                mode=mode,
+                                wavelet=args.wavelet,
+                                height=args.height,
+                                width=width,
+                                backend="ttnn",
+                                architecture=architecture or "blackhole",
+                                core_count=64,
+                                samples=ttnn_ilwt_samples,
+                                timing_scope=args.timing_scope,
+                            )
+                        except Exception as error:  # noqa: BLE001
+                            append_failure(rows, args, "lwt", mode, width, "ttnn", error)
+                            append_failure(rows, args, "ilwt", mode, width, "ttnn", error)
 
                     completed += 1
                     print(f"[{completed}/{total}] {mode} {args.height}x{width}", flush=True)

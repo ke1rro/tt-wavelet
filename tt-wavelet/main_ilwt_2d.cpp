@@ -38,7 +38,7 @@ struct Options {
     size_t width{0};
     std::array<std::filesystem::path, 4> bands;
     std::filesystem::path output{"ilwt_2d_output.f32"};
-    uint32_t core_limit{1};
+    uint32_t core_limit{0};
     uint32_t batch_count{1};
     size_t repeats{1};
     size_t warmup_runs{0};
@@ -226,6 +226,9 @@ int run(const Options& options) {
     }
     tt::tt_metal::distributed::Finish(queue);
 
+    const uint32_t effective_cores = (options.core_limit > 0)
+        ? options.core_limit
+        : static_cast<uint32_t>(mesh_device->compute_with_storage_grid_size().x * mesh_device->compute_with_storage_grid_size().y);
     ttwv::Ilwt2DExecutable executable = ttwv::create_ilwt_2d_executable<Scheme>(
         TT_WAVELET_SOURCE_DIR,
         *mesh_device,
@@ -235,7 +238,7 @@ int run(const Options& options) {
         *band_buffers[3]->get_backing_buffer(),
         options.height,
         options.width,
-        options.core_limit,
+        effective_cores,
         options.boundary_mode,
         options.batch_count);
     ttwv::prepare_ilwt_2d(queue, executable);

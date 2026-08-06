@@ -8,8 +8,13 @@ Creates individual SVG plots for each wavelet, dimension, transform (DWT/ILWT), 
 """
 
 import argparse
-from pathlib import Path
+import os
 import sys
+from pathlib import Path
+import site
+user_site = site.getusersitepackages()
+if user_site not in sys.path and os.path.exists(user_site):
+    sys.path.insert(0, user_site)
 
 try:
     import numpy as np
@@ -20,6 +25,7 @@ try:
 except ImportError as exc:
     print(f"Error importing required package for plotting: {exc}")
     sys.exit(1)
+
 
 
 def generate_plots(tsv_path: Path, output_dir: Path):
@@ -53,65 +59,63 @@ def generate_plots(tsv_path: Path, output_dir: Path):
             lens = m_df["length"].values
 
             # 1. DWT Plot
-            fig, ax = plt.subplots(figsize=(7.5, 5.0))
+            plt.figure(figsize=(7, 4.5))
             
             py_dwt = m_df["pywt_dwt_ms"].values
             std_dwt = m_df["standalone_dwt_ms"].values
             tt_dwt = m_df["ttnn_dwt_ms"].values
 
             if any(v > 0 for v in py_dwt):
-                ax.plot(lens, [v if v > 0 else np.nan for v in py_dwt], "o-", label="PyWavelets (CPU)", color="#4c72b0", linewidth=2, markersize=6)
+                plt.plot(lens, [v if v > 0 else np.nan for v in py_dwt], label="PyWavelets")
             if any(v > 0 for v in std_dwt):
-                ax.plot(lens, [v if v > 0 else np.nan for v in std_dwt], "s--", label="Standalone C++", color="#dd8452", linewidth=2, markersize=6)
+                plt.plot(lens, [v if v > 0 else np.nan for v in std_dwt], label="tt-wavelet")
             if any(v > 0 for v in tt_dwt):
-                ax.plot(lens, [v if v > 0 else np.nan for v in tt_dwt], "^-", label="TTNN (Device)", color="#2ca02c", linewidth=2.5, markersize=7)
+                plt.plot(lens, [v if v > 0 else np.nan for v in tt_dwt], label="ttnn-wavelet")
 
-            ax.set_yscale("log")
-            ax.set_xscale("log")
-            ax.set_title(f"{dim_title} DWT {wavelet} — Mode: {mode} (Log-Scale)", fontsize=12, fontweight="bold")
-            ax.set_xlabel("Signal Length N / Dimension (log)", fontsize=10)
-            ax.set_ylabel("Median Latency (ms, log scale)", fontsize=10)
-            
-            ax.set_xticks(lens)
-            ax.set_xticklabels([f"{l//1000}k" if l >= 1000 else str(l) for l in lens])
-            ax.legend(fontsize=9)
-            ax.grid(True, which="both", linestyle="--", alpha=0.5)
+            plt.yscale("log")
+            plt.xlabel("Signal width" if dim == "2d" else "Signal length")
+            plt.ylabel("Runtime (ms, log scale)")
+            plt.title(f"{dim_title} {wavelet} DWT runtime vs {'signal width' if dim == '2d' else 'signal length'}")
 
-            fig.tight_layout()
+            plt.grid(True, which="both", linestyle=":")
+            plt.legend()
+            plt.tight_layout()
+
+            dwt_png_path = w_dir / f"lwt_{mode}.png"
+            plt.savefig(dwt_png_path, dpi=200)
             dwt_svg_path = w_dir / f"lwt_{mode}.svg"
-            fig.savefig(dwt_svg_path, format="svg", dpi=300)
-            plt.close(fig)
+            plt.savefig(dwt_svg_path, format="svg", dpi=200)
+            plt.close()
             created_count += 1
 
             # 2. ILWT Plot
-            fig, ax = plt.subplots(figsize=(7.5, 5.0))
+            plt.figure(figsize=(7, 4.5))
             
             py_idwt = m_df["pywt_idwt_ms"].values
             std_idwt = m_df["standalone_idwt_ms"].values
             tt_idwt = m_df["ttnn_idwt_ms"].values
 
             if any(v > 0 for v in py_idwt):
-                ax.plot(lens, [v if v > 0 else np.nan for v in py_idwt], "o-", label="PyWavelets (CPU)", color="#4c72b0", linewidth=2, markersize=6)
+                plt.plot(lens, [v if v > 0 else np.nan for v in py_idwt], label="PyWavelets")
             if any(v > 0 for v in std_idwt):
-                ax.plot(lens, [v if v > 0 else np.nan for v in std_idwt], "s--", label="Standalone C++", color="#dd8452", linewidth=2, markersize=6)
+                plt.plot(lens, [v if v > 0 else np.nan for v in std_idwt], label="tt-wavelet")
             if any(v > 0 for v in tt_idwt):
-                ax.plot(lens, [v if v > 0 else np.nan for v in tt_idwt], "^-", label="TTNN (Device)", color="#2ca02c", linewidth=2.5, markersize=7)
+                plt.plot(lens, [v if v > 0 else np.nan for v in tt_idwt], label="ttnn-wavelet")
 
-            ax.set_yscale("log")
-            ax.set_xscale("log")
-            ax.set_title(f"{dim_title} ILWT {wavelet} — Mode: {mode} (Log-Scale)", fontsize=12, fontweight="bold")
-            ax.set_xlabel("Signal Length N / Dimension (log)", fontsize=10)
-            ax.set_ylabel("Median Latency (ms, log scale)", fontsize=10)
-            
-            ax.set_xticks(lens)
-            ax.set_xticklabels([f"{l//1000}k" if l >= 1000 else str(l) for l in lens])
-            ax.legend(fontsize=9)
-            ax.grid(True, which="both", linestyle="--", alpha=0.5)
+            plt.yscale("log")
+            plt.xlabel("Signal width" if dim == "2d" else "Signal length")
+            plt.ylabel("Runtime (ms, log scale)")
+            plt.title(f"{dim_title} {wavelet} ILWT runtime vs {'signal width' if dim == '2d' else 'signal length'}")
 
-            fig.tight_layout()
+            plt.grid(True, which="both", linestyle=":")
+            plt.legend()
+            plt.tight_layout()
+
+            idwt_png_path = w_dir / f"ilwt_{mode}.png"
+            plt.savefig(idwt_png_path, dpi=200)
             idwt_svg_path = w_dir / f"ilwt_{mode}.svg"
-            fig.savefig(idwt_svg_path, format="svg", dpi=300)
-            plt.close(fig)
+            plt.savefig(idwt_svg_path, format="svg", dpi=200)
+            plt.close()
             created_count += 1
 
     print(f"[SVG Plots Generated] Created {created_count} SVG plots in {output_dir}")

@@ -16,17 +16,16 @@ for arg in "$@"; do
   fi
 done
 
+# Use active shell python or repository .venv python if available
+if [[ -x "$SCRIPT_DIR/.venv/bin/python3" ]]; then
+  PYTHON_BIN="$SCRIPT_DIR/.venv/bin/python3"
+else
+  PYTHON_BIN="$(which python3)"
+fi
+
 PRECISION_DIR="$SCRIPT_DIR/benchmarks/precision"
 PERFORMANCE_DIR="$SCRIPT_DIR/benchmarks/performance"
 PLOTS_DIR="$PERFORMANCE_DIR/plots"
-
-if [[ -n "${PYTHON:-}" ]]; then
-  PYTHON_BIN="$PYTHON"
-elif [[ -x "$SCRIPT_DIR/.venv/bin/python3" ]] && "$SCRIPT_DIR/.venv/bin/python3" -c "import torch, ttnn" &>/dev/null; then
-  PYTHON_BIN="$SCRIPT_DIR/.venv/bin/python3"
-else
-  PYTHON_BIN="python3"
-fi
 
 mkdir -p "$PRECISION_DIR" "$PERFORMANCE_DIR" "$PLOTS_DIR"
 
@@ -51,6 +50,7 @@ echo " TENSTORRENT WAVELET AUTOMATED BRINGUP & BENCHMARK SUITE (1D & 2D) "
 echo "================================================================================"
 echo "Selected 1D Schemes: ${PERF_SCHEMES_1D[*]}"
 echo "Selected 2D Schemes: ${PERF_SCHEMES_2D[*]}"
+echo "Python Executable:  ${PYTHON_BIN}"
 
 if [[ "$IS_TEST_RUN" -eq 1 ]]; then
   echo "[Mode] TEST / VERIFICATION RUN"
@@ -87,12 +87,12 @@ else
     --output-json "$PRECISION_DIR/precision_results.json" \
     --output-tsv "$PRECISION_DIR/precision_results.tsv"
 
-  echo "--- Phase 2: 1D Performance Benchmark (4 schemes x 8 modes x 100k-1M, step 10k) ---"
+  echo "--- Phase 2: 1D Performance Benchmark (4 schemes x 8 modes x 100k-1M) ---"
   "$SCRIPT_DIR/scripts/set_env.sh" "$PYTHON_BIN" "$SCRIPT_DIR/scripts/benchmark_ttnn_vs_standalone_vs_pywt.py" \
     --dim 1d \
     --backends ttnn standalone pywt \
     --schemes "${PERF_SCHEMES_1D[@]}" \
-    --length-start 100000 --length-stop 1000000 --length-step 10000 \
+    --length-start 100000 --length-stop 1000000 --length-step 300000 \
     --repeats 20 \
     --output-dir "$PERFORMANCE_DIR"
 

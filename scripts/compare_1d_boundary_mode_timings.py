@@ -243,39 +243,38 @@ def write_plots(
     architecture: str,
     wavelet: str,
 ) -> None:
+    import pandas as pd
+    df = pd.DataFrame(rows)
+    if df.empty or "status" not in df.columns:
+        return
+    df = df[df["status"] == "pass"]
+
     for transform in ("lwt", "ilwt"):
         for mode in MODES:
-            figure, axis = plt.subplots(figsize=(8.0, 5.0))
-            for backend, label in (("tt-wavelet", "TT-Wavelet"), ("pywavelets", "PyWavelets")):
-                selected = sorted(
-                    (
-                        row
-                        for row in rows
-                        if row["transform"] == transform
-                        and row["boundary_mode"] == mode
-                        and row["backend"] == backend
-                        and row["status"] == "pass"
-                    ),
-                    key=lambda row: int(row["signal_length"]),
-                )
-                axis.plot(
-                    [int(row["signal_length"]) for row in selected],
-                    [float(row["median_latency_ms"]) for row in selected],
-                    marker="o",
-                    markersize=3,
-                    label=label,
-                )
-            axis.set_xlabel("Signal length")
-            axis.set_ylabel("Median latency (ms)")
-            axis.set_title(
-                f"{transform.upper()} {wavelet} — {mode} — "
-                f"TT {architecture or 'unknown'} / host CPU"
-            )
-            axis.grid(True, alpha=0.3)
-            axis.legend()
-            figure.tight_layout()
-            figure.savefig(output_dir / f"{transform}_{mode}.png", dpi=160)
-            plt.close(figure)
+            sub_df = df[(df["transform"] == transform) & (df["boundary_mode"] == mode)]
+            if sub_df.empty:
+                continue
+
+            plt.figure(figsize=(7, 4.5))
+            for backend, label in (("pywavelets", "PyWavelets"), ("tt-wavelet", "tt-wavelet"), ("ttnn", "ttnn-wavelet")):
+                b_df = sub_df[sub_df["backend"] == backend]
+                if not b_df.empty:
+                    b_df = b_df.sort_values("signal_length")
+                    plt.plot(
+                        b_df["signal_length"].astype(int),
+                        b_df["median_latency_ms"].astype(float),
+                        label=label,
+                    )
+
+            plt.yscale("log")
+            plt.xlabel("Signal length")
+            plt.ylabel("Runtime (ms, log scale)")
+            plt.title(f"1D {wavelet} {transform.upper()} runtime vs signal length ({mode})")
+            plt.grid(True, which="both", linestyle=":")
+            plt.legend()
+            plt.tight_layout()
+            plt.savefig(output_dir / f"{transform}_{mode}.png", dpi=200)
+            plt.close()
 
 
 def main() -> int:

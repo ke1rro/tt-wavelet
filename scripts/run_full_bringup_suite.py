@@ -298,67 +298,64 @@ def measure_ttnn_timing(wavelet_name, boundary_mode, signal_len, device, repeats
 def plot_performance_results(perf_data, output_dir, selected_wavelets, lengths):
     plots_dir = output_dir / "plots"
     plots_dir.mkdir(parents=True, exist_ok=True)
-    
-    # 1. Overall DWT Comparison Chart across selected wavelets
-    fig, axes = plt.subplots(1, len(selected_wavelets), figsize=(18, 5), sharey=False)
-    if len(selected_wavelets) == 1:
-        axes = [axes]
-        
-    for idx, wavelet in enumerate(selected_wavelets):
-        ax = axes[idx]
-        x_indices = np.arange(len(lengths))
-        width = 0.25
-        
-        # Average timing across boundary modes for each length
-        pywt_dwts = [np.mean([perf_data.get((wavelet, mode, N), {}).get("pywt_dwt", 0.0) for mode in ALL_BOUNDARY_MODES]) for N in lengths]
-        std_dwts = [np.mean([perf_data.get((wavelet, mode, N), {}).get("std_dwt", 0.0) for mode in ALL_BOUNDARY_MODES]) for N in lengths]
-        ttnn_dwts = [np.mean([perf_data.get((wavelet, mode, N), {}).get("ttnn_dwt", 0.0) for mode in ALL_BOUNDARY_MODES]) for N in lengths]
-        
-        ax.bar(x_indices - width, pywt_dwts, width, label="PyWT (CPU)", color="#4c72b0")
-        ax.bar(x_indices, std_dwts, width, label="Standalone C++", color="#dd8452")
-        ax.bar(x_indices + width, ttnn_dwts, width, label="TTNN (Device)", color="#55a868")
-        
-        ax.set_title(f"1D DWT: {wavelet} ({WAVELET_CATEGORIES.get(wavelet, {}).get('category', 'Custom')})")
-        ax.set_xlabel("Signal Length N")
-        ax.set_ylabel("Execution Time (ms)")
-        ax.set_xticks(x_indices)
-        ax.set_xticklabels([f"{N//1000}k" for N in lengths])
-        ax.legend()
-        ax.grid(True, linestyle="--", alpha=0.5)
+    import pandas as pd
 
-    plt.tight_layout()
-    plt.savefig(plots_dir / "dwt_performance_by_length.png", dpi=300)
-    plt.close()
+    for wavelet in selected_wavelets:
+        w_dir = plots_dir / wavelet.replace(".", "")
+        w_dir.mkdir(parents=True, exist_ok=True)
 
-    # 2. Overall IDWT Comparison Chart
-    fig, axes = plt.subplots(1, len(selected_wavelets), figsize=(18, 5), sharey=False)
-    if len(selected_wavelets) == 1:
-        axes = [axes]
+        for mode in ALL_BOUNDARY_MODES:
+            # 1. DWT Plot
+            plt.figure(figsize=(7, 4.5))
 
-    for idx, wavelet in enumerate(selected_wavelets):
-        ax = axes[idx]
-        x_indices = np.arange(len(lengths))
-        width = 0.25
-        
-        pywt_idwts = [np.mean([perf_data.get((wavelet, mode, N), {}).get("pywt_idwt", 0.0) for mode in ALL_BOUNDARY_MODES]) for N in lengths]
-        std_idwts = [np.mean([perf_data.get((wavelet, mode, N), {}).get("std_idwt", 0.0) for mode in ALL_BOUNDARY_MODES]) for N in lengths]
-        ttnn_idwts = [np.mean([perf_data.get((wavelet, mode, N), {}).get("ttnn_idwt", 0.0) for mode in ALL_BOUNDARY_MODES]) for N in lengths]
-        
-        ax.bar(x_indices - width, pywt_idwts, width, label="PyWT (CPU)", color="#4c72b0")
-        ax.bar(x_indices, std_idwts, width, label="Standalone C++", color="#dd8452")
-        ax.bar(x_indices + width, ttnn_idwts, width, label="TTNN (Device)", color="#55a868")
-        
-        ax.set_title(f"1D ILWT: {wavelet} ({WAVELET_CATEGORIES.get(wavelet, {}).get('category', 'Custom')})")
-        ax.set_xlabel("Signal Length N")
-        ax.set_ylabel("Execution Time (ms)")
-        ax.set_xticks(x_indices)
-        ax.set_xticklabels([f"{N//1000}k" for N in lengths])
-        ax.legend()
-        ax.grid(True, linestyle="--", alpha=0.5)
+            py_dwts = [perf_data.get((wavelet, mode, N), {}).get("pywt_dwt", 0.0) for N in lengths]
+            std_dwts = [perf_data.get((wavelet, mode, N), {}).get("std_dwt", 0.0) for N in lengths]
+            ttnn_dwts = [perf_data.get((wavelet, mode, N), {}).get("ttnn_dwt", 0.0) for N in lengths]
 
-    plt.tight_layout()
-    plt.savefig(plots_dir / "idwt_performance_by_length.png", dpi=300)
-    plt.close()
+            if any(v > 0 for v in py_dwts):
+                plt.plot(lengths, py_dwts, label="PyWavelets")
+            if any(v > 0 for v in std_dwts):
+                plt.plot(lengths, std_dwts, label="tt-wavelet")
+            if any(v > 0 for v in ttnn_dwts):
+                plt.plot(lengths, ttnn_dwts, label="ttnn-wavelet")
+
+            plt.yscale("log")
+            plt.xlabel("Signal length")
+            plt.ylabel("Runtime (ms, log scale)")
+            plt.title(f"1D {wavelet} DWT runtime vs signal length ({mode})")
+
+            plt.grid(True, which="both", linestyle=":")
+            plt.legend()
+            plt.tight_layout()
+
+            plt.savefig(w_dir / f"lwt_{mode}.png", dpi=200)
+            plt.close()
+
+            # 2. ILWT Plot
+            plt.figure(figsize=(7, 4.5))
+
+            py_idwts = [perf_data.get((wavelet, mode, N), {}).get("pywt_idwt", 0.0) for N in lengths]
+            std_idwts = [perf_data.get((wavelet, mode, N), {}).get("std_idwt", 0.0) for N in lengths]
+            ttnn_idwts = [perf_data.get((wavelet, mode, N), {}).get("ttnn_idwt", 0.0) for N in lengths]
+
+            if any(v > 0 for v in py_idwts):
+                plt.plot(lengths, py_idwts, label="PyWavelets")
+            if any(v > 0 for v in std_idwts):
+                plt.plot(lengths, std_idwts, label="tt-wavelet")
+            if any(v > 0 for v in ttnn_idwts):
+                plt.plot(lengths, ttnn_idwts, label="ttnn-wavelet")
+
+            plt.yscale("log")
+            plt.xlabel("Signal length")
+            plt.ylabel("Runtime (ms, log scale)")
+            plt.title(f"1D {wavelet} ILWT runtime vs signal length ({mode})")
+
+            plt.grid(True, which="both", linestyle=":")
+            plt.legend()
+            plt.tight_layout()
+
+            plt.savefig(w_dir / f"ilwt_{mode}.png", dpi=200)
+            plt.close()
 
 
 def main():

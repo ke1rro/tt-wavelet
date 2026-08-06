@@ -487,7 +487,8 @@ Lwt2DExecutable create_lwt_2d_executable_impl(
     const uint32_t chunks_per_sample = checked_u32(plan.chunks.size(), "2D LWT chunks per sample");
     const uint32_t total_work_items =
         checked_u32(static_cast<size_t>(chunks_per_sample) * batch_count, "2D LWT total batch work items");
-    std::vector<tt::tt_metal::CoreCoord> cores = select_cores(mesh_device, std::min(core_limit, total_work_items));
+    const uint32_t effective_core_limit = (core_limit == 0) ? std::numeric_limits<uint32_t>::max() : core_limit;
+    std::vector<tt::tt_metal::CoreCoord> cores = select_cores(mesh_device, std::min(effective_core_limit, total_work_items));
 
     std::array<std::shared_ptr<tt::tt_metal::distributed::MeshBuffer>, device_protocol::kLwt2DPlaneCount> planes;
     for (size_t slot = 0; slot < planes.size(); ++slot) {
@@ -650,7 +651,8 @@ Ilwt2DExecutable create_ilwt_2d_executable_impl(
     const uint32_t chunks_per_sample = checked_u32(plan.chunks.size(), "2D ILWT chunks per sample");
     const uint32_t total_work_items =
         checked_u32(static_cast<size_t>(chunks_per_sample) * batch_count, "2D ILWT total batch work items");
-    std::vector<tt::tt_metal::CoreCoord> cores = select_cores(mesh_device, std::min(core_limit, total_work_items));
+    const uint32_t effective_core_limit = (core_limit == 0) ? std::numeric_limits<uint32_t>::max() : core_limit;
+    std::vector<tt::tt_metal::CoreCoord> cores = select_cores(mesh_device, std::min(effective_core_limit, total_work_items));
 
     std::array<std::shared_ptr<tt::tt_metal::distributed::MeshBuffer>, device_protocol::kLwt2DPlaneCount> planes;
     for (size_t slot = 0; slot < planes.size(); ++slot) {
