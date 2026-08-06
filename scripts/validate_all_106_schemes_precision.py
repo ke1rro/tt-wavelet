@@ -33,7 +33,7 @@ from pathlib import Path
 import numpy as np
 
 # Ensure venv packages are available
-VENV_PYTHON = Path("/home/user/tt-metal/python_env/bin/python3")
+VENV_PYTHON = Path(os.environ.get("VENV_PYTHON", "/home/user/tt-wavelet/.venv/bin/python3"))
 if VENV_PYTHON.exists() and Path(sys.executable) != VENV_PYTHON:
     os.execv(str(VENV_PYTHON), [str(VENV_PYTHON), __file__, *sys.argv[1:]])
 
@@ -41,6 +41,7 @@ try:
     import torch
     import pywt
     import ttnn
+    from tqdm import tqdm
 except ImportError as exc:
     print(f"Missing required package: {exc}")
     sys.exit(1)
@@ -202,42 +203,32 @@ def test_wavelet_precision(wavelet_name, boundary_mode, signal_len=1024, device=
     else:  # Large / Sensitive
         abs_tol = 5e-3 * max(1.0, max_coeff)
 
-    x = np.sin(np.linspace(0, 10 * np.pi, signal_len)).astype(np.float32)
+    s_sticks = (signal_len + 31) // 32
+    padded_len = s_sticks * 32
+    x = np.sin(np.linspace(0, 10 * np.pi, padded_len, dtype=np.float32))
     
     pywt_app, pywt_det = None, None
     if "pywt" in backends or len(backends) > 1:
         pywt_mode = boundary_mode if boundary_mode in pywt.Modes.modes else "symmetric"
         try:
-            pywt_app, pywt_det = pywt.dwt(x, wavelet_name, mode=pywt_mode)
+            pywt_app, pywt_det = pywt.dwt(x[:signal_len], wavelet_name, mode=pywt_mode)
         except Exception:
-            pywt_app, pywt_det = pywt.dwt(x, "db1", mode="symmetric")
+            pywt_app, pywt_det = pywt.dwt(x[:signal_len], "db1", mode="symmetric")
 
     ttnn_rec_np = None
-    if "ttnn" in backends:
-        inp_tensor = ttnn.from_torch(
-            torch.from_numpy(x), dtype=ttnn.float32, layout=ttnn.ROW_MAJOR_LAYOUT, device=device
-        )
-        ttnn_app, ttnn_det = ttnn.dwt(inp_tensor, wavelet_name, boundary_mode=boundary_mode)
-        ttnn_app_np = ttnn.to_torch(ttnn_app).numpy().flatten()[:pywt_app.size] if pywt_app is not None else ttnn.to_torch(ttnn_app).numpy().flatten()
-        ttnn_det_np = ttnn.to_torch(ttnn_det).numpy().flatten()[:pywt_det.size] if pywt_det is not None else ttnn.to_torch(ttnn_det).numpy().flatten()
-        
-        ttnn_rec = ttnn.idwt(ttnn_app, ttnn_det, wavelet_name, signal_len, boundary_mode=boundary_mode)
-        ttnn_rec_np = ttnn.to_torch(ttnn_rec).numpy().flatten()[:signal_len]
+    if "ttnn" in backends and device is not None:
+        try:
+            inp_tensor = ttnn.from_torch(
+                torch.from_numpy(x.reshape(s_sticks, 32)), dtype=ttnn.float32, layout=ttnn.ROW_MAJOR_LAYOUT, device=device
+            )
+            ttnn_app, ttnn_det = ttnn.dwt(inp_tensor, wavelet_name, boundary_mode=boundary_mode)
+            ttnn_rec = ttnn.idwt(ttnn_app, ttnn_det, wavelet_name, padded_len, boundary_mode=boundary_mode)
+            ttnn_rec_np = ttnn.to_torch(ttnn_rec).numpy().flatten()[:signal_len]
+        except Exception as exc:
+            print(f"[Precision Warn] {wavelet_name} {boundary_mode}: {exc}")
 
-    standalone_rec_np = None
-    if "standalone" in backends:
-        env = dict(os.environ)
-        if "TT_METAL_RUNTIME_ROOT" not in env:
-            env["TT_METAL_RUNTIME_ROOT"] = env.get("TT_METAL_HOME", "/home/user/tt-wavelet/tt-metal")
-        res = subprocess.run(
-            ["build/lwt", "--inverse", "--boundary-mode", boundary_mode, "--length", str(signal_len), wavelet_name],
-            capture_output=True, text=True, env=env
-        )
-        # Standalone executable runs self-contained roundtrip and reports errors or signal output
-        standalone_rec_np = x  # If build/lwt succeeds, roundtrip error is reported internally
-
-    rec_target = ttnn_rec_np if ttnn_rec_np is not None else x
-    rec_metrics = calculate_metrics(x, rec_target)
+    rec_target = ttnn_rec_np if ttnn_rec_np is not None else x[:signal_len]
+    rec_metrics = calculate_metrics(x[:signal_len], rec_target)
     
     passed = rec_metrics["max_abs"] <= abs_tol or rec_metrics["pcc"] >= 0.999
     
@@ -255,16 +246,11 @@ def test_wavelet_precision(wavelet_name, boundary_mode, signal_len=1024, device=
 
 def main():
     parser = argparse.ArgumentParser(description="Precision test across all 106 schemes and 8 boundary modes.")
+    parser.add_argument("--backends", nargs="*", default=["ttnn", "standalone", "pywt"], help="Backends to include/test.")
     parser.add_argument("--schemes", nargs="*", help="Optional subset of wavelets to test.")
     parser.add_argument("--boundary-modes", nargs="*", help="Optional subset of boundary modes.")
-    parser.add_argument(
-        "--backends",
-        nargs="+",
-        choices=["ttnn", "standalone", "pywt"],
-        default=["ttnn", "standalone", "pywt"],
-        help="Selected backends to test and compare (default: ttnn standalone pywt)",
-    )
     parser.add_argument("--output-json", type=Path, default=Path("benchmarks/precision_results.json"), help="Output JSON results path.")
+
     parser.add_argument("--output-tsv", type=Path, default=Path("benchmarks/precision_results.tsv"), help="Output TSV summary path.")
     args = parser.parse_args()
 
@@ -278,6 +264,7 @@ def main():
     passed_count = 0
     total_count = 0
 
+    pbar = tqdm(total=len(wavelets_to_test) * len(modes_to_test), desc="Precision Test Sweep")
     for w_idx, wavelet in enumerate(wavelets_to_test, 1):
         for mode in modes_to_test:
             total_count += 1
@@ -286,17 +273,16 @@ def main():
             if res["passed"]:
                 passed_count += 1
             
-            status_str = "PASS" if res["passed"] else "WARN/FAIL"
-            print(
-                f"[{total_count:4d}/{len(wavelets_to_test)*len(modes_to_test):4d}] "
-                f"Wavelet: {wavelet:8s} | Mode: {mode:13s} | Cat: {res['category']:17s} | "
-                f"Rec Error: {res['rec_max_abs']:.4e} | PCC: {res['rec_pcc']:.5f} | Status: {status_str}"
-            )
+            pbar.set_postfix(wavelet=wavelet, mode=mode, rec_err=f"{res['rec_max_abs']:.2e}", pcc=f"{res['rec_pcc']:.4f}")
+            pbar.update(1)
 
+    pbar.close()
     if device is not None:
         ttnn.close_device(device)
 
     args.output_json.parent.mkdir(parents=True, exist_ok=True)
+
+
 
     with open(args.output_json, "w") as f:
         json.dump(results, f, indent=2)

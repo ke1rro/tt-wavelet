@@ -35,7 +35,9 @@ VENV_PYTHON = PROJECT_ROOT / ".venv" / "bin" / "python3"
 try:
     import numpy as np
     import pywt
+    from tqdm import tqdm
 except ModuleNotFoundError as exc:
+
     if VENV_PYTHON.exists() and Path(sys.executable).resolve() != VENV_PYTHON.resolve():
         os.execv(str(VENV_PYTHON), [str(VENV_PYTHON), __file__, *sys.argv[1:]])
     raise ModuleNotFoundError(
@@ -974,6 +976,7 @@ def main() -> int:
             approximation_path = temporary_path / "approximation.txt"
             detail_path = temporary_path / "detail.txt"
 
+            pbar = tqdm(total=group_total, desc="Layout Sweep")
             for signal_length in args.lengths:
                 signal = make_benchmark_signal(signal_length)
                 write_fp32_text(signal_path, signal)
@@ -994,11 +997,7 @@ def main() -> int:
                     for transform in transforms:
                         group_index += 1
                         reference = lwt_reference if transform == "lwt" else ilwt_reference
-                        print(
-                            f"[{group_index}/{group_total}] {transform} {wavelet} "
-                            f"N={signal_length} layouts=all",
-                            flush=True,
-                        )
+                        pbar.set_postfix(transform=transform, wavelet=wavelet, N=signal_length)
                         cases = run_layout_sweep_cases(
                             args=args,
                             transform=transform,
@@ -1010,6 +1009,7 @@ def main() -> int:
                             reference=reference,
                             temporary_path=temporary_path,
                         )
+                        pbar.update(1)
                         if any(case.architecture_failed for case in cases):
                             architecture_failed = True
 
