@@ -258,7 +258,9 @@ def main():
     wavelets_to_test = args.schemes if args.schemes else list(WAVELET_CATEGORIES.keys())
     modes_to_test = args.boundary_modes if args.boundary_modes else ALL_BOUNDARY_MODES
 
-    device = ttnn.open_device(device_id=0) if "ttnn" in args.backends else None
+    open_device_fn = getattr(ttnn, "open_device", getattr(getattr(ttnn, "_ttnn", None), "device", None).open_device if hasattr(ttnn, "_ttnn") else None)
+    close_device_fn = getattr(ttnn, "close_device", getattr(getattr(ttnn, "_ttnn", None), "device", None).close_device if hasattr(ttnn, "_ttnn") else None)
+    device = open_device_fn(device_id=0) if ("ttnn" in args.backends and open_device_fn is not None) else None
     print(f"Testing {len(wavelets_to_test)} wavelets x {len(modes_to_test)} boundary modes on backends: {args.backends}...")
 
     results = []
@@ -278,8 +280,8 @@ def main():
             pbar.update(1)
 
     pbar.close()
-    if device is not None:
-        ttnn.close_device(device)
+    if device is not None and close_device_fn is not None:
+        close_device_fn(device)
 
     args.output_json.parent.mkdir(parents=True, exist_ok=True)
 

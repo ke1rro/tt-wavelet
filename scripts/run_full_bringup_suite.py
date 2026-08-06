@@ -380,7 +380,9 @@ def main():
     print("=" * 80)
 
     # 1. Device Architecture Auto-Detection
-    device = ttnn.open_device(device_id=0)
+    open_device_fn = getattr(ttnn, "open_device", getattr(getattr(ttnn, "_ttnn", None), "device", None).open_device if hasattr(ttnn, "_ttnn") else None)
+    close_device_fn = getattr(ttnn, "close_device", getattr(getattr(ttnn, "_ttnn", None), "device", None).close_device if hasattr(ttnn, "_ttnn") else None)
+    device = open_device_fn(device_id=0)
     arch_str = str(device.arch()).replace("Arch.", "").lower()
     print(f"[Device Init] Detected Architecture: {device.arch()} ({arch_str})")
 
@@ -459,7 +461,8 @@ def main():
     print(f"[Precision Complete] {passed_count}/{total_count} passed. Saved to {prec_tsv_path}")
 
     # Close device before running standalone subprocesses to avoid locking
-    ttnn.close_device(device)
+    if device is not None and close_device_fn is not None:
+        close_device_fn(device)
     device = None
 
     # PHASE 2: PERFORMANCE BENCHMARK SUITE
@@ -496,7 +499,7 @@ def main():
 
     # 3. TTNN Phase
     print("\n[Perf Phase 3/3] TTNN ttnn-wavelet (Device)...")
-    device = ttnn.open_device(device_id=0)
+    device = open_device_fn(device_id=0)
     pbar_ttnn = tqdm(total=perf_total_runs, desc="TTNN Operations Benchmark")
     try:
         for wavelet in selected_perf_wavelets:
@@ -507,7 +510,8 @@ def main():
                     pbar_ttnn.update(1)
     finally:
         pbar_ttnn.close()
-        ttnn.close_device(device)
+        if close_device_fn is not None:
+            close_device_fn(device)
 
     # Save Performance Results & Plots
     perf_tsv_path = performance_dir / "performance_results.tsv"
