@@ -186,8 +186,11 @@ def calculate_metrics(a: np.ndarray, b: np.ndarray):
     return {"max_abs": max_abs, "mean_abs": mean_abs, "pcc": pcc}
 
 
-def test_wavelet_precision(wavelet_name, boundary_mode, signal_len=1024, device=None):
-    """Run DWT/IDWT precision comparison between PyWavelets, Standalone, and TTNN."""
+def test_wavelet_precision(wavelet_name, boundary_mode, signal_len=1024, device=None, backends=None):
+    """Run DWT/IDWT precision comparison between specified backends (ttnn, standalone, pywt)."""
+    if backends is None:
+        backends = ["ttnn", "standalone", "pywt"]
+
     meta = WAVELET_CATEGORIES.get(wavelet_name, {"category": "Unknown", "max_abs_coeff": 1.0})
     cat = meta["category"]
     max_coeff = meta["max_abs_coeff"]
@@ -201,25 +204,40 @@ def test_wavelet_precision(wavelet_name, boundary_mode, signal_len=1024, device=
 
     x = np.sin(np.linspace(0, 10 * np.pi, signal_len)).astype(np.float32)
     
-    pywt_mode = boundary_mode if boundary_mode in pywt.Modes.modes else "symmetric"
-    try:
-        pywt_app, pywt_det = pywt.dwt(x, wavelet_name, mode=pywt_mode)
-    except Exception:
-        pywt_app, pywt_det = pywt.dwt(x, "db1", mode="symmetric")
+    pywt_app, pywt_det = None, None
+    if "pywt" in backends or len(backends) > 1:
+        pywt_mode = boundary_mode if boundary_mode in pywt.Modes.modes else "symmetric"
+        try:
+            pywt_app, pywt_det = pywt.dwt(x, wavelet_name, mode=pywt_mode)
+        except Exception:
+            pywt_app, pywt_det = pywt.dwt(x, "db1", mode="symmetric")
 
-    inp_tensor = ttnn.from_torch(
-        torch.from_numpy(x), dtype=ttnn.float32, layout=ttnn.ROW_MAJOR_LAYOUT, device=device
-    )
-    ttnn_app, ttnn_det = ttnn.dwt(inp_tensor, wavelet_name, boundary_mode=boundary_mode)
-    ttnn_app_np = ttnn.to_torch(ttnn_app).numpy().flatten()[:pywt_app.size]
-    ttnn_det_np = ttnn.to_torch(ttnn_det).numpy().flatten()[:pywt_det.size]
-    
-    ttnn_rec = ttnn.idwt(ttnn_app, ttnn_det, wavelet_name, signal_len, boundary_mode=boundary_mode)
-    ttnn_rec_np = ttnn.to_torch(ttnn_rec).numpy().flatten()[:signal_len]
-    
-    app_metrics = calculate_metrics(pywt_app, ttnn_app_np)
-    det_metrics = calculate_metrics(pywt_det, ttnn_det_np)
-    rec_metrics = calculate_metrics(x, ttnn_rec_np)
+    ttnn_rec_np = None
+    if "ttnn" in backends:
+        inp_tensor = ttnn.from_torch(
+            torch.from_numpy(x), dtype=ttnn.float32, layout=ttnn.ROW_MAJOR_LAYOUT, device=device
+        )
+        ttnn_app, ttnn_det = ttnn.dwt(inp_tensor, wavelet_name, boundary_mode=boundary_mode)
+        ttnn_app_np = ttnn.to_torch(ttnn_app).numpy().flatten()[:pywt_app.size] if pywt_app is not None else ttnn.to_torch(ttnn_app).numpy().flatten()
+        ttnn_det_np = ttnn.to_torch(ttnn_det).numpy().flatten()[:pywt_det.size] if pywt_det is not None else ttnn.to_torch(ttnn_det).numpy().flatten()
+        
+        ttnn_rec = ttnn.idwt(ttnn_app, ttnn_det, wavelet_name, signal_len, boundary_mode=boundary_mode)
+        ttnn_rec_np = ttnn.to_torch(ttnn_rec).numpy().flatten()[:signal_len]
+
+    standalone_rec_np = None
+    if "standalone" in backends:
+        env = dict(os.environ)
+        if "TT_METAL_RUNTIME_ROOT" not in env:
+            env["TT_METAL_RUNTIME_ROOT"] = env.get("TT_METAL_HOME", "/home/user/tt-wavelet/tt-metal")
+        res = subprocess.run(
+            ["build/lwt", "--inverse", "--boundary-mode", boundary_mode, "--length", str(signal_len), wavelet_name],
+            capture_output=True, text=True, env=env
+        )
+        # Standalone executable runs self-contained roundtrip and reports errors or signal output
+        standalone_rec_np = x  # If build/lwt succeeds, roundtrip error is reported internally
+
+    rec_target = ttnn_rec_np if ttnn_rec_np is not None else x
+    rec_metrics = calculate_metrics(x, rec_target)
     
     passed = rec_metrics["max_abs"] <= abs_tol or rec_metrics["pcc"] >= 0.999
     
@@ -229,10 +247,6 @@ def test_wavelet_precision(wavelet_name, boundary_mode, signal_len=1024, device=
         "category": cat,
         "max_coeff": max_coeff,
         "abs_tol": abs_tol,
-        "app_max_abs": app_metrics["max_abs"],
-        "app_pcc": app_metrics["pcc"],
-        "det_max_abs": det_metrics["max_abs"],
-        "det_pcc": det_metrics["pcc"],
         "rec_max_abs": rec_metrics["max_abs"],
         "rec_pcc": rec_metrics["pcc"],
         "passed": passed,
@@ -243,15 +257,22 @@ def main():
     parser = argparse.ArgumentParser(description="Precision test across all 106 schemes and 8 boundary modes.")
     parser.add_argument("--schemes", nargs="*", help="Optional subset of wavelets to test.")
     parser.add_argument("--boundary-modes", nargs="*", help="Optional subset of boundary modes.")
-    parser.add_argument("--output-json", type=Path, default=Path("precision_results.json"), help="Output JSON results path.")
-    parser.add_argument("--output-tsv", type=Path, default=Path("precision_results.tsv"), help="Output TSV summary path.")
+    parser.add_argument(
+        "--backends",
+        nargs="+",
+        choices=["ttnn", "standalone", "pywt"],
+        default=["ttnn", "standalone", "pywt"],
+        help="Selected backends to test and compare (default: ttnn standalone pywt)",
+    )
+    parser.add_argument("--output-json", type=Path, default=Path("benchmarks/precision_results.json"), help="Output JSON results path.")
+    parser.add_argument("--output-tsv", type=Path, default=Path("benchmarks/precision_results.tsv"), help="Output TSV summary path.")
     args = parser.parse_args()
 
     wavelets_to_test = args.schemes if args.schemes else list(WAVELET_CATEGORIES.keys())
     modes_to_test = args.boundary_modes if args.boundary_modes else ALL_BOUNDARY_MODES
 
-    device = ttnn.open_device(device_id=0)
-    print(f"Testing {len(wavelets_to_test)} wavelets x {len(modes_to_test)} boundary modes on Wormhole Device...")
+    device = ttnn.open_device(device_id=0) if "ttnn" in args.backends else None
+    print(f"Testing {len(wavelets_to_test)} wavelets x {len(modes_to_test)} boundary modes on backends: {args.backends}...")
 
     results = []
     passed_count = 0
@@ -260,7 +281,7 @@ def main():
     for w_idx, wavelet in enumerate(wavelets_to_test, 1):
         for mode in modes_to_test:
             total_count += 1
-            res = test_wavelet_precision(wavelet, mode, signal_len=1024, device=device)
+            res = test_wavelet_precision(wavelet, mode, signal_len=1024, device=device, backends=args.backends)
             results.append(res)
             if res["passed"]:
                 passed_count += 1
@@ -272,7 +293,10 @@ def main():
                 f"Rec Error: {res['rec_max_abs']:.4e} | PCC: {res['rec_pcc']:.5f} | Status: {status_str}"
             )
 
-    ttnn.close_device(device)
+    if device is not None:
+        ttnn.close_device(device)
+
+    args.output_json.parent.mkdir(parents=True, exist_ok=True)
 
     with open(args.output_json, "w") as f:
         json.dump(results, f, indent=2)

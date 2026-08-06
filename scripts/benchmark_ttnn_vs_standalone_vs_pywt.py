@@ -105,6 +105,80 @@ def measure_ttnn_timing(wavelet_name, boundary_mode, signal_len, device, repeats
     return dwt_ms, idwt_ms
 
 
+def generate_benchmark_plots(summary_tsv: Path, output_dir: Path):
+    """Generate comparative PNG performance charts using matplotlib."""
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ImportError:
+        print("matplotlib not available, skipping chart plotting.")
+        return
+
+    charts_dir = output_dir / "charts"
+    charts_dir.mkdir(parents=True, exist_ok=True)
+
+    data = {}
+    with open(summary_tsv, "r") as f:
+        header = f.readline().strip().split("\t")
+        for line in f:
+            parts = line.strip().split("\t")
+            if len(parts) < 9:
+                continue
+            w, N, mode, py_dwt, py_idwt, std_dwt, std_idwt, tt_dwt, tt_idwt = (
+                parts[0], int(parts[1]), parts[2],
+                float(parts[3]), float(parts[4]),
+                float(parts[5]), float(parts[6]),
+                float(parts[7]), float(parts[8])
+            )
+            key = (w, mode)
+            if key not in data:
+                data[key] = {"N": [], "py_dwt": [], "py_idwt": [], "std_dwt": [], "std_idwt": [], "tt_dwt": [], "tt_idwt": []}
+            data[key]["N"].append(N)
+            data[key]["py_dwt"].append(py_dwt)
+            data[key]["py_idwt"].append(py_idwt)
+            data[key]["std_dwt"].append(std_dwt)
+            data[key]["std_idwt"].append(std_idwt)
+            data[key]["tt_dwt"].append(tt_dwt)
+            data[key]["tt_idwt"].append(tt_idwt)
+
+    for (w, mode), res in data.items():
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
+        fig.suptitle(f"Performance Comparison: {w} ({mode})", fontsize=14, fontweight="bold")
+
+        # DWT Plot
+        if any(v > 0 for v in res["py_dwt"]):
+            ax1.plot(res["N"], res["py_dwt"], "o-", label="PyWavelets (CPU)", color="#e74c3c", linewidth=2)
+        if any(v > 0 for v in res["std_dwt"]):
+            ax1.plot(res["N"], res["std_dwt"], "s--", label="Standalone tt-wavelet", color="#2ecc71", linewidth=2)
+        if any(v > 0 for v in res["tt_dwt"]):
+            ax1.plot(res["N"], res["tt_dwt"], "^-.", label="TTNN ttnn-wavelet", color="#3498db", linewidth=2)
+        ax1.set_title("1D Forward DWT Execution Time")
+        ax1.set_xlabel("Signal Length (N)")
+        ax1.set_ylabel("Execution Time (ms)")
+        ax1.grid(True, linestyle="--", alpha=0.6)
+        ax1.legend()
+
+        # IDWT Plot
+        if any(v > 0 for v in res["py_idwt"]):
+            ax2.plot(res["N"], res["py_idwt"], "o-", label="PyWavelets (CPU)", color="#e74c3c", linewidth=2)
+        if any(v > 0 for v in res["std_idwt"]):
+            ax2.plot(res["N"], res["std_idwt"], "s--", label="Standalone tt-wavelet", color="#2ecc71", linewidth=2)
+        if any(v > 0 for v in res["tt_idwt"]):
+            ax2.plot(res["N"], res["tt_idwt"], "^-.", label="TTNN ttnn-wavelet", color="#3498db", linewidth=2)
+        ax2.set_title("1D Inverse IDWT Execution Time")
+        ax2.set_xlabel("Signal Length (N)")
+        ax2.set_ylabel("Execution Time (ms)")
+        ax2.grid(True, linestyle="--", alpha=0.6)
+        ax2.legend()
+
+        plt.tight_layout()
+        chart_path = charts_dir / f"{w.replace('.', '')}_{mode}_performance.png"
+        plt.savefig(chart_path, dpi=150)
+        plt.close()
+        print(f"Generated chart: {chart_path}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Performance Benchmark: PyWavelets vs Standalone vs TTNN")
     parser.add_argument("--schemes", nargs="*", default=DEFAULT_WAVELETS, help="Wavelet schemes to benchmark.")
@@ -112,15 +186,22 @@ def main():
     parser.add_argument("--length-stop", type=int, default=100000, help="Signal length stop.")
     parser.add_argument("--length-step", type=int, default=30000, help="Signal length step.")
     parser.add_argument("--boundary-modes", nargs="*", default=ALL_BOUNDARY_MODES, help="Boundary modes.")
+    parser.add_argument(
+        "--backends",
+        nargs="+",
+        choices=["ttnn", "standalone", "pywt"],
+        default=["ttnn", "standalone", "pywt"],
+        help="Selected backends to benchmark (default: ttnn standalone pywt)",
+    )
     parser.add_argument("--repeats", type=int, default=20, help="Number of benchmark repeats.")
-    parser.add_argument("--output-dir", type=Path, default=Path("docs/benchmark_results"), help="Output benchmark directory.")
+    parser.add_argument("--output-dir", type=Path, default=Path("benchmarks/results"), help="Output benchmark directory.")
     args = parser.parse_args()
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    device = ttnn.open_device(device_id=0)
+    device = ttnn.open_device(device_id=0) if "ttnn" in args.backends else None
 
     lengths = list(range(args.length_start, args.length_stop + 1, args.length_step))
-    print(f"Starting performance benchmark across {len(args.schemes)} wavelets, {len(lengths)} lengths, {len(args.boundary_modes)} modes...")
+    print(f"Starting performance benchmark across {len(args.schemes)} wavelets, {len(lengths)} lengths, {len(args.boundary_modes)} modes on backends: {args.backends}...")
 
     summary_tsv = args.output_dir / "summary.tsv"
     with open(summary_tsv, "w") as f_tsv:
@@ -136,9 +217,9 @@ def main():
                 
                 for mode in args.boundary_modes:
                     for N in lengths:
-                        pywt_dwt, pywt_idwt = measure_pywt_timing(wavelet, mode, N, repeats=args.repeats)
-                        std_dwt, std_idwt = measure_standalone_timing(wavelet, mode, N, repeats=args.repeats)
-                        ttnn_dwt, ttnn_idwt = measure_ttnn_timing(wavelet, mode, N, device, repeats=args.repeats)
+                        pywt_dwt, pywt_idwt = measure_pywt_timing(wavelet, mode, N, repeats=args.repeats) if "pywt" in args.backends else (0.0, 0.0)
+                        std_dwt, std_idwt = measure_standalone_timing(wavelet, mode, N, repeats=args.repeats) if "standalone" in args.backends else (0.0, 0.0)
+                        ttnn_dwt, ttnn_idwt = measure_ttnn_timing(wavelet, mode, N, device, repeats=args.repeats) if "ttnn" in args.backends else (0.0, 0.0)
 
                         log_line = (
                             f"N={N:7d} | Mode={mode:13s} | "
@@ -154,7 +235,12 @@ def main():
                             f"{std_dwt:.4f}\t{std_idwt:.4f}\t{ttnn_dwt:.4f}\t{ttnn_idwt:.4f}\n"
                         )
 
-    ttnn.close_device(device)
+    if device is not None:
+        ttnn.close_device(device)
+
+    # Generate comparative PNG plots
+    generate_benchmark_plots(summary_tsv, args.output_dir)
+
     print("\n" + "=" * 80)
     print(f"BENCHMARK COMPLETE. Results saved to: {args.output_dir}")
     print(f"Summary TSV: {summary_tsv}")
