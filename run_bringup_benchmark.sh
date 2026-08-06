@@ -16,11 +16,20 @@ for arg in "$@"; do
   fi
 done
 
-# Use active shell python or repository .venv python if available
-if [[ -x "$SCRIPT_DIR/.venv/bin/python3" ]]; then
-  PYTHON_BIN="$SCRIPT_DIR/.venv/bin/python3"
-else
-  PYTHON_BIN="$(which python3)"
+# Virtual environment & dependency management
+VENV_DIR="$SCRIPT_DIR/.venv"
+if [[ ! -d "$VENV_DIR" ]]; then
+  echo "[Setup] Creating virtual environment at $VENV_DIR..."
+  python3 -m venv "$VENV_DIR"
+fi
+
+source "$VENV_DIR/bin/activate"
+PYTHON_BIN="$VENV_DIR/bin/python3"
+
+if ! "$PYTHON_BIN" -c "import torch, pywt, tqdm, matplotlib, scipy" 2>/dev/null; then
+  echo "[Setup] Installing required Python dependencies from requirements.txt..."
+  "$PYTHON_BIN" -m pip install -q --upgrade pip 2>/dev/null || true
+  "$PYTHON_BIN" -m pip install -q -r "$SCRIPT_DIR/requirements.txt"
 fi
 
 PRECISION_DIR="$SCRIPT_DIR/benchmarks/precision"
@@ -92,7 +101,7 @@ else
     --dim 1d \
     --backends ttnn standalone pywt \
     --schemes "${PERF_SCHEMES_1D[@]}" \
-    --length-start 100000 --length-stop 1000000 --length-step 300000 \
+    --length-start 100000 --length-stop 1000000 --length-step 10000 \
     --repeats 20 \
     --output-dir "$PERFORMANCE_DIR"
 
