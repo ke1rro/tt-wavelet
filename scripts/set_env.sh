@@ -21,12 +21,13 @@ ROOT_DIR=$(resolve_root)
 export TT_METAL_ROOT="$ROOT_DIR/tt-metal"
 export TT_METAL_HOME="$ROOT_DIR/tt-metal"
 export TT_METAL_RUNTIME_ROOT="$ROOT_DIR/tt-metal"
-TT_LIBRARY_PATH="$ROOT_DIR/build/tt-metal/tt_metal:$ROOT_DIR/build/tt-metal/lib:$ROOT_DIR/build/tt-metal/tt_metal/third_party/umd/device:$ROOT_DIR/build/tt-metal/tt_stl"
+TT_LIBRARY_PATH="$ROOT_DIR/build/tt-metal/tt_metal:$ROOT_DIR/build/tt-metal/lib:$ROOT_DIR/tt-metal/build/lib:$ROOT_DIR/build/lib:$ROOT_DIR/build/tt-metal/tt_metal/third_party/umd/device:$ROOT_DIR/build/tt-metal/tt_stl"
 if [[ -n "${LD_LIBRARY_PATH:-}" ]]; then
   export LD_LIBRARY_PATH="$TT_LIBRARY_PATH:$LD_LIBRARY_PATH"
 else
   export LD_LIBRARY_PATH="$TT_LIBRARY_PATH"
 fi
+export PYTHONPATH="$ROOT_DIR/.venv/lib/python3.10/site-packages:$ROOT_DIR/build/lib:$ROOT_DIR/tt-metal/ttnn:$ROOT_DIR"
 export CC=clang-20
 export CXX=clang++-20
 unset TT_METAL_SLOW_DISPATCH_MODE

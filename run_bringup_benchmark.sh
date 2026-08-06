@@ -1,136 +1,222 @@
 #!/usr/bin/env bash
-# Architecture-Independent Master Bringup & Benchmark Runner (1D & 2D)
+# ==============================================================================
+# Architecture-Independent Precision + Performance Benchmark Suite for tt-wavelet
+# ==============================================================================
 # Usage:
-#   ./run_bringup_benchmark.sh              # Full 1D & 2D precision validation + 4-scheme performance benchmarks
-#   ./run_bringup_benchmark.sh --test-run   # Quick test/verification run
+#   ./run_bringup_benchmark.sh                # Full overnight benchmark run
+#   ./run_bringup_benchmark.sh --test-run     # Pipeline validation test run
+#   ./run_bringup_benchmark.sh --seed 42       # Run with specific random seed
+# ==============================================================================
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
+PROJECT_ROOT="$SCRIPT_DIR"
 
-IS_TEST_RUN=0
-for arg in "$@"; do
-  if [[ "$arg" == "--test-run" ]]; then
-    IS_TEST_RUN=1
-  fi
+cd "$PROJECT_ROOT"
+
+# Parse Command Line Arguments
+TEST_RUN=false
+SEED=""
+EXPLICIT_SCHEMES=()
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --test-run)
+      TEST_RUN=true
+      shift
+      ;;
+    --seed)
+      SEED="$2"
+      shift 2
+      ;;
+    --schemes)
+      shift
+      while [[ $# -gt 0 && ! "$1" =~ ^-- ]]; do
+        EXPLICIT_SCHEMES+=("$1")
+        shift
+      done
+      ;;
+    *)
+      echo "Unknown option: $1"
+      echo "Usage: $0 [--test-run] [--seed <INT>] [--schemes <SCHEME1> <SCHEME2>...]"
+      exit 1
+      ;;
+  esac
 done
 
-# Virtual environment & dependency management
-VENV_DIR="$SCRIPT_DIR/.venv"
-if [[ ! -d "$VENV_DIR" ]]; then
-  echo "[Setup] Creating virtual environment at $VENV_DIR..."
-  python3 -m venv "$VENV_DIR"
+# Source Environment Setup
+if [[ -f "scripts/set_env.sh" ]]; then
+  echo "[Setup] Sourcing environment from scripts/set_env.sh..."
+  source "scripts/set_env.sh"
 fi
 
-source "$VENV_DIR/bin/activate"
-PYTHON_BIN="$VENV_DIR/bin/python3"
-
-if ! "$PYTHON_BIN" -c "import torch, pywt, tqdm, matplotlib, scipy" 2>/dev/null; then
-  echo "[Setup] Installing required Python dependencies from requirements.txt..."
-  "$PYTHON_BIN" -m pip install -q --upgrade pip 2>/dev/null || true
-  "$PYTHON_BIN" -m pip install -q -r "$SCRIPT_DIR/requirements.txt"
+# Detect Python Executable
+PYTHON_EXEC="python3"
+if [[ -n "${VENV_PYTHON:-}" && -f "$VENV_PYTHON" ]]; then
+  PYTHON_EXEC="$VENV_PYTHON"
+elif [[ -d ".venv" && -f ".venv/bin/python3" ]]; then
+  PYTHON_EXEC=".venv/bin/python3"
 fi
 
-PRECISION_DIR="$SCRIPT_DIR/benchmarks/precision"
-PERFORMANCE_DIR="$SCRIPT_DIR/benchmarks/performance"
-PLOTS_DIR="$PERFORMANCE_DIR/plots"
+echo "=========================================================================="
+echo "          TT-WAVELET AUTOMATED BENCHMARK SUITE          "
+echo "=========================================================================="
+echo "Python Executable: $PYTHON_EXEC"
+echo "Test Run Mode:     $TEST_RUN"
+if [[ -n "$SEED" ]]; then
+  echo "Random Seed:       $SEED"
+fi
 
-mkdir -p "$PRECISION_DIR" "$PERFORMANCE_DIR" "$PLOTS_DIR"
+# Setup Directory Hierarchy
+mkdir -p benchmarks/precision
+mkdir -p benchmarks/performance/preflight
+mkdir -p benchmarks/performance/1d/plots
+mkdir -p benchmarks/performance/2d/plots
 
-# Randomly select 1 compact, 1 medium, 1 large scheme, plus coif17 for 1D
-COMPACT_SCHEMES=("db1" "db2" "bior1.3" "bior2.2" "sym2" "haar")
-MEDIUM_SCHEMES=("db9" "db10" "bior3.9" "coif3" "sym10")
-LARGE_SCHEMES=("db38" "coif12" "sym20" "bior6.8")
+# ALL 8 Boundary Modes
+ALL_MODES=(symmetric zero constant periodic antisymmetric smooth reflect antireflect)
 
-RANDOM_COMPACT="${COMPACT_SCHEMES[$RANDOM % ${#COMPACT_SCHEMES[@]}]}"
-RANDOM_MEDIUM="${MEDIUM_SCHEMES[$RANDOM % ${#MEDIUM_SCHEMES[@]}]}"
-RANDOM_LARGE="${LARGE_SCHEMES[$RANDOM % ${#LARGE_SCHEMES[@]}]}"
-
-# 1D supports all schemes up to coif17
-PERF_SCHEMES_1D=("$RANDOM_COMPACT" "$RANDOM_MEDIUM" "$RANDOM_LARGE" "coif17")
-PERF_SCHEMES_1D=($(echo "${PERF_SCHEMES_1D[@]}" | tr ' ' '\n' | sort -u | tr '\n' ' '))
-
-# 2D uses compact/medium 2D schemes that fit within Tensix kernel config buffer (70,656 bytes)
-PERF_SCHEMES_2D=("db1" "bior1.3" "bior2.2" "sym2")
-
-echo "================================================================================"
-echo " TENSTORRENT WAVELET AUTOMATED BRINGUP & BENCHMARK SUITE (1D & 2D) "
-echo "================================================================================"
-echo "Selected 1D Schemes: ${PERF_SCHEMES_1D[*]}"
-echo "Selected 2D Schemes: ${PERF_SCHEMES_2D[*]}"
-echo "Python Executable:  ${PYTHON_BIN}"
-
-if [[ "$IS_TEST_RUN" -eq 1 ]]; then
-  echo "[Mode] TEST / VERIFICATION RUN"
-  echo "--- Phase 1: Precision Test (1D) ---"
-  "$SCRIPT_DIR/scripts/set_env.sh" "$PYTHON_BIN" "$SCRIPT_DIR/scripts/validate_all_106_schemes_precision.py" \
-    --schemes db1 bior3.9 \
-    --boundary-modes symmetric zero \
-    --output-json "$PRECISION_DIR/precision_results.json" \
-    --output-tsv "$PRECISION_DIR/precision_results.tsv"
-
-  echo "--- Phase 2: 1D Performance Benchmark (100k - 400k) ---"
-  "$SCRIPT_DIR/scripts/set_env.sh" "$PYTHON_BIN" "$SCRIPT_DIR/scripts/benchmark_ttnn_vs_standalone_vs_pywt.py" \
-    --dim 1d \
-    --backends ttnn standalone pywt \
-    --schemes "${PERF_SCHEMES_1D[@]}" \
-    --boundary-modes symmetric zero \
-    --length-start 100000 --length-stop 400000 --length-step 300000 \
-    --repeats 3 \
-    --output-dir "$PERFORMANCE_DIR"
-
-  echo "--- Phase 3: 2D Performance Benchmark (256x256 - 512x512) ---"
-  "$SCRIPT_DIR/scripts/set_env.sh" "$PYTHON_BIN" "$SCRIPT_DIR/scripts/benchmark_ttnn_vs_standalone_vs_pywt.py" \
-    --dim 2d \
-    --backends ttnn standalone pywt \
-    --schemes "${PERF_SCHEMES_2D[@]}" \
-    --boundary-modes symmetric zero \
-    --length-start 256 --length-stop 512 --length-step 256 \
-    --repeats 3 \
-    --output-dir "$PERFORMANCE_DIR"
+# Phase 1: Precision Validation Sweep
+echo ""
+echo "--------------------------------------------------------------------------"
+echo "[Phase 1/5] Running Precision & Correctness Validation Suite"
+echo "--------------------------------------------------------------------------"
+if [[ "$TEST_RUN" == "true" ]]; then
+  echo "[Test Run] Running precision validation on representative schemes (1D + 2D)..."
+  $PYTHON_EXEC scripts/validate_all_106_schemes_precision.py \
+    --schemes db1 bior1.3 sym6 db7 \
+    --dimensions 1d 2d \
+    --signal-len-1d 256 \
+    --matrix-height-2d 32 \
+    --matrix-width-2d 32 \
+    --output-json benchmarks/precision/precision_results.json \
+    --output-tsv benchmarks/precision/precision_results.tsv
 else
-  echo "[Mode] FULL PRODUCTION SWEEP RUN"
-  echo "--- Phase 1: Full Precision Test (All 106 schemes x 8 boundary modes) ---"
-  "$SCRIPT_DIR/scripts/set_env.sh" "$PYTHON_BIN" "$SCRIPT_DIR/scripts/validate_all_106_schemes_precision.py" \
-    --output-json "$PRECISION_DIR/precision_results.json" \
-    --output-tsv "$PRECISION_DIR/precision_results.tsv"
-
-  echo "--- Phase 2: 1D Performance Benchmark (4 schemes x 8 modes x 100k-1M) ---"
-  "$SCRIPT_DIR/scripts/set_env.sh" "$PYTHON_BIN" "$SCRIPT_DIR/scripts/benchmark_ttnn_vs_standalone_vs_pywt.py" \
-    --dim 1d \
-    --backends ttnn standalone pywt \
-    --schemes "${PERF_SCHEMES_1D[@]}" \
-    --length-start 100000 --length-stop 1000000 --length-step 10000 \
-    --repeats 20 \
-    --output-dir "$PERFORMANCE_DIR"
-
-  echo "--- Phase 3: 2D Performance Benchmark (4 schemes x 8 modes x 256-1024) ---"
-  "$SCRIPT_DIR/scripts/set_env.sh" "$PYTHON_BIN" "$SCRIPT_DIR/scripts/benchmark_ttnn_vs_standalone_vs_pywt.py" \
-    --dim 2d \
-    --backends ttnn standalone pywt \
-    --schemes "${PERF_SCHEMES_2D[@]}" \
-    --length-start 256 --length-stop 1024 --length-step 256 \
-    --repeats 20 \
-    --output-dir "$PERFORMANCE_DIR"
+  echo "[Production Run] Running precision validation on ALL 106 schemes (1D + 2D)..."
+  $PYTHON_EXEC scripts/validate_all_106_schemes_precision.py \
+    --dimensions 1d 2d \
+    --signal-len-1d 1024 \
+    --matrix-height-2d 64 \
+    --matrix-width-2d 64 \
+    --output-json benchmarks/precision/precision_results.json \
+    --output-tsv benchmarks/precision/precision_results.tsv
 fi
 
-echo "--- Phase 4: Plot Generation (1D & 2D) ---"
-if [[ -f "$PERFORMANCE_DIR/summary_1d.tsv" ]]; then
-  "$SCRIPT_DIR/scripts/set_env.sh" "$PYTHON_BIN" "$SCRIPT_DIR/scripts/generate_benchmark_plots.py" \
-    --summary-tsv "$PERFORMANCE_DIR/summary_1d.tsv" \
-    --output-dir "$PLOTS_DIR"
+# Phase 2: Common Performance Scheme Selection & Preflight
+echo ""
+echo "--------------------------------------------------------------------------"
+echo "[Phase 2/5] Common Performance Scheme Selection & Mandatory Preflight"
+echo "--------------------------------------------------------------------------"
+SELECT_CMD=("$PYTHON_EXEC" "scripts/select_and_preflight_schemes.py" "--output-file" "benchmarks/performance/selected_schemes.txt")
+if [[ -n "$SEED" ]]; then
+  SELECT_CMD+=("--seed" "$SEED")
 fi
-if [[ -f "$PERFORMANCE_DIR/summary_2d.tsv" ]]; then
-  "$SCRIPT_DIR/scripts/set_env.sh" "$PYTHON_BIN" "$SCRIPT_DIR/scripts/generate_benchmark_plots.py" \
-    --summary-tsv "$PERFORMANCE_DIR/summary_2d.tsv" \
-    --output-dir "$PLOTS_DIR"
+if [[ ${#EXPLICIT_SCHEMES[@]} -gt 0 ]]; then
+  SELECT_CMD+=("--schemes" "${EXPLICIT_SCHEMES[@]}")
 fi
 
-echo "================================================================================"
-echo " BRINGUP & BENCHMARK SUITE COMPLETE "
-echo " Precision Summary:   $PRECISION_DIR/precision_results.tsv"
-echo " 1D Perf Summary:     $PERFORMANCE_DIR/summary_1d.tsv"
-echo " 2D Perf Summary:     $PERFORMANCE_DIR/summary_2d.tsv"
-echo " Performance Plots:   $PLOTS_DIR/"
-echo "================================================================================"
+"${SELECT_CMD[@]}"
+
+ACCEPTED_SCHEMES=($(cat benchmarks/performance/selected_schemes.txt))
+echo "Accepted Performance Schemes for 1D and 2D: ${ACCEPTED_SCHEMES[*]}"
+
+# Phase 3: 1D Performance Sweep
+echo ""
+echo "--------------------------------------------------------------------------"
+echo "[Phase 3/5] Benchmarking 1D Performance Grid (PyWT vs tt-wavelet vs TTNN)"
+echo "--------------------------------------------------------------------------"
+
+if [[ "$TEST_RUN" == "true" ]]; then
+  echo "[Test Run] Benchmarking 1D representative signal length N=500000 (repeats=3)..."
+  $PYTHON_EXEC compare_timings.py \
+    --backend all \
+    --transform both \
+    --wavelets "${ACCEPTED_SCHEMES[@]}" \
+    --boundary-modes "${ALL_MODES[@]}" \
+    --lengths 500000 \
+    --pywt-repeats 3 \
+    --pywt-warmup-runs 1 \
+    --tt-repeats 3 \
+    --tt-warmup-runs 1 \
+    --csv benchmarks/performance/1d/summary_1d.tsv \
+    --overwrite
+else
+  echo "[Production Run] Benchmarking 1D sweep grid (100k -> 1M step 10k, exactly 91 lengths, repeats=20)..."
+  $PYTHON_EXEC compare_timings.py \
+    --backend all \
+    --transform both \
+    --wavelets "${ACCEPTED_SCHEMES[@]}" \
+    --boundary-modes "${ALL_MODES[@]}" \
+    --length-start 100000 \
+    --length-stop 1000000 \
+    --length-step 10000 \
+    --pywt-repeats 20 \
+    --pywt-warmup-runs 1 \
+    --tt-repeats 20 \
+    --tt-warmup-runs 1 \
+    --csv benchmarks/performance/1d/summary_1d.tsv \
+    --overwrite
+fi
+
+# Phase 4: 2D Performance Sweep
+echo ""
+echo "--------------------------------------------------------------------------"
+echo "[Phase 4/5] Benchmarking 2D Performance Grid (PyWT vs tt-wavelet vs TTNN)"
+echo "--------------------------------------------------------------------------"
+
+if [[ "$TEST_RUN" == "true" ]]; then
+  echo "[Test Run] Benchmarking 2D representative shape 1000x500 (repeats=3)..."
+  $PYTHON_EXEC compare_timings.py \
+    --backend all \
+    --transform both \
+    --wavelets "${ACCEPTED_SCHEMES[@]}" \
+    --boundary-modes "${ALL_MODES[@]}" \
+    --shapes "1000x500" \
+    --pywt-repeats 3 \
+    --pywt-warmup-runs 1 \
+    --tt-repeats 3 \
+    --tt-warmup-runs 1 \
+    --csv benchmarks/performance/2d/summary_2d.tsv \
+    --overwrite
+else
+  echo "[Production Run] Generating 91 matrix shapes 1000x100 -> 1000x1000 (repeats=20)..."
+  SHAPES_2D=($(seq 100 10 1000 | sed 's/^/1000x/'))
+  $PYTHON_EXEC compare_timings.py \
+    --backend all \
+    --transform both \
+    --wavelets "${ACCEPTED_SCHEMES[@]}" \
+    --boundary-modes "${ALL_MODES[@]}" \
+    --shapes "${SHAPES_2D[@]}" \
+    --pywt-repeats 20 \
+    --pywt-warmup-runs 1 \
+    --tt-repeats 20 \
+    --tt-warmup-runs 1 \
+    --csv benchmarks/performance/2d/summary_2d.tsv \
+    --overwrite
+fi
+
+# Phase 5: Strict Plot Generation
+echo ""
+echo "--------------------------------------------------------------------------"
+echo "[Phase 5/5] Generating 3-Curve Log-Scale Performance Line Plots"
+echo "--------------------------------------------------------------------------"
+$PYTHON_EXEC scripts/generate_benchmark_plots.py \
+  --summary-file benchmarks/performance/1d/summary_1d.tsv \
+  --output-dir benchmarks/performance/1d/plots
+
+$PYTHON_EXEC scripts/generate_benchmark_plots.py \
+  --summary-file benchmarks/performance/2d/summary_2d.tsv \
+  --output-dir benchmarks/performance/2d/plots
+
+echo ""
+echo "=========================================================================="
+echo "          BENCHMARK SUITE EXECUTION COMPLETE           "
+echo "=========================================================================="
+echo "Precision Results:    benchmarks/precision/precision_results.tsv"
+echo "Selected Schemes:     benchmarks/performance/selected_schemes.txt"
+echo "1D Summary:           benchmarks/performance/1d/summary_1d.tsv"
+echo "2D Summary:           benchmarks/performance/2d/summary_2d.tsv"
+echo "1D Plots Directory:   benchmarks/performance/1d/plots"
+echo "2D Plots Directory:   benchmarks/performance/2d/plots"
+echo "=========================================================================="

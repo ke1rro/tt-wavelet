@@ -42,7 +42,7 @@ struct Options {
     bool quiet{false};
     size_t repeats{1};
     size_t warmup_runs{1};
-    uint32_t core_limit{0};
+    uint32_t core_limit{64};
     uint32_t batch_count{1};
     ttwv::BoundaryMode boundary_mode{ttwv::BoundaryMode::kSymmetric};
     std::string wavelet;

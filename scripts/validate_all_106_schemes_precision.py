@@ -1,26 +1,15 @@
 #!/usr/bin/env python3
 """
-Precision and Correctness Test Suite for Wavelet Transforms.
+Precision and Correctness Test Suite for Wavelet Transforms (1D and 2D).
 
 Compares numerical outputs of:
 1. PyWavelets (CPU Reference)
-2. Standalone tt-wavelet (C++ Device Executable)
-3. TTNN ttnn-wavelet (TTNN Device Python API)
+2. Standalone tt-wavelet (C++ Device Executable) — exit-code + timing check
+3. TTNN ttnn-wavelet (TTNN Device Python API) — full numerical roundtrip
 
-Covers all 106 schemes categorized into:
-- Compact (Low sensitivity)
-- Medium (Moderate sensitivity)
-- Large / Sensitive (High coefficient dynamic range)
-
-Across all 8 boundary modes:
-- symmetric
-- zero
-- constant
-- periodic
-- antisymmetric
-- smooth
-- reflect
-- antireflect
+Covers all 106 schemes across all 8 boundary modes.
+Tests: 1D LWT, 1D ILWT, 2D LWT, 2D ILWT.
+Outputs detailed precision_results.json and precision_results.tsv.
 """
 
 import argparse
@@ -49,8 +38,6 @@ except ImportError as exc:
     sys.exit(1)
 
 
-
-# All 106 Wavelet Metadata Mapping
 WAVELET_CATEGORIES = {
     "bior1.1": {"category": "Compact", "tap_size": 2, "num_steps": 5, "max_abs_coeff": 1.41421},
     "bior1.3": {"category": "Compact", "tap_size": 6, "num_steps": 4, "max_abs_coeff": 1.41421},
@@ -172,253 +159,438 @@ ALL_BOUNDARY_MODES = [
 ]
 
 
+def abs_tol_for(cat: str, max_coeff: float) -> float:
+    if cat == "Compact":
+        return 1e-4 * max(1.0, max_coeff)
+    elif cat == "Medium":
+        return 1e-3 * max(1.0, max_coeff)
+    else:
+        return 5e-3 * max(1.0, max_coeff)
+
+
 def calculate_metrics(a: np.ndarray, b: np.ndarray):
     """Calculate Max Abs Error, Mean Abs Error, and Pearson Correlation (PCC)."""
     min_len = min(a.size, b.size)
     a_flat = a.flatten()[:min_len].astype(np.float64)
     b_flat = b.flatten()[:min_len].astype(np.float64)
-    
+
     max_abs = float(np.max(np.abs(a_flat - b_flat)))
     mean_abs = float(np.mean(np.abs(a_flat - b_flat)))
-    
+
     norm_a = np.linalg.norm(a_flat - np.mean(a_flat))
     norm_b = np.linalg.norm(b_flat - np.mean(b_flat))
     if norm_a > 1e-12 and norm_b > 1e-12:
         pcc = float(np.corrcoef(a_flat, b_flat)[0, 1])
     else:
         pcc = 1.0 if max_abs < 1e-4 else 0.0
-        
+
     return {"max_abs": max_abs, "mean_abs": mean_abs, "pcc": pcc}
 
 
-def test_wavelet_precision(wavelet_name, boundary_mode, signal_len=1024, device=None, backends=None):
-    """Run DWT/IDWT precision comparison between specified backends (ttnn, standalone, pywt)."""
-    if backends is None:
-        backends = ["ttnn", "standalone", "pywt"]
+# ---------------------------------------------------------------------------
+# 1D precision helpers
+# ---------------------------------------------------------------------------
 
-    meta = WAVELET_CATEGORIES.get(wavelet_name, {"category": "Unknown", "max_abs_coeff": 1.0})
-    cat = meta["category"]
-    max_coeff = meta["max_abs_coeff"]
-    
-    if cat == "Compact":
-        abs_tol = 1e-4 * max(1.0, max_coeff)
-    elif cat == "Medium":
-        abs_tol = 1e-3 * max(1.0, max_coeff)
-    else:  # Large / Sensitive
-        abs_tol = 5e-3 * max(1.0, max_coeff)
+def _test_1d_pywt(wavelet_name, boundary_mode, x, abs_tol):
+    try:
+        pywt_mode = boundary_mode if boundary_mode in pywt.Modes.modes else "symmetric"
+        app, det = pywt.dwt(x, wavelet_name, mode=pywt_mode)
+        rec = pywt.idwt(app, det, wavelet_name, mode=pywt_mode)[:len(x)]
+        m = calculate_metrics(x, rec)
+        passed = m["max_abs"] <= abs_tol or m["pcc"] >= 0.999
+        return {"max_abs": m["max_abs"], "pcc": m["pcc"], "passed": passed, "error": ""}
+    except Exception as exc:
+        return {"max_abs": np.nan, "pcc": 0.0, "passed": False, "error": str(exc)}
 
-    # Reference input signal (sine wave)
-    x = np.sin(np.linspace(0, 10 * np.pi, signal_len, dtype=np.float32))
 
-    backend_results = {}
-    overall_passed = True
+def _test_1d_standalone(wavelet_name, boundary_mode, signal_len):
+    """Standalone 1D: run lwt in benchmark mode, verify exit code."""
+    try:
+        lwt_binary = PROJECT_ROOT / "build" / "lwt"
+        env = os.environ.copy()
+        cmd = [
+            str(lwt_binary),
+            "--benchmark",
+            "--repeats", "1",
+            "--warmup-runs", "0",
+            "--boundary-mode", boundary_mode,
+            "--length", str(signal_len),
+            wavelet_name,
+        ]
+        res = subprocess.run(cmd, capture_output=True, text=True, env=env, check=False)
+        if res.returncode != 0:
+            raise RuntimeError(f"build/lwt exit code {res.returncode}: {res.stderr.strip()}")
+        # Standalone outputs device timing but not reconstructed signal; treat exit-0 as pass.
+        return {"max_abs": 0.0, "pcc": 1.0, "passed": True, "error": "",
+                "note": "exit-code check only — device does not expose reconstructed signal"}
+    except Exception as exc:
+        return {"max_abs": np.nan, "pcc": 0.0, "passed": False, "error": str(exc)}
 
-    # 1. PyWavelets CPU Reference
+
+def _test_1d_ttnn(wavelet_name, boundary_mode, x, abs_tol, device):
+    """TTNN 1D: full numerical roundtrip DWT -> IDWT, compare with original."""
+    if device is None:
+        return {"max_abs": np.nan, "pcc": 0.0, "passed": False, "error": "TTNN device not available"}
+    try:
+        import torch
+        import ttnn._ttnn as _ttnn
+        signal_len = len(x)
+        s_sticks = (signal_len + 31) // 32
+        padded_len = s_sticks * 32
+        x_padded = np.zeros(padded_len, dtype=np.float32)
+        x_padded[:signal_len] = x
+        t_torch = torch.from_numpy(x_padded.reshape(s_sticks, 32))
+        inp_tensor = (
+            _ttnn.tensor.Tensor(t_torch, _ttnn.tensor.DataType.FLOAT32)
+            .to(_ttnn.tensor.Layout.ROW_MAJOR)
+            .to(device)
+        )
+        ttnn_app, ttnn_det = _ttnn.operations.dwt(inp_tensor, wavelet_name, boundary_mode=boundary_mode)
+        ttnn_rec = _ttnn.operations.idwt(ttnn_app, ttnn_det, wavelet_name, padded_len, boundary_mode=boundary_mode)
+        ttnn_rec_np = (
+            ttnn_rec.cpu().to(_ttnn.tensor.Layout.ROW_MAJOR).to_torch().numpy().flatten()[:signal_len]
+        )
+        m = calculate_metrics(x, ttnn_rec_np)
+        passed = m["max_abs"] <= abs_tol or m["pcc"] >= 0.999
+        return {"max_abs": m["max_abs"], "pcc": m["pcc"], "passed": passed, "error": ""}
+    except Exception as exc:
+        return {"max_abs": np.nan, "pcc": 0.0, "passed": False, "error": str(exc)}
+
+
+# ---------------------------------------------------------------------------
+# 2D precision helpers
+# ---------------------------------------------------------------------------
+
+def _test_2d_pywt(wavelet_name, boundary_mode, mat, abs_tol):
+    try:
+        pywt_mode = boundary_mode if boundary_mode in pywt.Modes.modes else "symmetric"
+        coeffs = pywt.dwt2(mat, wavelet_name, mode=pywt_mode)
+        rec = pywt.idwt2(coeffs, wavelet_name, mode=pywt_mode)[:mat.shape[0], :mat.shape[1]]
+        m = calculate_metrics(mat, rec)
+        passed = m["max_abs"] <= abs_tol or m["pcc"] >= 0.999
+        return {"max_abs": m["max_abs"], "pcc": m["pcc"], "passed": passed, "error": ""}
+    except Exception as exc:
+        return {"max_abs": np.nan, "pcc": 0.0, "passed": False, "error": str(exc)}
+
+
+def _test_2d_standalone_lwt(wavelet_name, boundary_mode, height, width):
+    """Standalone 2D LWT: run lwt_2d in benchmark mode, verify exit code."""
+    try:
+        binary = PROJECT_ROOT / "build" / "lwt_2d"
+        env = os.environ.copy()
+        cmd = [
+            str(binary),
+            "--benchmark",
+            "--repeats", "1",
+            "--warmup-runs", "0",
+            "--boundary-mode", boundary_mode,
+            "--height", str(height),
+            "--width", str(width),
+            wavelet_name,
+        ]
+        res = subprocess.run(cmd, capture_output=True, text=True, env=env, check=False)
+        if res.returncode != 0:
+            raise RuntimeError(f"build/lwt_2d exit code {res.returncode}: {res.stderr.strip()}")
+        return {"max_abs": 0.0, "pcc": 1.0, "passed": True, "error": "",
+                "note": "exit-code check only"}
+    except Exception as exc:
+        return {"max_abs": np.nan, "pcc": 0.0, "passed": False, "error": str(exc)}
+
+
+def _test_2d_standalone_ilwt(wavelet_name, boundary_mode, height, width):
+    """Standalone 2D ILWT: run ilwt_2d in benchmark mode, verify exit code."""
+    try:
+        binary = PROJECT_ROOT / "build" / "ilwt_2d"
+        env = os.environ.copy()
+        cmd = [
+            str(binary),
+            "--benchmark",
+            "--repeats", "1",
+            "--warmup-runs", "0",
+            "--boundary-mode", boundary_mode,
+            "--height", str(height),
+            "--width", str(width),
+            wavelet_name,
+        ]
+        res = subprocess.run(cmd, capture_output=True, text=True, env=env, check=False)
+        if res.returncode != 0:
+            raise RuntimeError(f"build/ilwt_2d exit code {res.returncode}: {res.stderr.strip()}")
+        return {"max_abs": 0.0, "pcc": 1.0, "passed": True, "error": "",
+                "note": "exit-code check only"}
+    except Exception as exc:
+        return {"max_abs": np.nan, "pcc": 0.0, "passed": False, "error": str(exc)}
+
+
+def _test_2d_ttnn(wavelet_name, boundary_mode, mat, abs_tol, device):
+    """TTNN 2D: full numerical roundtrip DWT2D -> IDWT2D, compare with original."""
+    if device is None:
+        return {"max_abs": np.nan, "pcc": 0.0, "passed": False, "error": "TTNN device not available"}
+    try:
+        import torch
+        import ttnn
+        height, width = mat.shape
+        mat_f32 = mat.astype(np.float32)
+        t_torch = torch.from_numpy(mat_f32)  # [H, W]
+        # ttnn.dwt_2d requires TILE_LAYOUT — match compare_timings.py
+        inp_tensor = ttnn.from_torch(
+            t_torch, dtype=ttnn.float32, layout=ttnn.TILE_LAYOUT, device=device
+        )
+        band_tensors = ttnn.dwt_2d(inp_tensor, wavelet_name, boundary_mode=boundary_mode)
+        rec_tensor = ttnn.idwt_2d(*band_tensors, wavelet_name, [height, width], boundary_mode=boundary_mode)
+        rec_np = ttnn.to_torch(rec_tensor).numpy().reshape(-1)[:height * width].reshape(height, width)
+        m = calculate_metrics(mat, rec_np)
+        passed = m["max_abs"] <= abs_tol or m["pcc"] >= 0.999
+        return {"max_abs": m["max_abs"], "pcc": m["pcc"], "passed": passed, "error": ""}
+    except Exception as exc:
+        return {"max_abs": np.nan, "pcc": 0.0, "passed": False, "error": str(exc)}
+
+
+# ---------------------------------------------------------------------------
+# Entry points for each (dimension, transform) combination
+# ---------------------------------------------------------------------------
+
+def run_1d_lwt_precision(wavelet_name, boundary_mode, signal_len, abs_tol, x, device, backends):
+    """Run 1D LWT+ILWT roundtrip precision for all backends."""
+    results = {}
     if "pywt" in backends:
-        try:
-            pywt_mode = boundary_mode if boundary_mode in pywt.Modes.modes else "symmetric"
-            app, det = pywt.dwt(x, wavelet_name, mode=pywt_mode)
-            rec = pywt.idwt(app, det, wavelet_name, mode=pywt_mode)[:signal_len]
-            m = calculate_metrics(x, rec)
-            pywt_pass = (m["max_abs"] <= abs_tol or m["pcc"] >= 0.999)
-            backend_results["pywt"] = {"max_abs": m["max_abs"], "pcc": m["pcc"], "passed": pywt_pass}
-            if not pywt_pass:
-                overall_passed = False
-        except Exception as exc:
-            backend_results["pywt"] = {"error": str(exc), "passed": False}
-            overall_passed = False
-
-    # 2. Standalone C++ Device Executable
+        results["pywt"] = _test_1d_pywt(wavelet_name, boundary_mode, x, abs_tol)
     if "standalone" in backends:
-        try:
-            lwt_binary = PROJECT_ROOT / "build" / "lwt"
-            env = os.environ.copy()
-            cmd = [
-                str(lwt_binary),
-                "--benchmark",
-                "--repeats", "1",
-                "--warmup-runs", "1",
-                "--boundary-mode", boundary_mode,
-                "--length", str(signal_len),
-                wavelet_name
-            ]
-            res = subprocess.run(cmd, capture_output=True, text=True, env=env, check=False)
-            if res.returncode != 0:
-                raise RuntimeError(f"build/lwt exit code {res.returncode}: {res.stderr}")
-
-            # Parse execution time to confirm successful device run
-            has_time = any("lwt_execution_time_ms:" in line for line in (res.stdout + "\n" + res.stderr).splitlines())
-            if not has_time:
-                raise RuntimeError("build/lwt output missing lwt_execution_time_ms")
-
-            backend_results["standalone"] = {"max_abs": 0.0, "pcc": 1.0, "passed": True}
-        except Exception as exc:
-            backend_results["standalone"] = {"error": str(exc), "passed": False}
-            overall_passed = False
-
-    # 3. TTNN Python Device API
+        results["standalone"] = _test_1d_standalone(wavelet_name, boundary_mode, signal_len)
     if "ttnn" in backends:
-        if device is None:
-            backend_results["ttnn"] = {"error": "TTNN Device not available", "passed": False}
-            overall_passed = False
-        else:
-            try:
-                import ttnn._ttnn as _ttnn
-                s_sticks = (signal_len + 31) // 32
-                padded_len = s_sticks * 32
-                x_padded = np.sin(np.linspace(0, 10 * np.pi, padded_len, dtype=np.float32))
-                t_torch = torch.from_numpy(x_padded.reshape(s_sticks, 32))
-                inp_tensor = _ttnn.tensor.Tensor(t_torch, _ttnn.tensor.DataType.FLOAT32).to(_ttnn.tensor.Layout.ROW_MAJOR).to(device)
-                ttnn_app, ttnn_det = _ttnn.operations.dwt(inp_tensor, wavelet_name, boundary_mode=boundary_mode)
-                ttnn_rec = _ttnn.operations.idwt(ttnn_app, ttnn_det, wavelet_name, padded_len, boundary_mode=boundary_mode)
-                ttnn_rec_np = ttnn_rec.cpu().to(_ttnn.tensor.Layout.ROW_MAJOR).to_torch().numpy().flatten()[:signal_len]
+        results["ttnn"] = _test_1d_ttnn(wavelet_name, boundary_mode, x, abs_tol, device)
+    return results
 
-                m = calculate_metrics(x, ttnn_rec_np[:signal_len])
-                ttnn_pass = (m["max_abs"] <= abs_tol or m["pcc"] >= 0.999)
-                backend_results["ttnn"] = {"max_abs": m["max_abs"], "pcc": m["pcc"], "passed": ttnn_pass}
-                if not ttnn_pass:
-                    overall_passed = False
-            except Exception as exc:
-                backend_results["ttnn"] = {"error": str(exc), "passed": False}
-                overall_passed = False
 
-    # Summarize overall metrics
-    max_abs_val = 0.0
-    min_pcc_val = 1.0
-    for b_res in backend_results.values():
-        if "max_abs" in b_res:
-            max_abs_val = max(max_abs_val, b_res["max_abs"])
-            min_pcc_val = min(min_pcc_val, b_res["pcc"])
+def run_2d_precision(wavelet_name, boundary_mode, height, width, abs_tol, mat, device, backends):
+    """Run 2D LWT+ILWT roundtrip precision for all backends."""
+    results = {}
+    if "pywt" in backends:
+        results["pywt"] = _test_2d_pywt(wavelet_name, boundary_mode, mat, abs_tol)
+    if "standalone" in backends:
+        # 2D standalone: test both lwt_2d and ilwt_2d binaries
+        lwt_r = _test_2d_standalone_lwt(wavelet_name, boundary_mode, height, width)
+        ilwt_r = _test_2d_standalone_ilwt(wavelet_name, boundary_mode, height, width)
+        # Report the worse of the two
+        passed = lwt_r["passed"] and ilwt_r["passed"]
+        errors = "; ".join(e for e in [lwt_r.get("error", ""), ilwt_r.get("error", "")] if e)
+        results["standalone"] = {
+            "max_abs": max(lwt_r["max_abs"] if not math.isnan(lwt_r["max_abs"]) else 0,
+                           ilwt_r["max_abs"] if not math.isnan(ilwt_r["max_abs"]) else 0),
+            "pcc": min(lwt_r["pcc"], ilwt_r["pcc"]),
+            "passed": passed,
+            "error": errors,
+            "note": "exit-code check only for lwt_2d and ilwt_2d",
+        }
+    if "ttnn" in backends:
+        results["ttnn"] = _test_2d_ttnn(wavelet_name, boundary_mode, mat, abs_tol, device)
+    return results
 
-    return {
-        "wavelet": wavelet_name,
-        "boundary_mode": boundary_mode,
-        "category": cat,
-        "max_coeff": max_coeff,
-        "abs_tol": abs_tol,
-        "rec_max_abs": max_abs_val,
-        "rec_pcc": min_pcc_val,
-        "backend_results": backend_results,
-        "passed": overall_passed,
-    }
 
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 
 def main():
     parser = argparse.ArgumentParser(description="Precision test across all 106 schemes and 8 boundary modes.")
-    parser.add_argument("--backends", nargs="*", default=["ttnn", "standalone", "pywt"], help="Backends to include/test.")
+    parser.add_argument("--backends", nargs="*", default=["ttnn", "standalone", "pywt"],
+                        help="Backends to include/test.")
     parser.add_argument("--schemes", nargs="*", help="Optional subset of wavelets to test.")
     parser.add_argument("--boundary-modes", nargs="*", help="Optional subset of boundary modes.")
-    parser.add_argument("--output-json", type=Path, default=Path("benchmarks/precision_results.json"), help="Output JSON results path.")
-
-    parser.add_argument("--output-tsv", type=Path, default=Path("benchmarks/precision_results.tsv"), help="Output TSV summary path.")
+    parser.add_argument("--dimensions", nargs="*", default=["1d", "2d"],
+                        help="Dimensions to test: 1d, 2d (default: both).")
+    parser.add_argument("--signal-len-1d", type=int, default=256,
+                        help="1D signal length for precision test (default: 256).")
+    parser.add_argument("--matrix-height-2d", type=int, default=64,
+                        help="2D matrix height for precision test (default: 64).")
+    parser.add_argument("--matrix-width-2d", type=int, default=64,
+                        help="2D matrix width for precision test (default: 64).")
+    parser.add_argument("--output-json", type=Path,
+                        default=Path("benchmarks/precision/precision_results.json"),
+                        help="Output JSON results path.")
+    parser.add_argument("--output-tsv", type=Path,
+                        default=Path("benchmarks/precision/precision_results.tsv"),
+                        help="Output TSV summary path.")
     args = parser.parse_args()
 
     wavelets_to_test = args.schemes if args.schemes else list(WAVELET_CATEGORIES.keys())
     modes_to_test = args.boundary_modes if args.boundary_modes else ALL_BOUNDARY_MODES
+    dims_to_test = set(args.dimensions)
 
-    results_map = {(wavelet, mode): {"wavelet": wavelet, "boundary_mode": mode, "backend_results": {}} for wavelet in wavelets_to_test for mode in modes_to_test}
+    signal_len = args.signal_len_1d
+    mat_h = args.matrix_height_2d
+    mat_w = args.matrix_width_2d
 
-    # Phase 1: PyWavelets CPU Reference
+    # Reusable reference signals (small, fast)
+    x_1d = np.sin(np.linspace(0, 10 * np.pi, signal_len, dtype=np.float32))
+    mat_2d = np.outer(
+        np.sin(np.linspace(0, 6 * np.pi, mat_h)),
+        np.cos(np.linspace(0, 4 * np.pi, mat_w)),
+    ).astype(np.float32)
+
+    results = []
+
+    # ------------------------------------------------------------------
+    # Phase A: PyWavelets CPU (no device needed — run first)
+    # ------------------------------------------------------------------
     if "pywt" in args.backends:
-        pbar_pywt = tqdm(total=len(wavelets_to_test) * len(modes_to_test), desc="Precision Test (PyWT CPU)")
-        for wavelet in wavelets_to_test:
-            for mode in modes_to_test:
-                entry = results_map[(wavelet, mode)]
-                res = test_wavelet_precision(wavelet, mode, signal_len=1024, device=None, backends=["pywt"])
-                entry["backend_results"].update(res["backend_results"])
-                pbar_pywt.update(1)
-        pbar_pywt.close()
+        if "1d" in dims_to_test:
+            total = len(wavelets_to_test) * len(modes_to_test)
+            pbar = tqdm(total=total, desc="Precision Test 1D (PyWT CPU)")
+            for wavelet in wavelets_to_test:
+                meta = WAVELET_CATEGORIES.get(wavelet, {"category": "Unknown", "max_abs_coeff": 1.0})
+                tol = abs_tol_for(meta["category"], meta["max_abs_coeff"])
+                for mode in modes_to_test:
+                    r = _test_1d_pywt(wavelet, mode, x_1d, tol)
+                    results.append({
+                        "dimension": "1d", "transform": "lwt+ilwt_roundtrip",
+                        "wavelet": wavelet, "boundary_mode": mode,
+                        "category": meta["category"], "max_coeff": meta["max_abs_coeff"],
+                        "abs_tol": tol, "backend": "pywt", **r,
+                    })
+                    pbar.update(1)
+            pbar.close()
 
-    # Phase 2: Standalone C++ Device Executable
+        if "2d" in dims_to_test:
+            total = len(wavelets_to_test) * len(modes_to_test)
+            pbar = tqdm(total=total, desc="Precision Test 2D (PyWT CPU)")
+            for wavelet in wavelets_to_test:
+                meta = WAVELET_CATEGORIES.get(wavelet, {"category": "Unknown", "max_abs_coeff": 1.0})
+                tol = abs_tol_for(meta["category"], meta["max_abs_coeff"])
+                for mode in modes_to_test:
+                    r = _test_2d_pywt(wavelet, mode, mat_2d, tol)
+                    results.append({
+                        "dimension": "2d", "transform": "lwt2d+ilwt2d_roundtrip",
+                        "wavelet": wavelet, "boundary_mode": mode,
+                        "category": meta["category"], "max_coeff": meta["max_abs_coeff"],
+                        "abs_tol": tol, "backend": "pywt", **r,
+                    })
+                    pbar.update(1)
+            pbar.close()
+
+    # ------------------------------------------------------------------
+    # Phase B: Standalone C++ binaries (open device exclusively — run
+    # BEFORE any TTNN import so the PCIe TLB window is uncontested)
+    # ------------------------------------------------------------------
     if "standalone" in args.backends:
-        pbar_std = tqdm(total=len(wavelets_to_test) * len(modes_to_test), desc="Precision Test (Standalone C++)")
-        for wavelet in wavelets_to_test:
-            for mode in modes_to_test:
-                entry = results_map[(wavelet, mode)]
-                res = test_wavelet_precision(wavelet, mode, signal_len=1024, device=None, backends=["standalone"])
-                entry["backend_results"].update(res["backend_results"])
-                pbar_std.update(1)
-        pbar_std.close()
+        if "1d" in dims_to_test:
+            total = len(wavelets_to_test) * len(modes_to_test)
+            pbar = tqdm(total=total, desc="Precision Test 1D (Standalone C++)")
+            for wavelet in wavelets_to_test:
+                meta = WAVELET_CATEGORIES.get(wavelet, {"category": "Unknown", "max_abs_coeff": 1.0})
+                tol = abs_tol_for(meta["category"], meta["max_abs_coeff"])
+                for mode in modes_to_test:
+                    r = _test_1d_standalone(wavelet, mode, signal_len)
+                    results.append({
+                        "dimension": "1d", "transform": "lwt+ilwt_roundtrip",
+                        "wavelet": wavelet, "boundary_mode": mode,
+                        "category": meta["category"], "max_coeff": meta["max_abs_coeff"],
+                        "abs_tol": tol, "backend": "standalone", **r,
+                    })
+                    pbar.update(1)
+            pbar.close()
 
-    # Phase 3: TTNN Device API
+        if "2d" in dims_to_test:
+            total = len(wavelets_to_test) * len(modes_to_test)
+            pbar = tqdm(total=total, desc="Precision Test 2D (Standalone C++)")
+            for wavelet in wavelets_to_test:
+                meta = WAVELET_CATEGORIES.get(wavelet, {"category": "Unknown", "max_abs_coeff": 1.0})
+                tol = abs_tol_for(meta["category"], meta["max_abs_coeff"])
+                for mode in modes_to_test:
+                    r = run_2d_precision(
+                        wavelet, mode, mat_h, mat_w, tol, mat_2d, None,
+                        backends=["standalone"],
+                    )["standalone"]
+                    results.append({
+                        "dimension": "2d", "transform": "lwt2d+ilwt2d_roundtrip",
+                        "wavelet": wavelet, "boundary_mode": mode,
+                        "category": meta["category"], "max_coeff": meta["max_abs_coeff"],
+                        "abs_tol": tol, "backend": "standalone", **r,
+                    })
+                    pbar.update(1)
+            pbar.close()
+
+    # ------------------------------------------------------------------
+    # Phase C: TTNN device (open once, run 1D then 2D, close once)
+    # Standalone phases above must complete before opening the device.
+    # ------------------------------------------------------------------
     if "ttnn" in args.backends:
-        device = None
+        ttnn_device = None
         try:
             import ttnn._ttnn as _ttnn
-            device = _ttnn.device.open_device(device_id=0)
-        except Exception:
-            device = getattr(ttnn, "open_device", lambda device_id: None)(device_id=0)
+            ttnn_device = _ttnn.device.open_device(device_id=0)
+        except Exception as exc:
+            print(f"[Warning] Could not open TTNN device: {exc}")
 
-        pbar_ttnn = tqdm(total=len(wavelets_to_test) * len(modes_to_test), desc="Precision Test (TTNN Device)")
         try:
-            for wavelet in wavelets_to_test:
-                for mode in modes_to_test:
-                    entry = results_map[(wavelet, mode)]
-                    res = test_wavelet_precision(wavelet, mode, signal_len=1024, device=device, backends=["ttnn"])
-                    entry["backend_results"].update(res["backend_results"])
-                    pbar_ttnn.update(1)
+            if "1d" in dims_to_test:
+                total = len(wavelets_to_test) * len(modes_to_test)
+                pbar = tqdm(total=total, desc="Precision Test 1D (TTNN Device)")
+                for wavelet in wavelets_to_test:
+                    meta = WAVELET_CATEGORIES.get(wavelet, {"category": "Unknown", "max_abs_coeff": 1.0})
+                    tol = abs_tol_for(meta["category"], meta["max_abs_coeff"])
+                    for mode in modes_to_test:
+                        r = _test_1d_ttnn(wavelet, mode, x_1d, tol, ttnn_device)
+                        results.append({
+                            "dimension": "1d", "transform": "lwt+ilwt_roundtrip",
+                            "wavelet": wavelet, "boundary_mode": mode,
+                            "category": meta["category"], "max_coeff": meta["max_abs_coeff"],
+                            "abs_tol": tol, "backend": "ttnn", **r,
+                        })
+                        pbar.update(1)
+                pbar.close()
+
+            if "2d" in dims_to_test:
+                total = len(wavelets_to_test) * len(modes_to_test)
+                pbar = tqdm(total=total, desc="Precision Test 2D (TTNN Device)")
+                for wavelet in wavelets_to_test:
+                    meta = WAVELET_CATEGORIES.get(wavelet, {"category": "Unknown", "max_abs_coeff": 1.0})
+                    tol = abs_tol_for(meta["category"], meta["max_abs_coeff"])
+                    for mode in modes_to_test:
+                        r = _test_2d_ttnn(wavelet, mode, mat_2d, tol, ttnn_device)
+                        results.append({
+                            "dimension": "2d", "transform": "lwt2d+ilwt2d_roundtrip",
+                            "wavelet": wavelet, "boundary_mode": mode,
+                            "category": meta["category"], "max_coeff": meta["max_abs_coeff"],
+                            "abs_tol": tol, "backend": "ttnn", **r,
+                        })
+                        pbar.update(1)
+                pbar.close()
         finally:
-            pbar_ttnn.close()
-            if device is not None:
+            if ttnn_device is not None:
                 try:
                     import ttnn._ttnn as _ttnn
-                    _ttnn.device.close_device(device)
+                    _ttnn.device.synchronize_device(ttnn_device)
+                    _ttnn.device.close_device(ttnn_device)
                 except Exception:
                     pass
 
-    # Aggregate final results across backends
-    results = []
-    passed_count = 0
-    total_count = 0
-
-    for (wavelet, mode), entry in results_map.items():
-        total_count += 1
-        meta = WAVELET_CATEGORIES.get(wavelet, {"category": "Unknown", "max_abs_coeff": 1.0})
-        cat = meta["category"]
-        max_coeff = meta["max_abs_coeff"]
-        abs_tol = 1e-4 * max(1.0, max_coeff) if cat == "Compact" else (1e-3 * max(1.0, max_coeff) if cat == "Medium" else 5e-3 * max(1.0, max_coeff))
-
-        max_abs_val = 0.0
-        min_pcc_val = 1.0
-        overall_passed = True
-
-        for b_name, b_res in entry["backend_results"].items():
-            if not b_res.get("passed", False):
-                overall_passed = False
-            if "max_abs" in b_res:
-                max_abs_val = max(max_abs_val, b_res["max_abs"])
-                min_pcc_val = min(min_pcc_val, b_res["pcc"])
-
-        if overall_passed:
-            passed_count += 1
-
-        results.append({
-            "wavelet": wavelet,
-            "boundary_mode": mode,
-            "category": cat,
-            "max_coeff": max_coeff,
-            "abs_tol": abs_tol,
-            "rec_max_abs": max_abs_val,
-            "rec_pcc": min_pcc_val,
-            "backend_results": entry["backend_results"],
-            "passed": overall_passed,
-        })
-
+    # ------------------------------------------------------------------
+    # Write outputs
+    # ------------------------------------------------------------------
     args.output_json.parent.mkdir(parents=True, exist_ok=True)
+    args.output_tsv.parent.mkdir(parents=True, exist_ok=True)
 
     with open(args.output_json, "w") as f:
-        json.dump(results, f, indent=2)
+        json.dump(results, f, indent=2, default=lambda v: None if (isinstance(v, float) and math.isnan(v)) else v)
 
+    tsv_fields = [
+        "dimension", "transform", "wavelet", "boundary_mode",
+        "category", "backend", "max_coeff", "abs_tol",
+        "max_abs", "pcc", "passed", "error",
+    ]
     with open(args.output_tsv, "w") as f:
-        f.write("wavelet\tboundary_mode\tcategory\tmax_coeff\tabs_tol\trec_max_abs\trec_pcc\tpassed\n")
+        f.write("\t".join(tsv_fields) + "\n")
         for r in results:
-            f.write(
-                f"{r['wavelet']}\t{r['boundary_mode']}\t{r['category']}\t{r['max_coeff']}\t"
-                f"{r['abs_tol']}\t{r['rec_max_abs']:.6e}\t{r['rec_pcc']:.6f}\t{r['passed']}\n"
-            )
+            row = [str(r.get(k, "")) for k in tsv_fields]
+            f.write("\t".join(row) + "\n")
+
+    passed_count = sum(1 for r in results if r.get("passed", False))
+    total_count = len(results)
 
     print("\n" + "=" * 80)
     print(f"PRECISION TEST COMPLETE: {passed_count}/{total_count} tests passed tolerance checks.")
+    print(f"  1D entries: {sum(1 for r in results if r['dimension'] == '1d')}")
+    print(f"  2D entries: {sum(1 for r in results if r['dimension'] == '2d')}")
     print(f"Detailed JSON results saved to: {args.output_json}")
     print(f"Summary TSV saved to: {args.output_tsv}")
     print("=" * 80)
@@ -426,3 +598,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

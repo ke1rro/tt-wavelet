@@ -38,7 +38,7 @@ struct Options {
     size_t width{0};
     std::array<std::filesystem::path, 4> bands;
     std::filesystem::path output{"ilwt_2d_output.f32"};
-    uint32_t core_limit{0};
+    uint32_t core_limit{64};
     uint32_t batch_count{1};
     size_t repeats{1};
     size_t warmup_runs{0};
