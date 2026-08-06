@@ -1045,8 +1045,8 @@ void validate_1d_tensor(const Tensor& tensor, const char* tensor_name) {
     // bytes.  This reproduces the standalone buffer geometry and enables
     // page-per-stick addressing with full DRAM bank interleaving.
     const uint32_t stick_count = checked_u32(ceil_div(length, kStickWidth), "1D wavelet output stick count");
-    const Shape output_shape =
-        input_shape.rank_four ? Shape({input_shape.batch_count, 1, stick_count, kStickWidth}) : Shape({stick_count, kStickWidth});
+    const Shape output_shape = input_shape.rank_four ? Shape({input_shape.batch_count, 1, stick_count, kStickWidth})
+                                                     : Shape({stick_count, kStickWidth});
     return tt::tt_metal::TensorSpec(
         output_shape,
         tt::tt_metal::TensorLayout(

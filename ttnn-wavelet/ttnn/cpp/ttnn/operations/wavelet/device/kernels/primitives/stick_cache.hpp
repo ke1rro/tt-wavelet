@@ -57,9 +57,9 @@ ALWI void cache_source_sticks(
     const bool page_per_stick = cache.page_size == cache.stick_nbytes;
 #pragma GCC unroll 8
     for (uint32_t i = 0; i < reserve_sticks; ++i) {
-        const uint64_t src_noc_addr = page_per_stick
-                                          ? src.get_noc_addr(cache.source_page + source_stick + i)
-                                          : src.get_noc_addr(cache.source_page, (source_stick + i) * cache.stick_nbytes);
+        const uint64_t src_noc_addr =
+            page_per_stick ? src.get_noc_addr(cache.source_page + source_stick + i)
+                           : src.get_noc_addr(cache.source_page, (source_stick + i) * cache.stick_nbytes);
         noc_async_read(src_noc_addr, cache_l1_addr + i * cache.stick_nbytes, cache.stick_nbytes);
     }
     noc_async_read_barrier();

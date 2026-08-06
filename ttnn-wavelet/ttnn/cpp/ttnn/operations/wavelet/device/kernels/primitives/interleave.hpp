@@ -124,8 +124,8 @@ ALWI void write_direct_interleaved_signal(
                                                  : signal_group_elements;
         const uint32_t output_end = output_begin + output_length;
         const uint32_t first_stick = output_begin / ttnn::operations::wavelet::kStickWidth;
-        const uint32_t stick_count = (output_length + ttnn::operations::wavelet::kStickWidth - 1U) /
-                                     ttnn::operations::wavelet::kStickWidth;
+        const uint32_t stick_count =
+            (output_length + ttnn::operations::wavelet::kStickWidth - 1U) / ttnn::operations::wavelet::kStickWidth;
 
         static_assert(BatchSticks > 0, "ILWT direct-interleave batch must be non-zero");
         for (uint32_t batch_begin = 0; batch_begin < stick_count; batch_begin += BatchSticks) {
@@ -150,15 +150,17 @@ ALWI void write_direct_interleaved_signal(
                         if (is_even == updates_even) {
                             const uint32_t updated_begin = updates_even ? even_begin : odd_begin;
                             const uint32_t local_updated_index = split_index - updated_begin;
-                            const int32_t group_updated_index =
-                                static_cast<int32_t>(local_updated_index) - static_cast<int32_t>(group * split_group_elements);
+                            const int32_t group_updated_index = static_cast<int32_t>(local_updated_index) -
+                                                                static_cast<int32_t>(group * split_group_elements);
                             if (has_updated_values && group_updated_index >= 0 &&
                                 group_updated_index < static_cast<int32_t>(split_group_elements)) {
-                                value = read_direct_output_value(output_tiles, tile_bytes, static_cast<uint32_t>(group_updated_index));
+                                value = read_direct_output_value(
+                                    output_tiles, tile_bytes, static_cast<uint32_t>(group_updated_index));
                             } else {
-                                const uint32_t logical_index =
-                                    (updates_even ? even_offset : odd_offset) + split_index - (updates_even ? even_begin : odd_begin);
-                                value = (updates_even ? even : odd)[workspace_physical_index<TileNative>(logical_index)];
+                                const uint32_t logical_index = (updates_even ? even_offset : odd_offset) + split_index -
+                                                               (updates_even ? even_begin : odd_begin);
+                                value =
+                                    (updates_even ? even : odd)[workspace_physical_index<TileNative>(logical_index)];
                             }
                         } else if (is_even) {
                             const uint32_t logical_index = even_offset + split_index - even_begin;

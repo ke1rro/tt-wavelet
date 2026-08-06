@@ -43,9 +43,11 @@ enum RouteConfigWord : uint32_t {
 
 constexpr uint32_t kRouteFlagFinalDram = 1U << 0;
 constexpr uint32_t kRouteFlagIlwtFinalInterleave = 1U << 1;
-constexpr uint32_t kRouteFlagSourceTileMirror = 1U << 2;
-constexpr uint32_t kRouteFlagBaseTileMirror = 1U << 3;
-constexpr uint32_t kRouteFlagOutputTileMirror = 1U << 4;
+constexpr uint32_t kRouteFlagFinalEven = 1U << 2;
+constexpr uint32_t kRouteFlagFinalOdd = 1U << 3;
+constexpr uint32_t kRouteFlagSourceTileMirror = 1U << 4;
+constexpr uint32_t kRouteFlagBaseTileMirror = 1U << 5;
+constexpr uint32_t kRouteFlagOutputTileMirror = 1U << 6;
 
 constexpr uint32_t kLwtChunkConfigWordCount = 16;
 constexpr uint32_t kLwtChunkConfigPageBytes = kLwtChunkConfigWordCount * sizeof(uint32_t);
