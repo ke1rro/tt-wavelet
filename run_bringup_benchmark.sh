@@ -261,13 +261,13 @@ if [[ $TEST_RUN == true ]]; then
     PRECISION_SIZE=(--length 257 --height 35 --width 37)
     PERF_1D_SIZE=(--lengths 100000 500000)
     PERF_2D_SIZE=(--shapes 1000x100 1000x500)
-    REPEATS=(--warmup-runs 1 --repeats 3)
+    REPEATS=(--warmup-runs 1 --repeats 2)
 else
     MODES=(--boundary-modes symmetric zero constant periodic antisymmetric smooth reflect antireflect)
     PRECISION_SIZE=(--length 1024 --height 64 --width 64)
     PERF_1D_SIZE=(--length-start 100000 --length-stop 1000000 --length-step 10000)
     PERF_2D_SIZE=()
-    REPEATS=(--warmup-runs 1 --repeats 3)
+    REPEATS=(--warmup-runs 1 --repeats 2)
 fi
 
 echo "Seed: $SEED"

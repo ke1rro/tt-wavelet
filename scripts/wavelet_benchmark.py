@@ -2249,7 +2249,7 @@ def add_performance_arguments(parser: argparse.ArgumentParser, default: str) -> 
     parser.add_argument(
         "--repeats",
         type=int,
-        default=3,
+        default=2,
         help="measured repeats per performance point (default: %(default)s)",
     )
     parser.add_argument("--preflight-length", type=int, default=257)

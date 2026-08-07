@@ -238,7 +238,7 @@ and no intermediate band is looped through DRAM.
 
 The benchmark executable creates and prepares one device program per
 wavelet/shape case. Warmups and repeats enqueue that same `MeshWorkload`
-again. Thus `--warmup-runs 1 --repeats 3` performs four launches of one
+again. Thus `--warmup-runs 1 --repeats 2` performs three launches of one
 prepared fused program, not four program constructions. Each launch is one
 complete reader/compute/writer transform. Benchmark mode also enables the
 program cache.
