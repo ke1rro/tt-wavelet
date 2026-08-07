@@ -24,6 +24,7 @@
 #include "tt-metalium/mesh_buffer.hpp"
 #include "tt-metalium/mesh_device.hpp"
 #include "tt-metalium/tilize_utils.hpp"
+#include "tt_wavelet/include/benchmark/timing.hpp"
 #include "tt_wavelet/include/common/boundary_parse.hpp"
 #include "tt_wavelet/include/common/tiling_2d.hpp"
 #include "tt_wavelet/include/lifting/device_2d.hpp"
@@ -195,6 +196,35 @@ struct Options {
         &mesh_device);
 }
 
+[[nodiscard]] double percentile(const std::vector<double>& sorted, const double probability) {
+    const double position = probability * static_cast<double>(sorted.size() - 1);
+    const size_t lower = static_cast<size_t>(position);
+    const size_t upper = std::min(lower + 1, sorted.size() - 1);
+    const double fraction = position - static_cast<double>(lower);
+    return sorted[lower] + fraction * (sorted[upper] - sorted[lower]);
+}
+
+void print_timings(const std::string_view metric, std::vector<double> times) {
+    const double mean = std::accumulate(times.begin(), times.end(), 0.0) / static_cast<double>(times.size());
+    const double squared_error =
+        std::accumulate(times.begin(), times.end(), 0.0, [mean](const double sum, const double value) {
+            const double difference = value - mean;
+            return sum + difference * difference;
+        });
+    for (size_t repeat = 0; repeat < times.size(); ++repeat) {
+        std::cerr << std::fixed << std::setprecision(6) << "ilwt_2d_" << metric << "_repeat_ms[" << repeat
+                  << "]: " << times[repeat] << '\n';
+    }
+    std::sort(times.begin(), times.end());
+    std::cerr << std::fixed << std::setprecision(6) << "ilwt_2d_" << metric << "_mean_ms: " << mean << '\n'
+              << "ilwt_2d_" << metric << "_min_ms: " << times.front() << '\n'
+              << "ilwt_2d_" << metric << "_median_ms: " << percentile(times, 0.5) << '\n'
+              << "ilwt_2d_" << metric << "_p10_ms: " << percentile(times, 0.1) << '\n'
+              << "ilwt_2d_" << metric << "_p90_ms: " << percentile(times, 0.9) << '\n'
+              << "ilwt_2d_" << metric << "_stddev_ms: " << std::sqrt(squared_error / static_cast<double>(times.size()))
+              << '\n';
+}
+
 template <typename Scheme>
 int run(const Options& options) {
     const ttwv::Ilwt2DExecutionPlan host_plan = ttwv::make_ilwt_2d_execution_plan<Scheme>(
@@ -226,9 +256,11 @@ int run(const Options& options) {
     }
     tt::tt_metal::distributed::Finish(queue);
 
-    const uint32_t effective_cores = (options.core_limit > 0)
-        ? options.core_limit
-        : static_cast<uint32_t>(mesh_device->compute_with_storage_grid_size().x * mesh_device->compute_with_storage_grid_size().y);
+    const uint32_t effective_cores =
+        (options.core_limit > 0)
+            ? options.core_limit
+            : static_cast<uint32_t>(
+                  mesh_device->compute_with_storage_grid_size().x * mesh_device->compute_with_storage_grid_size().y);
     ttwv::Ilwt2DExecutable executable = ttwv::create_ilwt_2d_executable<Scheme>(
         TT_WAVELET_SOURCE_DIR,
         *mesh_device,
@@ -243,14 +275,22 @@ int run(const Options& options) {
         options.batch_count);
     ttwv::prepare_ilwt_2d(queue, executable);
     for (size_t warmup = 0; warmup < options.warmup_runs; ++warmup) {
-        ttwv::execute_ilwt_2d(*mesh_device, queue, executable);
+        static_cast<void>(
+            ttwv::benchmark::measure_host_timing(queue, [&]() { ttwv::enqueue_ilwt_2d(queue, executable); }));
     }
-    std::vector<double> times;
+    ttwv::benchmark::discard_device_profiler_samples(*mesh_device);
+    std::vector<double> enqueue_times;
+    std::vector<double> sync_times;
+    std::vector<double> host_total_times;
+    std::vector<double> device_times;
     for (size_t repeat = 0; repeat < options.repeats; ++repeat) {
-        const auto start = std::chrono::steady_clock::now();
-        ttwv::execute_ilwt_2d(*mesh_device, queue, executable);
-        const auto stop = std::chrono::steady_clock::now();
-        times.push_back(std::chrono::duration<double, std::milli>(stop - start).count());
+        const ttwv::benchmark::HostTiming sample =
+            ttwv::benchmark::measure_host_timing(queue, [&]() { ttwv::enqueue_ilwt_2d(queue, executable); });
+        enqueue_times.push_back(sample.enqueue_or_dispatch_ms);
+        sync_times.push_back(sample.sync_wait_ms);
+        host_total_times.push_back(sample.host_api_total_ms);
+        const std::vector<double> device_sample = ttwv::benchmark::read_device_kernel_times_ms(*mesh_device, 1);
+        device_times.insert(device_times.end(), device_sample.begin(), device_sample.end());
     }
 
     std::vector<float> tiled_output;
@@ -280,25 +320,17 @@ int run(const Options& options) {
     if (!output.good()) {
         throw std::runtime_error("Failed to write reconstructed output: " + options.output.string());
     }
-    const double mean = std::accumulate(times.begin(), times.end(), 0.0) / static_cast<double>(times.size());
-    std::vector<double> sorted_times = times;
-    std::sort(sorted_times.begin(), sorted_times.end());
-    const auto percentile = [&sorted_times](const double probability) {
-        const double position = probability * static_cast<double>(sorted_times.size() - 1);
-        const size_t lower = static_cast<size_t>(position);
-        const size_t upper = std::min(lower + 1, sorted_times.size() - 1);
-        const double fraction = position - static_cast<double>(lower);
-        return sorted_times[lower] + fraction * (sorted_times[upper] - sorted_times[lower]);
-    };
-    const double squared_error =
-        std::accumulate(times.begin(), times.end(), 0.0, [mean](const double sum, const double value) {
-            const double difference = value - mean;
-            return sum + difference * difference;
-        });
-    for (size_t repeat = 0; repeat < times.size(); ++repeat) {
-        std::cerr << std::fixed << std::setprecision(6) << "ilwt_2d_repeat_time_ms[" << repeat << "]: " << times[repeat]
-                  << '\n';
+    if (device_times.empty()) {
+        std::cerr << "ilwt_2d_device_time_status: unavailable\n"
+                  << "ilwt_2d_timing_mechanism: host_steady_clock_enqueue_plus_finish\n";
+    } else {
+        std::cerr << "ilwt_2d_device_time_status: available\n"
+                  << "ilwt_2d_timing_mechanism: tt_metal_device_profiler_kernel_span\n";
+        print_timings("device_time", device_times);
     }
+    print_timings("enqueue_or_dispatch", std::move(enqueue_times));
+    print_timings("sync_wait", std::move(sync_times));
+    print_timings("host_api_total", std::move(host_total_times));
     const size_t route_count = executable.plan.chunks.empty() ? 0 : executable.plan.chunks.front().routes.size();
     const size_t scale_routes_removed =
         executable.plan.chunks.empty()
@@ -311,12 +343,6 @@ int run(const Options& options) {
               << "ilwt_2d_boundary_mode: " << ttwv::boundary_mode_name(options.boundary_mode) << '\n'
               << "ilwt_2d_available_worker_core_count: " << executable.buffers.scheduler.available_worker_core_count
               << '\n'
-              << std::fixed << std::setprecision(6) << "ilwt_2d_execution_time_ms: " << mean << '\n'
-              << "ilwt_2d_min_execution_time_ms: " << sorted_times.front() << '\n'
-              << "ilwt_2d_median_time_ms: " << percentile(0.5) << '\n'
-              << "ilwt_2d_p10_time_ms: " << percentile(0.1) << '\n'
-              << "ilwt_2d_p90_time_ms: " << percentile(0.9) << '\n'
-              << "ilwt_2d_stddev_time_ms: " << std::sqrt(squared_error / static_cast<double>(times.size())) << '\n'
               << "ilwt_2d_active_core_count: " << executable.buffers.scheduler.active_core_count << '\n'
               << "ilwt_2d_batch_count: " << executable.buffers.scheduler.batch_count << '\n'
               << "ilwt_2d_chunks_per_sample: " << executable.buffers.scheduler.chunks_per_sample << '\n'
@@ -339,6 +365,7 @@ int run(const Options& options) {
 int main(int argc, char** argv) {
     try {
         const Options options = parse_options(argc, argv);
+        ttwv::benchmark::configure_device_profiler_environment();
         const auto dispatch = [&]<typename Scheme>() { return run<Scheme>(options); };
         if (options.wavelet == ttwv::schemes::testing::synthetic_k17::name) {
             return dispatch.template operator()<ttwv::schemes::testing::synthetic_k17>();

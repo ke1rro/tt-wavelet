@@ -22,6 +22,7 @@
 #include "tt-metalium/host_api.hpp"
 #include "tt-metalium/mesh_buffer.hpp"
 #include "tt-metalium/mesh_device.hpp"
+#include "tt_wavelet/include/benchmark/timing.hpp"
 #include "tt_wavelet/include/common/boundary_parse.hpp"
 #include "tt_wavelet/include/lifting/device.hpp"
 #include "tt_wavelet/include/schemes/generated/registry.hpp"
@@ -64,6 +65,8 @@ struct ForwardOutput {
 
 struct TimedTransform {
     double execution_time_ms{0.0};
+    double enqueue_or_dispatch_ms{0.0};
+    double sync_wait_ms{0.0};
     ttwv::LiftingSchedulerTelemetry scheduler{};
 };
 
@@ -282,30 +285,6 @@ void print_coeffs(const char* label, const std::vector<float>& values, const siz
     std::cout << std::defaultfloat << "]\n";
 }
 
-[[nodiscard]] std::vector<float> canonicalize_forward_output(
-    const std::vector<float>& values,
-    const size_t logical_length,
-    const size_t output_length,
-    const int stream_shift,
-    const int canonical_start) {
-    const size_t available_logical = std::min(values.size(), logical_length);
-    std::vector<float> logical_values(values.begin(), values.begin() + static_cast<std::ptrdiff_t>(available_logical));
-
-    std::vector<float> canonical(output_length, 0.0F);
-    const int64_t src_offset = static_cast<int64_t>(canonical_start) - static_cast<int64_t>(stream_shift);
-    const size_t src_begin = src_offset > 0 ? static_cast<size_t>(src_offset) : size_t{0};
-    const size_t dst_begin = src_offset < 0 ? static_cast<size_t>(-src_offset) : size_t{0};
-
-    if (src_begin >= logical_values.size() || dst_begin >= canonical.size()) {
-        return canonical;
-    }
-
-    const size_t copy_count = std::min(logical_values.size() - src_begin, canonical.size() - dst_begin);
-    std::copy_n(
-        logical_values.begin() + static_cast<std::ptrdiff_t>(src_begin), copy_count, canonical.begin() + dst_begin);
-    return canonical;
-}
-
 [[nodiscard]] std::string canonical_wavelet_name(const std::string_view raw_name) {
     const std::filesystem::path raw_path{std::string{raw_name}};
     if (raw_path.extension() == ".json") {
@@ -326,8 +305,7 @@ void configure_tt_runtime(const bool benchmark) {
     unsetenv("TT_METAL_DPRINT_CORES");
     unsetenv("TT_METAL_WATCHER");
     unsetenv("TT_METAL_SLOW_DISPATCH_MODE");
-    unsetenv("TT_METAL_DEVICE_PROFILER");
-    unsetenv("TT_METAL_DEVICE_PROFILER_DISPATCH");
+    ttwv::benchmark::configure_device_profiler_environment();
     unsetenv("TT_METAL_DISPATCH_DATA_COLLECTION");
     unsetenv("TTNN_CONFIG_OVERRIDES");
 }
@@ -415,7 +393,6 @@ template <typename Scheme>
 
     const auto& plan = executable.plan.full_plan;
     const size_t canonical_length = plan.output_length;
-    constexpr int canonical_start = static_cast<int>(Scheme::tap_size / 2);
 
     std::vector<float> approximation;
     std::vector<float> detail;
@@ -424,18 +401,17 @@ template <typename Scheme>
     const size_t even_stride = device_even_result.size() / batch_count;
     const size_t odd_stride = device_odd_result.size() / batch_count;
     for (uint32_t batch = 0; batch < batch_count; ++batch) {
-        const std::vector<float> even_sample(
+        TT_FATAL(
+            even_stride >= canonical_length && odd_stride >= canonical_length,
+            "LWT output buffer is shorter than its canonical coefficient interval");
+        approximation.insert(
+            approximation.end(),
             device_even_result.begin() + static_cast<std::ptrdiff_t>(batch * even_stride),
-            device_even_result.begin() + static_cast<std::ptrdiff_t>((batch + 1) * even_stride));
-        const std::vector<float> odd_sample(
+            device_even_result.begin() + static_cast<std::ptrdiff_t>(batch * even_stride + canonical_length));
+        detail.insert(
+            detail.end(),
             device_odd_result.begin() + static_cast<std::ptrdiff_t>(batch * odd_stride),
-            device_odd_result.begin() + static_cast<std::ptrdiff_t>((batch + 1) * odd_stride));
-        auto canonical_even = canonicalize_forward_output(
-            even_sample, plan.final_even_length, canonical_length, plan.final_even_shift, canonical_start);
-        auto canonical_odd = canonicalize_forward_output(
-            odd_sample, plan.final_odd_length, canonical_length, plan.final_odd_shift, canonical_start);
-        approximation.insert(approximation.end(), canonical_even.begin(), canonical_even.end());
-        detail.insert(detail.end(), canonical_odd.begin(), canonical_odd.end());
+            device_odd_result.begin() + static_cast<std::ptrdiff_t>(batch * odd_stride + canonical_length));
     }
     return ForwardOutput{
         .approximation = std::move(approximation),
@@ -458,12 +434,36 @@ template <typename Scheme>
         TT_WAVELET_SOURCE_DIR, mesh_device, input_buffer, input_desc, boundary_mode, batch_count);
     ttwv::prepare_lwt(command_queue, executable);
 
-    const auto start = std::chrono::steady_clock::now();
-    ttwv::execute_lwt(mesh_device, command_queue, executable);
-    const auto stop = std::chrono::steady_clock::now();
-    const std::chrono::duration<double, std::milli> elapsed_ms = stop - start;
+    const ttwv::benchmark::HostTiming timing =
+        ttwv::benchmark::measure_host_timing(command_queue, [&]() { ttwv::enqueue_lwt(command_queue, executable); });
     return TimedTransform{
-        .execution_time_ms = elapsed_ms.count(),
+        .execution_time_ms = timing.host_api_total_ms,
+        .enqueue_or_dispatch_ms = timing.enqueue_or_dispatch_ms,
+        .sync_wait_ms = timing.sync_wait_ms,
+        .scheduler = executable.buffers.scheduler,
+    };
+}
+
+[[nodiscard]] TimedTransform time_lwt_once(
+    tt::tt_metal::distributed::MeshCommandQueue& command_queue, ttwv::LwtExecutable& executable) {
+    const ttwv::benchmark::HostTiming timing =
+        ttwv::benchmark::measure_host_timing(command_queue, [&]() { ttwv::enqueue_lwt(command_queue, executable); });
+    return TimedTransform{
+        .execution_time_ms = timing.host_api_total_ms,
+        .enqueue_or_dispatch_ms = timing.enqueue_or_dispatch_ms,
+        .sync_wait_ms = timing.sync_wait_ms,
+        .scheduler = executable.buffers.scheduler,
+    };
+}
+
+[[nodiscard]] TimedTransform time_ilwt_once(
+    tt::tt_metal::distributed::MeshCommandQueue& command_queue, ttwv::IlwtExecutable& executable) {
+    const ttwv::benchmark::HostTiming timing =
+        ttwv::benchmark::measure_host_timing(command_queue, [&]() { ttwv::enqueue_ilwt(command_queue, executable); });
+    return TimedTransform{
+        .execution_time_ms = timing.host_api_total_ms,
+        .enqueue_or_dispatch_ms = timing.enqueue_or_dispatch_ms,
+        .sync_wait_ms = timing.sync_wait_ms,
         .scheduler = executable.buffers.scheduler,
     };
 }
@@ -575,15 +575,63 @@ void print_timing_statistics(
         });
     const double stddev_ms = std::sqrt(squared_deviation_sum / times_ms.size());
 
-    std::cerr << std::fixed << std::setprecision(6) << prefix << "_execution_time_ms: " << mean_ms << '\n'
-              << prefix << "_min_time_ms: " << min_ms << '\n'
-              << prefix << "_median_time_ms: " << median_ms << '\n'
-              << prefix << "_p10_time_ms: " << p10_ms << '\n'
-              << prefix << "_p90_time_ms: " << p90_ms << '\n'
-              << prefix << "_stddev_time_ms: " << stddev_ms << '\n'
+    std::cerr << std::fixed << std::setprecision(6) << prefix << "_host_api_total_mean_ms: " << mean_ms << '\n'
+              << prefix << "_host_api_total_min_ms: " << min_ms << '\n'
+              << prefix << "_host_api_total_median_ms: " << median_ms << '\n'
+              << prefix << "_host_api_total_p10_ms: " << p10_ms << '\n'
+              << prefix << "_host_api_total_p90_ms: " << p90_ms << '\n'
+              << prefix << "_host_api_total_stddev_ms: " << stddev_ms << '\n'
               << prefix << "_repeats: " << times_ms.size() << '\n'
               << prefix << "_warmup_runs: " << warmup_runs << '\n';
     print_scheduler_telemetry(prefix, scheduler);
+}
+
+void print_audited_timing_statistics(
+    const char* prefix,
+    const std::vector<TimedTransform>& samples,
+    const std::vector<double>& device_times_ms,
+    const uint32_t warmup_runs) {
+    const auto values = [&](const auto member) {
+        std::vector<double> result;
+        result.reserve(samples.size());
+        for (const TimedTransform& sample : samples) {
+            result.push_back(sample.*member);
+        }
+        return result;
+    };
+    if (device_times_ms.empty()) {
+        std::cerr << prefix << "_device_time_status: unavailable\n"
+                  << prefix << "_timing_mechanism: host_steady_clock_enqueue_plus_finish\n";
+    } else {
+        std::cerr << prefix << "_device_time_status: available\n"
+                  << prefix << "_timing_mechanism: tt_metal_device_profiler_kernel_span\n";
+    }
+    const auto print_metric = [&](const char* metric, std::vector<double> metric_values) {
+        const double mean = std::accumulate(metric_values.begin(), metric_values.end(), 0.0) / metric_values.size();
+        const double squared_deviation = std::accumulate(
+            metric_values.begin(), metric_values.end(), 0.0, [mean](const double sum, const double value) {
+                const double difference = value - mean;
+                return sum + difference * difference;
+            });
+        for (size_t repeat = 0; repeat < metric_values.size(); ++repeat) {
+            std::cerr << std::fixed << std::setprecision(6) << prefix << '_' << metric << "_repeat_ms[" << repeat
+                      << "]: " << metric_values[repeat] << '\n';
+        }
+        std::sort(metric_values.begin(), metric_values.end());
+        std::cerr << std::fixed << std::setprecision(6) << prefix << '_' << metric << "_mean_ms: " << mean << '\n'
+                  << prefix << '_' << metric << "_min_ms: " << metric_values.front() << '\n'
+                  << prefix << '_' << metric << "_median_ms: " << percentile(metric_values, 0.5) << '\n'
+                  << prefix << '_' << metric << "_stddev_ms: " << std::sqrt(squared_deviation / metric_values.size())
+                  << '\n';
+    };
+    if (!device_times_ms.empty()) {
+        print_metric("device_time", device_times_ms);
+    }
+    print_metric("enqueue_or_dispatch", values(&TimedTransform::enqueue_or_dispatch_ms));
+    print_metric("sync_wait", values(&TimedTransform::sync_wait_ms));
+    print_metric("host_api_total", values(&TimedTransform::execution_time_ms));
+    std::cerr << prefix << "_repeats: " << samples.size() << '\n' << prefix << "_warmup_runs: " << warmup_runs << '\n';
+    print_scheduler_telemetry(prefix, samples.back().scheduler);
 }
 
 struct InterleavedLayoutTiming {
@@ -746,37 +794,32 @@ int main(int argc, char** argv) {
                         if (layout != nullptr) {
                             setenv(kWorkspaceLayoutEnv, layout, 1);
                         }
+                        auto executable = ttwv::create_ilwt_executable<Scheme>(
+                            TT_WAVELET_SOURCE_DIR,
+                            *mesh_device,
+                            *(approximation.buffer->get_backing_buffer()),
+                            *(detail.buffer->get_backing_buffer()),
+                            coefficient_length,
+                            original_length,
+                            options.boundary_mode,
+                            options.batch_count);
+                        ttwv::prepare_ilwt(command_queue, executable);
                         for (uint32_t i = 0; i < options.warmup_runs; ++i) {
-                            static_cast<void>(run_inverse_once<Scheme>(
-                                *mesh_device,
-                                command_queue,
-                                *(approximation.buffer->get_backing_buffer()),
-                                *(detail.buffer->get_backing_buffer()),
-                                coefficient_length,
-                                original_length,
-                                options.boundary_mode,
-                                options.batch_count,
-                                false));
+                            static_cast<void>(time_ilwt_once(command_queue, executable));
                         }
 
-                        std::vector<double> times_ms;
-                        times_ms.reserve(options.repeats);
-                        ttwv::LiftingSchedulerTelemetry scheduler;
+                        ttwv::benchmark::discard_device_profiler_samples(*mesh_device);
+                        std::vector<TimedTransform> samples;
+                        std::vector<double> device_times;
+                        samples.reserve(options.repeats);
+                        device_times.reserve(options.repeats);
                         for (uint32_t i = 0; i < options.repeats; ++i) {
-                            InverseOutput sample = run_inverse_once<Scheme>(
-                                *mesh_device,
-                                command_queue,
-                                *(approximation.buffer->get_backing_buffer()),
-                                *(detail.buffer->get_backing_buffer()),
-                                coefficient_length,
-                                original_length,
-                                options.boundary_mode,
-                                options.batch_count,
-                                false);
-                            times_ms.push_back(sample.execution_time_ms);
-                            scheduler = std::move(sample.scheduler);
+                            samples.push_back(time_ilwt_once(command_queue, executable));
+                            const std::vector<double> device_sample =
+                                ttwv::benchmark::read_device_kernel_times_ms(*mesh_device, 1);
+                            device_times.insert(device_times.end(), device_sample.begin(), device_sample.end());
                         }
-                        print_timing_statistics(timing_prefix, times_ms, options.warmup_runs, scheduler);
+                        print_audited_timing_statistics(timing_prefix, samples, device_times, options.warmup_runs);
                         if (options.output_prefix.has_value()) {
                             const InverseOutput output = run_inverse_once<Scheme>(
                                 *mesh_device,
@@ -853,7 +896,7 @@ int main(int argc, char** argv) {
                 if (options.output_prefix.has_value()) {
                     write_inverse_output(*options.output_prefix, output);
                 }
-                std::cerr << "ilwt_execution_time_ms: " << std::fixed << std::setprecision(6)
+                std::cerr << "ilwt_host_api_total_ms: " << std::fixed << std::setprecision(6)
                           << output.execution_time_ms << '\n';
                 print_scheduler_telemetry("ilwt", output.scheduler);
                 return EXIT_SUCCESS;
@@ -864,31 +907,30 @@ int main(int argc, char** argv) {
                     if (layout != nullptr) {
                         setenv(kWorkspaceLayoutEnv, layout, 1);
                     }
+                    auto executable = ttwv::create_lwt_executable<Scheme>(
+                        TT_WAVELET_SOURCE_DIR,
+                        *mesh_device,
+                        *(input->buffer->get_backing_buffer()),
+                        input->desc,
+                        options.boundary_mode,
+                        options.batch_count);
+                    ttwv::prepare_lwt(command_queue, executable);
                     for (uint32_t i = 0; i < options.warmup_runs; ++i) {
-                        static_cast<void>(time_transform_once<Scheme>(
-                            *mesh_device,
-                            command_queue,
-                            *(input->buffer->get_backing_buffer()),
-                            input->desc,
-                            options.boundary_mode,
-                            options.batch_count));
+                        static_cast<void>(time_lwt_once(command_queue, executable));
                     }
 
-                    std::vector<double> times_ms;
-                    times_ms.reserve(options.repeats);
-                    ttwv::LiftingSchedulerTelemetry scheduler;
+                    ttwv::benchmark::discard_device_profiler_samples(*mesh_device);
+                    std::vector<TimedTransform> samples;
+                    std::vector<double> device_times;
+                    samples.reserve(options.repeats);
+                    device_times.reserve(options.repeats);
                     for (uint32_t i = 0; i < options.repeats; ++i) {
-                        TimedTransform sample = time_transform_once<Scheme>(
-                            *mesh_device,
-                            command_queue,
-                            *(input->buffer->get_backing_buffer()),
-                            input->desc,
-                            options.boundary_mode,
-                            options.batch_count);
-                        times_ms.push_back(sample.execution_time_ms);
-                        scheduler = std::move(sample.scheduler);
+                        samples.push_back(time_lwt_once(command_queue, executable));
+                        const std::vector<double> device_sample =
+                            ttwv::benchmark::read_device_kernel_times_ms(*mesh_device, 1);
+                        device_times.insert(device_times.end(), device_sample.begin(), device_sample.end());
                     }
-                    print_timing_statistics(timing_prefix, times_ms, options.warmup_runs, scheduler);
+                    print_audited_timing_statistics(timing_prefix, samples, device_times, options.warmup_runs);
                     if (options.output_prefix.has_value()) {
                         const ForwardOutput output = run_forward_once<Scheme>(
                             *mesh_device,
@@ -950,7 +992,7 @@ int main(int argc, char** argv) {
                 write_forward_outputs(*options.output_prefix, output);
             }
 
-            std::cerr << "lwt_execution_time_ms: " << std::fixed << std::setprecision(6) << output.execution_time_ms
+            std::cerr << "lwt_host_api_total_ms: " << std::fixed << std::setprecision(6) << output.execution_time_ms
                       << '\n';
             print_scheduler_telemetry("lwt", output.scheduler);
             return EXIT_SUCCESS;

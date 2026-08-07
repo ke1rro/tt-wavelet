@@ -600,6 +600,7 @@ void add_l1_telemetry(
         static_cast<uint32_t>(workspace_layout == WorkspaceLayout::kTileNative),
         0U,
         static_cast<uint32_t>(boundary_mode),
+        checked_u32(input_buffer.page_size(), "LWT input page size"),
         static_cast<uint32_t>(row_major_noc_staging),
         static_cast<uint32_t>(hybrid_tile_mirror),
     };
@@ -878,6 +879,7 @@ void set_runtime_args(
         // signal. Keep its unused shared-reader boundary specialization fixed
         // so every ILWT mode reuses the same device binary.
         static_cast<uint32_t>(BoundaryMode::kSymmetric),
+        checked_u32(approximation_buffer.page_size(), "ILWT input page size"),
         static_cast<uint32_t>(row_major_noc_staging),
         static_cast<uint32_t>(hybrid_tile_mirror),
     };
@@ -974,13 +976,11 @@ void set_inverse_runtime_args(
     }
 }
 
-void enqueue_program(
-    tt::tt_metal::distributed::MeshDevice& mesh_device,
-    tt::tt_metal::distributed::MeshCommandQueue& command_queue,
-    tt::tt_metal::Program&& program) {
+[[nodiscard]] tt::tt_metal::distributed::MeshWorkload make_workload(
+    tt::tt_metal::distributed::MeshDevice& mesh_device, tt::tt_metal::Program&& program) {
     tt::tt_metal::distributed::MeshWorkload workload;
     workload.add_program(tt::tt_metal::distributed::MeshCoordinateRange(mesh_device.shape()), std::move(program));
-    tt::tt_metal::distributed::EnqueueMeshWorkload(command_queue, workload, false);
+    return workload;
 }
 
 }  // namespace
@@ -1033,9 +1033,9 @@ LwtExecutable create_lwt_executable_impl(
     }
 
     SignalBuffer final_even_desc = plan.full_plan.preprocess_layout.output.even;
-    final_even_desc.length = plan.full_plan.final_even_length;
+    final_even_desc.length = plan.full_plan.output_length;
     SignalBuffer final_odd_desc = plan.full_plan.preprocess_layout.output.odd;
-    final_odd_desc.length = plan.full_plan.final_odd_length;
+    final_odd_desc.length = plan.full_plan.output_length;
     auto final_even = create_dram_signal_buffer(mesh_device, final_even_desc, batch_count);
     auto final_odd = create_dram_signal_buffer(mesh_device, final_odd_desc, batch_count);
     const size_t route_count = plan.chunks.front().routes.size();
@@ -1043,7 +1043,7 @@ LwtExecutable create_lwt_executable_impl(
         create_dram_buffer(mesh_device, plan.chunks.size() * route_count, device_protocol::kRouteConfigPageBytes);
     auto chunk_config = create_dram_buffer(mesh_device, plan.chunks.size(), device_protocol::kLwtChunkConfigPageBytes);
 
-    const size_t max_final_length = std::max(plan.full_plan.final_even_length, plan.full_plan.final_odd_length);
+    const size_t max_final_length = plan.full_plan.output_length;
     const uint32_t active_core_count = checked_u32(cores.size(), "LWT active core count");
     LwtWorkingBuffers buffers{
         .slots = std::move(slots),
@@ -1103,7 +1103,7 @@ LwtExecutable create_lwt_executable_impl(
     return LwtExecutable{
         .plan = std::move(plan),
         .buffers = std::move(buffers),
-        .lifting = std::move(program.program),
+        .workload = make_workload(mesh_device, std::move(program.program)),
     };
 }
 
@@ -1117,11 +1117,15 @@ void prepare_lwt(tt::tt_metal::distributed::MeshCommandQueue& command_queue, Lwt
     tt::tt_metal::distributed::Finish(command_queue);
 }
 
+void enqueue_lwt(tt::tt_metal::distributed::MeshCommandQueue& command_queue, LwtExecutable& executable) {
+    tt::tt_metal::distributed::EnqueueMeshWorkload(command_queue, executable.workload, false);
+}
+
 void execute_lwt(
-    tt::tt_metal::distributed::MeshDevice& mesh_device,
+    tt::tt_metal::distributed::MeshDevice&,
     tt::tt_metal::distributed::MeshCommandQueue& command_queue,
     LwtExecutable& executable) {
-    enqueue_program(mesh_device, command_queue, std::move(executable.lifting));
+    enqueue_lwt(command_queue, executable);
     tt::tt_metal::distributed::Finish(command_queue);
 }
 
@@ -1265,7 +1269,7 @@ IlwtExecutable create_ilwt_executable_impl(
     return IlwtExecutable{
         .plan = std::move(plan),
         .buffers = std::move(buffers),
-        .lifting = std::move(program.program),
+        .workload = make_workload(mesh_device, std::move(program.program)),
     };
 }
 
@@ -1279,11 +1283,15 @@ void prepare_ilwt(tt::tt_metal::distributed::MeshCommandQueue& command_queue, Il
     tt::tt_metal::distributed::Finish(command_queue);
 }
 
+void enqueue_ilwt(tt::tt_metal::distributed::MeshCommandQueue& command_queue, IlwtExecutable& executable) {
+    tt::tt_metal::distributed::EnqueueMeshWorkload(command_queue, executable.workload, false);
+}
+
 void execute_ilwt(
-    tt::tt_metal::distributed::MeshDevice& mesh_device,
+    tt::tt_metal::distributed::MeshDevice&,
     tt::tt_metal::distributed::MeshCommandQueue& command_queue,
     IlwtExecutable& executable) {
-    enqueue_program(mesh_device, command_queue, std::move(executable.lifting));
+    enqueue_ilwt(command_queue, executable);
     tt::tt_metal::distributed::Finish(command_queue);
 }
 

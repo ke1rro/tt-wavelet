@@ -26,6 +26,7 @@
 #include "tt-metalium/distributed.hpp"
 #include "tt-metalium/mesh_buffer.hpp"
 #include "tt-metalium/mesh_device.hpp"
+#include "tt_wavelet/include/benchmark/timing.hpp"
 #include "tt-metalium/tilize_utils.hpp"
 #include "tt_wavelet/include/common/boundary_parse.hpp"
 #include "tt_wavelet/include/common/tiling_2d.hpp"
@@ -282,7 +283,7 @@ struct DeviceBands {
     return sorted[lower] + fraction * (sorted[upper] - sorted[lower]);
 }
 
-void print_timings(const std::string_view prefix, std::vector<double> times) {
+void print_timings(const std::string_view prefix, const std::string_view metric, std::vector<double> times) {
     const double mean = std::accumulate(times.begin(), times.end(), 0.0) / static_cast<double>(times.size());
     const double squared_error =
         std::accumulate(times.begin(), times.end(), 0.0, [mean](const double sum, const double value) {
@@ -290,16 +291,17 @@ void print_timings(const std::string_view prefix, std::vector<double> times) {
             return sum + difference * difference;
         });
     for (size_t repeat = 0; repeat < times.size(); ++repeat) {
-        std::cerr << std::fixed << std::setprecision(6) << prefix << "_repeat_time_ms[" << repeat
+        std::cerr << std::fixed << std::setprecision(6) << prefix << '_' << metric << "_repeat_ms[" << repeat
                   << "]: " << times[repeat] << '\n';
     }
     std::sort(times.begin(), times.end());
-    std::cerr << std::fixed << std::setprecision(6) << prefix << "_execution_time_ms: " << mean << '\n'
-              << prefix << "_min_execution_time_ms: " << times.front() << '\n'
-              << prefix << "_median_time_ms: " << percentile(times, 0.5) << '\n'
-              << prefix << "_p10_time_ms: " << percentile(times, 0.1) << '\n'
-              << prefix << "_p90_time_ms: " << percentile(times, 0.9) << '\n'
-              << prefix << "_stddev_time_ms: " << std::sqrt(squared_error / static_cast<double>(times.size())) << '\n';
+    std::cerr << std::fixed << std::setprecision(6) << prefix << '_' << metric << "_mean_ms: " << mean << '\n'
+              << prefix << '_' << metric << "_min_ms: " << times.front() << '\n'
+              << prefix << '_' << metric << "_median_ms: " << percentile(times, 0.5) << '\n'
+              << prefix << '_' << metric << "_p10_ms: " << percentile(times, 0.1) << '\n'
+              << prefix << '_' << metric << "_p90_ms: " << percentile(times, 0.9) << '\n'
+              << prefix << '_' << metric
+              << "_stddev_ms: " << std::sqrt(squared_error / static_cast<double>(times.size())) << '\n';
 }
 
 void print_telemetry(const ttwv::Lwt2DSchedulerTelemetry& telemetry) {
@@ -408,9 +410,11 @@ int run(
     tt::tt_metal::distributed::MeshCommandQueue& queue,
     std::shared_ptr<tt::tt_metal::distributed::MeshBuffer>& input,
     const std::vector<float>& tiled_input) {
-    const uint32_t effective_cores = (options.core_limit > 0)
-        ? options.core_limit
-        : static_cast<uint32_t>(mesh_device.compute_with_storage_grid_size().x * mesh_device.compute_with_storage_grid_size().y);
+    const uint32_t effective_cores =
+        (options.core_limit > 0)
+            ? options.core_limit
+            : static_cast<uint32_t>(
+                  mesh_device.compute_with_storage_grid_size().x * mesh_device.compute_with_storage_grid_size().y);
     ttwv::Lwt2DExecutable executable = ttwv::create_lwt_2d_executable<Scheme>(
         TT_WAVELET_SOURCE_DIR,
         mesh_device,
@@ -423,21 +427,40 @@ int run(
     ttwv::prepare_lwt_2d(queue, executable);
 
     const auto execute = [&]() {
-        const auto start = std::chrono::steady_clock::now();
-        ttwv::execute_lwt_2d(mesh_device, queue, executable);
-        const auto stop = std::chrono::steady_clock::now();
-        return std::chrono::duration<double, std::milli>(stop - start).count();
+        return ttwv::benchmark::measure_host_timing(queue, [&]() { ttwv::enqueue_lwt_2d(queue, executable); });
     };
     if (options.benchmark) {
         for (size_t warmup = 0; warmup < options.warmup_runs; ++warmup) {
             static_cast<void>(execute());
         }
-        std::vector<double> times;
-        times.reserve(options.repeats);
+        ttwv::benchmark::discard_device_profiler_samples(mesh_device);
+        std::vector<double> enqueue_times;
+        std::vector<double> sync_times;
+        std::vector<double> host_total_times;
+        std::vector<double> device_times;
+        enqueue_times.reserve(options.repeats);
+        sync_times.reserve(options.repeats);
+        host_total_times.reserve(options.repeats);
+        device_times.reserve(options.repeats);
         for (size_t repeat = 0; repeat < options.repeats; ++repeat) {
-            times.push_back(execute());
+            const ttwv::benchmark::HostTiming sample = execute();
+            enqueue_times.push_back(sample.enqueue_or_dispatch_ms);
+            sync_times.push_back(sample.sync_wait_ms);
+            host_total_times.push_back(sample.host_api_total_ms);
+            const std::vector<double> device_sample = ttwv::benchmark::read_device_kernel_times_ms(mesh_device, 1);
+            device_times.insert(device_times.end(), device_sample.begin(), device_sample.end());
         }
-        print_timings("lwt_2d", std::move(times));
+        if (device_times.empty()) {
+            std::cerr << "lwt_2d_device_time_status: unavailable\n"
+                      << "lwt_2d_timing_mechanism: host_steady_clock_enqueue_plus_finish\n";
+        } else {
+            std::cerr << "lwt_2d_device_time_status: available\n"
+                      << "lwt_2d_timing_mechanism: tt_metal_device_profiler_kernel_span\n";
+            print_timings("lwt_2d", "device_time", device_times);
+        }
+        print_timings("lwt_2d", "enqueue_or_dispatch", std::move(enqueue_times));
+        print_timings("lwt_2d", "sync_wait", std::move(sync_times));
+        print_timings("lwt_2d", "host_api_total", std::move(host_total_times));
 
         if (options.include_transfers) {
             std::array<std::vector<float>, ttwv::device_protocol::kLwt2DBandCount> outputs;
@@ -460,7 +483,7 @@ int run(
             for (size_t repeat = 0; repeat < options.repeats; ++repeat) {
                 end_to_end_times.push_back(execute_end_to_end());
             }
-            print_timings("lwt_2d_end_to_end", std::move(end_to_end_times));
+            print_timings("lwt_2d", "host_end_to_end", std::move(end_to_end_times));
         }
         if (options.output_prefix) {
             write_output_bands(*options.output_prefix, read_bands(queue, executable));
@@ -469,7 +492,7 @@ int run(
         return EXIT_SUCCESS;
     }
 
-    const double execution_time_ms = execute();
+    const ttwv::benchmark::HostTiming execution_timing = execute();
     const DeviceBands output = read_bands(queue, executable);
     if (options.output_prefix) {
         write_output_bands(*options.output_prefix, output);
@@ -477,7 +500,8 @@ int run(
     if (!options.quiet) {
         print_bands(output);
     }
-    std::cerr << std::fixed << std::setprecision(6) << "lwt_2d_execution_time_ms: " << execution_time_ms << '\n';
+    std::cerr << std::fixed << std::setprecision(6)
+              << "lwt_2d_host_api_total_ms: " << execution_timing.host_api_total_ms << '\n';
     print_telemetry(executable.buffers.scheduler);
     return EXIT_SUCCESS;
 }
@@ -487,6 +511,9 @@ int run(
 int main(int argc, char** argv) {
     try {
         const Options options = parse_options(argc, argv);
+        if (options.benchmark) {
+            ttwv::benchmark::configure_device_profiler_environment();
+        }
         const std::vector<float> logical_input =
             read_input(options.input_path, options.height, options.width, options.batch_count, options.binary_input);
         const ttwv::TiledShape2D input_shape = ttwv::make_tiled_shape_2d({

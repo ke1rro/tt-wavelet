@@ -307,7 +307,11 @@ inline void validate_interval(const IndexInterval interval, const size_t stream_
 }
 
 [[nodiscard]] inline LwtChunkPlan build_chunk(
-    const LiftingForwardPlan& plan, const IndexInterval final_even, const IndexInterval final_odd) {
+    const LiftingForwardPlan& plan,
+    const IndexInterval final_even,
+    const IndexInterval final_odd,
+    const size_t final_even_output_origin,
+    const size_t final_odd_output_origin) {
     const std::vector<RequiredStreams> required = backpropagate_requirements(plan, final_even, final_odd);
     const TerminalScaleInline inline_scale = terminal_scale_inline(plan);
     StoredStream active_even{.slot = StorageSlot::kA, .storage = required.front().even};
@@ -391,6 +395,20 @@ inline void validate_interval(const IndexInterval interval, const size_t stream_
             });
     }
 
+    for (auto& route : routes) {
+        if (route.output.storage == RouteOutputStorage::kFinalEvenDram) {
+            TT_FATAL(
+                route.output_offset_elements >= final_even_output_origin,
+                "LWT final-even route starts before the canonical interval");
+            route.output_offset_elements -= final_even_output_origin;
+        } else if (route.output.storage == RouteOutputStorage::kFinalOddDram) {
+            TT_FATAL(
+                route.output_offset_elements >= final_odd_output_origin,
+                "LWT final-odd route starts before the canonical interval");
+            route.output_offset_elements -= final_odd_output_origin;
+        }
+    }
+
     const IndexInterval initial_even = required.front().even;
     const IndexInterval initial_odd = required.front().odd;
     const size_t final_begin = std::min(final_even.begin, final_odd.begin);
@@ -424,16 +442,20 @@ inline void validate_interval(const IndexInterval interval, const size_t stream_
     };
 }
 
-[[nodiscard]] constexpr IndexInterval clipped_chunk_interval(
-    const size_t begin, const size_t end, const size_t stream_length) noexcept {
-    const size_t clipped_begin = std::min(begin, stream_length);
-    return IndexInterval{.begin = clipped_begin, .end = std::min(end, stream_length)};
-}
-
 [[nodiscard]] inline std::vector<LwtChunkPlan> build_chunks(
     const LiftingForwardPlan& plan, const uint32_t requested_chunk_count) {
     TT_FATAL(requested_chunk_count > 0, "LWT chunk count must be non-zero");
-    const size_t max_final_length = std::max(plan.final_even_length, plan.final_odd_length);
+    const int64_t canonical_start = static_cast<int64_t>(plan.preprocess_layout.pad_config.left + 1) / 2;
+    const int64_t signed_even_origin = canonical_start - plan.final_even_shift;
+    const int64_t signed_odd_origin = canonical_start - plan.final_odd_shift;
+    TT_FATAL(signed_even_origin >= 0 && signed_odd_origin >= 0, "LWT canonical output requires a negative origin");
+    const size_t final_even_origin = static_cast<size_t>(signed_even_origin);
+    const size_t final_odd_origin = static_cast<size_t>(signed_odd_origin);
+    TT_FATAL(
+        final_even_origin + plan.output_length <= plan.final_even_length &&
+            final_odd_origin + plan.output_length <= plan.final_odd_length,
+        "LWT terminal streams do not cover the canonical output interval");
+    const size_t max_final_length = plan.output_length;
     const size_t final_group_count =
         std::max(ceil_div(max_final_length, static_cast<size_t>(device_protocol::kLwtGroupOutputElements)), size_t{1});
     const size_t chunk_count = std::min(static_cast<size_t>(requested_chunk_count), final_group_count);
@@ -450,8 +472,10 @@ inline void validate_interval(const IndexInterval interval, const size_t stream_
             std::min((group_begin + group_count) * device_protocol::kLwtGroupOutputElements, max_final_length);
         chunks.push_back(build_chunk(
             plan,
-            clipped_chunk_interval(begin, end, plan.final_even_length),
-            clipped_chunk_interval(begin, end, plan.final_odd_length)));
+            IndexInterval{.begin = begin + final_even_origin, .end = end + final_even_origin},
+            IndexInterval{.begin = begin + final_odd_origin, .end = end + final_odd_origin},
+            final_even_origin,
+            final_odd_origin));
         group_begin += group_count;
     }
     TT_FATAL(group_begin == final_group_count, "LWT chunks do not cover every final output group");
@@ -552,7 +576,7 @@ inline void validate_interval(const IndexInterval interval, const size_t stream_
     TT_FATAL(core_limit > 0, "LWT requires at least one worker core");
     TT_FATAL(l1_signal_budget_bytes >= 3 * device_protocol::kStickBytes, "LWT L1 budget is too small");
 
-    const size_t max_final_length = std::max(full_plan.final_even_length, full_plan.final_odd_length);
+    const size_t max_final_length = full_plan.output_length;
     const uint32_t final_group_count = static_cast<uint32_t>(
         std::max(ceil_div(max_final_length, static_cast<size_t>(device_protocol::kLwtGroupOutputElements)), size_t{1}));
     uint32_t chunk_count = std::min(final_group_count, core_limit);

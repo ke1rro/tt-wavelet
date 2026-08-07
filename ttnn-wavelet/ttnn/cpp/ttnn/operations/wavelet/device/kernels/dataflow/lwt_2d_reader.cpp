@@ -1227,13 +1227,14 @@ void kernel_main() {
 #ifndef ILWT_2D
     const auto input = TensorAccessor(input_args, input_addr, kTileBytes);
 #endif
-    cb_reserve_back(cb_route_zero, 1);
+    // This CB is an L1 allocation only: no other RISC consumes it as a FIFO.
+    // Keeping its cursor untouched makes persistent workload replay independent
+    // of CB producer/consumer counter state from the preceding launch.
     const uint32_t zero_tile_addr = get_write_ptr(cb_route_zero);
     auto* zero_tile = reinterpret_cast<volatile tt_l1_ptr uint32_t*>(zero_tile_addr);
     for (uint32_t word = 0; word < kTileElements; ++word) {
         zero_tile[word] = 0;
     }
-    cb_push_back(cb_route_zero, 1);
     const uint32_t noc_scratch_addr = get_write_ptr(cb_noc_scratch);
     constexpr uint32_t reader_config_capacity = split_scratch_bytes / 2;
     const uint32_t reader_config_addr = noc_scratch_addr;

@@ -184,6 +184,7 @@ ALWI void initialize_lwt_streams(
         ttnn::operations::wavelet::device_protocol::kLwtCacheStickCount,
         ttnn::operations::wavelet::kernels::primitives::kInvalidStick,
         0,
+        0,
         input_page,
         false,
         input_page_size};
@@ -242,6 +243,7 @@ ALWI void initialize_inverse_stream(
         ttnn::operations::wavelet::kStickWidth,
         ttnn::operations::wavelet::device_protocol::kLwtCacheStickCount,
         ttnn::operations::wavelet::kernels::primitives::kInvalidStick,
+        0,
         0,
         input_page,
         false,

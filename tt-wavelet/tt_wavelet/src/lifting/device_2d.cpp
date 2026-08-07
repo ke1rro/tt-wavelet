@@ -488,7 +488,8 @@ Lwt2DExecutable create_lwt_2d_executable_impl(
     const uint32_t total_work_items =
         checked_u32(static_cast<size_t>(chunks_per_sample) * batch_count, "2D LWT total batch work items");
     const uint32_t effective_core_limit = (core_limit == 0) ? std::numeric_limits<uint32_t>::max() : core_limit;
-    std::vector<tt::tt_metal::CoreCoord> cores = select_cores(mesh_device, std::min(effective_core_limit, total_work_items));
+    std::vector<tt::tt_metal::CoreCoord> cores =
+        select_cores(mesh_device, std::min(effective_core_limit, total_work_items));
 
     std::array<std::shared_ptr<tt::tt_metal::distributed::MeshBuffer>, device_protocol::kLwt2DPlaneCount> planes;
     for (size_t slot = 0; slot < planes.size(); ++slot) {
@@ -652,7 +653,8 @@ Ilwt2DExecutable create_ilwt_2d_executable_impl(
     const uint32_t total_work_items =
         checked_u32(static_cast<size_t>(chunks_per_sample) * batch_count, "2D ILWT total batch work items");
     const uint32_t effective_core_limit = (core_limit == 0) ? std::numeric_limits<uint32_t>::max() : core_limit;
-    std::vector<tt::tt_metal::CoreCoord> cores = select_cores(mesh_device, std::min(effective_core_limit, total_work_items));
+    std::vector<tt::tt_metal::CoreCoord> cores =
+        select_cores(mesh_device, std::min(effective_core_limit, total_work_items));
 
     std::array<std::shared_ptr<tt::tt_metal::distributed::MeshBuffer>, device_protocol::kLwt2DPlaneCount> planes;
     for (size_t slot = 0; slot < planes.size(); ++slot) {
@@ -816,7 +818,7 @@ void execute_ilwt_2d(
     tt::tt_metal::distributed::MeshDevice&,
     tt::tt_metal::distributed::MeshCommandQueue& command_queue,
     Ilwt2DExecutable& executable) {
-    tt::tt_metal::distributed::EnqueueMeshWorkload(command_queue, executable.workload, false);
+    enqueue_ilwt_2d(command_queue, executable);
     tt::tt_metal::distributed::Finish(command_queue);
 }
 
@@ -824,8 +826,16 @@ void execute_lwt_2d(
     tt::tt_metal::distributed::MeshDevice&,
     tt::tt_metal::distributed::MeshCommandQueue& command_queue,
     Lwt2DExecutable& executable) {
-    tt::tt_metal::distributed::EnqueueMeshWorkload(command_queue, executable.workload, false);
+    enqueue_lwt_2d(command_queue, executable);
     tt::tt_metal::distributed::Finish(command_queue);
+}
+
+void enqueue_ilwt_2d(tt::tt_metal::distributed::MeshCommandQueue& command_queue, Ilwt2DExecutable& executable) {
+    tt::tt_metal::distributed::EnqueueMeshWorkload(command_queue, executable.workload, false);
+}
+
+void enqueue_lwt_2d(tt::tt_metal::distributed::MeshCommandQueue& command_queue, Lwt2DExecutable& executable) {
+    tt::tt_metal::distributed::EnqueueMeshWorkload(command_queue, executable.workload, false);
 }
 
 }  // namespace ttwv

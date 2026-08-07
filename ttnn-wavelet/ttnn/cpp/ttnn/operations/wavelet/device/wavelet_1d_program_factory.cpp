@@ -17,12 +17,13 @@
 #include <vector>
 
 #include "tt-logger/tt-logger.hpp"
-#include "tt-metalium/allocator.hpp"
 #include "tt-metalium/buffer.hpp"
+#include "tt-metalium/buffer_distribution_spec.hpp"
 #include "tt-metalium/circular_buffer_constants.h"
 #include "tt-metalium/core_coord.hpp"
 #include "tt-metalium/host_api.hpp"
 #include "tt-metalium/program_descriptors.hpp"
+#include "tt-metalium/shape.hpp"
 #include "tt-metalium/tensor_accessor_args.hpp"
 #include "tt-metalium/tile.hpp"
 #include "tt-metalium/workload_descriptor.hpp"
@@ -54,7 +55,6 @@ constexpr uint32_t kInterleaveCb = tt::CBIndex::c_4;
 constexpr uint32_t kSyncCb = tt::CBIndex::c_5;
 constexpr uint32_t kReaderConfigCb = tt::CBIndex::c_6;
 constexpr uint32_t kWriterConfigCb = tt::CBIndex::c_7;
-constexpr uint32_t kWorkspaceCb = tt::CBIndex::c_8;
 constexpr uint32_t kTileGroupBuffering = 2;
 constexpr uint32_t kIlwtInterleaveBatchSticks = 96;
 constexpr uint32_t kAlignedNocMaxRouteCount = 5;
@@ -68,7 +68,7 @@ static_assert(
     "ILWT interleave batch must fit in one output group");
 
 struct LwtWorkingBuffers {
-    std::array<uint32_t, 3> slot_addresses{};
+    std::array<std::shared_ptr<tt::tt_metal::distributed::MeshBuffer>, 3> slots{};
     tt::tt_metal::Buffer* final_even{};
     tt::tt_metal::Buffer* final_odd{};
     std::shared_ptr<tt::tt_metal::distributed::MeshBuffer> route_config{};
@@ -76,19 +76,19 @@ struct LwtWorkingBuffers {
     std::vector<tt::tt_metal::CoreCoord> cores;
 
     [[nodiscard]] uint32_t at(const StorageSlot slot) const noexcept {
-        return slot_addresses[static_cast<size_t>(slot)];
+        return static_cast<uint32_t>(slots[static_cast<size_t>(slot)]->get_backing_buffer()->address());
     }
 };
 
 struct IlwtWorkingBuffers {
-    std::array<uint32_t, 3> slot_addresses{};
+    std::array<std::shared_ptr<tt::tt_metal::distributed::MeshBuffer>, 3> slots{};
     tt::tt_metal::Buffer* output{};
     std::shared_ptr<tt::tt_metal::distributed::MeshBuffer> route_config{};
     std::shared_ptr<tt::tt_metal::distributed::MeshBuffer> chunk_config{};
     std::vector<tt::tt_metal::CoreCoord> cores;
 
     [[nodiscard]] uint32_t at(const StorageSlot slot) const noexcept {
-        return slot_addresses[static_cast<size_t>(slot)];
+        return static_cast<uint32_t>(slots[static_cast<size_t>(slot)]->get_backing_buffer()->address());
     }
 };
 
@@ -200,54 +200,6 @@ struct Logical1DShape {
                          device_protocol::kLwtGroupOutputElements,
                      "hybrid tile mirror elements")
                : 0U;
-}
-
-[[nodiscard]] uint32_t static_workspace_address(
-    tt::tt_metal::distributed::MeshDevice& mesh_device, const uint32_t interleave_batch_sticks) {
-    const size_t alignment = mesh_device.allocator()->get_alignment(tt::tt_metal::BufferType::DRAM);
-    size_t address = mesh_device.allocator()->get_base_allocator_addr(tt::tt_metal::HalMemType::L1);
-    const auto reserve_cb = [&](const size_t bytes) {
-        address = round_up(address, alignment);
-        TT_FATAL(
-            address <= std::numeric_limits<uint32_t>::max() && bytes <= std::numeric_limits<uint32_t>::max() - address,
-            "LWT static circular-buffer addresses overflow uint32_t");
-        address += bytes;
-    };
-    reserve_cb(2 * kTileGroupBuffering * device_protocol::kLwtNarrowTileBytes);
-    reserve_cb(2 * kTileGroupBuffering * device_protocol::kLwtNarrowTileBytes);
-    reserve_cb(3 * kTileGroupBuffering * device_protocol::kLwtNarrowTileBytes);
-    reserve_cb(3 * kTileGroupBuffering * device_protocol::kLwtNarrowTileBytes);
-    reserve_cb(device_protocol::kLwtCacheStickCount * device_protocol::kStickBytes);
-    reserve_cb(static_cast<size_t>(interleave_batch_sticks) * device_protocol::kStickBytes);
-    reserve_cb(kNocAlignmentBytes);
-    reserve_cb(device_protocol::kRouteConfigPageBytes);
-    reserve_cb(device_protocol::kRouteConfigPageBytes);
-    return checked_u32(round_up(address, alignment), "LWT workspace base address");
-}
-
-[[nodiscard]] std::array<uint32_t, 3> workspace_slot_addresses(
-    tt::tt_metal::distributed::MeshDevice& mesh_device,
-    const uint32_t workspace_elements,
-    const bool hybrid_tile_mirror,
-    const uint32_t interleave_batch_sticks) {
-    TT_FATAL(workspace_elements > 0, "LWT workspace must contain at least one element");
-    TT_FATAL(
-        workspace_elements % kStickWidth == 0,
-        "LWT workspace length {} is not a multiple of the {}-element stick width",
-        workspace_elements,
-        kStickWidth);
-    const size_t base = static_workspace_address(mesh_device, interleave_batch_sticks);
-    const uint32_t mirror_elements = tile_mirror_elements(workspace_elements, hybrid_tile_mirror);
-    const size_t slot_bytes = static_cast<size_t>(workspace_elements + mirror_elements) * sizeof(float);
-    TT_FATAL(base <= std::numeric_limits<uint32_t>::max(), "LWT workspace base address overflows uint32_t");
-    TT_FATAL(
-        slot_bytes <= (std::numeric_limits<uint32_t>::max() - base) / 3,
-        "LWT workspace slot addresses overflow uint32_t");
-    return {
-        checked_u32(base, "LWT workspace base address"),
-        checked_u32(base + slot_bytes, "LWT workspace slot B address"),
-        checked_u32(base + 2 * slot_bytes, "LWT workspace slot C address"),
-    };
 }
 
 [[nodiscard]] uint32_t available_static_l1_bytes(tt::tt_metal::distributed::MeshDevice& mesh_device) {
@@ -368,6 +320,55 @@ template <typename Plan>
     };
     const tt::tt_metal::distributed::ReplicatedBufferConfig replicated_config{
         .size = static_cast<uint64_t>(physical_page_count * page_bytes),
+    };
+    return tt::tt_metal::distributed::MeshBuffer::create(replicated_config, local_config, &mesh_device);
+}
+
+[[nodiscard]] std::shared_ptr<tt::tt_metal::distributed::MeshBuffer> create_workspace_buffer(
+    tt::tt_metal::distributed::MeshDevice& mesh_device,
+    const std::vector<tt::tt_metal::CoreCoord>& cores,
+    const uint32_t workspace_elements,
+    const bool hybrid_tile_mirror) {
+    TT_FATAL(!cores.empty(), "LWT workspace requires at least one owner core");
+    TT_FATAL(workspace_elements > 0, "LWT workspace must contain at least one element");
+    TT_FATAL(
+        workspace_elements % kStickWidth == 0,
+        "LWT workspace length {} is not a multiple of the {}-element stick width",
+        workspace_elements,
+        kStickWidth);
+
+    const uint32_t mirror_elements = tile_mirror_elements(workspace_elements, hybrid_tile_mirror);
+    const uint32_t shard_elements =
+        checked_u32(static_cast<size_t>(workspace_elements) + mirror_elements, "hybrid workspace shard elements");
+    const uint32_t shard_sticks = shard_elements / kStickWidth;
+    const size_t capacity_sticks = static_cast<size_t>(shard_sticks) * cores.size();
+    const size_t physical_nbytes = capacity_sticks * device_protocol::kStickBytes;
+    TT_FATAL(
+        physical_nbytes <= static_cast<size_t>(std::numeric_limits<uint32_t>::max()),
+        "LWT workspace slot size {} exceeds device buffer limits",
+        physical_nbytes);
+
+    const tt::tt_metal::CoreRangeSet core_set(cores);
+    const tt::tt_metal::BufferDistributionSpec distribution(
+        tt::tt_metal::Shape{static_cast<uint32_t>(capacity_sticks)}, tt::tt_metal::Shape{shard_sticks}, cores);
+    const tt::tt_metal::ShardSpecBuffer shard_spec(
+        core_set,
+        {shard_sticks, kStickWidth},
+        tt::tt_metal::ShardOrientation::ROW_MAJOR,
+        {1, kStickWidth},
+        {static_cast<uint32_t>(capacity_sticks), 1});
+    const tt::tt_metal::BufferShardingArgs sharding_args(
+        std::optional<tt::tt_metal::BufferDistributionSpec>{distribution},
+        std::optional<tt::tt_metal::ShardSpecBuffer>{shard_spec},
+        tt::tt_metal::TensorMemoryLayout::HEIGHT_SHARDED);
+    const tt::tt_metal::distributed::DeviceLocalBufferConfig local_config{
+        .page_size = device_protocol::kStickBytes,
+        .buffer_type = tt::tt_metal::BufferType::L1,
+        .sharding_args = sharding_args,
+        .bottom_up = false,
+    };
+    const tt::tt_metal::distributed::ReplicatedBufferConfig replicated_config{
+        .size = static_cast<uint64_t>(physical_nbytes),
     };
     return tt::tt_metal::distributed::MeshBuffer::create(replicated_config, local_config, &mesh_device);
 }
@@ -601,17 +602,6 @@ void add_narrow_tile_circular_buffer(
     add_circular_buffer(descriptor, cores, kSyncCb, 1, kNocAlignmentBytes);
     add_circular_buffer(descriptor, cores, kReaderConfigCb, 1, device_protocol::kRouteConfigPageBytes);
     add_circular_buffer(descriptor, cores, kWriterConfigCb, 1, device_protocol::kRouteConfigPageBytes);
-    add_circular_buffer(
-        descriptor,
-        cores,
-        kWorkspaceCb,
-        checked_u32(
-            3 *
-                static_cast<size_t>(
-                    plan.workspace_elements + tile_mirror_elements(plan.workspace_elements, hybrid_tile_mirror)) /
-                kStickWidth,
-            "LWT workspace stick count"),
-        device_protocol::kStickBytes);
 
     const auto& config_buffer = *buffers.route_config->get_backing_buffer();
 
@@ -882,17 +872,6 @@ void add_narrow_tile_circular_buffer(
     add_circular_buffer(descriptor, cores, kSyncCb, 1, kNocAlignmentBytes);
     add_circular_buffer(descriptor, cores, kReaderConfigCb, 1, device_protocol::kRouteConfigPageBytes);
     add_circular_buffer(descriptor, cores, kWriterConfigCb, 1, device_protocol::kRouteConfigPageBytes);
-    add_circular_buffer(
-        descriptor,
-        cores,
-        kWorkspaceCb,
-        checked_u32(
-            3 *
-                static_cast<size_t>(
-                    plan.workspace_elements + tile_mirror_elements(plan.workspace_elements, hybrid_tile_mirror)) /
-                kStickWidth,
-            "ILWT workspace stick count"),
-        device_protocol::kStickBytes);
 
     const auto& config_buffer = *buffers.route_config->get_backing_buffer();
     std::vector<uint32_t> reader_compile_args = {
@@ -1219,12 +1198,18 @@ template <typename Scheme>
     std::vector<tt::tt_metal::CoreCoord> cores =
         select_cores(mesh_device, std::min(core_limit(mesh_device), total_work_items));
 
+    std::array<std::shared_ptr<tt::tt_metal::distributed::MeshBuffer>, 3> slots;
+    for (auto& slot : slots) {
+        slot = create_workspace_buffer(mesh_device, cores, plan.workspace_elements, hybrid_tile_mirror);
+        workload.buffers.push_back({slot, slot->get_backing_buffer()});
+    }
+
     const size_t route_count = plan.chunks.front().routes.size();
     auto route_config =
         create_dram_buffer(mesh_device, plan.chunks.size() * route_count, device_protocol::kRouteConfigPageBytes);
     auto chunk_config = create_dram_buffer(mesh_device, plan.chunks.size(), device_protocol::kLwtChunkConfigPageBytes);
     LwtWorkingBuffers buffers{
-        .slot_addresses = workspace_slot_addresses(mesh_device, plan.workspace_elements, hybrid_tile_mirror, 1U),
+        .slots = std::move(slots),
         .final_even = std::get<0>(tensor_return_value).buffer(),
         .final_odd = std::get<1>(tensor_return_value).buffer(),
         .route_config = route_config,
@@ -1329,13 +1314,18 @@ template <typename Scheme>
     std::vector<tt::tt_metal::CoreCoord> cores =
         select_cores(mesh_device, std::min(core_limit(mesh_device), total_work_items));
 
+    std::array<std::shared_ptr<tt::tt_metal::distributed::MeshBuffer>, 3> slots;
+    for (auto& slot : slots) {
+        slot = create_workspace_buffer(mesh_device, cores, plan.workspace_elements, hybrid_tile_mirror);
+        workload.buffers.push_back({slot, slot->get_backing_buffer()});
+    }
+
     const size_t route_count = plan.chunks.front().routes.size();
     auto route_config =
         create_dram_buffer(mesh_device, plan.chunks.size() * route_count, device_protocol::kRouteConfigPageBytes);
     auto chunk_config = create_dram_buffer(mesh_device, plan.chunks.size(), device_protocol::kLwtChunkConfigPageBytes);
     IlwtWorkingBuffers buffers{
-        .slot_addresses =
-            workspace_slot_addresses(mesh_device, plan.workspace_elements, hybrid_tile_mirror, interleave_batch_sticks),
+        .slots = std::move(slots),
         .output = tensor_return_value.buffer(),
         .route_config = route_config,
         .chunk_config = chunk_config,

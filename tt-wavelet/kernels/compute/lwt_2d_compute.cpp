@@ -35,15 +35,14 @@ constexpr bool kInverse = true;
 constexpr bool kInverse = false;
 #endif
 
-#if defined(TTWV_ILWT_2D) && defined(ARCH_WORMHOLE)
+#if defined(TTWV_ILWT_2D)
 constexpr bool kCompactInverseCodegen = true;
-#define TTWV_LWT_2D_STENCIL_ATTRIBUTES __attribute__((noinline, noclone, optimize("Os")))
-#define TTWV_LWT_2D_AXIS_ATTRIBUTES __attribute__((noinline, noclone))
 #else
 constexpr bool kCompactInverseCodegen = false;
-#define TTWV_LWT_2D_STENCIL_ATTRIBUTES __attribute__((noinline))
-#define TTWV_LWT_2D_AXIS_ATTRIBUTES __attribute__((noinline))
 #endif
+
+#define TTWV_LWT_2D_STENCIL_ATTRIBUTES __attribute__((noinline, noclone, optimize("Os")))
+#define TTWV_LWT_2D_AXIS_ATTRIBUTES __attribute__((noinline, noclone, optimize("Os")))
 
 template <uint32_t Index = 0>
 constexpr uint32_t first_predict_update_step_index() noexcept {

@@ -166,7 +166,8 @@ ALWI void initialize_lwt_streams(
     const uint32_t even_length,
     const uint32_t odd_begin,
     const uint32_t odd_length,
-    const uint32_t input_page) {
+    const uint32_t input_page,
+    const uint32_t input_page_size) {
     ttwv::kernels::primitives::StickReadCache input_cache{
         cb_input_cache,
         ttwv::device_protocol::kStickBytes,
@@ -174,8 +175,10 @@ ALWI void initialize_lwt_streams(
         ttwv::device_protocol::kLwtCacheStickCount,
         ttwv::kernels::primitives::kInvalidStick,
         0,
+        0,
         input_page,
-        false};
+        false,
+        input_page_size};
     auto* even_dst = reinterpret_cast<volatile tt_l1_ptr float*>(even_addr);
     auto* odd_dst = reinterpret_cast<volatile tt_l1_ptr float*>(odd_addr);
     uint32_t even_written = 0;
@@ -223,7 +226,8 @@ ALWI void initialize_inverse_stream(
     const uint32_t output_addr,
     const uint32_t output_length,
     const uint32_t cb_input_cache,
-    const uint32_t input_page) {
+    const uint32_t input_page,
+    const uint32_t input_page_size) {
     ttwv::kernels::primitives::StickReadCache input_cache{
         cb_input_cache,
         ttwv::device_protocol::kStickBytes,
@@ -231,8 +235,10 @@ ALWI void initialize_inverse_stream(
         ttwv::device_protocol::kLwtCacheStickCount,
         ttwv::kernels::primitives::kInvalidStick,
         0,
+        0,
         input_page,
-        false};
+        false,
+        input_page_size};
     auto* output = reinterpret_cast<volatile tt_l1_ptr float*>(output_addr);
     WorkspaceIndexCursor cursor(0);
     for (uint32_t index = 0; index < output_length; ++index) {
@@ -596,14 +602,15 @@ void kernel_main() {
     constexpr bool tile_native_workspace = get_compile_time_arg_val(6) != 0;
     constexpr bool inverse = get_compile_time_arg_val(7) != 0;
     constexpr auto boundary_mode = static_cast<ttwv::BoundaryMode>(get_compile_time_arg_val(8));
-    constexpr bool row_major_noc_staging = get_compile_time_arg_val(9) != 0;
-    constexpr bool hybrid_tile_mirror = get_compile_time_arg_val(10) != 0;
+    constexpr uint32_t input_page_size = get_compile_time_arg_val(9);
+    constexpr bool row_major_noc_staging = get_compile_time_arg_val(10) != 0;
+    constexpr bool hybrid_tile_mirror = get_compile_time_arg_val(11) != 0;
     static_assert(ttwv::is_supported_lwt_boundary_mode(boundary_mode), "Unsupported LWT boundary mode");
-    constexpr auto config_args = TensorAccessorArgs<11>();
+    constexpr auto config_args = TensorAccessorArgs<12>();
     constexpr auto input0_args = TensorAccessorArgs<config_args.next_compile_time_args_offset()>();
     constexpr auto input1_args = TensorAccessorArgs<input0_args.next_compile_time_args_offset()>();
 
-    const auto input0 = TensorAccessor(input0_args, input0_addr, ttwv::device_protocol::kStickBytes);
+    const auto input0 = TensorAccessor(input0_args, input0_addr, input_page_size);
 
     bool first_local_route = true;
     for (uint32_t local_chunk = 0; local_chunk < chunk_count; ++local_chunk) {
@@ -618,7 +625,7 @@ void kernel_main() {
         const uint32_t input_page = batch_index * input_pages_per_sample;
         const uint32_t* chunk = load_config_page(config_args, chunk_config_addr, cb_config, global_chunk);
         if constexpr (inverse) {
-            const auto input1 = TensorAccessor(input1_args, input1_or_length, ttwv::device_protocol::kStickBytes);
+            const auto input1 = TensorAccessor(input1_args, input1_or_length, input_page_size);
             const uint32_t coefficient_length = input_length_or_left_pad;
             const uint32_t approximation_begin = chunk[ttwv::device_protocol::kIlwtApproximationBegin];
             const uint32_t approximation_length = chunk[ttwv::device_protocol::kIlwtApproximationLength];
@@ -632,9 +639,17 @@ void kernel_main() {
                 initial_even_addr,
                 approximation_length,
                 cb_input_cache,
-                input_page);
+                input_page,
+                input_page_size);
             initialize_inverse_stream<tile_native_workspace>(
-                input1, coefficient_length, detail_begin, initial_odd_addr, detail_length, cb_input_cache, input_page);
+                input1,
+                coefficient_length,
+                detail_begin,
+                initial_odd_addr,
+                detail_length,
+                cb_input_cache,
+                input_page,
+                input_page_size);
         } else {
             const uint32_t input_length = input1_or_length;
             const uint32_t left_pad = input_length_or_left_pad;
@@ -654,7 +669,8 @@ void kernel_main() {
                 initial_even_length,
                 initial_odd_begin,
                 initial_odd_length,
-                input_page);
+                input_page,
+                input_page_size);
         }
 
         for (uint32_t route_index = 0; route_index < route_count; ++route_index) {

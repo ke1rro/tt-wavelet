@@ -77,7 +77,7 @@ struct LwtWorkingBuffers {
 struct LwtExecutable {
     LwtExecutionPlan plan{};
     LwtWorkingBuffers buffers{};
-    tt::tt_metal::Program lifting{};
+    tt::tt_metal::distributed::MeshWorkload workload{};
 };
 
 struct IlwtWorkingBuffers {
@@ -97,7 +97,7 @@ struct IlwtWorkingBuffers {
 struct IlwtExecutable {
     IlwtExecutionPlan plan{};
     IlwtWorkingBuffers buffers{};
-    tt::tt_metal::Program lifting{};
+    tt::tt_metal::distributed::MeshWorkload workload{};
 };
 
 [[nodiscard]] LwtExecutable create_lwt_executable_impl(
@@ -137,6 +137,8 @@ template <typename Scheme>
 }
 
 void prepare_lwt(tt::tt_metal::distributed::MeshCommandQueue& command_queue, LwtExecutable& executable);
+
+void enqueue_lwt(tt::tt_metal::distributed::MeshCommandQueue& command_queue, LwtExecutable& executable);
 
 void execute_lwt(
     tt::tt_metal::distributed::MeshDevice& mesh_device,
@@ -182,6 +184,8 @@ template <typename Scheme>
 }
 
 void prepare_ilwt(tt::tt_metal::distributed::MeshCommandQueue& command_queue, IlwtExecutable& executable);
+
+void enqueue_ilwt(tt::tt_metal::distributed::MeshCommandQueue& command_queue, IlwtExecutable& executable);
 
 void execute_ilwt(
     tt::tt_metal::distributed::MeshDevice& mesh_device,

@@ -132,6 +132,8 @@ template <typename Scheme>
 
 void prepare_lwt_2d(tt::tt_metal::distributed::MeshCommandQueue& command_queue, Lwt2DExecutable& executable);
 
+void enqueue_lwt_2d(tt::tt_metal::distributed::MeshCommandQueue& command_queue, Lwt2DExecutable& executable);
+
 void execute_lwt_2d(
     tt::tt_metal::distributed::MeshDevice& mesh_device,
     tt::tt_metal::distributed::MeshCommandQueue& command_queue,
@@ -190,6 +192,8 @@ template <typename Scheme>
 }
 
 void prepare_ilwt_2d(tt::tt_metal::distributed::MeshCommandQueue& command_queue, Ilwt2DExecutable& executable);
+
+void enqueue_ilwt_2d(tt::tt_metal::distributed::MeshCommandQueue& command_queue, Ilwt2DExecutable& executable);
 
 void execute_ilwt_2d(
     tt::tt_metal::distributed::MeshDevice& mesh_device,

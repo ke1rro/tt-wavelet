@@ -47,9 +47,11 @@ struct ArchitecturePolicy {
                 .ilwt_layout = layout,
                 .inverse_scale_inline = true,
                 .final_interleave_direct = layout == WorkspaceLayout::kTileNative,
-                .compact_2d_reader = false,
-                .inverse_2d_coordination_penalty_cycles_per_core =
-                    kBlackholeInverse2DCoordinationPenaltyCyclesPerCore,
+                // Complex boundary specializations can exceed the shared 69 KiB
+                // Tensix kernel-config window even for modest route counts. Keep
+                // helper bodies out of line on both supported architectures.
+                .compact_2d_reader = true,
+                .inverse_2d_coordination_penalty_cycles_per_core = kBlackholeInverse2DCoordinationPenaltyCyclesPerCore,
                 .l1_scratch_bytes = 0,
             };
         }

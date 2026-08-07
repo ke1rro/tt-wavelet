@@ -48,4 +48,11 @@ if(BUILD_TT_WAVELET)
   add_executable(ilwt_2d main_ilwt_2d.cpp tt_wavelet/src/lifting/device_2d.cpp)
   add_dependencies(ilwt_2d tt_wavelet_generate_static_schemes)
   tt_wavelet_configure_metal_target(ilwt_2d)
+
+  add_executable(
+    tt_wavelet_benchmark_runner benchmark_runner.cpp
+    tt_wavelet/src/lifting/device.cpp tt_wavelet/src/lifting/device_2d.cpp)
+  add_dependencies(tt_wavelet_benchmark_runner
+                   tt_wavelet_generate_static_schemes)
+  tt_wavelet_configure_metal_target(tt_wavelet_benchmark_runner)
 endif()

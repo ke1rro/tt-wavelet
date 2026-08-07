@@ -6,14 +6,11 @@
 #include "api/dataflow/dataflow_api.h"
 #define ALWI inline __attribute__((always_inline))
 
-// Wormhole NCRISC has a 16 KiB instruction region.  Keep the shared interior
-// test inline, but emit one callable copy of the larger boundary-only path
-// instead of duplicating it at the even and odd initialization sites.
-#if defined(ARCH_WORMHOLE)
+// Keep the shared interior test inline, but emit one callable copy of the
+// larger boundary-only path instead of duplicating it at the even and odd
+// initialization sites. This keeps every architecture below its reader text
+// budget for the largest boundary specializations.
 #define TTWV_BOUNDARY_CALLABLE __attribute__((noinline))
-#else
-#define TTWV_BOUNDARY_CALLABLE ALWI
-#endif
 
 namespace ttwv::kernels::primitives {
 
@@ -26,6 +23,7 @@ struct StickReadCache {
     uint32_t stick_capacity;
     uint32_t cached_stick_id;
     uint32_t cached_stick_count;
+    uint32_t reserved_stick_count;
     uint32_t source_page;
     bool valid;
     uint32_t page_size;
@@ -40,30 +38,56 @@ ALWI bool cache_contains_stick(const StickReadCache& cache, const uint32_t sourc
 
 template <typename SrcAccessor>
 ALWI void cache_source_sticks(
-    const SrcAccessor& src, StickReadCache& cache, const uint32_t source_stick, const uint32_t source_stick_count) {
+    const SrcAccessor& src,
+    StickReadCache& cache,
+    const uint32_t source_stick,
+    const uint32_t source_stick_count,
+    const uint32_t source_length) {
     if (cache.valid) {
-        cb_pop_front(cache.cb_id, cache.cached_stick_count);
+        cb_pop_front(cache.cb_id, cache.reserved_stick_count);
     }
 
     const uint32_t available_sticks = source_stick_count - source_stick;
-    const uint32_t reserve_sticks = min_u32(cache.stick_capacity, available_sticks);
+    const uint32_t cached_sticks = min_u32(cache.stick_capacity, available_sticks);
+    // Keep every transaction exactly one complete CB cycle. Raw L1 pointers
+    // returned by get_{read,write}_ptr do not wrap at a circular-buffer
+    // boundary, and a short tail transaction would leave later cache
+    // instances at an unknown physical slot. Pad unused cache slots with
+    // zeroes so the producer and consumer pointers always return to origin.
+    const uint32_t reserve_sticks = cache.stick_capacity;
 
     cb_reserve_back(cache.cb_id, reserve_sticks);
     const uint32_t cache_l1_addr = get_write_ptr(cache.cb_id);
     const bool page_per_stick = cache.page_size == cache.stick_nbytes;
 #pragma GCC unroll 8
     for (uint32_t i = 0; i < reserve_sticks; ++i) {
-        const uint64_t src_noc_addr =
-            page_per_stick ? src.get_noc_addr(cache.source_page + source_stick + i)
-                           : src.get_noc_addr(cache.source_page, (source_stick + i) * cache.stick_nbytes);
-        noc_async_read(src_noc_addr, cache_l1_addr + i * cache.stick_nbytes, cache.stick_nbytes);
+        const uint32_t stick_index = source_stick + i;
+        const bool is_cached_stick = i < cached_sticks;
+        const bool is_partial_tail = is_cached_stick && !page_per_stick && stick_index + 1 == source_stick_count &&
+                                     source_length % cache.stick_width != 0;
+        const uint32_t read_nbytes =
+            is_partial_tail ? (source_length - stick_index * cache.stick_width) * sizeof(float) : cache.stick_nbytes;
+        if (!is_cached_stick || is_partial_tail) {
+            auto* destination = reinterpret_cast<volatile tt_l1_ptr uint32_t*>(cache_l1_addr + i * cache.stick_nbytes);
+            for (uint32_t word = 0; word < cache.stick_nbytes / sizeof(uint32_t); ++word) {
+                destination[word] = 0U;
+            }
+        }
+        if (!is_cached_stick) {
+            continue;
+        }
+        const uint64_t src_noc_addr = page_per_stick
+                                          ? src.get_noc_addr(cache.source_page + stick_index)
+                                          : src.get_noc_addr(cache.source_page, stick_index * cache.stick_nbytes);
+        noc_async_read(src_noc_addr, cache_l1_addr + i * cache.stick_nbytes, read_nbytes);
     }
     noc_async_read_barrier();
     cb_push_back(cache.cb_id, reserve_sticks);
     cb_wait_front(cache.cb_id, reserve_sticks);
 
     cache.cached_stick_id = source_stick;
-    cache.cached_stick_count = reserve_sticks;
+    cache.cached_stick_count = cached_sticks;
+    cache.reserved_stick_count = reserve_sticks;
     cache.valid = true;
 }
 
@@ -75,7 +99,7 @@ ALWI float read_source_value(
     const uint32_t source_stick_count = (source_length + cache.stick_width - 1) / cache.stick_width;
 
     if (!cache_contains_stick(cache, source_stick)) {
-        cache_source_sticks(src, cache, source_stick, source_stick_count);
+        cache_source_sticks(src, cache, source_stick, source_stick_count, source_length);
     }
 
     const auto* cached_values = reinterpret_cast<const float*>(get_read_ptr(cache.cb_id));
@@ -167,9 +191,10 @@ ALWI void release_cache(StickReadCache& cache) {
         return;
     }
 
-    cb_pop_front(cache.cb_id, cache.cached_stick_count);
+    cb_pop_front(cache.cb_id, cache.reserved_stick_count);
     cache.cached_stick_id = kInvalidStick;
     cache.cached_stick_count = 0;
+    cache.reserved_stick_count = 0;
     cache.valid = false;
 }
 
