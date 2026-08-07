@@ -2246,7 +2246,12 @@ def add_performance_arguments(parser: argparse.ArgumentParser, default: str) -> 
     add_common_selection_arguments(parser)
     add_output_arguments(parser, default)
     parser.add_argument("--warmup-runs", type=int, default=1)
-    parser.add_argument("--repeats", type=int, default=20)
+    parser.add_argument(
+        "--repeats",
+        type=int,
+        default=3,
+        help="measured repeats per performance point (default: %(default)s)",
+    )
     parser.add_argument("--preflight-length", type=int, default=257)
     parser.add_argument("--preflight-height", type=int, default=35)
     parser.add_argument("--preflight-width", type=int, default=37)

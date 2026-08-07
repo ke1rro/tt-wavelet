@@ -6,17 +6,25 @@
 
 #include <cstdint>
 
-#include "ttnn/operations/wavelet/common/signal_extension.hpp"
 #include "api/dataflow/dataflow_api.h"
+#include "ttnn/operations/wavelet/common/signal_extension.hpp"
 #define ALWI inline __attribute__((always_inline))
 
-// Wormhole NCRISC has a 16 KiB instruction region. Keep its larger cache-refill
-// and boundary paths out of line, while preserving Blackhole's fully inlined
-// path and larger instruction-memory optimization policy.
+// Wormhole NCRISC has a 16 KiB instruction region, so keep the cache refill
+// path out of line there. Blackhole keeps that hot path inline. Boundary
+// extension is a cold path on both architectures; keeping it out of line also
+// prevents smooth/antireflect cloning from overflowing Blackhole's aggregate
+// fast-dispatch program-config buffer in profiler builds.
 #if defined(ARCH_WORMHOLE)
+#define LWT_CACHE_REFILL_CALLABLE __attribute__((noinline))
 #define LWT_BOUNDARY_CALLABLE __attribute__((noinline))
 #elif defined(ARCH_BLACKHOLE)
+#define LWT_CACHE_REFILL_CALLABLE ALWI
+#if defined(PROFILE_KERNEL) && PROFILE_KERNEL
+#define LWT_BOUNDARY_CALLABLE __attribute__((noinline))
+#else
 #define LWT_BOUNDARY_CALLABLE ALWI
+#endif
 #else
 #error "TTNN wavelet stick cache supports only Wormhole and Blackhole"
 #endif
@@ -46,7 +54,7 @@ ALWI bool cache_contains_stick(const StickReadCache& cache, const uint32_t sourc
 }
 
 template <typename SrcAccessor>
-LWT_BOUNDARY_CALLABLE void cache_source_sticks(
+LWT_CACHE_REFILL_CALLABLE void cache_source_sticks(
     const SrcAccessor& src,
     StickReadCache& cache,
     const uint32_t source_stick,
@@ -212,3 +220,4 @@ ALWI void release_cache(StickReadCache& cache) {
 }  // namespace ttnn::operations::wavelet::kernels::primitives
 
 #undef LWT_BOUNDARY_CALLABLE
+#undef LWT_CACHE_REFILL_CALLABLE
