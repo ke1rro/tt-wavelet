@@ -81,12 +81,19 @@ export_tt_env() {
   export TT_METAL_ROOT="$TT_METAL_DIR"
   export TT_METAL_HOME="$TT_METAL_DIR"
   export TT_METAL_RUNTIME_ROOT="$TT_METAL_DIR"
-  local tt_library_path="$BUILD_DIR/tt-metal/tt_metal:$BUILD_DIR/tt-metal/lib:$BUILD_DIR/tt-metal/tt_metal/third_party/umd/device:$BUILD_DIR/tt-metal/tt_stl"
-  if [[ -n "${LD_LIBRARY_PATH:-}" ]]; then
-    export LD_LIBRARY_PATH="$tt_library_path:$LD_LIBRARY_PATH"
-  else
-    export LD_LIBRARY_PATH="$tt_library_path"
-  fi
+  local tt_library_path="$BUILD_DIR/tt-metal/tt_metal:$BUILD_DIR/tt-metal/lib:$BUILD_DIR/tt-metal/tt_metal/third_party/umd/lib:$BUILD_DIR/tt-metal/tt_stl:$BUILD_DIR/lib"
+  local inherited_path=""
+  local entry
+  local -a inherited_entries=()
+  IFS=: read -ra inherited_entries <<< "${LD_LIBRARY_PATH:-}"
+  for entry in "${inherited_entries[@]}"; do
+    [[ -n "$entry" ]] || continue
+    case "$entry" in
+      */tt-metal/build | */tt-metal/build/* | */build/tt-metal | */build/tt-metal/*) continue ;;
+    esac
+    inherited_path+="${inherited_path:+:}$entry"
+  done
+  export LD_LIBRARY_PATH="$tt_library_path${inherited_path:+:$inherited_path}"
   export CC=clang-20
   export CXX=clang++-20
   log INFO "TT env set: TT_METAL_HOME=$TT_METAL_HOME"
@@ -125,7 +132,7 @@ configure_project() {
     -DCMAKE_C_COMPILER=clang-20 \
     -DCMAKE_CXX_COMPILER=clang++-20 \
     -DBUILD_TT_WAVELET=ON \
-    -DENABLE_TRACY:BOOL=OFF \
+    -DENABLE_TRACY:BOOL=ON \
     -DMETALIUM_INCLUDE_DIRS=ON \
     -DTT_USE_SYSTEM_SFPI:BOOL=OFF \
     -DCMAKE_DISABLE_PRECOMPILE_HEADERS=TRUE \

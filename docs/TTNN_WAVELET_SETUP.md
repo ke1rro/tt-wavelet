@@ -13,14 +13,20 @@ Run the unified wrapper from the root of `tt-wavelet`:
 ```
 
 This script will automatically:
-1. Initialize missing submodules and install system/Python dependencies.
+1. Check out the exact `tt-metal` gitlink pinned by `tt-wavelet`, initialize
+   missing submodules, and install system/Python dependencies.
 2. Register Wavelet structurally in TT-Metal CMake and nanobind files.
 3. Symlink the Wavelet operation and tests into TT-Metal.
-4. Configure CMake and build `tt_wavelet_benchmark_runner` and `ttnn`.
+4. Configure a Tracy-enabled CMake build and build
+   `tt_wavelet_benchmark_runner` and `ttnn`.
 5. Update local Python binary bindings (`_ttnn.so` and `_ttnncpp.so`).
+6. Reject profiler-disabled or server-wide TT-Metal/UMD/Tracy libraries before
+   any hardware benchmark starts.
 
 The registration editor is idempotent and repairs misplaced hooks left by the
-old line-number-based patch.
+old line-number-based patch. The wrapper will not discard a dirty TT-Metal
+checkout when its revision differs from the pin; save or clean that submodule
+first.
 
 ---
 

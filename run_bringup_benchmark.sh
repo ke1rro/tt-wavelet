@@ -51,6 +51,74 @@ require_value() {
     fi
 }
 
+ensure_pinned_tt_metal() {
+    local pinned_revision
+    local current_revision
+    pinned_revision=$(git ls-tree HEAD tt-metal | awk '{print $3}')
+    if [[ -z $pinned_revision ]]; then
+        echo "HEAD does not pin a tt-metal submodule revision" >&2
+        exit 2
+    fi
+    if [[ ! -f tt-metal/CMakeLists.txt ]]; then
+        echo "Initializing pinned TT-Metal submodule..."
+        git submodule update --init --recursive --checkout tt-metal
+    fi
+    current_revision=$(git -C tt-metal rev-parse HEAD)
+    if [[ $current_revision != "$pinned_revision" ]]; then
+        if [[ -n $(git -C tt-metal status --porcelain) ]]; then
+            echo "TT-Metal is at $current_revision with local changes; pinned revision is $pinned_revision." >&2
+            echo "Refusing to discard TT-Metal work. Clean or save that submodule before rerunning." >&2
+            exit 2
+        fi
+        echo "Checking out pinned TT-Metal revision $pinned_revision..."
+        git submodule update --init --recursive --checkout tt-metal
+    elif git submodule status --recursive 2>/dev/null | grep -q '^-'; then
+        echo "Initializing nested TT-Metal submodules..."
+        git submodule update --init --recursive tt-metal
+    fi
+    echo "Pinned TT-Metal: $pinned_revision"
+}
+
+validate_local_tt_runtime() {
+    local local_metal=$ROOT_DIR/build/tt-metal/tt_metal/libtt_metal.so
+    if [[ ! -f $local_metal ]]; then
+        echo "Missing local TT-Metal runtime: $local_metal" >&2
+        exit 2
+    fi
+    if grep -aFq 'TT_METAL_DEVICE_PROFILER requires a Tracy-enabled build' "$local_metal"; then
+        echo "Local TT-Metal runtime was built without Tracy device-profiler support." >&2
+        echo "Run: ./run_bringup_benchmark.sh --setup-only --bootstrap" >&2
+        exit 2
+    fi
+
+    local artifact
+    local dependencies
+    local dependency
+    local resolved
+    for artifact in \
+        "$ROOT_DIR/build/tt_wavelet_benchmark_runner" \
+        "$ROOT_DIR/build/tt-metal/ttnn/_ttnn.so"; do
+        [[ -f $artifact ]] || { echo "Missing built artifact: $artifact" >&2; exit 2; }
+        dependencies=$(ldd "$artifact")
+        if grep -q 'not found' <<< "$dependencies"; then
+            echo "Unresolved shared-library dependency for $artifact:" >&2
+            grep 'not found' <<< "$dependencies" >&2
+            exit 2
+        fi
+        while read -r dependency _ resolved _; do
+            case "$dependency" in
+                libtt_metal.so | libtt-umd.so* | libtracy.so*)
+                    if [[ $resolved != "$ROOT_DIR"/* ]]; then
+                        echo "$artifact resolves $dependency outside this checkout: $resolved" >&2
+                        exit 2
+                    fi
+                    ;;
+            esac
+        done <<< "$dependencies"
+    done
+    echo "TT runtime validation: local pinned Tracy-enabled libraries"
+}
+
 while (($#)); do
     case "$1" in
         --test-run)
@@ -108,10 +176,7 @@ if [[ $BUILD == false && ( $SETUP_ONLY == true || $FORCE_BOOTSTRAP == true ) ]];
 fi
 
 if [[ $BUILD == true ]]; then
-    if [[ ! -f tt-metal/CMakeLists.txt ]] || git submodule status --recursive 2>/dev/null | grep -q '^-'; then
-        echo "Initializing repository submodules..."
-        git submodule update --init --recursive
-    fi
+    ensure_pinned_tt_metal
 
     # The integration step is idempotent. It links the live ttnn-wavelet tree
     # into TT-Metal and applies the five required CMake/nanobind hooks exactly
@@ -120,8 +185,13 @@ if [[ $BUILD == true ]]; then
 
     NEED_SYSTEM_BOOTSTRAP=false
     NEED_PYTHON_BOOTSTRAP=false
+    NEED_CMAKE_CONFIGURE=false
     if [[ $FORCE_BOOTSTRAP == true || ! -f build/CMakeCache.txt ]]; then
         NEED_SYSTEM_BOOTSTRAP=true
+        NEED_CMAKE_CONFIGURE=true
+    elif ! grep -q '^ENABLE_TRACY:BOOL=ON$' build/CMakeCache.txt; then
+        echo "Existing build is not Tracy-enabled; reconfiguring for device timing."
+        NEED_CMAKE_CONFIGURE=true
     fi
     if ! command -v clang-20 >/dev/null 2>&1 || ! command -v clang++-20 >/dev/null 2>&1; then
         NEED_SYSTEM_BOOTSTRAP=true
@@ -137,11 +207,13 @@ if [[ $BUILD == true ]]; then
         echo "Bootstrapping compiler, TT-Metal system dependencies, Python environment, and CMake..."
         run_tt_metal_install_deps
         ensure_base_deps
-        configure_project Release
         NEED_PYTHON_BOOTSTRAP=false
     elif [[ $NEED_PYTHON_BOOTSTRAP == true ]]; then
         echo "Creating Python environment and installing benchmark dependencies..."
         ensure_python_packages
+    fi
+    if [[ $NEED_CMAKE_CONFIGURE == true || $FORCE_BOOTSTRAP == true ]]; then
+        configure_project Release
     fi
 
     BUILD_JOBS=${TT_WAVELET_BUILD_JOBS:-$(nproc)}
@@ -153,6 +225,7 @@ if [[ $BUILD == true ]]; then
     # Refresh extension links after the build. PYTHONPATH from set_env.sh then
     # imports this checkout rather than any server-wide TTNN installation.
     scripts/setup_ttnn_wavelet_in_ttmetal.sh --skip-build
+    validate_local_tt_runtime
 
     if [[ $NEED_SYSTEM_BOOTSTRAP == true || $NEED_PYTHON_BOOTSTRAP == true || $FORCE_BOOTSTRAP == true ]]; then
         echo "Installing this TT-Metal checkout into the local virtual environment..."
