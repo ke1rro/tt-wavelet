@@ -6,20 +6,21 @@ This guide explains how to set up, integrate, build, and benchmark `ttnn-wavelet
 
 ## 1. Quick Setup (Automated)
 
-Run the provided setup script from the root of `tt-wavelet`:
+Run the unified wrapper from the root of `tt-wavelet`:
 
 ```bash
-source scripts/set_env.sh
-./scripts/setup_ttnn_wavelet_in_ttmetal.sh
+./run_bringup_benchmark.sh --setup-only
 ```
 
 This script will automatically:
-1. Export environment variables (`TT_METAL_HOME`, `TT_METAL_ROOT`, `LD_LIBRARY_PATH`, `PYTHONPATH`).
-2. Apply integration hooks to `tt-metal` CMake and Python bindings.
-3. Symlink `ttnn-wavelet/ttnn/cpp/ttnn/operations/wavelet` into `tt-metal`.
-4. Symlink `ttnn-wavelet/tests/ttnn/unit_tests/operations/wavelet` into `tt-metal`.
-5. Compile the C++ tree using `cmake --build build -j$(nproc)`.
-6. Update Python virtualenv binary bindings (`_ttnn.so` and `_ttnncpp.so`).
+1. Initialize missing submodules and install system/Python dependencies.
+2. Register Wavelet structurally in TT-Metal CMake and nanobind files.
+3. Symlink the Wavelet operation and tests into TT-Metal.
+4. Configure CMake and build `tt_wavelet_benchmark_runner` and `ttnn`.
+5. Update local Python binary bindings (`_ttnn.so` and `_ttnncpp.so`).
+
+The registration editor is idempotent and repairs misplaced hooks left by the
+old line-number-based patch.
 
 ---
 
@@ -36,24 +37,19 @@ ln -sfn /path/to/tt-wavelet/ttnn-wavelet/ttnn/cpp/ttnn/operations/wavelet \
 ```
 
 ### Step 2: Update CMake & Nanobind Registration
-Apply `ttnn-wavelet/patches/integration-hooks.patch` or manually add:
-1. In `tt-metal/ttnn/cpp/ttnn/operations/CMakeLists.txt`:
-   ```cmake
-   add_subdirectory(wavelet)
-   ```
-2. In `tt-metal/ttnn/cpp/ttnn/nanobind/__init__.cpp`:
-   ```cpp
-   #include "ttnn/operations/wavelet/wavelet_pybind.hpp"
-   // Inside bind_registered_operations:
-   ttnn::operations::wavelet::py_module(m_wavelet);
-   ```
+Run the structure-aware registration editor. Do not apply the historical
+zero-context patch to a different TT-Metal revision:
+
+```bash
+python3 scripts/integrate_ttnn_wavelet.py --tt-metal /path/to/tt-metal
+```
 
 ### Step 3: Compile C++ Targets
 Build the TTNN shared library:
 
 ```bash
 cd /path/to/tt-wavelet
-cmake --build build -j$(nproc)
+cmake --build build --target tt_wavelet_benchmark_runner ttnn --parallel $(nproc)
 ```
 
 ### Step 4: Symlink Built Python Libraries

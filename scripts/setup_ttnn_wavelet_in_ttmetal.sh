@@ -63,46 +63,7 @@ for source_dir in "$operation_source" "$test_source"; do
     fi
 done
 
-nanobind_file=$TT_METAL_HOME/ttnn/cpp/ttnn-nanobind/__init__.cpp
-operations_cmake=$TT_METAL_HOME/ttnn/cpp/ttnn/operations/CMakeLists.txt
-patch_file=$REPO_ROOT/ttnn-wavelet/patches/integration-hooks.patch
-for integration_file in "$nanobind_file" "$operations_cmake" "$patch_file"; do
-    if [[ ! -f $integration_file ]]; then
-        echo "Required integration file is missing: $integration_file" >&2
-        exit 2
-    fi
-done
-
-count_line() {
-    local file=$1
-    local pattern=$2
-    local count
-    count=$(grep -E -c "$pattern" "$file" || true)
-    printf '%s\n' "${count:-0}"
-}
-
-hook_count=0
-hook_count=$((hook_count + $(count_line "$nanobind_file" '^[[:space:]]*#include "ttnn/operations/wavelet/wavelet_nanobind.hpp"[[:space:]]*$')))
-hook_count=$((hook_count + $(count_line "$nanobind_file" '^[[:space:]]*wavelet::bind_wavelet_operations\(mod\);[[:space:]]*$')))
-hook_count=$((hook_count + $(count_line "$operations_cmake" '^[[:space:]]*add_subdirectory\(wavelet\)[[:space:]]*$')))
-hook_count=$((hook_count + $(count_line "$operations_cmake" '^[[:space:]]*TTNN::Ops::Wavelet[[:space:]]*$')))
-hook_count=$((hook_count + $(count_line "$operations_cmake" '^[[:space:]]*\$<TARGET_OBJECTS:TTNN::Ops::Wavelet>[[:space:]]*$')))
-
-case $hook_count in
-    0)
-        echo "Applying TTNN-Wavelet registration hooks"
-        git -C "$TT_METAL_HOME" apply --check "$patch_file"
-        git -C "$TT_METAL_HOME" apply "$patch_file"
-        ;;
-    5)
-        echo "TTNN-Wavelet registration hooks already present"
-        ;;
-    *)
-        echo "TTNN-Wavelet registration is partial or duplicated ($hook_count/5 hooks)." >&2
-        echo "Refusing to modify TT-Metal; inspect $nanobind_file and $operations_cmake" >&2
-        exit 2
-        ;;
-esac
+python3 "$SCRIPT_DIR/integrate_ttnn_wavelet.py" --tt-metal "$TT_METAL_HOME"
 
 link_tree() {
     local source_path=$1

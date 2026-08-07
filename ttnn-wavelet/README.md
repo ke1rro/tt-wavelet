@@ -41,14 +41,13 @@ The preserved integration commit series is:
   schemes, build metadata, and operation documentation.
 - `tests/ttnn/unit_tests/operations/wavelet/` — correctness, scheme, and
   program-cache tests.
-- `patches/integration-hooks.patch` — the original additions to TTNN's
-  operations CMake registration and nanobind module. This patch is recorded
-  for reference and is not expected to apply cleanly to later upstream trees.
+- `patches/integration-hooks.patch` — historical reference only. Do not apply
+  this zero-context patch to a different TT-Metal revision.
 
 ## Future restoration
 
-When adapting this checkpoint to a newer `tt-metal`, copy the preserved
-operation and tests into the matching upstream-relative paths, then port the
-two registration changes manually using `patches/integration-hooks.patch` as
-a reference. Keep the currently pinned submodule untouched until that port is
-done in a dedicated branch or worktree.
+When adapting this checkpoint to a newer `tt-metal`, use
+`../scripts/setup_ttnn_wavelet_in_ttmetal.sh`. It symlinks the preserved trees
+and uses a structure-aware editor to place the registration hooks inside the
+correct CMake command blocks. The editor is idempotent and rejects unsupported
+TT-Metal structures instead of inserting hooks at brittle line offsets.
