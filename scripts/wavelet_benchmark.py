@@ -2120,12 +2120,7 @@ def generate_plots(csv_paths: Sequence[Path], output_dir: Path) -> None:
         ):
             x_positions, x_label, categorical_x = _plot_positions(dimension, group)
             figure, axes = plt.subplots(4, 2, figsize=(14, 16), sharex=True)
-            speedup_figure, speedup_axes = plt.subplots(
-                4, 2, figsize=(14, 16), sharex=True
-            )
-            for mode, axis, speedup_axis in zip(
-                BOUNDARY_MODES, axes.flat, speedup_axes.flat
-            ):
+            for mode, axis in zip(BOUNDARY_MODES, axes.flat):
                 mode_rows = [row for row in group if row["boundary_mode"] == mode]
                 by_backend: dict[str, dict[str, float]] = {}
                 for row in mode_rows:
@@ -2162,13 +2157,6 @@ def generate_plots(csv_paths: Sequence[Path], output_dir: Path) -> None:
                         by_backend[baseline][value] / by_backend[candidate][value]
                         for value in common
                     ]
-                    if common:
-                        speedup_axis.plot(
-                            [x_positions[value] for value in common],
-                            values,
-                            marker=".",
-                            label=label,
-                        )
                     for x_value, value in zip(common, values):
                         speedup_writer.writerow(
                             {
@@ -2182,37 +2170,23 @@ def generate_plots(csv_paths: Sequence[Path], output_dir: Path) -> None:
                                 "speedup": value,
                             }
                         )
-                speedup_axis.axhline(1.0, color="black", linewidth=0.7)
-                speedup_axis.set_title(mode)
-                speedup_axis.set_ylabel("speedup (higher is faster)")
-                speedup_axis.grid(True, linestyle=":", alpha=0.5)
-                if speedup_axis.get_legend_handles_labels()[0]:
-                    speedup_axis.legend(fontsize=8)
             for axis in axes[-1, :]:
-                axis.set_xlabel(x_label)
-            for axis in speedup_axes[-1, :]:
                 axis.set_xlabel(x_label)
             if categorical_x:
                 labels = sorted(x_positions, key=x_positions.__getitem__)
                 positions = [x_positions[label] for label in labels]
-                for axis in (*axes[-1, :], *speedup_axes[-1, :]):
+                for axis in axes[-1, :]:
                     axis.set_xticks(positions, labels, rotation=35, ha="right")
             figure.suptitle(
                 f"{dimension} {transform} {wavelet} — raw time; PyWavelets CPU API, TT device profiler — {architecture}"
             )
-            speedup_figure.suptitle(
-                f"{dimension} {transform} {wavelet} — cross-domain speedups; not end-to-end — {architecture}"
-            )
             figure.tight_layout(rect=(0, 0, 1, 0.98))
-            speedup_figure.tight_layout(rect=(0, 0, 1, 0.98))
             safe_architecture = "".join(
                 character if character.isalnum() else "_" for character in architecture
             )
             stem = f"{dimension}_{transform}_{wavelet.replace('.', '_')}_{safe_architecture}"
             figure.savefig(output_dir / f"{stem}_milliseconds.png", dpi=180)
-            speedup_figure.savefig(output_dir / f"{stem}_speedups.png", dpi=180)
             plt.close(figure)
-            plt.close(speedup_figure)
 
 
 def add_common_selection_arguments(parser: argparse.ArgumentParser) -> None:
