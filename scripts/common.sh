@@ -103,14 +103,24 @@ select_generator() {
 configure_project() {
   local build_type="$1"
   local generator
-  generator=$(select_generator)
+  local generator_args=()
+  if [[ -f "$BUILD_DIR/CMakeCache.txt" ]]; then
+    generator=$(sed -n 's/^CMAKE_GENERATOR:INTERNAL=//p' "$BUILD_DIR/CMakeCache.txt")
+    if [[ -z "$generator" ]]; then
+      log ERROR "Could not determine generator from $BUILD_DIR/CMakeCache.txt" >&2
+      exit 1
+    fi
+  else
+    generator=$(select_generator)
+    generator_args=(-G "$generator")
+  fi
 
   log INFO "Configuring CMake ($generator, ${build_type})"
   # Use the SFPI release pinned and checksummed by this TT-Metal checkout.
   # The server-wide toolchain can be newer and is not ABI-compatible by
   # assumption; TT-Metal intentionally rejects such version mismatches.
   cmake -S "$ROOT_DIR" -B "$BUILD_DIR" \
-    -G "$generator" \
+    "${generator_args[@]}" \
     -DCMAKE_BUILD_TYPE="$build_type" \
     -DCMAKE_C_COMPILER=clang-20 \
     -DCMAKE_CXX_COMPILER=clang++-20 \
