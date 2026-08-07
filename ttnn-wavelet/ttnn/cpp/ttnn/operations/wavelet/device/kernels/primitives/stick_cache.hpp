@@ -10,11 +10,16 @@
 #include "api/dataflow/dataflow_api.h"
 #define ALWI inline __attribute__((always_inline))
 
-// Keep the shared interior test inline, but emit one callable copy of the
-// larger boundary-only path instead of duplicating it at the even and odd
-// initialization sites. This keeps every architecture below its reader text
-// budget for the largest boundary specializations.
+// Wormhole NCRISC has a 16 KiB instruction region. Keep its larger cache-refill
+// and boundary paths out of line, while preserving Blackhole's fully inlined
+// path and larger instruction-memory optimization policy.
+#if defined(ARCH_WORMHOLE)
 #define LWT_BOUNDARY_CALLABLE __attribute__((noinline))
+#elif defined(ARCH_BLACKHOLE)
+#define LWT_BOUNDARY_CALLABLE ALWI
+#else
+#error "TTNN wavelet stick cache supports only Wormhole and Blackhole"
+#endif
 
 namespace ttnn::operations::wavelet::kernels::primitives {
 
@@ -41,7 +46,7 @@ ALWI bool cache_contains_stick(const StickReadCache& cache, const uint32_t sourc
 }
 
 template <typename SrcAccessor>
-ALWI void cache_source_sticks(
+LWT_BOUNDARY_CALLABLE void cache_source_sticks(
     const SrcAccessor& src,
     StickReadCache& cache,
     const uint32_t source_stick,
