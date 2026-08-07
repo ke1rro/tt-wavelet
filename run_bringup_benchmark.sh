@@ -267,7 +267,7 @@ else
     PRECISION_SIZE=(--length 1024 --height 64 --width 64)
     PERF_1D_SIZE=(--length-start 100000 --length-stop 1000000 --length-step 10000)
     PERF_2D_SIZE=()
-    REPEATS=(--warmup-runs 1 --repeats 20)
+    REPEATS=(--warmup-runs 1 --repeats 3)
 fi
 
 echo "Seed: $SEED"
