@@ -1859,7 +1859,7 @@ def run_ttnn_performance(
                                 },
                                 memory_config=(
                                     "input/output: TTNN DRAM memory config; "
-                                    "temporary workspace: operation-managed"
+                                    "temporary workspace: program-local L1 circular buffers"
                                 ),
                                 warmup_runs=args.warmup_runs,
                                 repeats=args.repeats,

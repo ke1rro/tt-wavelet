@@ -14,6 +14,14 @@ namespace {
 using ttnn::operations::wavelet::kernels::primitives::write_direct_interleaved_signal;
 using ttnn::operations::wavelet::kernels::primitives::write_reconstructed_signal;
 
+ALWI uint32_t resolve_workspace_slot(
+    const uint32_t slot,
+    const uint32_t workspace_a_addr,
+    const uint32_t workspace_b_addr,
+    const uint32_t workspace_scratch_addr) {
+    return slot == 0 ? workspace_a_addr : (slot == 1 ? workspace_b_addr : workspace_scratch_addr);
+}
+
 template <typename ConfigAccessor>
 ALWI const uint32_t* load_route_config(
     const ConfigAccessor& config, const uint32_t config_addr, const uint32_t cb_config, const uint32_t page_index) {
@@ -233,9 +241,15 @@ void kernel_main() {
     constexpr uint32_t output_page_size = get_compile_time_arg_val(7);
     constexpr uint32_t interleave_batch_sticks = get_compile_time_arg_val(8);
     constexpr bool hybrid_tile_mirror = get_compile_time_arg_val(9) != 0;
+    constexpr uint32_t cb_workspace_a = get_compile_time_arg_val(10);
+    constexpr uint32_t cb_workspace_b = get_compile_time_arg_val(11);
+    constexpr uint32_t cb_workspace_scratch = get_compile_time_arg_val(12);
     constexpr uint32_t tile_bytes = get_tile_size(cb_output);
-    constexpr auto config_args = TensorAccessorArgs<10>();
+    constexpr auto config_args = TensorAccessorArgs<13>();
     constexpr auto final_args = TensorAccessorArgs<config_args.next_compile_time_args_offset()>();
+    const uint32_t workspace_a_addr = get_write_ptr(cb_workspace_a);
+    const uint32_t workspace_b_addr = get_write_ptr(cb_workspace_b);
+    const uint32_t workspace_scratch_addr = get_write_ptr(cb_workspace_scratch);
 
     if constexpr (inverse) {
         const uint32_t chunk_config_addr = get_arg_val<uint32_t>(4);
@@ -258,6 +272,16 @@ void kernel_main() {
                 chunk_words[word] = loaded_chunk[word];
             }
             cb_pop_front(cb_config, 1);
+            chunk_words[ttnn::operations::wavelet::device_protocol::kIlwtFinalEvenAddr] = resolve_workspace_slot(
+                chunk_words[ttnn::operations::wavelet::device_protocol::kIlwtFinalEvenAddr],
+                workspace_a_addr,
+                workspace_b_addr,
+                workspace_scratch_addr);
+            chunk_words[ttnn::operations::wavelet::device_protocol::kIlwtFinalOddAddr] = resolve_workspace_slot(
+                chunk_words[ttnn::operations::wavelet::device_protocol::kIlwtFinalOddAddr],
+                workspace_a_addr,
+                workspace_b_addr,
+                workspace_scratch_addr);
 
             bool direct_interleave_written = false;
             for (uint32_t route_index = 0; route_index < route_count; ++route_index) {
@@ -287,7 +311,11 @@ void kernel_main() {
                     direct_interleave_written = true;
                 } else {
                     write_local_output_groups<use_noc_local_write, tile_native_workspace, hybrid_tile_mirror>(
-                        route[ttnn::operations::wavelet::device_protocol::kRouteOutputAddr],
+                        resolve_workspace_slot(
+                            route[ttnn::operations::wavelet::device_protocol::kRouteOutputAddr],
+                            workspace_a_addr,
+                            workspace_b_addr,
+                            workspace_scratch_addr),
                         cb_output,
                         tile_bytes,
                         route[ttnn::operations::wavelet::device_protocol::kRouteOutputOffset],
@@ -356,7 +384,7 @@ void kernel_main() {
                         dst, cb_output, tile_bytes, output_page, output_offset, output_length, group_count);
                 } else {
                     write_local_output_groups<use_noc_local_write, tile_native_workspace, hybrid_tile_mirror>(
-                        output_addr,
+                        resolve_workspace_slot(output_addr, workspace_a_addr, workspace_b_addr, workspace_scratch_addr),
                         cb_output,
                         tile_bytes,
                         output_offset,

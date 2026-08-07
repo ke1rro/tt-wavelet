@@ -31,6 +31,14 @@ static_assert(NOC_L1_READ_ALIGNMENT_BYTES % sizeof(float) == 0);
 
 using ttnn::operations::wavelet::kernels::primitives::WorkspaceIndexCursor;
 
+ALWI uint32_t resolve_workspace_slot(
+    const uint32_t slot,
+    const uint32_t workspace_a_addr,
+    const uint32_t workspace_b_addr,
+    const uint32_t workspace_scratch_addr) {
+    return slot == 0 ? workspace_a_addr : (slot == 1 ? workspace_b_addr : workspace_scratch_addr);
+}
+
 ALWI void read_workspace_block(const volatile tt_l1_ptr float* src, WorkspaceIndexCursor& cursor, float* dst) {
     // A logical 16-element block crosses at most one physical narrow-tile
     // block boundary.  Copy the two contiguous segments and update the cursor
@@ -591,8 +599,8 @@ void kernel_main() {
     const uint32_t input0_addr = get_arg_val<uint32_t>(0);
     const uint32_t input1_or_length = get_arg_val<uint32_t>(1);
     const uint32_t input_length_or_left_pad = get_arg_val<uint32_t>(2);
-    const uint32_t initial_even_addr = get_arg_val<uint32_t>(3);
-    const uint32_t initial_odd_addr = get_arg_val<uint32_t>(4);
+    const uint32_t initial_even_slot = get_arg_val<uint32_t>(3);
+    const uint32_t initial_odd_slot = get_arg_val<uint32_t>(4);
     const uint32_t chunk_config_addr = get_arg_val<uint32_t>(5);
     const uint32_t route_config_addr = get_arg_val<uint32_t>(6);
     const uint32_t chunk_begin = get_arg_val<uint32_t>(7);
@@ -614,13 +622,23 @@ void kernel_main() {
     constexpr uint32_t input_page_size = get_compile_time_arg_val(9);
     constexpr bool row_major_noc_staging = get_compile_time_arg_val(10) != 0;
     constexpr bool hybrid_tile_mirror = get_compile_time_arg_val(11) != 0;
+    constexpr uint32_t cb_workspace_a = get_compile_time_arg_val(12);
+    constexpr uint32_t cb_workspace_b = get_compile_time_arg_val(13);
+    constexpr uint32_t cb_workspace_scratch = get_compile_time_arg_val(14);
     static_assert(
         ttnn::operations::wavelet::is_supported_lwt_boundary_mode(boundary_mode), "Unsupported LWT boundary mode");
-    constexpr auto config_args = TensorAccessorArgs<12>();
+    constexpr auto config_args = TensorAccessorArgs<15>();
     constexpr auto input0_args = TensorAccessorArgs<config_args.next_compile_time_args_offset()>();
     constexpr auto input1_args = TensorAccessorArgs<input0_args.next_compile_time_args_offset()>();
 
     const auto input0 = TensorAccessor(input0_args, input0_addr, input_page_size);
+    const uint32_t workspace_a_addr = get_write_ptr(cb_workspace_a);
+    const uint32_t workspace_b_addr = get_write_ptr(cb_workspace_b);
+    const uint32_t workspace_scratch_addr = get_write_ptr(cb_workspace_scratch);
+    const uint32_t initial_even_addr =
+        resolve_workspace_slot(initial_even_slot, workspace_a_addr, workspace_b_addr, workspace_scratch_addr);
+    const uint32_t initial_odd_addr =
+        resolve_workspace_slot(initial_odd_slot, workspace_a_addr, workspace_b_addr, workspace_scratch_addr);
 
     bool first_local_route = true;
     for (uint32_t local_chunk = 0; local_chunk < chunk_count; ++local_chunk) {
@@ -694,9 +712,17 @@ void kernel_main() {
             const uint32_t config_index = global_chunk * route_count + route_index;
             const uint32_t* route = load_config_page(config_args, route_config_addr, cb_config, config_index);
             const uint32_t route_type = route[ttnn::operations::wavelet::device_protocol::kRouteType];
-            const uint32_t source_addr = route[ttnn::operations::wavelet::device_protocol::kRouteSourceAddr];
+            const uint32_t source_addr = resolve_workspace_slot(
+                route[ttnn::operations::wavelet::device_protocol::kRouteSourceAddr],
+                workspace_a_addr,
+                workspace_b_addr,
+                workspace_scratch_addr);
             const uint32_t source_end = route[ttnn::operations::wavelet::device_protocol::kRouteSourceLength];
-            const uint32_t base_addr = route[ttnn::operations::wavelet::device_protocol::kRouteBaseAddr];
+            const uint32_t base_addr = resolve_workspace_slot(
+                route[ttnn::operations::wavelet::device_protocol::kRouteBaseAddr],
+                workspace_a_addr,
+                workspace_b_addr,
+                workspace_scratch_addr);
             const uint32_t base_end = route[ttnn::operations::wavelet::device_protocol::kRouteBaseLength];
             const uint32_t output_length = route[ttnn::operations::wavelet::device_protocol::kRouteOutputLength];
             const uint32_t source_offset = route[ttnn::operations::wavelet::device_protocol::kRouteSourceOffset];
