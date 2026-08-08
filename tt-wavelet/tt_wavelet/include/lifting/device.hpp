@@ -24,8 +24,14 @@ struct LiftingSchedulerTelemetry {
     tt::ARCH architecture{tt::ARCH::Invalid};
     uint64_t signal_length{0};
     uint32_t max_group_count{0};
+    uint32_t batch_count{1};
+    uint32_t chunks_per_sample{0};
+    uint32_t total_work_items{0};
+    uint32_t min_work_items_per_core{0};
+    uint32_t max_work_items_per_core{0};
     uint32_t active_core_count{0};
     uint32_t chunk_count{0};
+    uint32_t route_count{0};
     uint32_t groups_per_chunk{0};
     uint32_t workspace_elements{0};
     uint32_t max_workspace_elements{0};
@@ -33,8 +39,13 @@ struct LiftingSchedulerTelemetry {
     bool terminal_scale_inline{true};
     bool inverse_scale_inline{false};
     bool inverse_final_interleave_direct{false};
+    bool compact_reader{false};
     WorkspaceLayout workspace_layout{WorkspaceLayout::kRowMajor};
+    bool hybrid_tile_mirror{false};
+    bool row_major_noc_staging{false};
+    uint32_t interleave_batch_sticks{1};
     uint64_t l1_slots_bytes{0};
+    uint64_t l1_workspace_mirror_bytes{0};
     uint64_t l1_circular_buffers_bytes{0};
     uint64_t l1_cache_bytes{0};
     uint64_t l1_output_bytes{0};
@@ -66,7 +77,7 @@ struct LwtWorkingBuffers {
 struct LwtExecutable {
     LwtExecutionPlan plan{};
     LwtWorkingBuffers buffers{};
-    tt::tt_metal::Program lifting{};
+    tt::tt_metal::distributed::MeshWorkload workload{};
 };
 
 struct IlwtWorkingBuffers {
@@ -86,13 +97,14 @@ struct IlwtWorkingBuffers {
 struct IlwtExecutable {
     IlwtExecutionPlan plan{};
     IlwtWorkingBuffers buffers{};
-    tt::tt_metal::Program lifting{};
+    tt::tt_metal::distributed::MeshWorkload workload{};
 };
 
 [[nodiscard]] LwtExecutable create_lwt_executable_impl(
     const std::filesystem::path& kernel_root,
     tt::tt_metal::distributed::MeshDevice& mesh_device,
     const tt::tt_metal::Buffer& input_buffer,
+    uint32_t batch_count,
     LiftingForwardPlan full_plan,
     const char* compute_scheme_header,
     const char* compute_scheme_type);
@@ -103,9 +115,14 @@ template <typename Scheme>
     tt::tt_metal::distributed::MeshDevice& mesh_device,
     const tt::tt_metal::Buffer& input_buffer,
     const SignalBuffer& input_desc,
-    const BoundaryMode boundary_mode = BoundaryMode::kSymmetric) {
+    const BoundaryMode boundary_mode = BoundaryMode::kSymmetric,
+    const uint32_t batch_count = 1) {
     TT_FATAL(input_desc.length > 0, "Input signal must be non-empty");
+    TT_FATAL(batch_count > 0, "LWT batch count must be positive");
     TT_FATAL(input_desc.element_size_bytes == sizeof(float), "LWT supports FP32 only");
+    TT_FATAL(
+        input_buffer.size() >= static_cast<uint64_t>(batch_count) * input_desc.physical_nbytes(),
+        "LWT input buffer is smaller than the batched physical signal storage");
 
     SignalBuffer planned_input = input_desc;
     planned_input.dram_address = input_buffer.address();
@@ -113,13 +130,15 @@ template <typename Scheme>
         kernel_root,
         mesh_device,
         input_buffer,
+        batch_count,
         make_forward_lifting_plan<Scheme>(planned_input, 0, 0, boundary_mode),
         Scheme::compute_scheme_header,
         Scheme::compute_scheme_type);
 }
 
-void prepare_lwt(
-    tt::tt_metal::distributed::MeshCommandQueue& command_queue, LwtExecutable& executable);
+void prepare_lwt(tt::tt_metal::distributed::MeshCommandQueue& command_queue, LwtExecutable& executable);
+
+void enqueue_lwt(tt::tt_metal::distributed::MeshCommandQueue& command_queue, LwtExecutable& executable);
 
 void execute_lwt(
     tt::tt_metal::distributed::MeshDevice& mesh_device,
@@ -131,6 +150,7 @@ void execute_lwt(
     tt::tt_metal::distributed::MeshDevice& mesh_device,
     const tt::tt_metal::Buffer& approximation_buffer,
     const tt::tt_metal::Buffer& detail_buffer,
+    uint32_t batch_count,
     LiftingInversePlan full_plan,
     const char* inverse_compute_scheme_header,
     const char* inverse_compute_scheme_type);
@@ -143,20 +163,29 @@ template <typename Scheme>
     const tt::tt_metal::Buffer& detail_buffer,
     const size_t coefficient_length,
     const size_t original_length,
-    const BoundaryMode boundary_mode = BoundaryMode::kSymmetric) {
+    const BoundaryMode boundary_mode = BoundaryMode::kSymmetric,
+    const uint32_t batch_count = 1) {
+    TT_FATAL(batch_count > 0, "ILWT batch count must be positive");
+    const SignalBuffer coefficient_desc{.length = coefficient_length};
+    TT_FATAL(
+        approximation_buffer.size() >= static_cast<uint64_t>(batch_count) * coefficient_desc.physical_nbytes() &&
+            detail_buffer.size() >= static_cast<uint64_t>(batch_count) * coefficient_desc.physical_nbytes(),
+        "ILWT input buffer is smaller than the batched physical coefficient storage");
     using InverseScheme = typename Scheme::inverse;
     return create_ilwt_executable_impl(
         kernel_root,
         mesh_device,
         approximation_buffer,
         detail_buffer,
+        batch_count,
         make_inverse_lifting_plan<Scheme>(original_length, coefficient_length, boundary_mode),
         InverseScheme::compute_scheme_header,
         InverseScheme::compute_scheme_type);
 }
 
-void prepare_ilwt(
-    tt::tt_metal::distributed::MeshCommandQueue& command_queue, IlwtExecutable& executable);
+void prepare_ilwt(tt::tt_metal::distributed::MeshCommandQueue& command_queue, IlwtExecutable& executable);
+
+void enqueue_ilwt(tt::tt_metal::distributed::MeshCommandQueue& command_queue, IlwtExecutable& executable);
 
 void execute_ilwt(
     tt::tt_metal::distributed::MeshDevice& mesh_device,

@@ -5,7 +5,6 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TT_METAL_DIR="$ROOT_DIR/tt-metal"
 VENV_DIR="$ROOT_DIR/.venv"
 BUILD_DIR="$ROOT_DIR/build"
-CMAKES_DIR="$ROOT_DIR/cmakes"
 
 log() { printf "[%s] %s\n" "$1" "$2"; }
 
@@ -61,32 +60,23 @@ run_tt_metal_install_deps() {
   sudo bash "$TT_METAL_DIR/install_dependencies.sh" "${args[@]}"
 }
 
-apply_cmake_fixes() {
-  local fabric_src="$CMAKES_DIR/CMAKE_FABRIC.txt"
-  local scaleout_src="$CMAKES_DIR/CMAKE_SCALEOUT.txt"
-  local fabric_dst="$TT_METAL_DIR/tt_metal/fabric/CMakeLists.txt"
-  local scaleout_dst="$TT_METAL_DIR/tools/scaleout/CMakeLists.txt"
-
-  [[ -f "$fabric_src" ]] || { log ERROR "$fabric_src missing"; exit 1; }
-  [[ -f "$scaleout_src" ]] || { log ERROR "$scaleout_src missing"; exit 1; }
-
-  log INFO "Patching tt-metal CMake (fabric)"
-  cp "$fabric_src" "$fabric_dst"
-
-  log INFO "Patching tt-metal CMake (scaleout)"
-  cp "$scaleout_src" "$scaleout_dst"
-}
-
 export_tt_env() {
   export TT_METAL_ROOT="$TT_METAL_DIR"
   export TT_METAL_HOME="$TT_METAL_DIR"
   export TT_METAL_RUNTIME_ROOT="$TT_METAL_DIR"
-  local tt_library_path="$BUILD_DIR/tt-metal/tt_metal:$BUILD_DIR/tt-metal/lib:$BUILD_DIR/tt-metal/tt_metal/third_party/umd/device:$BUILD_DIR/tt-metal/tt_stl"
-  if [[ -n "${LD_LIBRARY_PATH:-}" ]]; then
-    export LD_LIBRARY_PATH="$tt_library_path:$LD_LIBRARY_PATH"
-  else
-    export LD_LIBRARY_PATH="$tt_library_path"
-  fi
+  local tt_library_path="$BUILD_DIR/tt-metal/tt_metal:$BUILD_DIR/tt-metal/lib:$BUILD_DIR/tt-metal/tt_metal/third_party/umd/lib:$BUILD_DIR/tt-metal/tt_stl:$BUILD_DIR/lib"
+  local inherited_path=""
+  local entry
+  local -a inherited_entries=()
+  IFS=: read -ra inherited_entries <<< "${LD_LIBRARY_PATH:-}"
+  for entry in "${inherited_entries[@]}"; do
+    [[ -n "$entry" ]] || continue
+    case "$entry" in
+      */tt-metal/build | */tt-metal/build/* | */build/tt-metal | */build/tt-metal/*) continue ;;
+    esac
+    inherited_path+="${inherited_path:+:}$entry"
+  done
+  export LD_LIBRARY_PATH="$tt_library_path${inherited_path:+:$inherited_path}"
   export CC=clang-20
   export CXX=clang++-20
   log INFO "TT env set: TT_METAL_HOME=$TT_METAL_HOME"
@@ -103,20 +93,29 @@ select_generator() {
 configure_project() {
   local build_type="$1"
   local generator
-  generator=$(select_generator)
+  local generator_args=()
+  if [[ -f "$BUILD_DIR/CMakeCache.txt" ]]; then
+    generator=$(sed -n 's/^CMAKE_GENERATOR:INTERNAL=//p' "$BUILD_DIR/CMakeCache.txt")
+    if [[ -z "$generator" ]]; then
+      log ERROR "Could not determine generator from $BUILD_DIR/CMakeCache.txt" >&2
+      exit 1
+    fi
+  else
+    generator=$(select_generator)
+    generator_args=(-G "$generator")
+  fi
 
   log INFO "Configuring CMake ($generator, ${build_type})"
   # Use the SFPI release pinned and checksummed by this TT-Metal checkout.
   # The server-wide toolchain can be newer and is not ABI-compatible by
   # assumption; TT-Metal intentionally rejects such version mismatches.
   cmake -S "$ROOT_DIR" -B "$BUILD_DIR" \
-    -G "$generator" \
+    "${generator_args[@]}" \
     -DCMAKE_BUILD_TYPE="$build_type" \
     -DCMAKE_C_COMPILER=clang-20 \
     -DCMAKE_CXX_COMPILER=clang++-20 \
     -DBUILD_TT_WAVELET=ON \
-    -DENABLE_TRACY:BOOL=OFF \
-    -DMETALIUM_INCLUDE_DIRS=ON \
+    -DENABLE_TRACY:BOOL=ON \
     -DTT_USE_SYSTEM_SFPI:BOOL=OFF \
     -DCMAKE_DISABLE_PRECOMPILE_HEADERS=TRUE \
     -DENABLE_CCACHE=TRUE \

@@ -23,6 +23,30 @@ struct IndexInterval {
     [[nodiscard]] constexpr size_t length() const noexcept { return end - begin; }
 };
 
+struct AxisRequiredStreams {
+    IndexInterval even{};
+    IndexInterval odd{};
+};
+
+struct AxisRouteRequirement {
+    StepType type{StepType::kPredict};
+    AxisRequiredStreams before{};
+    AxisRequiredStreams after{};
+    IndexInterval source{};
+    IndexInterval base{};
+    IndexInterval output{};
+};
+
+struct AxisConePlan {
+    IndexInterval final_even{};
+    IndexInterval final_odd{};
+    IndexInterval initial_even{};
+    IndexInterval initial_odd{};
+    std::vector<AxisRouteRequirement> routes;
+    size_t max_workspace_elements{0};
+    bool base_transitions_aligned_32{false};
+};
+
 struct DependencyExtent {
     int32_t even_left{0};
     int32_t even_right{0};
@@ -73,10 +97,7 @@ struct LwtExecutionPlan {
 
 namespace execution_detail {
 
-struct RequiredStreams {
-    IndexInterval even{};
-    IndexInterval odd{};
-};
+using RequiredStreams = AxisRequiredStreams;
 
 struct StoredStream {
     StorageSlot slot{StorageSlot::kA};
@@ -178,14 +199,30 @@ inline void validate_interval(const IndexInterval interval, const size_t stream_
 }
 
 [[nodiscard]] inline std::vector<RequiredStreams> backpropagate_requirements(
-    const LiftingForwardPlan& plan, const IndexInterval final_even, const IndexInterval final_odd) {
+    const LiftingForwardPlan& plan,
+    const IndexInterval final_even,
+    const IndexInterval final_odd,
+    const size_t closure_extent = 0) {
+    const auto close_interval = [closure_extent](const IndexInterval interval, const size_t stream_length) {
+        if (closure_extent == 0 || interval.empty()) {
+            return interval;
+        }
+        const size_t begin = (interval.begin / closure_extent) * closure_extent;
+        const size_t rounded_end = interval.end > std::numeric_limits<size_t>::max() - (closure_extent - 1)
+                                       ? stream_length
+                                       : round_up(interval.end, closure_extent);
+        return IndexInterval{.begin = begin, .end = std::min(rounded_end, stream_length)};
+    };
     std::vector<RequiredStreams> required(plan.routes.size() + 1);
-    required.back() = RequiredStreams{.even = final_even, .odd = final_odd};
 
     size_t even_length = plan.final_even_length;
     size_t odd_length = plan.final_odd_length;
     validate_interval(final_even, even_length, "final even");
     validate_interval(final_odd, odd_length, "final odd");
+    required.back() = RequiredStreams{
+        .even = close_interval(final_even, even_length),
+        .odd = close_interval(final_odd, odd_length),
+    };
 
     for (size_t reverse_index = plan.routes.size(); reverse_index > 0; --reverse_index) {
         const size_t route_index = reverse_index - 1;
@@ -241,6 +278,8 @@ inline void validate_interval(const IndexInterval interval, const size_t stream_
                 break;
         }
 
+        before.even = close_interval(before.even, even_length);
+        before.odd = close_interval(before.odd, odd_length);
         validate_interval(before.even, even_length, "required even before route");
         validate_interval(before.odd, odd_length, "required odd before route");
         required[route_index] = before;
@@ -270,7 +309,9 @@ inline void validate_interval(const IndexInterval interval, const size_t stream_
 [[nodiscard]] inline LwtChunkPlan build_chunk(
     const LiftingForwardPlan& plan,
     const IndexInterval final_even,
-    const IndexInterval final_odd) {
+    const IndexInterval final_odd,
+    const size_t final_even_output_origin,
+    const size_t final_odd_output_origin) {
     const std::vector<RequiredStreams> required = backpropagate_requirements(plan, final_even, final_odd);
     const TerminalScaleInline inline_scale = terminal_scale_inline(plan);
     StoredStream active_even{.slot = StorageSlot::kA, .storage = required.front().even};
@@ -299,9 +340,9 @@ inline void validate_interval(const IndexInterval interval, const size_t stream_
             const IndexInterval base_required = translated(output, full_route.base_offset);
             const StoredStream& source = predict ? active_even : active_odd;
             const StoredStream& base = predict ? active_odd : active_even;
-            const RouteOutputRef output_ref = inline_scale_route
-                                                  ? RouteOutputRef{.storage = inline_scale.final_storage, .slot = free_slot}
-                                                  : detail::workspace_output(free_slot);
+            const RouteOutputRef output_ref =
+                inline_scale_route ? RouteOutputRef{.storage = inline_scale.final_storage, .slot = free_slot}
+                                   : detail::workspace_output(free_slot);
 
             routes.push_back(LwtStepRoute{
                 .type = full_route.type,
@@ -352,6 +393,20 @@ inline void validate_interval(const IndexInterval interval, const size_t stream_
         });
     }
 
+    for (auto& route : routes) {
+        if (route.output.storage == RouteOutputStorage::kFinalEvenDram) {
+            TT_FATAL(
+                route.output_offset_elements >= final_even_output_origin,
+                "LWT final-even route starts before the canonical interval");
+            route.output_offset_elements -= final_even_output_origin;
+        } else if (route.output.storage == RouteOutputStorage::kFinalOddDram) {
+            TT_FATAL(
+                route.output_offset_elements >= final_odd_output_origin,
+                "LWT final-odd route starts before the canonical interval");
+            route.output_offset_elements -= final_odd_output_origin;
+        }
+    }
+
     const IndexInterval initial_even = required.front().even;
     const IndexInterval initial_odd = required.front().odd;
     const size_t final_begin = std::min(final_even.begin, final_odd.begin);
@@ -385,16 +440,20 @@ inline void validate_interval(const IndexInterval interval, const size_t stream_
     };
 }
 
-[[nodiscard]] constexpr IndexInterval clipped_chunk_interval(
-    const size_t begin, const size_t end, const size_t stream_length) noexcept {
-    const size_t clipped_begin = std::min(begin, stream_length);
-    return IndexInterval{.begin = clipped_begin, .end = std::min(end, stream_length)};
-}
-
 [[nodiscard]] inline std::vector<LwtChunkPlan> build_chunks(
     const LiftingForwardPlan& plan, const uint32_t requested_chunk_count) {
     TT_FATAL(requested_chunk_count > 0, "LWT chunk count must be non-zero");
-    const size_t max_final_length = std::max(plan.final_even_length, plan.final_odd_length);
+    const int64_t canonical_start = static_cast<int64_t>(plan.preprocess_layout.pad_config.left + 1) / 2;
+    const int64_t signed_even_origin = canonical_start - plan.final_even_shift;
+    const int64_t signed_odd_origin = canonical_start - plan.final_odd_shift;
+    TT_FATAL(signed_even_origin >= 0 && signed_odd_origin >= 0, "LWT canonical output requires a negative origin");
+    const size_t final_even_origin = static_cast<size_t>(signed_even_origin);
+    const size_t final_odd_origin = static_cast<size_t>(signed_odd_origin);
+    TT_FATAL(
+        final_even_origin + plan.output_length <= plan.final_even_length &&
+            final_odd_origin + plan.output_length <= plan.final_odd_length,
+        "LWT terminal streams do not cover the canonical output interval");
+    const size_t max_final_length = plan.output_length;
     const size_t final_group_count =
         std::max(ceil_div(max_final_length, static_cast<size_t>(device_protocol::kLwtGroupOutputElements)), size_t{1});
     const size_t chunk_count = std::min(static_cast<size_t>(requested_chunk_count), final_group_count);
@@ -411,8 +470,10 @@ inline void validate_interval(const IndexInterval interval, const size_t stream_
             std::min((group_begin + group_count) * device_protocol::kLwtGroupOutputElements, max_final_length);
         chunks.push_back(build_chunk(
             plan,
-            clipped_chunk_interval(begin, end, plan.final_even_length),
-            clipped_chunk_interval(begin, end, plan.final_odd_length)));
+            IndexInterval{.begin = begin + final_even_origin, .end = end + final_even_origin},
+            IndexInterval{.begin = begin + final_odd_origin, .end = end + final_odd_origin},
+            final_even_origin,
+            final_odd_origin));
         group_begin += group_count;
     }
     TT_FATAL(group_begin == final_group_count, "LWT chunks do not cover every final output group");
@@ -420,6 +481,90 @@ inline void validate_interval(const IndexInterval interval, const size_t stream_
 }
 
 }  // namespace execution_detail
+
+/**
+ * Build the exact one-dimensional dependency cone for a requested pair of
+ * terminal stream intervals.
+ *
+ * The returned route records retain both sides of every lifting transition.
+ * Predict/update source and base intervals are therefore directly reusable by
+ * a 2D planner: a horizontal route changes only x, while a vertical route
+ * changes only y.
+ */
+[[nodiscard]] inline AxisConePlan build_axis_cone(
+    const LiftingForwardPlan& plan,
+    const IndexInterval final_even,
+    const IndexInterval final_odd,
+    const size_t closure_extent = 0) {
+    const std::vector<AxisRequiredStreams> required =
+        execution_detail::backpropagate_requirements(plan, final_even, final_odd, closure_extent);
+
+    std::vector<AxisRouteRequirement> routes;
+    routes.reserve(plan.routes.size());
+    for (size_t route_index = 0; route_index < plan.routes.size(); ++route_index) {
+        const LiftingStepRoute& route = plan.routes[route_index];
+        const AxisRequiredStreams before = required[route_index];
+        const AxisRequiredStreams after = required[route_index + 1];
+        AxisRouteRequirement requirement{
+            .type = route.type,
+            .before = before,
+            .after = after,
+        };
+
+        switch (route.type) {
+            case StepType::kPredict: {
+                const uint32_t k = execution_detail::coefficient_count(route);
+                requirement.output = after.odd;
+                requirement.source =
+                    execution_detail::translated(requirement.output, route.source_offset, static_cast<size_t>(k - 1));
+                requirement.base = execution_detail::translated(requirement.output, route.base_offset);
+                break;
+            }
+            case StepType::kUpdate: {
+                const uint32_t k = execution_detail::coefficient_count(route);
+                requirement.output = after.even;
+                requirement.source =
+                    execution_detail::translated(requirement.output, route.source_offset, static_cast<size_t>(k - 1));
+                requirement.base = execution_detail::translated(requirement.output, route.base_offset);
+                break;
+            }
+            case StepType::kScaleEven:
+                requirement.output = after.even;
+                requirement.source = execution_detail::translated(requirement.output, route.source_offset);
+                requirement.base = requirement.source;
+                break;
+            case StepType::kScaleOdd:
+                requirement.output = after.odd;
+                requirement.source = execution_detail::translated(requirement.output, route.source_offset);
+                requirement.base = requirement.source;
+                break;
+            case StepType::kSwap:
+                // A swap changes stream descriptors only and has no data
+                // source/base/output transfer of its own.
+                break;
+        }
+        routes.push_back(requirement);
+    }
+
+    size_t max_workspace_elements = 0;
+    for (const AxisRequiredStreams& streams : required) {
+        max_workspace_elements =
+            std::max(max_workspace_elements, std::max(streams.even.length(), streams.odd.length()));
+    }
+    const bool base_transitions_aligned_32 =
+        std::all_of(plan.routes.begin(), plan.routes.end(), [](const LiftingStepRoute& route) {
+            return !is_predict_update_step(route.type) || route.base_offset % 32 == 0;
+        });
+    return AxisConePlan{
+        .final_even = required.back().even,
+        .final_odd = required.back().odd,
+        .initial_even = required.front().even,
+        .initial_odd = required.front().odd,
+        .routes = std::move(routes),
+        .max_workspace_elements = max_workspace_elements,
+        .base_transitions_aligned_32 = base_transitions_aligned_32,
+    };
+}
 
 [[nodiscard]] inline LwtExecutionPlan make_lwt_execution_plan(
     LiftingForwardPlan full_plan,
@@ -429,7 +574,7 @@ inline void validate_interval(const IndexInterval interval, const size_t stream_
     TT_FATAL(core_limit > 0, "LWT requires at least one worker core");
     TT_FATAL(l1_signal_budget_bytes >= 3 * device_protocol::kStickBytes, "LWT L1 budget is too small");
 
-    const size_t max_final_length = std::max(full_plan.final_even_length, full_plan.final_odd_length);
+    const size_t max_final_length = full_plan.output_length;
     const uint32_t final_group_count = static_cast<uint32_t>(
         std::max(ceil_div(max_final_length, static_cast<size_t>(device_protocol::kLwtGroupOutputElements)), size_t{1}));
     uint32_t chunk_count = std::min(final_group_count, core_limit);

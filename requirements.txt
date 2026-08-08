@@ -4,3 +4,7 @@ pre-commit
 cmake-format
 PyWavelets
 tqdm
+torch
+matplotlib
+scipy
+numpy

@@ -13,6 +13,7 @@ from typing import Sequence
 PROJECT_ROOT = Path(__file__).resolve().parent
 LIFTING_USAGE_DIR = PROJECT_ROOT / "lifting-factorization" / "usage"
 TT_WAVELET_BINARY = PROJECT_ROOT / "build" / "lwt"
+TT_WAVELET_2D_BINARY = PROJECT_ROOT / "build" / "lwt_2d"
 TT_WAVELET_ENV = PROJECT_ROOT / "scripts" / "set_env.sh"
 VENV_PYTHON = PROJECT_ROOT / ".venv" / "bin" / "python3"
 
@@ -26,7 +27,7 @@ PU_COMPUTE_ARGS_PER_STEP = 20
 PU_WRITER_ARGS_PER_STEP = 2
 
 try:
-    from pywt import dwt
+    from pywt import dwt, dwt2
 except ModuleNotFoundError as exc:
     if VENV_PYTHON.exists() and Path(sys.executable) != VENV_PYTHON:
         os.execv(str(VENV_PYTHON), [str(VENV_PYTHON), __file__, *sys.argv[1:]])
@@ -41,7 +42,9 @@ if LIFTING_USAGE_DIR.exists():
         sys.path.insert(0, str(LIFTING_USAGE_DIR))
     try:
         import dtypes  # noqa: E402  # type: ignore[import-not-found]
-        from lifting import LiftingScheme  # noqa: E402  # type: ignore[import-not-found]
+        from lifting import (
+            LiftingScheme,
+        )  # noqa: E402  # type: ignore[import-not-found]
 
         LIFTING_AVAILABLE = True
     except ModuleNotFoundError:
@@ -64,10 +67,29 @@ def parse_args() -> argparse.Namespace:
         help="Whitespace-separated signal file (default: %(default)s).",
     )
     parser.add_argument(
+        "--shape",
+        nargs=2,
+        type=int,
+        metavar=("HEIGHT", "WIDTH"),
+        help="Compare a flattened row-major HEIGHT x WIDTH input.",
+    )
+    parser.add_argument(
         "--tolerance",
         type=float,
         default=1e-5,
         help="Absolute tolerance used for pairwise coefficient comparisons (default: %(default)s).",
+    )
+    parser.add_argument(
+        "--device-tolerance",
+        type=float,
+        default=1e-4,
+        help="Hard 2D device-vs-PyWavelets absolute tolerance (default: %(default)s).",
+    )
+    parser.add_argument(
+        "--tt-cores",
+        type=int,
+        default=1,
+        help="Maximum TT worker cores for a 2D device comparison (default: %(default)s).",
     )
     parser.add_argument(
         "--skip-tt-wavelet",
@@ -129,14 +151,18 @@ def print_pairwise_mismatches(
     for i, (lhs_val, rhs_val) in enumerate(zip(lhs, rhs)):
         if abs(float(lhs_val) - float(rhs_val)) > tolerance:
             mismatches += 1
-            print(f"{name} coeff {i} differs: lhs={float(lhs_val):.8e} vs rhs={float(rhs_val):.8e}")
+            print(
+                f"{name} coeff {i} differs: lhs={float(lhs_val):.8e} vs rhs={float(rhs_val):.8e}"
+            )
 
     if mismatches == 0:
         print(f"{name}: all coefficients match within tolerance {tolerance}")
     return mismatches
 
 
-def print_error_metrics(reference: Sequence[float], candidate: Sequence[float], name: str) -> None:
+def print_error_metrics(
+    reference: Sequence[float], candidate: Sequence[float], name: str
+) -> None:
     if len(reference) == 0 or len(candidate) == 0:
         print(f"{name} error metrics: skipped (empty sequence)")
         return
@@ -163,10 +189,12 @@ def print_error_metrics(reference: Sequence[float], candidate: Sequence[float], 
     )
 
 
-def run_tt_wavelet(wavelet: str, signal_file: Path, boundary_mode: str) -> dict[str, list[float]]:
+def run_tt_wavelet(
+    wavelet: str, signal_file: Path, boundary_mode: str
+) -> dict[str, list[float]]:
     if not TT_WAVELET_BINARY.exists():
         raise FileNotFoundError(
-            f"TT-wavelet binary not found at {TT_WAVELET_BINARY}. Rebuild with ./update.sh Release lwt"
+            f"TT-wavelet binary not found at {TT_WAVELET_BINARY}. Rebuild with ./build.sh lwt"
         )
 
     command = (
@@ -207,6 +235,64 @@ def run_tt_wavelet(wavelet: str, signal_file: Path, boundary_mode: str) -> dict[
     }
 
 
+def run_tt_wavelet_2d(
+    wavelet: str,
+    signal_file: Path,
+    boundary_mode: str,
+    height: int,
+    width: int,
+    core_limit: int,
+) -> dict[str, list[float]]:
+    if not TT_WAVELET_2D_BINARY.exists():
+        raise FileNotFoundError(
+            "TT-wavelet 2D device binary not found at "
+            f"{TT_WAVELET_2D_BINARY}. Rebuild with ./build.sh lwt_2d"
+        )
+    if core_limit <= 0:
+        raise ValueError("--tt-cores must be positive")
+    command = (
+        f"source {sh_quote(str(TT_WAVELET_ENV))} "
+        f"&& {sh_quote(str(TT_WAVELET_2D_BINARY))} "
+        f"--boundary-mode {sh_quote(boundary_mode)} --cores {core_limit} "
+        f"{sh_quote(wavelet)} {height} {width} "
+        f"{sh_quote(str(signal_file))}"
+    )
+    completed = subprocess.run(
+        ["bash", "-lc", command],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+        env=os.environ.copy(),
+    )
+    output = completed.stdout + completed.stderr
+    if completed.returncode != 0:
+        raise RuntimeError(
+            "TT-wavelet 2D device run failed with exit code "
+            f"{completed.returncode}.\nCaptured output:\n{output}"
+        )
+    bands: dict[str, list[float]] = {}
+    for band in ("LL", "LH", "HL", "HH"):
+        pattern = re.compile(rf"tt-wavelet device {band} \((\d+)x(\d+)\): \[(.*?)\]")
+        match = pattern.search(output)
+        if match is None:
+            raise ValueError(f"Unable to find 2D device band {band}")
+        band_height = int(match.group(1))
+        band_width = int(match.group(2))
+        values = [
+            float(value) for value in ast.literal_eval("[" + match.group(3) + "]")
+        ]
+        if len(values) != band_height * band_width:
+            raise ValueError(
+                f"2D device {band} has {len(values)} values for "
+                f"shape {band_height}x{band_width}"
+            )
+        if not all(math.isfinite(value) for value in values):
+            raise ValueError(f"2D device {band} contains NaN or Inf")
+        bands[band] = values
+    return bands
+
+
 def extract_coeff_line(output: str, candidate_labels: Sequence[str]) -> list[float]:
     for label in candidate_labels:
         pattern = re.compile(rf"{re.escape(label)} \((\d+)\): \[(.*?)\]")
@@ -225,7 +311,9 @@ def extract_coeff_line(output: str, candidate_labels: Sequence[str]) -> list[flo
         logical_length = int(match.group(1))
         return [float(value) for value in parsed[:logical_length]]
 
-    raise ValueError(f"Unable to find coefficient line for labels: {', '.join(candidate_labels)}")
+    raise ValueError(
+        f"Unable to find coefficient line for labels: {', '.join(candidate_labels)}"
+    )
 
 
 def sh_quote(value: str) -> str:
@@ -292,7 +380,9 @@ def is_green_scheme(scheme_path: Path, runtime_limit: int) -> tuple[bool, list[s
     return len(errors) == 0, errors
 
 
-def discover_green_wavelets(schemes_dir: Path, runtime_limit: int) -> tuple[list[str], list[str]]:
+def discover_green_wavelets(
+    schemes_dir: Path, runtime_limit: int
+) -> tuple[list[str], list[str]]:
     if not schemes_dir.exists() or not schemes_dir.is_dir():
         raise FileNotFoundError(f"Schemes directory not found: {schemes_dir}")
 
@@ -313,11 +403,16 @@ def discover_green_wavelets(schemes_dir: Path, runtime_limit: int) -> tuple[list
 
 
 def run_single_comparison(args: argparse.Namespace, wavelet: str) -> bool:
+    if args.shape is not None:
+        return run_2d_comparison(args, wavelet)
+
     signal = read_signal_file(args.signal_file)
     scheme_path = args.schemes_dir / f"{wavelet}.json"
 
     if args.boundary_mode in {"reflect", "antireflect"} and len(signal) <= 1:
-        raise ValueError("reflect and antireflect modes require a signal length greater than one")
+        raise ValueError(
+            "reflect and antireflect modes require a signal length greater than one"
+        )
 
     if not scheme_path.exists():
         raise FileNotFoundError(f"Wavelet scheme file not found: {scheme_path}")
@@ -345,11 +440,17 @@ def run_single_comparison(args: argparse.Namespace, wavelet: str) -> bool:
     print(f"pywt lengths: cA={len(cA_pywt)}, cD={len(cD_pywt)}")
     print()
     if cA_lifting is not None and cD_lifting is not None:
-        print(f"lifting-factorization approximation coefficients: {format_coeffs(cA_lifting)}")
+        print(
+            f"lifting-factorization approximation coefficients: {format_coeffs(cA_lifting)}"
+        )
         print(f"lifting-factorization detail coefficients: {format_coeffs(cD_lifting)}")
-        print(f"lifting-factorization lengths: cA={len(cA_lifting)}, cD={len(cD_lifting)}")
+        print(
+            f"lifting-factorization lengths: cA={len(cA_lifting)}, cD={len(cD_lifting)}"
+        )
     else:
-        print("lifting-factorization skipped: lifting-factorization/usage is not available.")
+        print(
+            "lifting-factorization skipped: lifting-factorization/usage is not available."
+        )
     print()
 
     tt_wavelet = None
@@ -380,7 +481,9 @@ def run_single_comparison(args: argparse.Namespace, wavelet: str) -> bool:
         pywt_vs_lifting_d = print_pairwise_mismatches(
             cD_pywt, cD_lifting, "Detail pywt vs lifting-factorization", args.tolerance
         )
-        print_error_metrics(cA_pywt, cA_lifting, "Approximation pywt -> lifting-factorization")
+        print_error_metrics(
+            cA_pywt, cA_lifting, "Approximation pywt -> lifting-factorization"
+        )
         print_error_metrics(cD_pywt, cD_lifting, "Detail pywt -> lifting-factorization")
         checks_ok = pywt_vs_lifting_a == 0 and pywt_vs_lifting_d == 0
 
@@ -431,6 +534,73 @@ def run_single_comparison(args: argparse.Namespace, wavelet: str) -> bool:
             ]
         )
 
+    return checks_ok
+
+
+def run_2d_comparison(args: argparse.Namespace, wavelet: str) -> bool:
+    height, width = args.shape
+    if height <= 0 or width <= 0:
+        raise ValueError("--shape dimensions must be positive")
+    signal = read_signal_file(args.signal_file)
+    if len(signal) != height * width:
+        raise ValueError(
+            f"Signal contains {len(signal)} values, but --shape {height} {width} "
+            f"requires {height * width}"
+        )
+    if args.boundary_mode in {"reflect", "antireflect"} and min(height, width) <= 1:
+        raise ValueError(
+            "2D reflect and antireflect modes require both dimensions to be greater than one"
+        )
+
+    matrix = [signal[row * width : (row + 1) * width] for row in range(height)]
+    approximation, (horizontal, vertical, diagonal) = dwt2(
+        matrix, wavelet, mode=args.boundary_mode
+    )
+    # TT-wavelet names bands by (vertical result, horizontal result).
+    pywt_bands = {
+        "LL": approximation.ravel().tolist(),
+        "LH": vertical.ravel().tolist(),
+        "HL": horizontal.ravel().tolist(),
+        "HH": diagonal.ravel().tolist(),
+    }
+    device_bands = None
+    if not args.skip_tt_wavelet:
+        device_bands = run_tt_wavelet_2d(
+            wavelet,
+            args.signal_file,
+            args.boundary_mode,
+            height,
+            width,
+            args.tt_cores,
+        )
+
+    print(f"2D input shape: {height}x{width}")
+    print(f"signal file: {args.signal_file}")
+    print(f"boundary mode: {args.boundary_mode}")
+    print("band convention: first letter is vertical " "(PyWavelets cV=LH, cH=HL)")
+    print()
+
+    checks_ok = True
+    for band in ("LL", "LH", "HL", "HH"):
+        print(f"pywt {band}: {format_coeffs(pywt_bands[band])}")
+        if device_bands is not None:
+            print(f"tt-wavelet device {band}: " f"{format_coeffs(device_bands[band])}")
+            device_mismatches = print_pairwise_mismatches(
+                pywt_bands[band],
+                device_bands[band],
+                f"{band} PyWavelets vs TT device",
+                args.device_tolerance,
+            )
+            print_error_metrics(
+                pywt_bands[band],
+                device_bands[band],
+                f"{band} PyWavelets -> TT device",
+            )
+            checks_ok = checks_ok and device_mismatches == 0
+        print()
+
+    if device_bands is None:
+        print("TT-wavelet fused 2D device run skipped.")
     return checks_ok
 
 

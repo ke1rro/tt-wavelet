@@ -6,9 +6,9 @@
 #if defined(ARCH_BLACKHOLE) && defined(ARCH_WORMHOLE)
 #error "TT-Metal JIT defined both ARCH_BLACKHOLE and ARCH_WORMHOLE"
 #elif defined(ARCH_BLACKHOLE)
-#include "../../tt-metal/tt_metal/third_party/tt_llk/tt_llk_blackhole/common/inc/ckernel.h"
+#include "../../tt-metal/tt_metal/tt-llk/tt_llk_blackhole/common/inc/ckernel.h"
 #elif defined(ARCH_WORMHOLE)
-#include "../../tt-metal/tt_metal/third_party/tt_llk/tt_llk_wormhole_b0/common/inc/ckernel.h"
+#include "../../tt-metal/tt_metal/tt-llk/tt_llk_wormhole_b0/common/inc/ckernel.h"
 #else
 #error "tt-wavelet SFPI kernels support only Wormhole and Blackhole"
 #endif

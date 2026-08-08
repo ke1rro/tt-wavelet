@@ -1,0 +1,378 @@
+// SPDX-FileCopyrightText: © 2026 Tenstorrent USA, Inc.
+//
+// SPDX-License-Identifier: Apache-2.0
+
+#include <algorithm>
+#include <array>
+#include <chrono>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <filesystem>
+#include <fstream>
+#include <iomanip>
+#include <iostream>
+#include <limits>
+#include <memory>
+#include <numeric>
+#include <stdexcept>
+#include <string>
+#include <string_view>
+#include <vector>
+
+#include "tt-metalium/distributed.hpp"
+#include "tt-metalium/mesh_buffer.hpp"
+#include "tt-metalium/mesh_device.hpp"
+#include "tt-metalium/tilize_utils.hpp"
+#include "tt_wavelet/include/benchmark/timing.hpp"
+#include "tt_wavelet/include/common/boundary_parse.hpp"
+#include "tt_wavelet/include/common/tiling_2d.hpp"
+#include "tt_wavelet/include/lifting/device_2d.hpp"
+#include "tt_wavelet/include/schemes/generated/registry.hpp"
+#include "tt_wavelet/include/schemes/testing/synthetic_k17.hpp"
+
+namespace {
+
+struct Options {
+    std::string wavelet;
+    size_t height{0};
+    size_t width{0};
+    std::array<std::filesystem::path, 4> bands;
+    std::filesystem::path output{"ilwt_2d_output.f32"};
+    uint32_t core_limit{64};
+    uint32_t batch_count{1};
+    size_t repeats{1};
+    size_t warmup_runs{0};
+    ttwv::BoundaryMode boundary_mode{ttwv::BoundaryMode::kSymmetric};
+};
+
+[[nodiscard]] size_t parse_positive(const std::string& text, const char* label) {
+    size_t consumed = 0;
+    const unsigned long long value = std::stoull(text, &consumed);
+    if (consumed != text.size() || value == 0 || value > std::numeric_limits<size_t>::max()) {
+        throw std::runtime_error(std::string{label} + " must be positive");
+    }
+    return static_cast<size_t>(value);
+}
+
+[[nodiscard]] Options parse_options(const int argc, char** argv) {
+    Options options;
+    std::vector<std::string> positional;
+    for (int index = 1; index < argc; ++index) {
+        const std::string argument = argv[index];
+        if (argument == "--boundary-mode") {
+            if (++index >= argc || !ttwv::parse_boundary_mode(argv[index], options.boundary_mode)) {
+                throw std::runtime_error(
+                    "--boundary-mode requires zero, constant, symmetric, reflect, periodic, smooth, "
+                    "antisymmetric, or antireflect");
+            }
+        } else if (argument == "--cores") {
+            if (++index >= argc) {
+                throw std::runtime_error("--cores requires a value");
+            }
+            const size_t value = parse_positive(argv[index], "--cores");
+            if (value > std::numeric_limits<uint32_t>::max()) {
+                throw std::runtime_error("--cores exceeds uint32_t");
+            }
+            options.core_limit = static_cast<uint32_t>(value);
+        } else if (argument == "--batch-count") {
+            if (++index >= argc) {
+                throw std::runtime_error("--batch-count requires a value");
+            }
+            const size_t value = parse_positive(argv[index], "--batch-count");
+            if (value > std::numeric_limits<uint32_t>::max()) {
+                throw std::runtime_error("--batch-count exceeds uint32_t");
+            }
+            options.batch_count = static_cast<uint32_t>(value);
+        } else if (argument == "--output") {
+            if (++index >= argc) {
+                throw std::runtime_error("--output requires a path");
+            }
+            options.output = argv[index];
+        } else if (argument == "--repeats") {
+            if (++index >= argc) {
+                throw std::runtime_error("--repeats requires a value");
+            }
+            options.repeats = parse_positive(argv[index], "--repeats");
+        } else if (argument == "--warmup-runs") {
+            if (++index >= argc) {
+                throw std::runtime_error("--warmup-runs requires a value");
+            }
+            options.warmup_runs = static_cast<size_t>(std::stoull(argv[index]));
+        } else if (argument == "--help" || argument == "-h") {
+            std::cout << "Usage: ilwt_2d [--boundary-mode MODE] [--cores N] [--batch-count B] [--output PATH] "
+                         "[--repeats N] [--warmup-runs N] "
+                         "WAVELET HEIGHT WIDTH LL.f32 LH.f32 HL.f32 HH.f32\n";
+            std::exit(EXIT_SUCCESS);
+        } else if (argument.starts_with("--")) {
+            throw std::runtime_error("Unknown option: " + argument);
+        } else {
+            positional.push_back(argument);
+        }
+    }
+    if (positional.size() != 7) {
+        throw std::runtime_error(
+            "Usage: ilwt_2d [--cores N] [--output PATH] WAVELET HEIGHT WIDTH LL.f32 LH.f32 HL.f32 HH.f32");
+    }
+    options.wavelet = positional[0];
+    options.height = parse_positive(positional[1], "HEIGHT");
+    options.width = parse_positive(positional[2], "WIDTH");
+    if (ttwv::boundary_mode_requires_multiple_samples(options.boundary_mode) &&
+        (options.height <= 1 || options.width <= 1)) {
+        throw std::runtime_error("2D reflect and antireflect modes require HEIGHT and WIDTH greater than one");
+    }
+    for (size_t band = 0; band < options.bands.size(); ++band) {
+        options.bands[band] = positional[3 + band];
+    }
+    return options;
+}
+
+[[nodiscard]] std::vector<float> read_binary(const std::filesystem::path& path, const size_t elements) {
+    std::ifstream input(path, std::ios::binary);
+    if (!input.good()) {
+        throw std::runtime_error("Failed to open input band: " + path.string());
+    }
+    std::vector<float> values(elements);
+    input.read(reinterpret_cast<char*>(values.data()), static_cast<std::streamsize>(values.size() * sizeof(float)));
+    if (input.gcount() != static_cast<std::streamsize>(values.size() * sizeof(float))) {
+        throw std::runtime_error("Input band size does not match the planned coefficient shape: " + path.string());
+    }
+    return values;
+}
+
+[[nodiscard]] std::vector<float> tilize_padded(const std::vector<float>& row_major, const ttwv::Shape2D shape) {
+    std::vector<float> tiled;
+    tiled.reserve(row_major.size());
+    for (size_t tile_y = 0; tile_y < shape.height / ttwv::kTileHeight2D; ++tile_y) {
+        for (size_t tile_x = 0; tile_x < shape.width / ttwv::kTileWidth2D; ++tile_x) {
+            std::vector<float> tile(ttwv::kTileHeight2D * ttwv::kTileWidth2D);
+            for (size_t row = 0; row < ttwv::kTileHeight2D; ++row) {
+                const size_t source = (tile_y * ttwv::kTileHeight2D + row) * shape.width + tile_x * ttwv::kTileWidth2D;
+                std::copy_n(
+                    row_major.begin() + static_cast<std::ptrdiff_t>(source),
+                    ttwv::kTileWidth2D,
+                    tile.begin() + static_cast<std::ptrdiff_t>(row * ttwv::kTileWidth2D));
+            }
+            const std::vector<float> tile_nfaces = tilize_nfaces(tile, 32, 32);
+            tiled.insert(tiled.end(), tile_nfaces.begin(), tile_nfaces.end());
+        }
+    }
+    return tiled;
+}
+
+[[nodiscard]] std::vector<float> untilize_padded(const std::vector<float>& tiled, const ttwv::Shape2D shape) {
+    std::vector<float> row_major(shape.height * shape.width);
+    size_t tile_index = 0;
+    for (size_t tile_y = 0; tile_y < shape.height / ttwv::kTileHeight2D; ++tile_y) {
+        for (size_t tile_x = 0; tile_x < shape.width / ttwv::kTileWidth2D; ++tile_x, ++tile_index) {
+            const auto begin =
+                tiled.begin() + static_cast<std::ptrdiff_t>(tile_index * ttwv::kTileHeight2D * ttwv::kTileWidth2D);
+            const std::vector<float> tile =
+                untilize_nfaces(std::vector<float>(begin, begin + ttwv::kTileHeight2D * ttwv::kTileWidth2D), 32, 32);
+            for (size_t row = 0; row < ttwv::kTileHeight2D; ++row) {
+                const size_t destination =
+                    (tile_y * ttwv::kTileHeight2D + row) * shape.width + tile_x * ttwv::kTileWidth2D;
+                std::copy_n(
+                    tile.begin() + static_cast<std::ptrdiff_t>(row * ttwv::kTileWidth2D),
+                    ttwv::kTileWidth2D,
+                    row_major.begin() + static_cast<std::ptrdiff_t>(destination));
+            }
+        }
+    }
+    return row_major;
+}
+
+[[nodiscard]] std::shared_ptr<tt::tt_metal::distributed::MeshBuffer> create_tiled_dram(
+    tt::tt_metal::distributed::MeshDevice& mesh_device, const ttwv::Shape2D shape, const uint32_t batch_count) {
+    const size_t tiles = shape.height / ttwv::kTileHeight2D * (shape.width / ttwv::kTileWidth2D);
+    return tt::tt_metal::distributed::MeshBuffer::create(
+        tt::tt_metal::distributed::ReplicatedBufferConfig{
+            .size = static_cast<uint64_t>(batch_count) * tiles * ttwv::device_protocol::kLwt2DFullTileBytes,
+        },
+        tt::tt_metal::distributed::DeviceLocalBufferConfig{
+            .page_size = ttwv::device_protocol::kLwt2DFullTileBytes,
+            .buffer_type = tt::tt_metal::BufferType::DRAM,
+        },
+        &mesh_device);
+}
+
+[[nodiscard]] double percentile(const std::vector<double>& sorted, const double probability) {
+    const double position = probability * static_cast<double>(sorted.size() - 1);
+    const size_t lower = static_cast<size_t>(position);
+    const size_t upper = std::min(lower + 1, sorted.size() - 1);
+    const double fraction = position - static_cast<double>(lower);
+    return sorted[lower] + fraction * (sorted[upper] - sorted[lower]);
+}
+
+void print_timings(const std::string_view metric, std::vector<double> times) {
+    const double mean = std::accumulate(times.begin(), times.end(), 0.0) / static_cast<double>(times.size());
+    const double squared_error =
+        std::accumulate(times.begin(), times.end(), 0.0, [mean](const double sum, const double value) {
+            const double difference = value - mean;
+            return sum + difference * difference;
+        });
+    for (size_t repeat = 0; repeat < times.size(); ++repeat) {
+        std::cerr << std::fixed << std::setprecision(6) << "ilwt_2d_" << metric << "_repeat_ms[" << repeat
+                  << "]: " << times[repeat] << '\n';
+    }
+    std::sort(times.begin(), times.end());
+    std::cerr << std::fixed << std::setprecision(6) << "ilwt_2d_" << metric << "_mean_ms: " << mean << '\n'
+              << "ilwt_2d_" << metric << "_min_ms: " << times.front() << '\n'
+              << "ilwt_2d_" << metric << "_median_ms: " << percentile(times, 0.5) << '\n'
+              << "ilwt_2d_" << metric << "_p10_ms: " << percentile(times, 0.1) << '\n'
+              << "ilwt_2d_" << metric << "_p90_ms: " << percentile(times, 0.9) << '\n'
+              << "ilwt_2d_" << metric << "_stddev_ms: " << std::sqrt(squared_error / static_cast<double>(times.size()))
+              << '\n';
+}
+
+template <typename Scheme>
+int run(const Options& options) {
+    const ttwv::Ilwt2DExecutionPlan host_plan = ttwv::make_ilwt_2d_execution_plan<Scheme>(
+        options.height, options.width, options.core_limit, 768 * 1024, options.boundary_mode);
+    std::array<std::vector<float>, 4> tiled_bands;
+    for (size_t band = 0; band < tiled_bands.size(); ++band) {
+        const std::vector<float> logical = read_binary(
+            options.bands[band],
+            static_cast<size_t>(options.batch_count) * host_plan.band_height * host_plan.band_width);
+        const size_t logical_stride = host_plan.band_height * host_plan.band_width;
+        for (uint32_t batch = 0; batch < options.batch_count; ++batch) {
+            const std::vector<float> sample(
+                logical.begin() + static_cast<std::ptrdiff_t>(batch * logical_stride),
+                logical.begin() + static_cast<std::ptrdiff_t>((batch + 1) * logical_stride));
+            auto tiled_sample = tilize_padded(
+                ttwv::zero_pad_row_major_to_tiles_2d(sample, host_plan.tiling.band.logical),
+                host_plan.tiling.band.storage);
+            tiled_bands[band].insert(tiled_bands[band].end(), tiled_sample.begin(), tiled_sample.end());
+        }
+    }
+
+    auto mesh_device = tt::tt_metal::distributed::MeshDevice::create_unit_mesh(0);
+    mesh_device->enable_program_cache();
+    auto& queue = mesh_device->mesh_command_queue();
+    std::array<std::shared_ptr<tt::tt_metal::distributed::MeshBuffer>, 4> band_buffers;
+    for (size_t band = 0; band < band_buffers.size(); ++band) {
+        band_buffers[band] = create_tiled_dram(*mesh_device, host_plan.tiling.band.storage, options.batch_count);
+        tt::tt_metal::distributed::EnqueueWriteMeshBuffer(queue, band_buffers[band], tiled_bands[band], false);
+    }
+    tt::tt_metal::distributed::Finish(queue);
+
+    const uint32_t effective_cores =
+        (options.core_limit > 0)
+            ? options.core_limit
+            : static_cast<uint32_t>(
+                  mesh_device->compute_with_storage_grid_size().x * mesh_device->compute_with_storage_grid_size().y);
+    ttwv::Ilwt2DExecutable executable = ttwv::create_ilwt_2d_executable<Scheme>(
+        TT_WAVELET_SOURCE_DIR,
+        *mesh_device,
+        *band_buffers[0]->get_backing_buffer(),
+        *band_buffers[1]->get_backing_buffer(),
+        *band_buffers[2]->get_backing_buffer(),
+        *band_buffers[3]->get_backing_buffer(),
+        options.height,
+        options.width,
+        effective_cores,
+        options.boundary_mode,
+        options.batch_count);
+    ttwv::prepare_ilwt_2d(queue, executable);
+    for (size_t warmup = 0; warmup < options.warmup_runs; ++warmup) {
+        static_cast<void>(
+            ttwv::benchmark::measure_host_timing(queue, [&]() { ttwv::enqueue_ilwt_2d(queue, executable); }));
+    }
+    ttwv::benchmark::discard_device_profiler_samples(*mesh_device);
+    std::vector<double> enqueue_times;
+    std::vector<double> sync_times;
+    std::vector<double> host_total_times;
+    std::vector<double> device_times;
+    for (size_t repeat = 0; repeat < options.repeats; ++repeat) {
+        const ttwv::benchmark::HostTiming sample =
+            ttwv::benchmark::measure_host_timing(queue, [&]() { ttwv::enqueue_ilwt_2d(queue, executable); });
+        enqueue_times.push_back(sample.enqueue_or_dispatch_ms);
+        sync_times.push_back(sample.sync_wait_ms);
+        host_total_times.push_back(sample.host_api_total_ms);
+        const std::vector<double> device_sample = ttwv::benchmark::read_device_kernel_times_ms(*mesh_device, 1);
+        device_times.insert(device_times.end(), device_sample.begin(), device_sample.end());
+    }
+
+    std::vector<float> tiled_output;
+    tt::tt_metal::distributed::EnqueueReadMeshBuffer(queue, tiled_output, executable.buffers.outputs[0], true);
+    std::vector<float> logical;
+    logical.reserve(static_cast<size_t>(options.batch_count) * options.height * options.width);
+    const size_t tiled_stride = tiled_output.size() / options.batch_count;
+    for (uint32_t batch = 0; batch < options.batch_count; ++batch) {
+        const std::vector<float> tiled_sample(
+            tiled_output.begin() + static_cast<std::ptrdiff_t>(batch * tiled_stride),
+            tiled_output.begin() + static_cast<std::ptrdiff_t>((batch + 1) * tiled_stride));
+        const std::vector<float> padded = untilize_padded(tiled_sample, executable.plan.tiling.input.storage);
+        for (size_t row = 0; row < options.height; ++row) {
+            logical.insert(
+                logical.end(),
+                padded.begin() + static_cast<std::ptrdiff_t>(row * executable.plan.tiling.input.storage.width),
+                padded.begin() +
+                    static_cast<std::ptrdiff_t>(row * executable.plan.tiling.input.storage.width + options.width));
+        }
+    }
+    if (!options.output.parent_path().empty()) {
+        std::filesystem::create_directories(options.output.parent_path());
+    }
+    std::ofstream output(options.output, std::ios::binary);
+    output.write(
+        reinterpret_cast<const char*>(logical.data()), static_cast<std::streamsize>(logical.size() * sizeof(float)));
+    if (!output.good()) {
+        throw std::runtime_error("Failed to write reconstructed output: " + options.output.string());
+    }
+    if (device_times.empty()) {
+        std::cerr << "ilwt_2d_device_time_status: unavailable\n"
+                  << "ilwt_2d_timing_mechanism: host_steady_clock_enqueue_plus_finish\n";
+    } else {
+        std::cerr << "ilwt_2d_device_time_status: available\n"
+                  << "ilwt_2d_timing_mechanism: tt_metal_device_profiler_kernel_span\n";
+        print_timings("device_time", device_times);
+    }
+    print_timings("enqueue_or_dispatch", std::move(enqueue_times));
+    print_timings("sync_wait", std::move(sync_times));
+    print_timings("host_api_total", std::move(host_total_times));
+    const size_t route_count = executable.plan.chunks.empty() ? 0 : executable.plan.chunks.front().routes.size();
+    const size_t scale_routes_removed =
+        executable.plan.chunks.empty()
+            ? 0
+            : static_cast<size_t>(std::count_if(
+                  executable.plan.chunks.front().routes.begin(),
+                  executable.plan.chunks.front().routes.end(),
+                  [](const ttwv::Lwt2DRoutePlan& route) { return ttwv::is_scale_step(route.type); }));
+    std::cerr << "ilwt_2d_architecture: " << tt::arch_to_str(executable.buffers.scheduler.architecture) << '\n'
+              << "ilwt_2d_boundary_mode: " << ttwv::boundary_mode_name(options.boundary_mode) << '\n'
+              << "ilwt_2d_available_worker_core_count: " << executable.buffers.scheduler.available_worker_core_count
+              << '\n'
+              << "ilwt_2d_active_core_count: " << executable.buffers.scheduler.active_core_count << '\n'
+              << "ilwt_2d_batch_count: " << executable.buffers.scheduler.batch_count << '\n'
+              << "ilwt_2d_chunks_per_sample: " << executable.buffers.scheduler.chunks_per_sample << '\n'
+              << "ilwt_2d_total_work_items: " << executable.buffers.scheduler.total_work_items << '\n'
+              << "ilwt_2d_min_work_items_per_core: " << executable.buffers.scheduler.min_work_items_per_core << '\n'
+              << "ilwt_2d_max_work_items_per_core: " << executable.buffers.scheduler.max_work_items_per_core << '\n'
+              << "ilwt_2d_chunk_count: " << executable.plan.chunks.size() << '\n'
+              << "ilwt_2d_chunk_tiles: " << executable.plan.chunk_tiles_y << 'x' << executable.plan.chunk_tiles_x
+              << '\n'
+              << "ilwt_2d_estimated_latency_cycles: " << executable.plan.estimated_latency_cycles << '\n'
+              << "ilwt_2d_route_count: " << route_count << '\n'
+              << "ilwt_2d_executable_route_count: " << executable.plan.executable_route_count << '\n'
+              << "ilwt_2d_scale_routes_removed: " << scale_routes_removed << '\n'
+              << "ilwt_2d_l1_total_bytes: " << executable.plan.allocated_l1_bytes << '\n';
+    return EXIT_SUCCESS;
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+    try {
+        const Options options = parse_options(argc, argv);
+        ttwv::benchmark::configure_device_profiler_environment();
+        const auto dispatch = [&]<typename Scheme>() { return run<Scheme>(options); };
+        if (options.wavelet == ttwv::schemes::testing::synthetic_k17::name) {
+            return dispatch.template operator()<ttwv::schemes::testing::synthetic_k17>();
+        }
+        return ttwv::dispatch_scheme(options.wavelet, dispatch);
+    } catch (const std::exception& error) {
+        std::cerr << error.what() << '\n';
+        return EXIT_FAILURE;
+    }
+}

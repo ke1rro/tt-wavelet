@@ -2,18 +2,27 @@
 
 #include <cstdint>
 
-#include "../../tt_wavelet/include/common/boundary.hpp"
+#include "../../tt_wavelet/include/common/signal_extension.hpp"
 #include "api/dataflow/dataflow_api.h"
-#include "indexing.hpp"
 #define ALWI inline __attribute__((always_inline))
 
-// Wormhole NCRISC has a 16 KiB instruction region.  Keep the shared interior
-// test inline, but emit one callable copy of the larger boundary-only path
-// instead of duplicating it at the even and odd initialization sites.
+// Wormhole NCRISC has a 16 KiB instruction region, so keep the cache refill
+// path out of line there. Blackhole keeps that hot path inline. Boundary
+// extension is a cold path on both architectures; keeping it out of line also
+// prevents smooth/antireflect cloning from overflowing Blackhole's aggregate
+// fast-dispatch program-config buffer in profiler builds.
 #if defined(ARCH_WORMHOLE)
+#define TTWV_CACHE_REFILL_CALLABLE __attribute__((noinline))
+#define TTWV_BOUNDARY_CALLABLE __attribute__((noinline))
+#elif defined(ARCH_BLACKHOLE)
+#define TTWV_CACHE_REFILL_CALLABLE ALWI
+#if defined(PROFILE_KERNEL) && PROFILE_KERNEL
 #define TTWV_BOUNDARY_CALLABLE __attribute__((noinline))
 #else
 #define TTWV_BOUNDARY_CALLABLE ALWI
+#endif
+#else
+#error "TT-wavelet stick cache supports only Wormhole and Blackhole"
 #endif
 
 namespace ttwv::kernels::primitives {
@@ -27,7 +36,10 @@ struct StickReadCache {
     uint32_t stick_capacity;
     uint32_t cached_stick_id;
     uint32_t cached_stick_count;
+    uint32_t reserved_stick_count;
+    uint32_t source_page;
     bool valid;
+    uint32_t page_size;
 };
 
 ALWI uint32_t min_u32(const uint32_t lhs, const uint32_t rhs) { return lhs < rhs ? lhs : rhs; }
@@ -38,28 +50,57 @@ ALWI bool cache_contains_stick(const StickReadCache& cache, const uint32_t sourc
 }
 
 template <typename SrcAccessor>
-ALWI void cache_source_sticks(
-    const SrcAccessor& src, StickReadCache& cache, const uint32_t source_stick, const uint32_t source_stick_count) {
+TTWV_CACHE_REFILL_CALLABLE void cache_source_sticks(
+    const SrcAccessor& src,
+    StickReadCache& cache,
+    const uint32_t source_stick,
+    const uint32_t source_stick_count,
+    const uint32_t source_length) {
     if (cache.valid) {
-        cb_pop_front(cache.cb_id, cache.cached_stick_count);
+        cb_pop_front(cache.cb_id, cache.reserved_stick_count);
     }
 
     const uint32_t available_sticks = source_stick_count - source_stick;
-    const uint32_t reserve_sticks = min_u32(cache.stick_capacity, available_sticks);
+    const uint32_t cached_sticks = min_u32(cache.stick_capacity, available_sticks);
+    // Keep every transaction exactly one complete CB cycle. Raw L1 pointers
+    // returned by get_{read,write}_ptr do not wrap at a circular-buffer
+    // boundary, and a short tail transaction would leave later cache
+    // instances at an unknown physical slot. Pad unused cache slots with
+    // zeroes so the producer and consumer pointers always return to origin.
+    const uint32_t reserve_sticks = cache.stick_capacity;
 
     cb_reserve_back(cache.cb_id, reserve_sticks);
     const uint32_t cache_l1_addr = get_write_ptr(cache.cb_id);
-#pragma unroll 8
+    const bool page_per_stick = cache.page_size == cache.stick_nbytes;
+#pragma GCC unroll 8
     for (uint32_t i = 0; i < reserve_sticks; ++i) {
-        const uint64_t src_noc_addr = src.get_noc_addr(source_stick + i);
-        noc_async_read(src_noc_addr, cache_l1_addr + i * cache.stick_nbytes, cache.stick_nbytes);
+        const uint32_t stick_index = source_stick + i;
+        const bool is_cached_stick = i < cached_sticks;
+        const bool is_partial_tail = is_cached_stick && !page_per_stick && stick_index + 1 == source_stick_count &&
+                                     source_length % cache.stick_width != 0;
+        const uint32_t read_nbytes =
+            is_partial_tail ? (source_length - stick_index * cache.stick_width) * sizeof(float) : cache.stick_nbytes;
+        if (!is_cached_stick || is_partial_tail) {
+            auto* destination = reinterpret_cast<volatile tt_l1_ptr uint32_t*>(cache_l1_addr + i * cache.stick_nbytes);
+            for (uint32_t word = 0; word < cache.stick_nbytes / sizeof(uint32_t); ++word) {
+                destination[word] = 0U;
+            }
+        }
+        if (!is_cached_stick) {
+            continue;
+        }
+        const uint64_t src_noc_addr = page_per_stick
+                                          ? src.get_noc_addr(cache.source_page + stick_index)
+                                          : src.get_noc_addr(cache.source_page, stick_index * cache.stick_nbytes);
+        noc_async_read(src_noc_addr, cache_l1_addr + i * cache.stick_nbytes, read_nbytes);
     }
     noc_async_read_barrier();
     cb_push_back(cache.cb_id, reserve_sticks);
     cb_wait_front(cache.cb_id, reserve_sticks);
 
     cache.cached_stick_id = source_stick;
-    cache.cached_stick_count = reserve_sticks;
+    cache.cached_stick_count = cached_sticks;
+    cache.reserved_stick_count = reserve_sticks;
     cache.valid = true;
 }
 
@@ -71,7 +112,7 @@ ALWI float read_source_value(
     const uint32_t source_stick_count = (source_length + cache.stick_width - 1) / cache.stick_width;
 
     if (!cache_contains_stick(cache, source_stick)) {
-        cache_source_sticks(src, cache, source_stick, source_stick_count);
+        cache_source_sticks(src, cache, source_stick, source_stick_count, source_length);
     }
 
     const auto* cached_values = reinterpret_cast<const float*>(get_read_ptr(cache.cb_id));
@@ -85,6 +126,17 @@ TTWV_BOUNDARY_CALLABLE float read_extended_source_value(
     return read_source_value(src, cache, source_index, source_length);
 }
 
+template <typename SrcAccessor>
+struct CachedSourceReader {
+    const SrcAccessor& src;
+    StickReadCache& cache;
+    uint32_t source_length;
+
+    ALWI float operator()(const uint32_t source_index) const {
+        return read_extended_source_value(src, cache, source_index, source_length);
+    }
+};
+
 template <ttwv::BoundaryMode Mode, typename SrcAccessor>
 TTWV_BOUNDARY_CALLABLE float read_extended_value(
     const SrcAccessor& src,
@@ -93,58 +145,36 @@ TTWV_BOUNDARY_CALLABLE float read_extended_value(
     const uint32_t left_pad,
     const uint32_t out_idx) {
     static_assert(ttwv::is_supported_lwt_boundary_mode(Mode), "Unsupported compile-time boundary mode");
-
-    if constexpr (Mode == ttwv::BoundaryMode::kZero) {
-        return 0.0F;
-    } else if constexpr (Mode == ttwv::BoundaryMode::kConstant) {
-        const uint32_t source_index = out_idx < left_pad ? 0U : input_length - 1U;
-        return read_extended_source_value(src, cache, source_index, input_length);
-    } else if constexpr (Mode == ttwv::BoundaryMode::kSymmetric) {
+#if defined(ARCH_WORMHOLE)
+    if constexpr (Mode == ttwv::BoundaryMode::kAntireflect) {
+        // Host planning bounds the padded signal to INT32_MAX.  Native 32-bit
+        // decomposition is therefore exactly equivalent on the supported
+        // domain and avoids linking 64-bit divide/modulo helpers into
+        // Wormhole's 16 KiB NCRISC text region.  Keep Blackhole on the proven
+        // canonical ExtendedIndex path below.
         const int32_t logical = static_cast<int32_t>(out_idx) - static_cast<int32_t>(left_pad);
-        return read_extended_source_value(src, cache, symmetric_index(logical, input_length), input_length);
-    } else if constexpr (Mode == ttwv::BoundaryMode::kReflect) {
-        const int32_t logical = static_cast<int32_t>(out_idx) - static_cast<int32_t>(left_pad);
-        return read_extended_source_value(src, cache, reflect_index(logical, input_length), input_length);
-    } else if constexpr (Mode == ttwv::BoundaryMode::kPeriodic) {
-        const int32_t logical = static_cast<int32_t>(out_idx) - static_cast<int32_t>(left_pad);
-        return read_extended_source_value(src, cache, positive_mod(logical, input_length), input_length);
-    } else if constexpr (Mode == ttwv::BoundaryMode::kAntisymmetric) {
-        const int32_t logical = static_cast<int32_t>(out_idx) - static_cast<int32_t>(left_pad);
-        const AntisymmetricIndex mapped = antisymmetric_index(logical, input_length);
-        const float value = read_extended_source_value(src, cache, mapped.source_index, input_length);
-        return mapped.negate ? -value : value;
-    } else if constexpr (Mode == ttwv::BoundaryMode::kSmooth) {
-        const int32_t logical = static_cast<int32_t>(out_idx) - static_cast<int32_t>(left_pad);
-        if (input_length == 1U) {
-            // A one-sample DWT has no edge difference. PyWavelets' DWT treats
-            // the missing slope as zero (its public pad helper behaves
-            // differently for this degenerate input).
-            return read_extended_source_value(src, cache, 0U, input_length);
-        }
-        const bool left = logical < 0;
-        const uint32_t edge_index = left ? 0U : input_length - 1U;
-        const uint32_t neighbor_index = left ? 1U : input_length - 2U;
-        const int32_t distance = left ? -logical : logical - static_cast<int32_t>(input_length - 1U);
-        const float edge = read_extended_source_value(src, cache, edge_index, input_length);
-        const float neighbor = read_extended_source_value(src, cache, neighbor_index, input_length);
-        return edge + static_cast<float>(distance) * (edge - neighbor);
-    } else {
-        static_assert(Mode == ttwv::BoundaryMode::kAntireflect);
-        if (input_length == 1U) {
-            return read_extended_source_value(src, cache, 0U, input_length);
-        }
-        const int32_t logical = static_cast<int32_t>(out_idx) - static_cast<int32_t>(left_pad);
-        const uint32_t last_index = input_length - 1U;
-        const uint64_t period = 2U * static_cast<uint64_t>(last_index);
-        const SignedPeriodIndex mapped = decompose_signed_period(logical, period);
-        const bool reflected = mapped.remainder > last_index;
-        const uint32_t source_index =
-            reflected ? static_cast<uint32_t>(period - mapped.remainder) : static_cast<uint32_t>(mapped.remainder);
-        const float source_value = read_extended_source_value(src, cache, source_index, input_length);
-        const float first = read_extended_source_value(src, cache, 0U, input_length);
-        const float last = read_extended_source_value(src, cache, last_index, input_length);
-        const float base = reflected ? 2.0F * last - source_value : source_value;
-        return base + static_cast<float>(2 * mapped.quotient) * (last - first);
+        const ttwv::AntireflectIndexI32 extended = ttwv::make_antireflect_index_i32(logical, input_length);
+        return ttwv::evaluate_antireflect_index_i32(
+            extended,
+            input_length,
+            CachedSourceReader<SrcAccessor>{
+                .src = src,
+                .cache = cache,
+                .source_length = input_length,
+            });
+    } else
+#endif
+    {
+        const int64_t logical = static_cast<int64_t>(out_idx) - static_cast<int64_t>(left_pad);
+        const ttwv::ExtendedIndex extended = ttwv::make_extended_index<Mode>(logical, input_length);
+        return ttwv::evaluate_extended_index<Mode>(
+            extended,
+            input_length,
+            CachedSourceReader<SrcAccessor>{
+                .src = src,
+                .cache = cache,
+                .source_length = input_length,
+            });
     }
 }
 
@@ -174,12 +204,14 @@ ALWI void release_cache(StickReadCache& cache) {
         return;
     }
 
-    cb_pop_front(cache.cb_id, cache.cached_stick_count);
+    cb_pop_front(cache.cb_id, cache.reserved_stick_count);
     cache.cached_stick_id = kInvalidStick;
     cache.cached_stick_count = 0;
+    cache.reserved_stick_count = 0;
     cache.valid = false;
 }
 
 }  // namespace ttwv::kernels::primitives
 
 #undef TTWV_BOUNDARY_CALLABLE
+#undef TTWV_CACHE_REFILL_CALLABLE

@@ -12,17 +12,15 @@
 #include <algorithm>
 #include <array>
 
-#include "../ckernel.h"
-#include "ckernel_defs.h"
-#include "cmath_common.h"
-#include "sfpi.h"
+#include "lwt_sfpi_common.h"
 
 using namespace sfpi;
 
 namespace ckernel {
 namespace sfpu {
 
-inline uint32_t _get_dst_base(const uint32_t tile_index, const uint32_t face_index, const uint32_t row_index, const uint32_t col_index) {
+inline uint32_t _get_dst_base(
+    const uint32_t tile_index, const uint32_t face_index, const uint32_t row_index, const uint32_t col_index) {
     // addr uint10: XTTTFFRRCX
     // T: tile index (0-7) << 6
     // F: face index (0-3) << 4
@@ -31,7 +29,8 @@ inline uint32_t _get_dst_base(const uint32_t tile_index, const uint32_t face_ind
     return (tile_index << 6) + (face_index << 4) + row_index + (col_index << 1);
 }
 
-inline uint32_t _get_block(const uint32_t tile1, const uint32_t tile2, const uint32_t row_index, const uint32_t col_index) {
+inline uint32_t _get_block(
+    const uint32_t tile1, const uint32_t tile2, const uint32_t row_index, const uint32_t col_index) {
     const uint32_t tile = (row_index < 32) ? tile1 : tile2;
     const uint32_t col_face = (col_index < 2) ? 0 : 1;
     const uint32_t row_face = ((row_index % 32) < 16) ? 0 : 1;
@@ -39,12 +38,7 @@ inline uint32_t _get_block(const uint32_t tile1, const uint32_t tile2, const uin
     const uint32_t row_offset = row_index % 16;
     const uint32_t col_offset = col_index % 2;
 
-    return _get_dst_base(
-        tile,
-        face,
-        row_offset,
-        col_offset
-    );
+    return _get_dst_base(tile, face, row_offset, col_offset);
 }
 
 inline void _vertical_stencil_init() {
@@ -85,13 +79,18 @@ inline void _vertical_stencil_block(
     const uint32_t dst_f1,
     const uint32_t dst_f2,
     const uint32_t dst_f3,
+    const uint32_t dst_tail0,
+    const uint32_t dst_tail1,
+    const uint32_t dst_tail2,
+    const uint32_t dst_tail3,
     const uint32_t dst_g0,
     const uint32_t dst_g1,
     const uint32_t dst_g2,
     const uint32_t dst_base0 = 512,
     const uint32_t dst_base1 = 512,
-    const uint32_t dst_base2 = 512
-) {
+    const uint32_t dst_base2 = 512) {
+    static_assert(K > 0 && K <= 17, "Vertical stencil supports 1..17 coefficients");
+
     // Register allocations
     const auto& f_0 = p_sfpu::LREG0;
     const auto& f_1 = p_sfpu::LREG1;
@@ -103,63 +102,78 @@ inline void _vertical_stencil_block(
     const auto& tmp = p_sfpu::LREG7;
 
     // Load inputs into LRegs, for odd columns offset of 2 is used
-    TT_SFPLOAD(f_0, sfpi::SFPLOAD_MOD0_FMT_FP32, ADDR_MOD_3, dst_f0);      // f_0
-    TT_SFPLOAD(f_1, sfpi::SFPLOAD_MOD0_FMT_FP32, ADDR_MOD_3, dst_f1);      // f_1
-    TT_SFPLOAD(f_2, sfpi::SFPLOAD_MOD0_FMT_FP32, ADDR_MOD_3, dst_f2);      // f_2
-    TT_SFPLOAD(f_3, sfpi::SFPLOAD_MOD0_FMT_FP32, ADDR_MOD_3, dst_f3);      // f_3
+    TT_SFPLOAD(f_0, sfpi::SFPLOAD_MOD0_FMT_FP32, ADDR_MOD_3, dst_f0);
+    TT_SFPLOAD(f_1, sfpi::SFPLOAD_MOD0_FMT_FP32, ADDR_MOD_3, dst_f1);
+    TT_SFPLOAD(f_2, sfpi::SFPLOAD_MOD0_FMT_FP32, ADDR_MOD_3, dst_f2);
+    TT_SFPLOAD(f_3, sfpi::SFPLOAD_MOD0_FMT_FP32, ADDR_MOD_3, dst_f3);
 
     // Load base from Dst
     if (dst_base0 < 512) {
-        TT_SFPLOAD(g_0, sfpi::SFPLOAD_MOD0_FMT_FP32, ADDR_MOD_3, dst_base0); // g_0
+        TT_SFPLOAD(g_0, sfpi::SFPLOAD_MOD0_FMT_FP32, ADDR_MOD_3, dst_base0);
     } else {
-        TTI_SFPMOV(0, p_sfpu::LCONST_0, g_0, 0); // g_0 = 0
+        TTI_SFPMOV(0, p_sfpu::LCONST_0, g_0, 0);
     }
-
-    if(K < 10 && (dst_base1 < 512)) {
-        TT_SFPLOAD(g_1, sfpi::SFPLOAD_MOD0_FMT_FP32, ADDR_MOD_3, dst_base1); // g_1
+    if (K < 10 && dst_base1 < 512) {
+        TT_SFPLOAD(g_1, sfpi::SFPLOAD_MOD0_FMT_FP32, ADDR_MOD_3, dst_base1);
     } else if (K < 10) {
-        TTI_SFPMOV(0, p_sfpu::LCONST_0, g_1, 0); // g_1 = 0
+        TTI_SFPMOV(0, p_sfpu::LCONST_0, g_1, 0);
     }
-
-    if(K < 6 && (dst_base2 < 512)) {
-        TT_SFPLOAD(g_2, sfpi::SFPLOAD_MOD0_FMT_FP32, ADDR_MOD_3, dst_base2); // g_2
+    if (K < 6 && dst_base2 < 512) {
+        TT_SFPLOAD(g_2, sfpi::SFPLOAD_MOD0_FMT_FP32, ADDR_MOD_3, dst_base2);
     } else if (K < 6) {
-        TTI_SFPMOV(0, p_sfpu::LCONST_0, g_2, 0); // g_2 = 0
+        TTI_SFPMOV(0, p_sfpu::LCONST_0, g_2, 0);
     }
 
-
-#pragma unroll 17
-    for (uint8_t j = 0; j < K; j++) {
-        TT_SFPLOADI(tmp, sfpi::SFPLOADI_MOD0_UPPER, (h_packed[(K-1) - j]) >> 16);
-        TT_SFPLOADI(tmp, sfpi::SFPLOADI_MOD0_LOWER, (h_packed[(K-1) - j]) & 0xFFFF);
-
+#pragma GCC unroll 13
+    for (uint8_t j = 0; j < std::min<uint8_t>(K, 13); j++) {
+        TT_SFPLOADI(tmp, sfpi::SFPLOADI_MOD0_UPPER, (h_packed[(K - 1) - j]) >> 16);
+        TT_SFPLOADI(tmp, sfpi::SFPLOADI_MOD0_LOWER, (h_packed[(K - 1) - j]) & 0xFFFF);
         if constexpr (K < 6) {
             TTI_SFPMAD(f_0, tmp, g_0, g_0, 0);
             TTI_SFPMAD(f_1, tmp, g_1, g_1, 0);
             TTI_SFPMAD(f_2, tmp, g_2, g_2, 0);
         } else if constexpr (K < 10) {
-            // g_0 += h[(k-1)-j] * f_0
             TTI_SFPMAD(f_0, tmp, g_0, g_0, 0);
-            // g_1 += h[(k-1)-j] * f_1
             TTI_SFPMAD(f_1, tmp, g_1, g_1, 0);
         } else {
-            // g_0 += h[(k-1)-j] * f_0
             TTI_SFPMAD(f_0, tmp, g_0, g_0, 0);
         }
-
-        TTI_SFPNOP; // Wait for SFPU to finish the multiply-accumulate before rotating
-        if (j != K - 1) { // No need to rotate on the last iteration
+        TTI_SFPNOP;
+        if (j + 1 < std::min<uint8_t>(K, 13)) {
             _vertical_stencil_rotate_();
         }
     }
 
-    // Store results back to Dst
-    TT_SFPSTORE(g_0, sfpi::SFPSTORE_MOD0_FMT_FP32, ADDR_MOD_3, dst_g0); // g_0
-    if(K < 10 && (dst_g1 < 512)) {
-        TT_SFPSTORE(g_1, sfpi::SFPSTORE_MOD0_FMT_FP32, ADDR_MOD_3, dst_g1); // g_1
+    if constexpr (K > 13) {
+        // Four output rows with K=14..17 require at most 20 contiguous
+        // source rows. Keep g_0 live, reload a tail window beginning at
+        // source row + 12, and rotate once so tap 13 observes row + 13.
+        // No partial accumulator is materialized, and coefficients remain in
+        // the same ordered FP32 MAD sequence as the K<=13 path.
+        TT_SFPLOAD(f_0, sfpi::SFPLOAD_MOD0_FMT_FP32, ADDR_MOD_3, dst_tail0);
+        TT_SFPLOAD(f_1, sfpi::SFPLOAD_MOD0_FMT_FP32, ADDR_MOD_3, dst_tail1);
+        TT_SFPLOAD(f_2, sfpi::SFPLOAD_MOD0_FMT_FP32, ADDR_MOD_3, dst_tail2);
+        TT_SFPLOAD(f_3, sfpi::SFPLOAD_MOD0_FMT_FP32, ADDR_MOD_3, dst_tail3);
+        _vertical_stencil_rotate_();
+
+#pragma GCC unroll 4
+        for (uint8_t j = 13; j < K; ++j) {
+            TT_SFPLOADI(tmp, sfpi::SFPLOADI_MOD0_UPPER, (h_packed[(K - 1) - j]) >> 16);
+            TT_SFPLOADI(tmp, sfpi::SFPLOADI_MOD0_LOWER, (h_packed[(K - 1) - j]) & 0xFFFF);
+            TTI_SFPMAD(f_0, tmp, g_0, g_0, 0);
+            TTI_SFPNOP;
+            if (j + 1 < K) {
+                _vertical_stencil_rotate_();
+            }
+        }
     }
-    if(K < 6 && (dst_g2 < 512)) {
-        TT_SFPSTORE(g_2, sfpi::SFPSTORE_MOD0_FMT_FP32, ADDR_MOD_3, dst_g2); // g_2
+
+    TT_SFPSTORE(g_0, sfpi::SFPSTORE_MOD0_FMT_FP32, ADDR_MOD_3, dst_g0);
+    if (K < 10 && dst_g1 < 512) {
+        TT_SFPSTORE(g_1, sfpi::SFPSTORE_MOD0_FMT_FP32, ADDR_MOD_3, dst_g1);
+    }
+    if (K < 6 && dst_g2 < 512) {
+        TT_SFPSTORE(g_2, sfpi::SFPSTORE_MOD0_FMT_FP32, ADDR_MOD_3, dst_g2);
     }
 }
 
@@ -170,20 +184,21 @@ inline void _vertical_stencil_block(
 //   output: tile index in dst register for output (can be same as either input)
 template <uint8_t K>
 inline void _vertical_stencil(
-    const uint32_t h_packed[K], const uint32_t input1, const uint32_t input2, const uint32_t output, const uint32_t base = 8) {
+    const uint32_t h_packed[K],
+    const uint32_t input1,
+    const uint32_t input2,
+    const uint32_t output,
+    const uint32_t base = 8) {
     math::set_dst_write_addr<DstTileShape::Tile32x32, UnpackDestination::SrcRegs>(0);
     // We use addr mod 3, so base=0
-    ckernel::math::clear_addr_mod_base();
+    _lwt_clear_addr_mod_base_();
     TTI_STALLWAIT(p_stall::STALL_SFPU, p_stall::MATH);
 
-    constexpr uint32_t ROW_STRIDE =
-        (K >= 10) ? 4 :
-        (K >= 6) ? 8 :
-                    12;
+    constexpr uint32_t ROW_STRIDE = (K >= 10) ? 4 : (K >= 6) ? 8 : 12;
 
-#pragma unroll 8
+#pragma GCC unroll 8
     for (uint32_t row = 0; row < 32; row += ROW_STRIDE) {
-#pragma unroll 4
+#pragma GCC unroll 4
         for (uint32_t col = 0; col < 4; col += 1) {
             _vertical_stencil_block<K>(
                 h_packed,
@@ -191,13 +206,16 @@ inline void _vertical_stencil(
                 _get_block(input1, input2, row + 4, col),
                 _get_block(input1, input2, row + 8, col),
                 _get_block(input1, input2, row + 12, col),
+                _get_block(input1, input2, row + 12, col),
+                _get_block(input1, input2, row + 16, col),
+                _get_block(input1, input2, row + 20, col),
+                _get_block(input1, input2, row + 24, col),
                 _get_block(output, 8, row, col),
                 _get_block(output, 8, row + 4, col),
                 _get_block(output, 8, row + 8, col),
                 _get_block(base, base, row, col),
                 _get_block(base, base, row + 4, col),
-                _get_block(base, base, row + 8, col)
-            );
+                _get_block(base, base, row + 8, col));
         }
     }
 
@@ -211,6 +229,10 @@ inline void vstencil_init() { MATH((ckernel::sfpu::_vertical_stencil_init())); }
 
 template <uint8_t K>
 inline void vstencil_tile(
-    std::array<uint32_t, K> h_packed, const uint32_t input1, const uint32_t input2, const uint32_t output, const uint32_t base = 8) {
+    std::array<uint32_t, K> h_packed,
+    const uint32_t input1,
+    const uint32_t input2,
+    const uint32_t output,
+    const uint32_t base = 8) {
     MATH((ckernel::sfpu::_vertical_stencil<K>(h_packed.data(), input1, input2, output, base)));
 }

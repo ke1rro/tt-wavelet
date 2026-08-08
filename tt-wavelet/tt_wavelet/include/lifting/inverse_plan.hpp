@@ -265,20 +265,19 @@ inline void validate_inverse_scale_inline(const LiftingForwardPlan& plan) {
             const StoredStream& source = predict ? active_even : active_odd;
             const StoredStream& base = predict ? active_odd : active_even;
 
-            routes.push_back(
-                LwtStepRoute{
-                    .type = forward_route.type,
-                    .source = StreamRef{.slot = source.slot},
-                    .base = StreamRef{.slot = base.slot},
-                    .output = detail::workspace_output(free_slot),
-                    .source_storage_length = source.storage.length(),
-                    .base_storage_length = base.storage.length(),
-                    .source_offset_elements = execution_detail::local_offset(source.storage, source_required),
-                    .base_offset_elements = execution_detail::local_offset(base.storage, base_required),
-                    .source_left_pad_elements = forward_route.source_left_pad,
-                    .output_length = output.length(),
-                    .output_offset_elements = 0,
-                });
+            routes.push_back(LwtStepRoute{
+                .type = forward_route.type,
+                .source = StreamRef{.slot = source.slot},
+                .base = StreamRef{.slot = base.slot},
+                .output = detail::workspace_output(free_slot),
+                .source_storage_length = source.storage.length(),
+                .base_storage_length = base.storage.length(),
+                .source_offset_elements = execution_detail::local_offset(source.storage, source_required),
+                .base_offset_elements = execution_detail::local_offset(base.storage, base_required),
+                .source_left_pad_elements = forward_route.source_left_pad,
+                .output_length = output.length(),
+                .output_offset_elements = 0,
+            });
 
             const StoredStream replacement{.slot = free_slot, .storage = output};
             max_workspace_elements = std::max(max_workspace_elements, output.length());
@@ -296,20 +295,19 @@ inline void validate_inverse_scale_inline(const LiftingForwardPlan& plan) {
         TT_FATAL(scale_even || forward_route.type == StepType::kScaleOdd, "Unsupported inverse route type");
         const IndexInterval output = scale_even ? before.even : before.odd;
         const StoredStream& source = scale_even ? active_even : active_odd;
-        routes.push_back(
-            LwtStepRoute{
-                .type = forward_route.type,
-                .source = StreamRef{.slot = source.slot},
-                .base = StreamRef{.slot = source.slot},
-                .output = detail::workspace_output(free_slot),
-                .source_storage_length = source.storage.length(),
-                .base_storage_length = source.storage.length(),
-                .source_offset_elements = execution_detail::local_offset(source.storage, output),
-                .base_offset_elements = execution_detail::local_offset(source.storage, output),
-                .source_left_pad_elements = 0,
-                .output_length = output.length(),
-                .output_offset_elements = 0,
-            });
+        routes.push_back(LwtStepRoute{
+            .type = forward_route.type,
+            .source = StreamRef{.slot = source.slot},
+            .base = StreamRef{.slot = source.slot},
+            .output = detail::workspace_output(free_slot),
+            .source_storage_length = source.storage.length(),
+            .base_storage_length = source.storage.length(),
+            .source_offset_elements = execution_detail::local_offset(source.storage, output),
+            .base_offset_elements = execution_detail::local_offset(source.storage, output),
+            .source_left_pad_elements = 0,
+            .output_length = output.length(),
+            .output_offset_elements = 0,
+        });
 
         const StoredStream replacement{.slot = free_slot, .storage = output};
         max_workspace_elements = std::max(max_workspace_elements, output.length());
@@ -391,8 +389,11 @@ template <typename Scheme>
         .element_size_bytes = sizeof(float),
     };
     LiftingForwardPlan trace = make_forward_lifting_plan<Scheme>(original, 0, 0, boundary_mode);
+    const bool length_valid = coefficient_length == trace.output_length ||
+                              (coefficient_length >= trace.output_length && coefficient_length % kStickWidth == 0 &&
+                               (coefficient_length - trace.output_length) < kStickWidth);
     TT_FATAL(
-        coefficient_length == trace.output_length,
+        length_valid,
         "ILWT coefficient length {} does not match expected length {} for original length {}",
         coefficient_length,
         trace.output_length,

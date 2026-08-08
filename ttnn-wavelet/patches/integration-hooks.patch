@@ -1,0 +1,19 @@
+diff --git a/ttnn/cpp/ttnn-nanobind/__init__.cpp b/ttnn/cpp/ttnn-nanobind/__init__.cpp
+index fba7dc3a0bf..2707592a5e8 100644
+--- a/ttnn/cpp/ttnn-nanobind/__init__.cpp
++++ b/ttnn/cpp/ttnn-nanobind/__init__.cpp
+@@ -79,0 +80 @@
++#include "ttnn/operations/wavelet/wavelet_nanobind.hpp"
+@@ -222,0 +224,2 @@ void py_module(nb::module_& mod) {
++
++    wavelet::bind_wavelet_operations(mod);
+diff --git a/ttnn/cpp/ttnn/operations/CMakeLists.txt b/ttnn/cpp/ttnn/operations/CMakeLists.txt
+index aeef50fedda..720b6885b6c 100644
+--- a/ttnn/cpp/ttnn/operations/CMakeLists.txt
++++ b/ttnn/cpp/ttnn/operations/CMakeLists.txt
+@@ -47,0 +48 @@ add_subdirectory(uniform)
++add_subdirectory(wavelet)
+@@ -82,0 +84 @@ target_link_libraries(
++        TTNN::Ops::Wavelet
+@@ -123,0 +126 @@ target_sources(
++        $<TARGET_OBJECTS:TTNN::Ops::Wavelet>

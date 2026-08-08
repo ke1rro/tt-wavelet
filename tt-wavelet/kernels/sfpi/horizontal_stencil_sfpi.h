@@ -123,7 +123,7 @@ inline void _horizontal_stencil_plus_base_block(
         _lwt_scale_register_(g_o, tmp, tmp_acc);
     }
 
-#pragma unroll 17
+#pragma GCC unroll 17
     for (uint8_t j = 0; j < K; j++) {
         TT_SFPLOADI(tmp, sfpi::SFPLOADI_MOD0_UPPER, (h_packed[j]) >> 16);
         TT_SFPLOADI(tmp, sfpi::SFPLOADI_MOD0_LOWER, (h_packed[j]) & 0xFFFF);
@@ -165,7 +165,7 @@ inline void _horizontal_stencil_plus_base_face(
     constexpr uint32_t ROWS = std::min(Rows, static_cast<uint32_t>(16));
     constexpr uint32_t ROW_STRIDE = 4;
 
-#pragma unroll 4
+#pragma GCC unroll 4
     for (uint32_t row = 0; row < ROWS; row += ROW_STRIDE) {
         _horizontal_stencil_plus_base_block<K, ScaleSource, ScaleBase, SourceScalePacked, BaseScalePacked>(
             h_packed, input1 + row, input2 + row, base + row, output + row);
@@ -228,6 +228,37 @@ inline void _horizontal_stencil_plus_base(
     TTI_STALLWAIT(p_stall::STALL_CFG, p_stall::WAIT_SFPU);
 }
 
+template <uint8_t K>
+inline void _horizontal_stencil_dense_tile(
+    const uint32_t h_packed[K],
+    const uint32_t input0,
+    const uint32_t input1,
+    const uint32_t base,
+    const uint32_t output) {
+    static_assert(K > 0 && K <= 17, "Dense horizontal stencil supports 1..17 coefficients");
+    math::set_dst_write_addr<DstTileShape::Tile32x32, UnpackDestination::SrcRegs>(0);
+    _lwt_clear_addr_mod_base_();
+    TTI_STALLWAIT(p_stall::STALL_SFPU, p_stall::MATH);
+
+    // The reader places 17-K alignment positions before the source interval,
+    // making column 16 the newest sample for output column zero. The two
+    // source tiles then contain the invariant 48-position packed window:
+    //
+    //   (17-K) alignment + 32 outputs + (K-1) halo = 48.
+    //
+    // Each output face consumes its preceding and current source faces.
+    _horizontal_stencil_plus_base_face<K, 16>(
+        h_packed, _lwt_dst_base(input0, 0), _lwt_dst_base(input0, 1), _lwt_dst_base(base, 0), _lwt_dst_base(output, 0));
+    _horizontal_stencil_plus_base_face<K, 16>(
+        h_packed, _lwt_dst_base(input0, 1), _lwt_dst_base(input1, 0), _lwt_dst_base(base, 1), _lwt_dst_base(output, 1));
+    _horizontal_stencil_plus_base_face<K, 16>(
+        h_packed, _lwt_dst_base(input0, 2), _lwt_dst_base(input0, 3), _lwt_dst_base(base, 2), _lwt_dst_base(output, 2));
+    _horizontal_stencil_plus_base_face<K, 16>(
+        h_packed, _lwt_dst_base(input0, 3), _lwt_dst_base(input1, 2), _lwt_dst_base(base, 3), _lwt_dst_base(output, 3));
+
+    TTI_STALLWAIT(p_stall::STALL_CFG, p_stall::WAIT_SFPU);
+}
+
 template <
     uint8_t K,
     bool ScaleSource = false,
@@ -249,9 +280,9 @@ inline void _horizontal_stencil_plus_base_narrow(
 
     const uint32_t sources[4] = {source0, source1, source2, source3};
     const uint32_t bases[3] = {base0, base1, base2};
-#pragma unroll 3
+#pragma GCC unroll 3
     for (uint32_t block = 0; block < 3; ++block) {
-#pragma unroll 2
+#pragma GCC unroll 2
         for (uint32_t face = 0; face < 2; ++face) {
             _horizontal_stencil_plus_base_face<K, 16, ScaleSource, ScaleBase, SourceScalePacked, BaseScalePacked>(
                 h_packed,
@@ -281,6 +312,16 @@ inline void hstencil_plus_base_tile(
     const uint32_t output2) {
     MATH((ckernel::sfpu::_horizontal_stencil_plus_base<K, Rows>(
         h_packed.data(), input1, input2, base1, base2, output1, output2)));
+}
+
+template <uint8_t K>
+inline void hstencil_dense_tile(
+    std::array<uint32_t, K> h_packed,
+    const uint32_t input0,
+    const uint32_t input1,
+    const uint32_t base,
+    const uint32_t output) {
+    MATH((ckernel::sfpu::_horizontal_stencil_dense_tile<K>(h_packed.data(), input0, input1, base, output)));
 }
 
 template <uint8_t K>

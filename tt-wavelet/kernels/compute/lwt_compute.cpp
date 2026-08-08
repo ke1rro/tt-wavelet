@@ -9,11 +9,11 @@
 #include <array>
 #include <cstdint>
 
-#include "compute_kernel_api/common.h"
-#include "compute_kernel_api/eltwise_unary/eltwise_unary.h"
-#include "compute_kernel_api/tile_move_copy.h"
 #include "../../tt_wavelet/include/device_protocol/lwt_config.hpp"
 #include "../../tt_wavelet/include/lifting/static_scheme.hpp"
+#include "api/compute/common.h"
+#include "api/compute/eltwise_unary/eltwise_unary.h"
+#include "api/compute/tile_move_copy.h"
 #include "../sfpi/horizontal_stencil_sfpi.h"
 #include TTWV_LWT_SCHEME_HEADER
 
@@ -360,7 +360,7 @@ inline void run_static_steps(
     } else {
         static_assert(
             !InlineInverseScale || ((!EvenNeedsScale || EvenScalePacked == 0x3f800000U) &&
-                                  (!OddNeedsScale || OddScalePacked == 0x3f800000U)),
+                                    (!OddNeedsScale || OddScalePacked == 0x3f800000U)),
             "Inline inverse scaling left a final stream unscaled");
     }
 }
@@ -376,7 +376,8 @@ void lwt_compute() {
         "Exactly one production scale policy must be selected for LWT or ILWT");
     constexpr uint32_t route_count =
         executable_step_count<Scheme>() - (kInlineTerminalScale ? 1U : 0U) - (kInlineInverseScale ? 2U : 0U);
-    constexpr uint32_t inverse_even_scale = maybe_inverse_scale_bits<Scheme, kInlineInverseScale, StepType::kScaleEven>();
+    constexpr uint32_t inverse_even_scale =
+        maybe_inverse_scale_bits<Scheme, kInlineInverseScale, StepType::kScaleEven>();
     constexpr uint32_t inverse_odd_scale = maybe_inverse_scale_bits<Scheme, kInlineInverseScale, StepType::kScaleOdd>();
     const uint32_t chunk_count = get_arg_val<uint32_t>(0);
 
