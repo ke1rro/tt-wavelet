@@ -3,11 +3,12 @@
 
 set -euo pipefail
 
-ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+ROOT_DIR=$(cd "$SCRIPT_DIR/.." && pwd)
 cd "$ROOT_DIR"
 WRAPPER_ARGS=("$@")
 set --
-source scripts/set_env.sh >/dev/null
+source "$ROOT_DIR/scripts/set_env.sh" >/dev/null
 set -- "${WRAPPER_ARGS[@]}"
 # Bring-up comparisons always use the complete hardware worker grid. The
 # standalone-only diagnostic override must not leak in from an interactive
@@ -17,6 +18,7 @@ unset TT_WAVELET_LWT_MAX_CORES
 PYTHON="$ROOT_DIR/.venv/bin/python"
 SUITE="$ROOT_DIR/scripts/wavelet_benchmark.py"
 OUTPUT_BASE="$ROOT_DIR/benchmarks/bringup"
+OUTPUT_BASE_EXPLICIT=false
 SEED=42
 TEST_RUN=false
 SETUP_ONLY=false
@@ -27,7 +29,7 @@ SCHEMES=()
 
 usage() {
     cat <<'EOF'
-Usage: ./run_bringup_benchmark.sh [OPTIONS]
+Usage: ./scripts/run_bringup_benchmark.sh [OPTIONS]
 
 Setup/build options:
   --setup-only       Install/integrate/build, then exit without using hardware
@@ -38,10 +40,65 @@ Benchmark options:
   --test-run         Run the targeted smoke matrix instead of the full suite
   --seed N           Reproducible performance-wavelet seed (default: 42)
   --schemes NAMES... Explicit wavelets instead of metadata-based selection
-  --output-base DIR  Output root (default: benchmarks/bringup)
+  --output-base DIR  Output root. By default, uses an architecture- and
+                     revision-specific directory under benchmarks/bringup.
   --overwrite        Replace existing result directories
   --resume           Continue compatible result directories
 EOF
+}
+
+validate_local_ttnn_python() {
+    TT_LOGGER_LEVEL=FATAL "$PYTHON" - "$ROOT_DIR" <<'PY'
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1]).resolve()
+expected_init = root / "tt-metal" / "ttnn" / "ttnn" / "__init__.py"
+expected_extension = root / "build" / "tt-metal" / "ttnn" / "_ttnn.so"
+
+import ttnn
+
+actual_init = pathlib.Path(ttnn.__file__).resolve()
+if actual_init != expected_init:
+    raise RuntimeError(
+        f"ttnn was imported from {actual_init}, expected {expected_init}"
+    )
+
+import ttnn._ttnn
+
+actual_extension = pathlib.Path(ttnn._ttnn.__file__).resolve()
+if actual_extension != expected_extension:
+    raise RuntimeError(
+        "ttnn._ttnn was imported from "
+        f"{actual_extension}, expected {expected_extension}"
+    )
+PY
+}
+
+ensure_local_ttnn_python() {
+    if validate_local_ttnn_python; then
+        echo "TTNN Python validation: local package and extension"
+        return
+    fi
+
+    echo "Repairing the local TTNN Python installation..."
+    "$PYTHON" -m pip install -e "$ROOT_DIR/tt-metal"
+    validate_local_ttnn_python
+    echo "TTNN Python validation: local package and extension"
+}
+
+detect_device_architecture() {
+    "$PYTHON" <<'PY'
+import ttnn
+
+device = ttnn.open_mesh_device(
+    mesh_shape=ttnn.MeshShape(1, 1), physical_device_ids=[0]
+)
+try:
+    print(str(device.arch()).replace("Arch.", "").lower())
+finally:
+    ttnn.close_mesh_device(device)
+PY
 }
 
 require_value() {
@@ -145,6 +202,7 @@ while (($#)); do
         --output-base)
             require_value "$1" "${2-}"
             OUTPUT_BASE=$2
+            OUTPUT_BASE_EXPLICIT=true
             shift 2
             ;;
         --overwrite | --resume)
@@ -197,7 +255,7 @@ if [[ $BUILD == true ]]; then
         NEED_SYSTEM_BOOTSTRAP=true
     fi
     if [[ $FORCE_BOOTSTRAP == true || ! -x $PYTHON ]] || \
-        ! "$PYTHON" -c 'import matplotlib, numpy, pywt, scipy, torch, tqdm' >/dev/null 2>&1; then
+        ! "$PYTHON" -c 'import loguru, matplotlib, numpy, pywt, scipy, torch, tqdm' >/dev/null 2>&1; then
         NEED_PYTHON_BOOTSTRAP=true
     fi
 
@@ -225,12 +283,6 @@ if [[ $BUILD == true ]]; then
     # Refresh extension links after the build. PYTHONPATH from set_env.sh then
     # imports this checkout rather than any server-wide TTNN installation.
     scripts/setup_ttnn_wavelet_in_ttmetal.sh --skip-build
-    validate_local_tt_runtime
-
-    if [[ $NEED_SYSTEM_BOOTSTRAP == true || $NEED_PYTHON_BOOTSTRAP == true || $FORCE_BOOTSTRAP == true ]]; then
-        echo "Installing this TT-Metal checkout into the local virtual environment..."
-        "$PYTHON" -m pip install -e "$ROOT_DIR/tt-metal"
-    fi
 elif [[ ! -x build/tt_wavelet_benchmark_runner ]]; then
     echo "Missing standalone runner; omit --skip-build or build with:" >&2
     echo "  cmake --build build --target tt_wavelet_benchmark_runner ttnn --parallel \$(nproc)" >&2
@@ -243,9 +295,19 @@ if [[ ! -x $PYTHON ]]; then
     exit 2
 fi
 
+validate_local_tt_runtime
+ensure_local_ttnn_python
+
 if [[ $SETUP_ONLY == true ]]; then
     echo "Setup complete: TTNN-Wavelet integrated; standalone runner and TTNN built."
     exit 0
+fi
+
+if [[ $OUTPUT_BASE_EXPLICIT == false ]]; then
+    DEVICE_ARCHITECTURE=$(detect_device_architecture)
+    REPOSITORY_REVISION=$(git rev-parse --short HEAD)
+    TT_METAL_REVISION=$(git -C tt-metal rev-parse --short HEAD)
+    OUTPUT_BASE="$ROOT_DIR/benchmarks/bringup/${DEVICE_ARCHITECTURE}-${REPOSITORY_REVISION}-${TT_METAL_REVISION}"
 fi
 
 COMMON=(--seed "$SEED")
