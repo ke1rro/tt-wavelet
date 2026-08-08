@@ -10,7 +10,7 @@ import ttnn
 
 @pytest.mark.slow
 @pytest.mark.timeout(1800)
-def test_all_106_discrete_schemes_jit_forward_inverse(device):
+def test_all_106_discrete_schemes_jit_forward_inverse(device: ttnn.MeshDevice) -> None:
     schemes = pywt.wavelist(kind="discrete")
     assert len(schemes) == 106
 
@@ -32,12 +32,13 @@ def test_all_106_discrete_schemes_jit_forward_inverse(device):
             boundary_mode="symmetric",
         )
 
-        coefficient_length = pywt.dwt_coeff_len(
-            signal.numel(), pywt.Wavelet(scheme).dec_len, mode="symmetric"
-        )
-        assert tuple(approximation.shape) == (coefficient_length,)
-        assert tuple(detail.shape) == (coefficient_length,)
-        assert tuple(reconstructed.shape) == tuple(signal.shape)
+        coefficient_length = pywt.dwt_coeff_len(signal.numel(), pywt.Wavelet(scheme).dec_len, mode="symmetric")
+        assert ttnn.dwt_coeff_len(signal.numel(), scheme) == coefficient_length
+        coefficient_sticks = (coefficient_length + 31) // 32
+        signal_sticks = (signal.numel() + 31) // 32
+        assert tuple(approximation.shape) == (coefficient_sticks, 32)
+        assert tuple(detail.shape) == (coefficient_sticks, 32)
+        assert tuple(reconstructed.shape) == (signal_sticks, 32)
         assert torch.isfinite(ttnn.to_torch(approximation)).all(), scheme
         assert torch.isfinite(ttnn.to_torch(detail)).all(), scheme
         assert torch.isfinite(ttnn.to_torch(reconstructed)).all(), scheme
@@ -45,7 +46,9 @@ def test_all_106_discrete_schemes_jit_forward_inverse(device):
 
 @pytest.mark.slow
 @pytest.mark.timeout(1800)
-def test_all_106_discrete_schemes_jit_forward_inverse_2d(device):
+def test_all_106_discrete_schemes_jit_forward_inverse_2d(
+    device: ttnn.MeshDevice,
+) -> None:
     schemes = pywt.wavelist(kind="discrete")
     assert len(schemes) == 106
 

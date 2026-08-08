@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include <cstdint>
 #include <string_view>
 
 #include "ttnn/operations/wavelet/common/boundary.hpp"
@@ -16,5 +17,7 @@ namespace ttnn::operations::wavelet {
 [[nodiscard]] SchemeId scheme_id_from_string(std::string_view name);
 
 [[nodiscard]] const SchemeInfo& scheme_info(SchemeId id);
+
+[[nodiscard]] uint32_t dwt_coefficient_length(uint32_t input_length, SchemeId id);
 
 }  // namespace ttnn::operations::wavelet

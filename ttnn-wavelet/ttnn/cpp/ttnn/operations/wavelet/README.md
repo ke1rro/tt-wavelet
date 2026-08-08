@@ -22,6 +22,8 @@ approximation, detail = ttnn.dwt(
     output_tensors=None,
 )
 
+coefficient_length = ttnn.dwt_coeff_len(input.shape[-1], "bior1.3")
+
 reconstructed = ttnn.idwt(
     approximation,
     detail,
@@ -59,16 +61,38 @@ return is therefore `ll, (hl, lh, hh)` when variable names follow its
 documentation.
 
 `original_length` and `output_shape` are required because coefficient shapes do
-not uniquely encode the original odd/even dimensions. Preallocated outputs must
-have the exact inferred tensor specification, be on the same device, and not
-alias inputs or sibling outputs.
+not uniquely encode the original odd/even dimensions. `dwt_coeff_len` returns
+the valid 1D coefficient count without dispatching a device operation.
+Preallocated outputs must have the exact inferred tensor specification, be on
+the same device, and not alias inputs or sibling outputs.
+
+### 1D valid-length and storage contract
+
+Current TTNN row-major interleaved tensors derive physical page width from the
+padded row width. They cannot expose logical shape `[C]` while independently
+retaining one 128-byte page for each 32-FP32 stick. The 1D operations therefore
+use an explicit stick-native contract:
+
+- `dwt([W])` returns two `[ceil(C/32), 32]` tensors;
+- `dwt([B,1,1,W])` returns two `[B,1,ceil(C/32),32]` tensors;
+- `C = ttnn.dwt_coeff_len(W, wavelet)` is the valid coefficient count;
+- `idwt(..., original_length=W)` returns `[ceil(W/32),32]` or
+  `[B,1,ceil(W/32),32]`;
+- each row is one 32-FP32, 128-byte physical page;
+- only the first `C` or `W` flattened values per batch item are valid;
+- unused lanes in the final stick are unspecified and must not be consumed.
+
+This keeps DWT outputs directly consumable by IDWT without a reshape, trim,
+copy kernel, extra dispatch, or loss of DRAM bank striping. A canonical logical
+shape with this page geometry requires a TTNN core representation that can set
+row-major interleaved page width independently from logical row width.
 
 ## Supported contract
 
 | Operation | Rank and tensor layout | Memory | Output |
 | --- | --- | --- | --- |
-| `dwt` | `[W]` or `[B,1,1,W]`, row-major, FLOAT32 | interleaved DRAM or L1 input, one physical device | two rank-preserving row-major interleaved DRAM coefficient tensors |
-| `idwt` | two equal `[Wc]` or `[B,1,1,Wc]` row-major FLOAT32 tensors | independently interleaved DRAM or L1 inputs, one physical device | one rank-preserving row-major interleaved DRAM signal tensor |
+| `dwt` | `[W]` or `[B,1,1,W]`, row-major, FLOAT32 | interleaved DRAM or L1 input, one physical device | two stick-native row-major DRAM tensors; valid length from `dwt_coeff_len` |
+| `idwt` | two equal canonical or stick-native row-major FLOAT32 tensors | independently interleaved DRAM or L1 inputs, one physical device | one stick-native row-major DRAM tensor; valid length is `original_length` |
 | `dwt_2d` | `[H,W]` or `[B,1,H,W]`, standard 32x32 tile layout, FLOAT32 | interleaved DRAM or L1 input, one physical device | four rank-preserving tile-layout interleaved DRAM band tensors |
 | `idwt_2d` | four equal `[Hc,Wc]` or `[B,1,Hc,Wc]` standard-tile FLOAT32 tensors | independently interleaved DRAM or L1 inputs, one physical device | one rank-preserving tile-layout interleaved DRAM image tensor |
 

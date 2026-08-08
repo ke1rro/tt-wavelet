@@ -48,13 +48,14 @@ namespace ttnn::operations::wavelet {
  * ### Logical vs physical size
  *
  * The logical signal @ref length may not be a multiple of @ref stick_width.
- * The remaining slots in the last partial stick are zero-padded in DRAM.
+ * Storage still reserves the complete final stick. Whether unused slots are
+ * initialized is a producer contract; lifting plans never consume them.
  *
  * @code
  * // Example: length = 70, stick_width = 32
  * //
- * // [s0 ... s31] [s32 ... s63] [s64 ... s69 | 0 ... 0]
- * //  stick 0      stick 1      stick 2  (22 padding zeros)
+ * // [s0 ... s31] [s32 ... s63] [s64 ... s69 | unused capacity]
+ * //  stick 0      stick 1      stick 2
  * //
  * // physical slots = 3 * 32 = 96
  * // stick_count()     = 3

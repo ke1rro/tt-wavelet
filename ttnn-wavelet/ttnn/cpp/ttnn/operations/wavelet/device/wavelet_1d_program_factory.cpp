@@ -115,12 +115,10 @@ struct Logical1DShape {
 
 [[nodiscard]] Logical1DShape logical_1d_shape(const Tensor& tensor, const char* tensor_name) {
     const auto& shape = tensor.logical_shape();
-    // Stick-native shape: [S, 32] or [B, 1, S, 32] where S = ceil(N/32).
-    // The logical signal length N is stored in the tensor metadata; here we
-    // reconstruct it from the stick shape since the last dimension is always
-    // kStickWidth.  For tensors produced by output_spec_1d the physical
-    // stick count may exceed the minimum needed (the last stick contains
-    // zero-padded elements), so we report the full capacity.
+    // Stick-native shape: [S, 32] or [B, 1, S, 32]. TensorSpec cannot retain
+    // a separate valid length for this row-major page geometry, so the public
+    // dwt_coeff_len()/original_length contract identifies the valid prefix.
+    // Unused lanes in the final stick are unspecified.
     if (shape.rank() == 2) {
         TT_FATAL(
             shape[1] == kStickWidth,
@@ -992,8 +990,8 @@ void validate_1d_tensor(const Tensor& tensor, const char* tensor_name) {
     TT_FATAL(shape.length > 0, "{} must be non-empty", tensor_name);
     validate_input_memory_config(tensor.memory_config(), tensor_name);
 
-    // With stick-native shapes the physical buffer includes zero-padded tail
-    // elements, so use the physical volume rather than logical length.
+    // Stick-native shapes expose their complete allocated capacity, including
+    // unspecified final-stick lanes, so validate the complete physical volume.
     const uint64_t physical_bytes = static_cast<uint64_t>(tensor.physical_volume()) * sizeof(float);
     TT_FATAL(
         tensor.buffer()->size() >= physical_bytes,
@@ -1461,16 +1459,9 @@ void Lwt1DDeviceOperation::validate_on_program_cache_hit(
 
 Lwt1DDeviceOperation::spec_return_value_t Lwt1DDeviceOperation::compute_output_specs(
     const operation_attributes_t& operation_attributes, const tensor_args_t& tensor_args) {
-    const auto& info = scheme_info(operation_attributes.scheme_id);
     const Logical1DShape input_shape = logical_1d_shape(tensor_args.input, "DWT input");
-    const uint64_t input_length = input_shape.length;
-    const uint64_t coefficient_length = (input_length + info.tap_size - 1) / 2;
-    TT_FATAL(
-        coefficient_length <= std::numeric_limits<uint32_t>::max(),
-        "DWT coefficient length {} exceeds the device uint32 range",
-        coefficient_length);
-    auto spec = output_spec_1d(
-        input_shape, static_cast<uint32_t>(coefficient_length), operation_attributes.output_memory_config);
+    const uint32_t coefficient_length = dwt_coefficient_length(input_shape.length, operation_attributes.scheme_id);
+    auto spec = output_spec_1d(input_shape, coefficient_length, operation_attributes.output_memory_config);
     return {spec, spec};
 }
 

@@ -12,6 +12,11 @@
 
 namespace ttnn {
 
+uint32_t dwt_coeff_len(const uint32_t input_length, const std::string_view wavelet) {
+    return operations::wavelet::dwt_coefficient_length(
+        input_length, operations::wavelet::scheme_id_from_string(wavelet));
+}
+
 std::tuple<Tensor, Tensor> dwt(
     const Tensor& input,
     const std::string_view wavelet,

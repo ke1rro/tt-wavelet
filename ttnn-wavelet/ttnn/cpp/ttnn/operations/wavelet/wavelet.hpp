@@ -5,6 +5,7 @@
 #pragma once
 
 #include <array>
+#include <cstdint>
 #include <optional>
 #include <string_view>
 #include <tuple>
@@ -13,6 +14,8 @@
 #include "ttnn/types.hpp"
 
 namespace ttnn {
+
+[[nodiscard]] uint32_t dwt_coeff_len(uint32_t input_length, std::string_view wavelet);
 
 std::tuple<Tensor, Tensor> dwt(
     const Tensor& input,

@@ -17,6 +17,19 @@
 namespace ttnn::operations::wavelet {
 
 void bind_wavelet_operations(nb::module_& mod) {
+    ttnn::bind_function<"dwt_coeff_len">(
+        mod,
+        R"doc(
+Return the valid coefficient count for one level of ``ttnn.dwt``.
+
+The device tensors returned by ``ttnn.dwt`` use 32-FP32 row-major sticks to
+preserve 128-byte DRAM pages. Their public capacity is rounded up to a multiple
+of 32; only this many values per batch item belong to the transform.
+)doc",
+        &ttnn::dwt_coeff_len,
+        nb::arg("input_length"),
+        nb::arg("wavelet"));
+
     ttnn::bind_function<"dwt">(
         mod,
         R"doc(
@@ -29,8 +42,11 @@ DRAM tensors and preserve the optional batch dimensions.
 schemes and ``boundary_mode`` is one of ``zero``, ``constant``, ``symmetric``,
 ``reflect``, ``periodic``, ``smooth``, ``antisymmetric``, or ``antireflect``.
 
-Returns ``(approximation, detail)``. Both tensors have length
-``(input_length + filter_length - 1) // 2``. When supplied,
+Returns ``(approximation, detail)``. Let
+``C = ttnn.dwt_coeff_len(input.shape[-1], wavelet)``. Each output has
+stick-native shape ``[ceil(C/32), 32]`` or ``[B,1,ceil(C/32),32]`` and a
+128-byte physical page per stick. Only the first ``C`` flattened values per
+batch item are valid; unused final-stick lanes are unspecified. When supplied,
 ``output_tensors`` must contain two non-aliasing tensors with the exact inferred
 specification.
 )doc",
@@ -48,14 +64,17 @@ specification.
 Compute one level of the FP32 1D inverse discrete wavelet transform.
 
 ``approximation`` and ``detail`` must be non-aliasing, equal-shaped row-major
-INTERLEAVED FLOAT32 tensors with shape ``[Wc]`` or ``[B,1,1,Wc]`` in DRAM or L1
-on the same physical device.
+INTERLEAVED FLOAT32 tensors with canonical shape ``[Wc]``/``[B,1,1,Wc]`` or
+stick-native shape ``[S,32]``/``[B,1,S,32]`` in DRAM or L1 on the same device.
 Their placements may differ. The output remains an INTERLEAVED DRAM tensor.
 ``original_length`` restores the exact odd or even logical length and must be
 consistent with the coefficient shape, wavelet, and boundary mode.
 
-Returns one tensor matching the input rank and batch. ``output_tensor`` may provide exact-spec
-preallocated storage and must not alias either input.
+Returns a stick-native tensor with shape ``[ceil(original_length/32),32]``
+or ``[B,1,ceil(original_length/32),32]``. Only the first
+``original_length`` flattened values per batch item are valid; unused lanes
+are unspecified. ``output_tensor`` may provide exact-spec preallocated
+storage and must not alias either input.
 )doc",
         &ttnn::idwt,
         nb::arg("approximation").noconvert(),
