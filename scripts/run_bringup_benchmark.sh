@@ -55,6 +55,15 @@ import sys
 root = pathlib.Path(sys.argv[1]).resolve()
 expected_init = root / "tt-metal" / "ttnn" / "ttnn" / "__init__.py"
 expected_extension = root / "build" / "tt-metal" / "ttnn" / "_ttnn.so"
+expected_tracy = root / "tt-metal" / "tools" / "tracy" / "__init__.py"
+
+import tracy
+
+actual_tracy = pathlib.Path(tracy.__file__).resolve()
+if actual_tracy != expected_tracy:
+    raise RuntimeError(
+        f"tracy was imported from {actual_tracy}, expected {expected_tracy}"
+    )
 
 import ttnn
 
@@ -255,7 +264,7 @@ if [[ $BUILD == true ]]; then
         NEED_SYSTEM_BOOTSTRAP=true
     fi
     if [[ $FORCE_BOOTSTRAP == true || ! -x $PYTHON ]] || \
-        ! "$PYTHON" -c 'import loguru, matplotlib, numpy, pywt, scipy, torch, tqdm' >/dev/null 2>&1; then
+        ! "$PYTHON" -c 'import loguru, matplotlib, numpy, pywt, scipy, torch, tqdm, tracy' >/dev/null 2>&1; then
         NEED_PYTHON_BOOTSTRAP=true
     fi
 

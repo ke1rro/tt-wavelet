@@ -32,7 +32,7 @@ for LIBRARY_ENTRY in "${INHERITED_LIBRARY_ENTRIES[@]}"; do
   INHERITED_LIBRARY_PATH+="${INHERITED_LIBRARY_PATH:+:}$LIBRARY_ENTRY"
 done
 export LD_LIBRARY_PATH="$TT_LIBRARY_PATH${INHERITED_LIBRARY_PATH:+:$INHERITED_LIBRARY_PATH}"
-export PYTHONPATH="$ROOT_DIR/.venv/lib/python3.10/site-packages:$ROOT_DIR/build/lib:$ROOT_DIR/tt-metal/ttnn:$ROOT_DIR"
+export PYTHONPATH="$ROOT_DIR/.venv/lib/python3.10/site-packages:$ROOT_DIR/build/lib:$ROOT_DIR/tt-metal/ttnn:$ROOT_DIR/tt-metal/tools:$ROOT_DIR"
 export CC=clang-20
 export CXX=clang++-20
 unset TT_METAL_SLOW_DISPATCH_MODE
