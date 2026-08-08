@@ -394,8 +394,7 @@ template <typename Scheme>
     };
     LiftingForwardPlan trace = make_forward_lifting_plan<Scheme>(original, 0, 0, boundary_mode);
     const bool length_valid = coefficient_length == trace.output_length ||
-                              (coefficient_length >= trace.output_length &&
-                               coefficient_length % kStickWidth == 0 &&
+                              (coefficient_length >= trace.output_length && coefficient_length % kStickWidth == 0 &&
                                (coefficient_length - trace.output_length) < kStickWidth);
     TT_FATAL(
         length_valid,

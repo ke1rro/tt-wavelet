@@ -42,7 +42,9 @@ if LIFTING_USAGE_DIR.exists():
         sys.path.insert(0, str(LIFTING_USAGE_DIR))
     try:
         import dtypes  # noqa: E402  # type: ignore[import-not-found]
-        from lifting import LiftingScheme  # noqa: E402  # type: ignore[import-not-found]
+        from lifting import (
+            LiftingScheme,
+        )  # noqa: E402  # type: ignore[import-not-found]
 
         LIFTING_AVAILABLE = True
     except ModuleNotFoundError:
@@ -149,14 +151,18 @@ def print_pairwise_mismatches(
     for i, (lhs_val, rhs_val) in enumerate(zip(lhs, rhs)):
         if abs(float(lhs_val) - float(rhs_val)) > tolerance:
             mismatches += 1
-            print(f"{name} coeff {i} differs: lhs={float(lhs_val):.8e} vs rhs={float(rhs_val):.8e}")
+            print(
+                f"{name} coeff {i} differs: lhs={float(lhs_val):.8e} vs rhs={float(rhs_val):.8e}"
+            )
 
     if mismatches == 0:
         print(f"{name}: all coefficients match within tolerance {tolerance}")
     return mismatches
 
 
-def print_error_metrics(reference: Sequence[float], candidate: Sequence[float], name: str) -> None:
+def print_error_metrics(
+    reference: Sequence[float], candidate: Sequence[float], name: str
+) -> None:
     if len(reference) == 0 or len(candidate) == 0:
         print(f"{name} error metrics: skipped (empty sequence)")
         return
@@ -183,10 +189,12 @@ def print_error_metrics(reference: Sequence[float], candidate: Sequence[float], 
     )
 
 
-def run_tt_wavelet(wavelet: str, signal_file: Path, boundary_mode: str) -> dict[str, list[float]]:
+def run_tt_wavelet(
+    wavelet: str, signal_file: Path, boundary_mode: str
+) -> dict[str, list[float]]:
     if not TT_WAVELET_BINARY.exists():
         raise FileNotFoundError(
-            f"TT-wavelet binary not found at {TT_WAVELET_BINARY}. Rebuild with ./update.sh Release lwt"
+            f"TT-wavelet binary not found at {TT_WAVELET_BINARY}. Rebuild with ./build.sh lwt"
         )
 
     command = (
@@ -238,7 +246,7 @@ def run_tt_wavelet_2d(
     if not TT_WAVELET_2D_BINARY.exists():
         raise FileNotFoundError(
             "TT-wavelet 2D device binary not found at "
-            f"{TT_WAVELET_2D_BINARY}. Rebuild with ./update.sh Release lwt_2d"
+            f"{TT_WAVELET_2D_BINARY}. Rebuild with ./build.sh lwt_2d"
         )
     if core_limit <= 0:
         raise ValueError("--tt-cores must be positive")
@@ -271,7 +279,9 @@ def run_tt_wavelet_2d(
             raise ValueError(f"Unable to find 2D device band {band}")
         band_height = int(match.group(1))
         band_width = int(match.group(2))
-        values = [float(value) for value in ast.literal_eval("[" + match.group(3) + "]")]
+        values = [
+            float(value) for value in ast.literal_eval("[" + match.group(3) + "]")
+        ]
         if len(values) != band_height * band_width:
             raise ValueError(
                 f"2D device {band} has {len(values)} values for "
@@ -301,7 +311,9 @@ def extract_coeff_line(output: str, candidate_labels: Sequence[str]) -> list[flo
         logical_length = int(match.group(1))
         return [float(value) for value in parsed[:logical_length]]
 
-    raise ValueError(f"Unable to find coefficient line for labels: {', '.join(candidate_labels)}")
+    raise ValueError(
+        f"Unable to find coefficient line for labels: {', '.join(candidate_labels)}"
+    )
 
 
 def sh_quote(value: str) -> str:
@@ -368,7 +380,9 @@ def is_green_scheme(scheme_path: Path, runtime_limit: int) -> tuple[bool, list[s
     return len(errors) == 0, errors
 
 
-def discover_green_wavelets(schemes_dir: Path, runtime_limit: int) -> tuple[list[str], list[str]]:
+def discover_green_wavelets(
+    schemes_dir: Path, runtime_limit: int
+) -> tuple[list[str], list[str]]:
     if not schemes_dir.exists() or not schemes_dir.is_dir():
         raise FileNotFoundError(f"Schemes directory not found: {schemes_dir}")
 
@@ -396,7 +410,9 @@ def run_single_comparison(args: argparse.Namespace, wavelet: str) -> bool:
     scheme_path = args.schemes_dir / f"{wavelet}.json"
 
     if args.boundary_mode in {"reflect", "antireflect"} and len(signal) <= 1:
-        raise ValueError("reflect and antireflect modes require a signal length greater than one")
+        raise ValueError(
+            "reflect and antireflect modes require a signal length greater than one"
+        )
 
     if not scheme_path.exists():
         raise FileNotFoundError(f"Wavelet scheme file not found: {scheme_path}")
@@ -424,11 +440,17 @@ def run_single_comparison(args: argparse.Namespace, wavelet: str) -> bool:
     print(f"pywt lengths: cA={len(cA_pywt)}, cD={len(cD_pywt)}")
     print()
     if cA_lifting is not None and cD_lifting is not None:
-        print(f"lifting-factorization approximation coefficients: {format_coeffs(cA_lifting)}")
+        print(
+            f"lifting-factorization approximation coefficients: {format_coeffs(cA_lifting)}"
+        )
         print(f"lifting-factorization detail coefficients: {format_coeffs(cD_lifting)}")
-        print(f"lifting-factorization lengths: cA={len(cA_lifting)}, cD={len(cD_lifting)}")
+        print(
+            f"lifting-factorization lengths: cA={len(cA_lifting)}, cD={len(cD_lifting)}"
+        )
     else:
-        print("lifting-factorization skipped: lifting-factorization/usage is not available.")
+        print(
+            "lifting-factorization skipped: lifting-factorization/usage is not available."
+        )
     print()
 
     tt_wavelet = None
@@ -459,7 +481,9 @@ def run_single_comparison(args: argparse.Namespace, wavelet: str) -> bool:
         pywt_vs_lifting_d = print_pairwise_mismatches(
             cD_pywt, cD_lifting, "Detail pywt vs lifting-factorization", args.tolerance
         )
-        print_error_metrics(cA_pywt, cA_lifting, "Approximation pywt -> lifting-factorization")
+        print_error_metrics(
+            cA_pywt, cA_lifting, "Approximation pywt -> lifting-factorization"
+        )
         print_error_metrics(cD_pywt, cD_lifting, "Detail pywt -> lifting-factorization")
         checks_ok = pywt_vs_lifting_a == 0 and pywt_vs_lifting_d == 0
 
@@ -529,7 +553,9 @@ def run_2d_comparison(args: argparse.Namespace, wavelet: str) -> bool:
         )
 
     matrix = [signal[row * width : (row + 1) * width] for row in range(height)]
-    approximation, (horizontal, vertical, diagonal) = dwt2(matrix, wavelet, mode=args.boundary_mode)
+    approximation, (horizontal, vertical, diagonal) = dwt2(
+        matrix, wavelet, mode=args.boundary_mode
+    )
     # TT-wavelet names bands by (vertical result, horizontal result).
     pywt_bands = {
         "LL": approximation.ravel().tolist(),

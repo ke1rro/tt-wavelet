@@ -5,7 +5,6 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TT_METAL_DIR="$ROOT_DIR/tt-metal"
 VENV_DIR="$ROOT_DIR/.venv"
 BUILD_DIR="$ROOT_DIR/build"
-CMAKES_DIR="$ROOT_DIR/cmakes"
 
 log() { printf "[%s] %s\n" "$1" "$2"; }
 
@@ -59,22 +58,6 @@ run_tt_metal_install_deps() {
     log INFO "Running tt-metal/install_dependencies.sh"
   fi
   sudo bash "$TT_METAL_DIR/install_dependencies.sh" "${args[@]}"
-}
-
-apply_cmake_fixes() {
-  local fabric_src="$CMAKES_DIR/CMAKE_FABRIC.txt"
-  local scaleout_src="$CMAKES_DIR/CMAKE_SCALEOUT.txt"
-  local fabric_dst="$TT_METAL_DIR/tt_metal/fabric/CMakeLists.txt"
-  local scaleout_dst="$TT_METAL_DIR/tools/scaleout/CMakeLists.txt"
-
-  [[ -f "$fabric_src" ]] || { log ERROR "$fabric_src missing"; exit 1; }
-  [[ -f "$scaleout_src" ]] || { log ERROR "$scaleout_src missing"; exit 1; }
-
-  log INFO "Patching tt-metal CMake (fabric)"
-  cp "$fabric_src" "$fabric_dst"
-
-  log INFO "Patching tt-metal CMake (scaleout)"
-  cp "$scaleout_src" "$scaleout_dst"
 }
 
 export_tt_env() {
@@ -133,7 +116,6 @@ configure_project() {
     -DCMAKE_CXX_COMPILER=clang++-20 \
     -DBUILD_TT_WAVELET=ON \
     -DENABLE_TRACY:BOOL=ON \
-    -DMETALIUM_INCLUDE_DIRS=ON \
     -DTT_USE_SYSTEM_SFPI:BOOL=OFF \
     -DCMAKE_DISABLE_PRECOMPILE_HEADERS=TRUE \
     -DENABLE_CCACHE=TRUE \

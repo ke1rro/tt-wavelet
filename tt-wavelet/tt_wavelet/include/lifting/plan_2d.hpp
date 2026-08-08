@@ -360,19 +360,18 @@ inline void append_axis_routes(
     for (size_t route_index = 0; route_index < cone.routes.size(); ++route_index) {
         const AxisRouteRequirement& requirement = cone.routes[route_index];
         if (requirement.type == StepType::kSwap) {
-            routes.push_back(
-                Lwt2DRoutePlan{
-                    .axis = axis,
-                    .axis_route_index = route_index,
-                    .type = requirement.type,
-                    .source_slot = slots.even,
-                    .base_slot = slots.odd,
-                    .output_slot = slots.even,
-                    .source = axis_rectangle(axis, requirement.before.even, transverse),
-                    .base = axis_rectangle(axis, requirement.before.odd, transverse),
-                    .output = {},
-                    .in_place = true,
-                });
+            routes.push_back(Lwt2DRoutePlan{
+                .axis = axis,
+                .axis_route_index = route_index,
+                .type = requirement.type,
+                .source_slot = slots.even,
+                .base_slot = slots.odd,
+                .output_slot = slots.even,
+                .source = axis_rectangle(axis, requirement.before.even, transverse),
+                .base = axis_rectangle(axis, requirement.before.odd, transverse),
+                .output = {},
+                .in_place = true,
+            });
             std::swap(slots.even, slots.odd);
             continue;
         }
@@ -395,20 +394,19 @@ inline void append_axis_routes(
         const Lwt2DPlaneSlot base_slot = predict ? slots.odd : update ? slots.even : source_slot;
         const Lwt2DPlaneSlot output_slot =
             predict || update ? (aligned_in_place ? base_slot : slots.free) : source_slot;
-        routes.push_back(
-            Lwt2DRoutePlan{
-                .axis = axis,
-                .axis_route_index = route_index,
-                .type = requirement.type,
-                .source_slot = source_slot,
-                .base_slot = base_slot,
-                .output_slot = output_slot,
-                .source = axis_rectangle(axis, requirement.source, transverse),
-                .base = axis_rectangle(axis, requirement.base, transverse),
-                .output = fused_scale_route ? IndexRectangle{} : axis_rectangle(axis, requirement.output, transverse),
-                .in_place = output_slot == base_slot,
-                .inline_terminal_scale = inline_terminal_scale,
-            });
+        routes.push_back(Lwt2DRoutePlan{
+            .axis = axis,
+            .axis_route_index = route_index,
+            .type = requirement.type,
+            .source_slot = source_slot,
+            .base_slot = base_slot,
+            .output_slot = output_slot,
+            .source = axis_rectangle(axis, requirement.source, transverse),
+            .base = axis_rectangle(axis, requirement.base, transverse),
+            .output = fused_scale_route ? IndexRectangle{} : axis_rectangle(axis, requirement.output, transverse),
+            .in_place = output_slot == base_slot,
+            .inline_terminal_scale = inline_terminal_scale,
+        });
 
         if (!predict && !update) {
             continue;
@@ -841,8 +839,7 @@ enum class AlignmentCostClass : uint8_t {
         begin += count;
     }
     if (inverse && inverse_coordination_penalty_cycles_per_core > 0 && active_core_count > 64) {
-        maximum +=
-            static_cast<uint64_t>(active_core_count - 64) * inverse_coordination_penalty_cycles_per_core;
+        maximum += static_cast<uint64_t>(active_core_count - 64) * inverse_coordination_penalty_cycles_per_core;
     }
     return maximum;
 }

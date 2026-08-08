@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-# SPDX-License-Identifier: Apache-2.0
 """Idempotently register the out-of-tree Wavelet operation in TTNN."""
 
 from __future__ import annotations

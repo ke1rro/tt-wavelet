@@ -242,8 +242,7 @@ template <typename Scheme>
                 output_prefix.string() + ".approximation.f32",
                 crop_stick_output(even, plan.output_length, batch_count));
             write_binary(
-                output_prefix.string() + ".detail.f32",
-                crop_stick_output(odd, plan.output_length, batch_count));
+                output_prefix.string() + ".detail.f32", crop_stick_output(odd, plan.output_length, batch_count));
         }
         return result;
     }

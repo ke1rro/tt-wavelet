@@ -16,14 +16,12 @@ if(BUILD_TT_WAVELET)
 
   set(TT_WAVELET_INCLUDE_DIRS
       ${CMAKE_SOURCE_DIR}/tt-metal
+      ${CMAKE_SOURCE_DIR}/tt-metal/tt_metal
       ${CMAKE_SOURCE_DIR}/tt-metal/tt_metal/common
       ${CMAKE_SOURCE_DIR}/tt-metal/tt_metal/api/tt-metalium
       ${CMAKE_SOURCE_DIR}
       ${CMAKE_CURRENT_SOURCE_DIR})
   function(tt_wavelet_configure_metal_target TARGET_NAME)
-    if(DEFINED METALIUM_INCLUDE_DIRS)
-      target_include_directories(${TARGET_NAME} PRIVATE ${METALIUM_INCLUDE_DIRS})
-    endif()
     target_include_directories(${TARGET_NAME}
                                PRIVATE ${TT_WAVELET_INCLUDE_DIRS})
     target_link_libraries(${TARGET_NAME} PRIVATE Metalium::Metal)

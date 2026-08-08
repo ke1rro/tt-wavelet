@@ -111,39 +111,37 @@ inline void append_axis_routes(
         const AxisRouteRequirement& requirement = cone.routes[inverse_index];
         const size_t forward_index = route_count - inverse_index - 1;
         if (requirement.type == StepType::kSwap) {
-            routes.push_back(
-                Lwt2DRoutePlan{
-                    .axis = axis,
-                    .axis_route_index = forward_index,
-                    .type = requirement.type,
-                    .source_slot = slots.even,
-                    .base_slot = slots.odd,
-                    .output_slot = slots.even,
-                    .source = plan_2d_detail::axis_rectangle(axis, requirement.before.even, transverse),
-                    .base = plan_2d_detail::axis_rectangle(axis, requirement.before.odd, transverse),
-                    .output = {},
-                    .in_place = true,
-                });
+            routes.push_back(Lwt2DRoutePlan{
+                .axis = axis,
+                .axis_route_index = forward_index,
+                .type = requirement.type,
+                .source_slot = slots.even,
+                .base_slot = slots.odd,
+                .output_slot = slots.even,
+                .source = plan_2d_detail::axis_rectangle(axis, requirement.before.even, transverse),
+                .base = plan_2d_detail::axis_rectangle(axis, requirement.before.odd, transverse),
+                .output = {},
+                .in_place = true,
+            });
             std::swap(slots.even, slots.odd);
             continue;
         }
         if (is_scale_step(requirement.type)) {
             const bool even = requirement.type == StepType::kScaleEven;
             const Lwt2DPlaneSlot slot = even ? slots.even : slots.odd;
-            routes.push_back(
-                Lwt2DRoutePlan{
-                    .axis = axis,
-                    .axis_route_index = forward_index,
-                    .type = requirement.type,
-                    .source_slot = slot,
-                    .base_slot = slot,
-                    .output_slot = slot,
-                    .source = plan_2d_detail::axis_rectangle(
-                        axis, even ? requirement.before.even : requirement.before.odd, transverse),
-                    .base = {},
-                    .output = {},
-                    .in_place = true,
-                });
+            routes.push_back(Lwt2DRoutePlan{
+                .axis = axis,
+                .axis_route_index = forward_index,
+                .type = requirement.type,
+                .source_slot = slot,
+                .base_slot = slot,
+                .output_slot = slot,
+                .source = plan_2d_detail::axis_rectangle(
+                    axis, even ? requirement.before.even : requirement.before.odd, transverse),
+                .base = {},
+                .output = {},
+                .in_place = true,
+            });
             continue;
         }
 
@@ -151,19 +149,18 @@ inline void append_axis_routes(
         const Lwt2DPlaneSlot source_slot = predict ? slots.even : slots.odd;
         const Lwt2DPlaneSlot base_slot = predict ? slots.odd : slots.even;
         const Lwt2DPlaneSlot output_slot = slots.free;
-        routes.push_back(
-            Lwt2DRoutePlan{
-                .axis = axis,
-                .axis_route_index = forward_index,
-                .type = requirement.type,
-                .source_slot = source_slot,
-                .base_slot = base_slot,
-                .output_slot = output_slot,
-                .source = plan_2d_detail::axis_rectangle(axis, requirement.source, transverse),
-                .base = plan_2d_detail::axis_rectangle(axis, requirement.base, transverse),
-                .output = plan_2d_detail::axis_rectangle(axis, requirement.output, transverse),
-                .in_place = false,
-            });
+        routes.push_back(Lwt2DRoutePlan{
+            .axis = axis,
+            .axis_route_index = forward_index,
+            .type = requirement.type,
+            .source_slot = source_slot,
+            .base_slot = base_slot,
+            .output_slot = output_slot,
+            .source = plan_2d_detail::axis_rectangle(axis, requirement.source, transverse),
+            .base = plan_2d_detail::axis_rectangle(axis, requirement.base, transverse),
+            .output = plan_2d_detail::axis_rectangle(axis, requirement.output, transverse),
+            .in_place = false,
+        });
         if (predict) {
             slots.free = slots.odd;
             slots.odd = output_slot;

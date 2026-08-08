@@ -365,8 +365,7 @@ ALWI void write_interleaved_output(
                     pad_y,
                     pad_x,
                     scratch_addr);
-                noc_async_write(
-                    scratch_addr, output.get_noc_addr(output_tile_base + destination_tile), kTileBytes);
+                noc_async_write(scratch_addr, output.get_noc_addr(output_tile_base + destination_tile), kTileBytes);
             } else {
                 for (uint32_t y = std::max(tile_y, final_y_begin); y < y_end; ++y) {
                     const uint32_t padded_y = y + pad_y;

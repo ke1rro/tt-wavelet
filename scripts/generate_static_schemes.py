@@ -11,7 +11,9 @@ from typing import Any
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
 DEFAULT_JSON_DIR = REPO_ROOT / "wavelets"
-DEFAULT_SCHEME_DIR = REPO_ROOT / "tt-wavelet" / "tt_wavelet" / "include" / "schemes" / "generated"
+DEFAULT_SCHEME_DIR = (
+    REPO_ROOT / "tt-wavelet" / "tt_wavelet" / "include" / "schemes" / "generated"
+)
 DEFAULT_REGISTRY = DEFAULT_SCHEME_DIR / "registry.hpp"
 
 STEP_TYPES = {
@@ -97,7 +99,9 @@ def load_scheme(path: Path) -> Scheme:
             raise ValueError(f"{path.name}: {kind} must have exactly one coefficient")
         if kind == "swap" and coeff_bits:
             raise ValueError(f"{path.name}: swap must not have coefficients")
-        steps.append(Step(kind=kind, shift=int(raw_step["shift"]), coeff_bits=coeff_bits))
+        steps.append(
+            Step(kind=kind, shift=int(raw_step["shift"]), coeff_bits=coeff_bits)
+        )
 
     return Scheme(
         name=name,
@@ -212,7 +216,8 @@ def render_registry(schemes: list[Scheme]) -> str:
     )
 
     scheme_id_checks = "\n".join(
-        f'    if (name == "{scheme.name}") return SchemeId::k{scheme.ident};' for scheme in schemes
+        f'    if (name == "{scheme.name}") return SchemeId::k{scheme.ident};'
+        for scheme in schemes
     )
     dispatch_cases = "\n".join(
         (
@@ -313,7 +318,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"ERROR: no JSON schemes found in {args.json_dir}", file=sys.stderr)
         return 1
 
-    schemes = sorted((load_scheme(path) for path in json_files), key=lambda scheme: scheme.name)
+    schemes = sorted(
+        (load_scheme(path) for path in json_files), key=lambda scheme: scheme.name
+    )
     if len({scheme.ident for scheme in schemes}) != len(schemes):
         raise RuntimeError("Generated scheme identifiers are not unique")
 

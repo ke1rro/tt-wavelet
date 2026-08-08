@@ -575,14 +575,7 @@ ALWI void split_macro_tile(
     const int32_t raw_y_begin = 2 * static_cast<int32_t>(tile_y) - static_cast<int32_t>(pad_y);
     const int32_t raw_x_begin = 2 * static_cast<int32_t>(tile_x) - static_cast<int32_t>(pad_x);
     const SplitSourceTiles<Mode> source_tiles = stage_split_source_tiles<Interior, Mode>(
-        input,
-        input_height,
-        input_width,
-        input_tile_columns,
-        input_tile_base,
-        raw_y_begin,
-        raw_x_begin,
-        scratch_addr);
+        input, input_height, input_width, input_tile_columns, input_tile_base, raw_y_begin, raw_x_begin, scratch_addr);
 
     if constexpr (Interior) {
         bool complete = true;

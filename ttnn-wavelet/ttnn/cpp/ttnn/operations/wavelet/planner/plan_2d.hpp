@@ -843,8 +843,7 @@ enum class AlignmentCostClass : uint8_t {
         begin += count;
     }
     if (inverse && inverse_coordination_penalty_cycles_per_core > 0 && active_core_count > 64) {
-        maximum +=
-            static_cast<uint64_t>(active_core_count - 64) * inverse_coordination_penalty_cycles_per_core;
+        maximum += static_cast<uint64_t>(active_core_count - 64) * inverse_coordination_penalty_cycles_per_core;
     }
     return maximum;
 }

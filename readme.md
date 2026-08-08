@@ -1,13 +1,6 @@
 # tt-wavelet
 
-`tt-wavelet` implements one-level FP32 lifting wavelet transforms on Tenstorrent Wormhole B0 and Blackhole. Production LWT and ILWT use dependency-local three-slot L1 workspaces, native `32x16` compute pages, and direct terminal DRAM output. All 106 generated schemes are compiled through the local pinned TT-Metal/SFPI toolchain.
-
-The separable 2D path uses an exact product-cone planner, a mandatory
-`32x32` tile-padding contract, full-tile SFPU stencils, and one fused
-worker-local reader/compute/writer program with a five-plane L1 workspace.
-It supports all eight boundary modes, separate LL/LH/HL/HH outputs, reusable
-prepared launches, multi-core tile chunks, a fused tiled polyphase split, and
-full-tile final-band writes.
+`tt-wavelet` implements one-level FP32 lifting wavelet transforms on Tenstorrent Wormhole  and Blackhole.
 
 ## Setup
 
@@ -19,74 +12,52 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-The supported toolchain includes clang/clang++ 20, Ninja, CMake 3.20 or newer, and the TT-Metal revision in the `tt-metal` submodule.
-
 ## Build
 
-Use the full build for bootstrap or after changing TT-Metal:
+`build.sh` uses the TT-Metal revision pinned in the `tt-metal` submodule and
+builds the complete local stack:
+
+- TT-Metal and the TTNN Python bindings;
+- TTNN-Wavelet, linked into TT-Metal from this repository's single
+  `ttnn-wavelet` source tree; and
+- the standalone `lwt`, `ilwt`, `lwt_2d`, `ilwt_2d`, and benchmark binaries.
+
+On a new machine, install TT-Metal's system and Python dependencies first:
 
 ```bash
-unset ARCH_NAME
-./build.sh Release
+./build.sh --bootstrap
 ```
 
-For ordinary tt-wavelet changes:
+For a normal incremental build:
 
 ```bash
-unset ARCH_NAME
-./update.sh Release lwt
+./build.sh
+```
+
+To rebuild one target after a focused source change, pass its name:
+
+```bash
+./build.sh lwt
+./build.sh --target ttnn --jobs $(nproc)
+```
+
+Supported targets are:
+
+- `ttnn` – TTNN runtime, Python bindings, and the linked TTNN-Wavelet operation.
+- `lwt` – standalone forward 1D lifting wavelet transform.
+- `ilwt` – standalone inverse 1D lifting wavelet transform.
+- `lwt_2d` – standalone forward 2D lifting wavelet transform.
+- `ilwt_2d` – standalone inverse 2D lifting wavelet transform.
+- `tt_wavelet_benchmark_runner` – standalone benchmark runner used by the benchmark scripts.
+
+```bash
+./build.sh --jobs 16
+./build.sh --type Debug
+```
+
+After a build, enable the local runtime before running a binary or importing
+TTNN:
+
+```bash
 source ./scripts/set_env.sh
 ```
-
-`update.sh` reconfigures the project, reapplies the repository's TT-Metal CMake fixes, and rebuilds only the requested tt-wavelet target. A successful host build does not compile SFPI; run a device command after kernel changes.
-
-## Run
-
-```bash
-./build/lwt db7 signal.txt
-./build/lwt --boundary-mode periodic db7 signal.txt
-./build/lwt --inverse db7 signal.txt
-./build/lwt --benchmark --repeats 20 --warmup-runs 5 --length 5000000 db7
-```
-
-The default boundary mode is `symmetric`. Other supported modes are `zero`, `constant`, `periodic`, `antisymmetric`, `smooth`, `reflect`, and `antireflect`.
-
-The architecture is detected by TT-Metal. Do not set `ARCH_NAME` on hardware. For controlled layout A/B tests only:
-
-```bash
-export TT_WAVELET_LWT_WORKSPACE_LAYOUT=auto
-export TT_WAVELET_LWT_WORKSPACE_LAYOUT=row-major
-export TT_WAVELET_LWT_WORKSPACE_LAYOUT=tile-native
-```
-
-## Validate
-
-Activate the repository virtual environment before Python validation:
-
-```bash
-source .venv/bin/activate
-source ./scripts/set_env.sh
-python3 compare.py --wavelet db1 --tolerance 1e-5
-python3 compare.py --wavelet db7 --tolerance 1e-3
-python3 scripts/validate_lwt_boundaries.py
-python3 scripts/validate_ilwt.py
-python3 scripts/validate_ilwt_stability.py
-python3 scripts/validate_synthetic_k17.py
-python3 scripts/validate_ilwt_geometry.py
-python3 scripts/check_ncrisc_elf_size.py --architecture wormhole_b0
-python3 compare.py --wavelet db1 --shape 4 5 --signal-file signal.txt
-python3 compare_timings.py --backend tt-wavelet --wavelets db7 \
-  --shapes 256x256 512x512 --tt-cores 64
-.venv/bin/python scripts/validate_lwt_2d_extension_modes.py \
-  --schemes db1 --modes symmetric --shape 33x33 --input-type ramp
-```
-
-## Documentation
-
-- [Production LWT and ILWT](docs/LWT.md)
-- [Scheduling, layouts, and L1 accounting](docs/LWT_MEMORY_MODES.md)
-- [Native narrow-tile workspace](docs/LWT_TILE_NATIVE_OPTIMIZATION.md)
-- [Horizontal SFPU stencil](docs/HORIZONTAL_STENCIL.md)
-- [Vertical SFPU stencil](docs/VERTICAL_STENCIL.md)
-- [2D LWT architecture and status](docs/2D_LWT.md)
-- [Definitions](docs/DEFINITIONS.md)
