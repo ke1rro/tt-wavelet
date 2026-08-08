@@ -4,9 +4,15 @@
 
 #include <cstdint>
 
+#include "../primitives/noc_local.hpp"
 #include "../primitives/stick_cache.hpp"
 #include "../primitives/workspace_layout.hpp"
+#include "api/core_local_mem.h"
+#include "api/dataflow/circular_buffer.h"
 #include "api/dataflow/dataflow_api.h"
+#include "api/dataflow/endpoints.h"
+#include "api/dataflow/noc.h"
+#include "api/tensor/noc_traits.h"
 #include "ttnn/operations/wavelet/common/boundary.hpp"
 #include "ttnn/operations/wavelet/device/protocol/lwt_config.hpp"
 #include "ttnn/operations/wavelet/planner/step.hpp"
@@ -92,32 +98,63 @@ ALWI void read_aligned_source_group(
     const uint32_t src_tiles01_addr,
     const uint32_t src_tiles23_addr) {
     const uint32_t physical_group_addr = source_addr + logical_start * sizeof(float);
-    noc_async_read(get_noc_addr(physical_group_addr), src_tiles01_addr, kNarrowTileBytes);
-    noc_async_read(
-        get_noc_addr(physical_group_addr + kNarrowTileBytes), src_tiles01_addr + kNarrowTileBytes, kNarrowTileBytes);
-    noc_async_read(get_noc_addr(physical_group_addr + 2 * kNarrowTileBytes), src_tiles23_addr, kNarrowTileBytes);
+    Noc noc;
+    UnicastEndpoint local_endpoint;
+    const auto local_coordinates = ttnn::operations::wavelet::kernels::primitives::local_noc_coordinates(noc);
+    noc.async_read(
+        local_endpoint,
+        CoreLocalMem<uint32_t>(src_tiles01_addr),
+        kNarrowTileBytes,
+        ttnn::operations::wavelet::kernels::primitives::local_noc_source(local_coordinates, physical_group_addr),
+        {});
+    noc.async_read(
+        local_endpoint,
+        CoreLocalMem<uint32_t>(src_tiles01_addr + kNarrowTileBytes),
+        kNarrowTileBytes,
+        ttnn::operations::wavelet::kernels::primitives::local_noc_source(
+            local_coordinates, physical_group_addr + kNarrowTileBytes),
+        {});
+    noc.async_read(
+        local_endpoint,
+        CoreLocalMem<uint32_t>(src_tiles23_addr),
+        kNarrowTileBytes,
+        ttnn::operations::wavelet::kernels::primitives::local_noc_source(
+            local_coordinates, physical_group_addr + 2 * kNarrowTileBytes),
+        {});
 
     // The fourth source tile is the first tile shifted up by one logical
     // 48-element row.  Its final row comes from the following native group.
-    noc_async_read(
-        get_noc_addr(physical_group_addr + kBlockElements * sizeof(float)),
-        src_tiles23_addr + kNarrowTileBytes,
-        kNarrowTileBytes - kBlockElements * sizeof(float));
-    noc_async_read(
-        get_noc_addr(physical_group_addr + kGroupOutputBytes),
-        src_tiles23_addr + 2 * kNarrowTileBytes - kBlockElements * sizeof(float),
-        kBlockElements * sizeof(float));
+    noc.async_read(
+        local_endpoint,
+        CoreLocalMem<uint32_t>(src_tiles23_addr + kNarrowTileBytes),
+        kNarrowTileBytes - kBlockElements * sizeof(float),
+        ttnn::operations::wavelet::kernels::primitives::local_noc_source(
+            local_coordinates, physical_group_addr + kBlockElements * sizeof(float)),
+        {});
+    noc.async_read(
+        local_endpoint,
+        CoreLocalMem<uint32_t>(src_tiles23_addr + 2 * kNarrowTileBytes - kBlockElements * sizeof(float)),
+        kBlockElements * sizeof(float),
+        ttnn::operations::wavelet::kernels::primitives::local_noc_source(
+            local_coordinates, physical_group_addr + kGroupOutputBytes),
+        {});
 }
 
 ALWI void read_aligned_output_group(
     const uint32_t source_addr, const uint32_t logical_start, const uint32_t narrow_tiles_addr) {
     const uint32_t physical_group_addr = source_addr + logical_start * sizeof(float);
+    Noc noc;
+    UnicastEndpoint local_endpoint;
+    const auto local_coordinates = ttnn::operations::wavelet::kernels::primitives::local_noc_coordinates(noc);
 #pragma GCC unroll 3
     for (uint32_t block = 0; block < kOutputBlocksPerRow; ++block) {
-        noc_async_read(
-            get_noc_addr(physical_group_addr + block * kNarrowTileBytes),
-            narrow_tiles_addr + block * kNarrowTileBytes,
-            kNarrowTileBytes);
+        noc.async_read(
+            local_endpoint,
+            CoreLocalMem<uint32_t>(narrow_tiles_addr + block * kNarrowTileBytes),
+            kNarrowTileBytes,
+            ttnn::operations::wavelet::kernels::primitives::local_noc_source(
+                local_coordinates, physical_group_addr + block * kNarrowTileBytes),
+            {});
     }
 }
 
@@ -126,31 +163,51 @@ ALWI void read_row_major_source_group(
     const uint32_t logical_start,
     const uint32_t src_tiles01_addr,
     const uint32_t src_tiles23_addr) {
-    noc_async_read_one_packet_set_state(
-        get_noc_addr(source_addr), ttnn::operations::wavelet::device_protocol::kLwtHalfStickBytes);
+    Noc noc;
+    UnicastEndpoint local_endpoint;
+    const auto local_coordinates = ttnn::operations::wavelet::kernels::primitives::local_noc_coordinates(noc);
+    auto local_source =
+        ttnn::operations::wavelet::kernels::primitives::local_noc_source(local_coordinates, source_addr);
+    noc.set_async_read_state<NocOptions::DEFAULT, NOC_MAX_BURST_SIZE>(
+        local_endpoint, ttnn::operations::wavelet::device_protocol::kLwtHalfStickBytes, local_source);
     for (uint32_t block = 0; block < 4; ++block) {
         const uint32_t destination_tile_addr =
             block < 2 ? src_tiles01_addr + block * kNarrowTileBytes : src_tiles23_addr + (block - 2) * kNarrowTileBytes;
         for (uint32_t row = 0; row < kRowsPerGroup; ++row) {
             const uint32_t source_index = logical_start + (row * kOutputBlocksPerRow + block) * kBlockElements;
-            noc_async_read_one_packet_with_state(
-                source_addr + source_index * sizeof(float),
-                destination_tile_addr + row * ttnn::operations::wavelet::device_protocol::kLwtHalfStickBytes);
+            local_source.addr = source_addr + source_index * sizeof(float);
+            noc.async_read_with_state<NocOptions::DEFAULT, NOC_MAX_BURST_SIZE>(
+                local_endpoint,
+                CoreLocalMem<uint32_t>(
+                    destination_tile_addr + row * ttnn::operations::wavelet::device_protocol::kLwtHalfStickBytes),
+                ttnn::operations::wavelet::device_protocol::kLwtHalfStickBytes,
+                local_source,
+                {});
         }
     }
 }
 
 ALWI void read_row_major_output_group(
     const uint32_t source_addr, const uint32_t logical_start, const uint32_t narrow_tiles_addr) {
-    noc_async_read_one_packet_set_state(
-        get_noc_addr(source_addr), ttnn::operations::wavelet::device_protocol::kLwtHalfStickBytes);
+    Noc noc;
+    UnicastEndpoint local_endpoint;
+    const auto local_coordinates = ttnn::operations::wavelet::kernels::primitives::local_noc_coordinates(noc);
+    auto local_source =
+        ttnn::operations::wavelet::kernels::primitives::local_noc_source(local_coordinates, source_addr);
+    noc.set_async_read_state<NocOptions::DEFAULT, NOC_MAX_BURST_SIZE>(
+        local_endpoint, ttnn::operations::wavelet::device_protocol::kLwtHalfStickBytes, local_source);
     for (uint32_t block = 0; block < kOutputBlocksPerRow; ++block) {
         const uint32_t destination_tile_addr = narrow_tiles_addr + block * kNarrowTileBytes;
         for (uint32_t row = 0; row < kRowsPerGroup; ++row) {
             const uint32_t source_index = logical_start + (row * kOutputBlocksPerRow + block) * kBlockElements;
-            noc_async_read_one_packet_with_state(
-                source_addr + source_index * sizeof(float),
-                destination_tile_addr + row * ttnn::operations::wavelet::device_protocol::kLwtHalfStickBytes);
+            local_source.addr = source_addr + source_index * sizeof(float);
+            noc.async_read_with_state<NocOptions::DEFAULT, NOC_MAX_BURST_SIZE>(
+                local_endpoint,
+                CoreLocalMem<uint32_t>(
+                    destination_tile_addr + row * ttnn::operations::wavelet::device_protocol::kLwtHalfStickBytes),
+                ttnn::operations::wavelet::device_protocol::kLwtHalfStickBytes,
+                local_source,
+                {});
         }
     }
 }
@@ -160,15 +217,20 @@ ALWI const uint32_t* load_config_page(
     const ConfigAccessor& config, const uint32_t config_addr, const uint32_t cb_config, const uint32_t page_index) {
     const auto page_accessor =
         TensorAccessor(config, config_addr, ttnn::operations::wavelet::device_protocol::kRouteConfigPageBytes);
-    cb_reserve_back(cb_config, 1);
-    noc_async_read(
-        page_accessor.get_noc_addr(page_index),
-        get_write_ptr(cb_config),
-        ttnn::operations::wavelet::device_protocol::kRouteConfigPageBytes);
-    noc_async_read_barrier();
-    cb_push_back(cb_config, 1);
-    cb_wait_front(cb_config, 1);
-    return reinterpret_cast<const uint32_t*>(get_read_ptr(cb_config));
+    CircularBuffer config_buffer(cb_config);
+    Noc noc;
+
+    config_buffer.reserve_back(1);
+    noc.async_read(
+        page_accessor,
+        config_buffer,
+        ttnn::operations::wavelet::device_protocol::kRouteConfigPageBytes,
+        {.page_id = page_index},
+        {});
+    noc.async_read_barrier();
+    config_buffer.push_back(1);
+    config_buffer.wait_front(1);
+    return reinterpret_cast<const uint32_t*>(config_buffer.get_read_ptr());
 }
 
 template <ttnn::operations::wavelet::BoundaryMode Boundary, bool TileNative, typename InputAccessor>
@@ -421,16 +483,20 @@ ALWI void emit_predict_update_tiles(
     const uint32_t tile_mirror_offset,
     const bool source_tile_mirror,
     const bool base_tile_mirror) {
+    CircularBuffer source0_buffer(cb_src_tile0);
+    CircularBuffer source1_buffer(cb_src_tile1);
+    CircularBuffer base_buffer(cb_base_tile);
+    Noc noc;
     const auto* src = reinterpret_cast<volatile tt_l1_ptr float*>(source_addr);
     const auto* base = reinterpret_cast<volatile tt_l1_ptr float*>(base_addr);
 
     for (uint32_t group = 0; group < group_count; ++group) {
         const uint32_t group_base = group * kGroupOutputElements;
         bool needs_read_barrier = false;
-        cb_reserve_back(cb_src_tile0, 2);
-        auto* src_tiles01 = reinterpret_cast<float*>(get_write_ptr(cb_src_tile0));
-        cb_reserve_back(cb_src_tile1, 2);
-        auto* src_tiles23 = reinterpret_cast<float*>(get_write_ptr(cb_src_tile1));
+        source0_buffer.reserve_back(2);
+        auto* src_tiles01 = reinterpret_cast<float*>(source0_buffer.get_write_ptr());
+        source1_buffer.reserve_back(2);
+        auto* src_tiles23 = reinterpret_cast<float*>(source1_buffer.get_write_ptr());
 
         bool source_is_dense = group_base >= source_left_pad;
         uint32_t source_begin = 0;
@@ -442,7 +508,7 @@ ALWI void emit_predict_update_tiles(
         if constexpr (TileNative) {
             if (source_is_dense && source_begin % kGroupOutputElements == 0) {
                 read_aligned_source_group(
-                    source_addr, source_begin, get_write_ptr(cb_src_tile0), get_write_ptr(cb_src_tile1));
+                    source_addr, source_begin, source0_buffer.get_write_ptr(), source1_buffer.get_write_ptr());
                 needs_read_barrier = true;
             } else if (source_is_dense) {
                 fill_source_narrow_tiles<false>(
@@ -458,8 +524,8 @@ ALWI void emit_predict_update_tiles(
                     read_aligned_source_group(
                         source_addr + tile_mirror_offset,
                         source_begin,
-                        get_write_ptr(cb_src_tile0),
-                        get_write_ptr(cb_src_tile1));
+                        source0_buffer.get_write_ptr(),
+                        source1_buffer.get_write_ptr());
                     loaded_from_tile_mirror = true;
                     needs_read_barrier = true;
                 }
@@ -468,7 +534,7 @@ ALWI void emit_predict_update_tiles(
                 if constexpr (RowMajorNocStaging) {
                     if (source_begin % kNocL1ReadAlignmentElements == 0) {
                         read_row_major_source_group(
-                            source_addr, source_begin, get_write_ptr(cb_src_tile0), get_write_ptr(cb_src_tile1));
+                            source_addr, source_begin, source0_buffer.get_write_ptr(), source1_buffer.get_write_ptr());
                         needs_read_barrier = true;
                     } else {
                         fill_source_row_major<false>(
@@ -484,14 +550,14 @@ ALWI void emit_predict_update_tiles(
                 src, src_tiles01, src_tiles23, source_end, source_offset, source_left_pad, group_base);
         }
 
-        cb_reserve_back(cb_base_tile, 3);
-        auto* base_tiles = reinterpret_cast<float*>(get_write_ptr(cb_base_tile));
+        base_buffer.reserve_back(3);
+        auto* base_tiles = reinterpret_cast<float*>(base_buffer.get_write_ptr());
         const bool base_is_dense = static_cast<uint64_t>(group_base) + kGroupOutputElements <= output_length &&
                                    static_cast<uint64_t>(base_offset) + group_base + kGroupOutputElements <= base_end;
         const uint32_t base_begin = base_offset + group_base;
         if constexpr (TileNative) {
             if (base_is_dense && base_begin % kGroupOutputElements == 0) {
-                read_aligned_output_group(base_addr, base_begin, get_write_ptr(cb_base_tile));
+                read_aligned_output_group(base_addr, base_begin, base_buffer.get_write_ptr());
                 needs_read_barrier = true;
             } else if (base_is_dense) {
                 fill_output_narrow_tiles<false>(base, base_tiles, base_end, base_offset, output_length, group_base);
@@ -502,7 +568,7 @@ ALWI void emit_predict_update_tiles(
             bool loaded_from_tile_mirror = false;
             if constexpr (HybridTileMirror) {
                 if (base_tile_mirror && base_begin % kGroupOutputElements == 0) {
-                    read_aligned_output_group(base_addr + tile_mirror_offset, base_begin, get_write_ptr(cb_base_tile));
+                    read_aligned_output_group(base_addr + tile_mirror_offset, base_begin, base_buffer.get_write_ptr());
                     loaded_from_tile_mirror = true;
                     needs_read_barrier = true;
                 }
@@ -510,7 +576,7 @@ ALWI void emit_predict_update_tiles(
             if (!loaded_from_tile_mirror) {
                 if constexpr (RowMajorNocStaging) {
                     if (base_begin % kNocL1ReadAlignmentElements == 0) {
-                        read_row_major_output_group(base_addr, base_begin, get_write_ptr(cb_base_tile));
+                        read_row_major_output_group(base_addr, base_begin, base_buffer.get_write_ptr());
                         needs_read_barrier = true;
                     } else {
                         fill_output_row_major<false>(
@@ -524,12 +590,12 @@ ALWI void emit_predict_update_tiles(
             fill_output_row_major<true>(base, base_tiles, base_end, base_offset, output_length, group_base);
         }
         if (needs_read_barrier) {
-            noc_async_read_barrier();
+            noc.async_read_barrier();
         }
 
-        cb_push_back(cb_src_tile0, 2);
-        cb_push_back(cb_src_tile1, 2);
-        cb_push_back(cb_base_tile, 3);
+        source0_buffer.push_back(2);
+        source1_buffer.push_back(2);
+        base_buffer.push_back(3);
     }
 }
 
@@ -543,20 +609,22 @@ ALWI void emit_scale_tiles(
     const uint32_t group_count,
     const uint32_t tile_mirror_offset,
     const bool source_tile_mirror) {
+    CircularBuffer scale_buffer(cb_scale_tile);
+    Noc noc;
     const auto* src = reinterpret_cast<volatile tt_l1_ptr float*>(source_addr);
 
     for (uint32_t group = 0; group < group_count; ++group) {
         const uint32_t group_base = group * kGroupOutputElements;
-        cb_reserve_back(cb_scale_tile, 3);
-        auto* scale_tiles = reinterpret_cast<float*>(get_write_ptr(cb_scale_tile));
+        scale_buffer.reserve_back(3);
+        auto* scale_tiles = reinterpret_cast<float*>(scale_buffer.get_write_ptr());
         const bool source_is_dense =
             static_cast<uint64_t>(group_base) + kGroupOutputElements <= output_length &&
             static_cast<uint64_t>(source_offset) + group_base + kGroupOutputElements <= source_end;
         const uint32_t source_begin = source_offset + group_base;
         if constexpr (TileNative) {
             if (source_is_dense && source_begin % kGroupOutputElements == 0) {
-                read_aligned_output_group(source_addr, source_begin, get_write_ptr(cb_scale_tile));
-                noc_async_read_barrier();
+                read_aligned_output_group(source_addr, source_begin, scale_buffer.get_write_ptr());
+                noc.async_read_barrier();
             } else if (source_is_dense) {
                 fill_output_narrow_tiles<false>(src, scale_tiles, source_end, source_offset, output_length, group_base);
             } else {
@@ -567,16 +635,16 @@ ALWI void emit_scale_tiles(
             if constexpr (HybridTileMirror) {
                 if (source_tile_mirror && source_begin % kGroupOutputElements == 0) {
                     read_aligned_output_group(
-                        source_addr + tile_mirror_offset, source_begin, get_write_ptr(cb_scale_tile));
-                    noc_async_read_barrier();
+                        source_addr + tile_mirror_offset, source_begin, scale_buffer.get_write_ptr());
+                    noc.async_read_barrier();
                     loaded_from_tile_mirror = true;
                 }
             }
             if (!loaded_from_tile_mirror) {
                 if constexpr (RowMajorNocStaging) {
                     if (source_begin % kNocL1ReadAlignmentElements == 0) {
-                        read_row_major_output_group(source_addr, source_begin, get_write_ptr(cb_scale_tile));
-                        noc_async_read_barrier();
+                        read_row_major_output_group(source_addr, source_begin, scale_buffer.get_write_ptr());
+                        noc.async_read_barrier();
                     } else {
                         fill_output_row_major<false>(
                             src, scale_tiles, source_end, source_offset, output_length, group_base);
@@ -589,7 +657,7 @@ ALWI void emit_scale_tiles(
         } else {
             fill_output_row_major<true>(src, scale_tiles, source_end, source_offset, output_length, group_base);
         }
-        cb_push_back(cb_scale_tile, 3);
+        scale_buffer.push_back(3);
     }
 }
 
@@ -632,9 +700,11 @@ void kernel_main() {
     constexpr auto input1_args = TensorAccessorArgs<input0_args.next_compile_time_args_offset()>();
 
     const auto input0 = TensorAccessor(input0_args, input0_addr, input_page_size);
-    const uint32_t workspace_a_addr = get_write_ptr(cb_workspace_a);
-    const uint32_t workspace_b_addr = get_write_ptr(cb_workspace_b);
-    const uint32_t workspace_scratch_addr = get_write_ptr(cb_workspace_scratch);
+    CircularBuffer config_buffer(cb_config);
+    CircularBuffer sync_buffer(cb_sync);
+    const uint32_t workspace_a_addr = CircularBuffer(cb_workspace_a).get_write_ptr();
+    const uint32_t workspace_b_addr = CircularBuffer(cb_workspace_b).get_write_ptr();
+    const uint32_t workspace_scratch_addr = CircularBuffer(cb_workspace_scratch).get_write_ptr();
     const uint32_t initial_even_addr =
         resolve_workspace_slot(initial_even_slot, workspace_a_addr, workspace_b_addr, workspace_scratch_addr);
     const uint32_t initial_odd_addr =
@@ -643,8 +713,8 @@ void kernel_main() {
     bool first_local_route = true;
     for (uint32_t local_chunk = 0; local_chunk < chunk_count; ++local_chunk) {
         if (!first_local_route) {
-            cb_wait_front(cb_sync, 1);
-            cb_pop_front(cb_sync, 1);
+            sync_buffer.wait_front(1);
+            sync_buffer.pop_front(1);
         }
 
         const uint32_t global_work_item = chunk_begin + local_chunk;
@@ -661,7 +731,7 @@ void kernel_main() {
                 chunk[ttnn::operations::wavelet::device_protocol::kIlwtApproximationLength];
             const uint32_t detail_begin = chunk[ttnn::operations::wavelet::device_protocol::kIlwtDetailBegin];
             const uint32_t detail_length = chunk[ttnn::operations::wavelet::device_protocol::kIlwtDetailLength];
-            cb_pop_front(cb_config, 1);
+            config_buffer.pop_front(1);
             initialize_inverse_stream<tile_native_workspace>(
                 input0,
                 coefficient_length,
@@ -688,7 +758,7 @@ void kernel_main() {
                 chunk[ttnn::operations::wavelet::device_protocol::kLwtInitialEvenLength];
             const uint32_t initial_odd_begin = chunk[ttnn::operations::wavelet::device_protocol::kLwtInitialOddBegin];
             const uint32_t initial_odd_length = chunk[ttnn::operations::wavelet::device_protocol::kLwtInitialOddLength];
-            cb_pop_front(cb_config, 1);
+            config_buffer.pop_front(1);
             initialize_lwt_streams<boundary_mode, tile_native_workspace>(
                 input0,
                 initial_even_addr,
@@ -706,8 +776,8 @@ void kernel_main() {
 
         for (uint32_t route_index = 0; route_index < route_count; ++route_index) {
             if (route_index > 0) {
-                cb_wait_front(cb_sync, 1);
-                cb_pop_front(cb_sync, 1);
+                sync_buffer.wait_front(1);
+                sync_buffer.pop_front(1);
             }
             const uint32_t config_index = global_chunk * route_count + route_index;
             const uint32_t* route = load_config_page(config_args, route_config_addr, cb_config, config_index);
@@ -763,7 +833,7 @@ void kernel_main() {
                     tile_mirror_offset,
                     source_tile_mirror);
             }
-            cb_pop_front(cb_config, 1);
+            config_buffer.pop_front(1);
             first_local_route = false;
         }
     }

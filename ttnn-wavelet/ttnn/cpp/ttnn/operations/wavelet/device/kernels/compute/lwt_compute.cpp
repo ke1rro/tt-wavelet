@@ -15,13 +15,16 @@
 #include <array>
 #include <cstdint>
 
+// clang-format off
 #include "api/compute/common.h"
 #include "api/compute/eltwise_unary/eltwise_unary.h"
 #include "api/compute/tile_move_copy.h"
+#include "api/dataflow/circular_buffer.h"
 #include "ttnn/operations/wavelet/device/protocol/lwt_config.hpp"
 #include "ttnn/operations/wavelet/planner/static_scheme.hpp"
 #include "../sfpi/horizontal_stencil_sfpi.h"
 #include WAVELET_1D_ACTIVE_SCHEME_HEADER
+// clang-format on
 
 #ifndef LWT_INLINE_TERMINAL_SCALE
 #define LWT_INLINE_TERMINAL_SCALE 0
@@ -177,28 +180,32 @@ inline void run_predict_update_step(
     const uint32_t output_group_count) {
     static_assert(K > 0, "Predict/update steps must have at least one coefficient");
     static_assert(K <= device_protocol::kStepCoeffCapacity, "Step coefficient count exceeds device capacity");
+    CircularBuffer input0_buffer(cb_input0);
+    CircularBuffer input1_buffer(cb_input1);
+    CircularBuffer base_buffer(cb_base);
+    CircularBuffer output_buffer(cb_output);
 
     for (uint32_t group = 0; group < output_group_count; ++group) {
         tile_regs_acquire();
 
-        cb_wait_front(cb_input0, 2);
+        input0_buffer.wait_front(2);
         copy_tile_to_dst_init_short(cb_input0);
         copy_narrow_tile(cb_input0, 0, kDstSource0);
         copy_narrow_tile(cb_input0, 1, kDstSource1);
-        cb_pop_front(cb_input0, 2);
+        input0_buffer.pop_front(2);
 
-        cb_wait_front(cb_input1, 2);
+        input1_buffer.wait_front(2);
         copy_tile_to_dst_init_short(cb_input1);
         copy_narrow_tile(cb_input1, 0, kDstSource2);
         copy_narrow_tile(cb_input1, 1, kDstSource3);
-        cb_pop_front(cb_input1, 2);
+        input1_buffer.pop_front(2);
 
-        cb_wait_front(cb_base, 3);
+        base_buffer.wait_front(3);
         copy_tile_to_dst_init_short(cb_base);
         copy_narrow_tile(cb_base, 0, kDstBase0);
         copy_narrow_tile(cb_base, 1, kDstBase1);
         copy_narrow_tile(cb_base, 2, kDstBase2);
-        cb_pop_front(cb_base, 3);
+        base_buffer.pop_front(3);
 
         hstencil_init();
         if constexpr (ScaleSource || ScaleBase) {
@@ -226,11 +233,11 @@ inline void run_predict_update_step(
         tile_regs_commit();
         tile_regs_wait();
 
-        cb_reserve_back(cb_output, 3);
+        output_buffer.reserve_back(3);
         pack_tile(kPackBase0, cb_output, 0);
         pack_tile(kPackBase1, cb_output, 1);
         pack_tile(kPackBase2, cb_output, 2);
-        cb_push_back(cb_output, 3);
+        output_buffer.push_back(3);
 
         tile_regs_release();
     }
@@ -241,9 +248,11 @@ inline void run_scale_step(
     const uint32_t cb_output,
     const uint32_t scalar_packed,
     const uint32_t output_group_count) {
+    CircularBuffer input_buffer(cb_input);
+    CircularBuffer output_buffer(cb_output);
     for (uint32_t group = 0; group < output_group_count; ++group) {
-        cb_wait_front(cb_input, 3);
-        cb_reserve_back(cb_output, 3);
+        input_buffer.wait_front(3);
+        output_buffer.reserve_back(3);
 
         for (uint32_t tile = 0; tile < 3; ++tile) {
             tile_regs_acquire();
@@ -256,8 +265,8 @@ inline void run_scale_step(
             tile_regs_release();
         }
 
-        cb_pop_front(cb_input, 3);
-        cb_push_back(cb_output, 3);
+        input_buffer.pop_front(3);
+        output_buffer.push_back(3);
     }
 }
 
@@ -387,7 +396,6 @@ void lwt_compute() {
     constexpr uint32_t inverse_odd_scale = maybe_inverse_scale_bits<Scheme, kInlineInverseScale, StepType::kScaleOdd>();
     const uint32_t chunk_count = get_arg_val<uint32_t>(0);
 
-    ckernel::init_sfpu(cb_base, cb_output);
     for (uint32_t chunk = 0; chunk < chunk_count; ++chunk) {
         run_static_steps<
             Scheme,
@@ -404,4 +412,9 @@ void lwt_compute() {
 
 }  // namespace ttnn::operations::wavelet::kernels
 
-void kernel_main() { ttnn::operations::wavelet::kernels::lwt_compute<WAVELET_1D_ACTIVE_SCHEME_TYPE>(); }
+void kernel_main() {
+    constexpr uint32_t cb_base = get_compile_time_arg_val(2);
+    constexpr uint32_t cb_output = get_compile_time_arg_val(3);
+    init_sfpu(cb_base, cb_output);
+    ttnn::operations::wavelet::kernels::lwt_compute<WAVELET_1D_ACTIVE_SCHEME_TYPE>();
+}

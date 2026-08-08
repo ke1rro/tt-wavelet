@@ -4,11 +4,17 @@
 
 #include <cstdint>
 
+#include "../primitives/config_page.hpp"
+#include "../primitives/noc_local.hpp"
+#include "../primitives/tile_2d_layout.hpp"
+#include "api/core_local_mem.h"
+#include "api/dataflow/circular_buffer.h"
+#include "api/dataflow/endpoints.h"
+#include "api/dataflow/noc.h"
+#include "api/tensor/noc_traits.h"
 #include "ttnn/operations/wavelet/common/signal_extension.hpp"
 #include "ttnn/operations/wavelet/device/protocol/lwt_2d_config.hpp"
 #include "ttnn/operations/wavelet/planner/step.hpp"
-#include "../primitives/config_page.hpp"
-#include "../primitives/tile_2d_layout.hpp"
 
 namespace {
 
@@ -65,10 +71,16 @@ ALWI void preload_config_pages(
     const uint32_t page_count,
     const uint32_t destination_addr) {
     const auto pages = TensorAccessor(accessor, address, page_bytes);
+    Noc noc;
     for (uint32_t page = 0; page < page_count; ++page) {
-        noc_async_read(pages.get_noc_addr(page_begin + page), destination_addr + page * page_bytes, page_bytes);
+        noc.async_read(
+            pages,
+            CoreLocalMem<uint32_t>(destination_addr + page * page_bytes),
+            page_bytes,
+            {.page_id = page_begin + page},
+            {});
     }
-    noc_async_read_barrier();
+    noc.async_read_barrier();
 }
 
 template <ttnn::operations::wavelet::BoundaryMode Mode>
@@ -202,17 +214,20 @@ template <bool Interior, ttnn::operations::wavelet::BoundaryMode Mode, typename 
     collect_source_axis_tiles<Interior, Mode>(
         tiles.columns, tiles.column_count, SplitSourceTiles<Mode>::kAxisCapacity, raw_x_begin, input_width);
 
+    Noc noc;
     for (uint32_t tile_y = 0; tile_y < tiles.row_count; ++tile_y) {
         for (uint32_t tile_x = 0; tile_x < tiles.column_count; ++tile_x) {
             const uint32_t source_tile = tiles.rows[tile_y] * input_tile_columns + tiles.columns[tile_x];
             const uint32_t scratch_tile = tile_y * tiles.column_count + tile_x;
-            noc_async_read(
-                input.get_noc_addr(input_tile_base + source_tile),
-                scratch_addr + scratch_tile * kTileBytes,
-                kTileBytes);
+            noc.async_read(
+                input,
+                CoreLocalMem<uint32_t>(scratch_addr + scratch_tile * kTileBytes),
+                kTileBytes,
+                {.page_id = input_tile_base + source_tile},
+                {});
         }
     }
-    noc_async_read_barrier();
+    noc.async_read_barrier();
     return tiles;
 }
 
@@ -739,6 +754,8 @@ ALWI void initialize_inverse_band_plane(
     const uint32_t scratch_addr,
     const uint32_t zero_tile_addr) {
     const auto band = TensorAccessor(band_args, band_addr, kTileBytes);
+    Noc noc;
+    UnicastEndpoint local_endpoint;
     const uint32_t y_origin = aligned_begin(rectangle.y_begin);
     const uint32_t x_origin = aligned_begin(rectangle.x_begin);
     const uint32_t y_end = aligned_end(rectangle.y_begin, rectangle.y_length);
@@ -762,12 +779,22 @@ ALWI void initialize_inverse_band_plane(
             if (exact_full_tile) {
                 const uint32_t source_tile = (static_cast<uint32_t>(full_canonical_y) / kTileSide) * band_tile_columns +
                                              static_cast<uint32_t>(full_canonical_x) / kTileSide;
-                noc_async_read(band.get_noc_addr(band_tile_base + source_tile), destination_addr, kTileBytes);
-                noc_async_read_barrier();
+                noc.async_read(
+                    band,
+                    CoreLocalMem<uint32_t>(destination_addr),
+                    kTileBytes,
+                    {.page_id = band_tile_base + source_tile},
+                    {});
+                noc.async_read_barrier();
                 continue;
             }
-            noc_async_read(get_noc_addr(zero_tile_addr), destination_addr, kTileBytes);
-            noc_async_read_barrier();
+            noc.async_read(
+                local_endpoint,
+                CoreLocalMem<uint32_t>(destination_addr),
+                kTileBytes,
+                ttnn::operations::wavelet::kernels::primitives::local_noc_source(noc, zero_tile_addr),
+                {});
+            noc.async_read_barrier();
 
             const uint32_t internal_y_begin = std::max(tile_y, rectangle.y_begin);
             const uint32_t internal_y_end = std::min(tile_y + kTileSide, rectangle.y_begin + rectangle.y_length);
@@ -799,13 +826,15 @@ ALWI void initialize_inverse_band_plane(
                     const uint32_t source_tile =
                         (source_tile_y_begin + source_tile_y) * band_tile_columns + source_tile_x_begin + source_tile_x;
                     const uint32_t scratch_tile = source_tile_y * source_tile_columns + source_tile_x;
-                    noc_async_read(
-                        band.get_noc_addr(band_tile_base + source_tile),
-                        scratch_addr + scratch_tile * kTileBytes,
-                        kTileBytes);
+                    noc.async_read(
+                        band,
+                        CoreLocalMem<uint32_t>(scratch_addr + scratch_tile * kTileBytes),
+                        kTileBytes,
+                        {.page_id = band_tile_base + source_tile},
+                        {});
                 }
             }
-            noc_async_read_barrier();
+            noc.async_read_barrier();
 
             auto* destination = reinterpret_cast<volatile tt_l1_ptr float*>(destination_addr);
             for (uint32_t internal_y = internal_y_begin; internal_y < internal_y_end; ++internal_y) {
@@ -930,8 +959,9 @@ enum class RouteTileClass : uint32_t {
 };
 
 ALWI void reserve_tile(const uint32_t cb) {
-    cb_reserve_back(cb, 1);
-    auto* tile = reinterpret_cast<volatile tt_l1_ptr float*>(get_write_ptr(cb));
+    CircularBuffer buffer(cb);
+    buffer.reserve_back(1);
+    auto* tile = reinterpret_cast<volatile tt_l1_ptr float*>(buffer.get_write_ptr());
     for (uint32_t element = 0; element < kTileElements; ++element) {
         tile[element] = 0.0F;
     }
@@ -1075,17 +1105,30 @@ __attribute__((noinline)) void assemble_bounded_tile(
     const int32_t requested_y,
     const int32_t requested_x) {
     const RouteTileClass tile_class = classify_route_tile(stored, requested_y, requested_x);
-    cb_reserve_back(cb, 1);
-    const uint32_t destination_addr = get_write_ptr(cb);
+    CircularBuffer buffer(cb);
+    Noc noc;
+    UnicastEndpoint local_endpoint;
+    buffer.reserve_back(1);
+    const uint32_t destination_addr = buffer.get_write_ptr();
     if (tile_class == RouteTileClass::kExact) {
         const uint32_t source_addr =
             route_plane_tile_addr(plane_addr, plane_tile_columns, stored, requested_y, requested_x);
-        noc_async_read(get_noc_addr(source_addr), destination_addr, kTileBytes);
+        noc.async_read(
+            local_endpoint,
+            CoreLocalMem<uint32_t>(destination_addr),
+            kTileBytes,
+            ttnn::operations::wavelet::kernels::primitives::local_noc_source(noc, source_addr),
+            {});
         return StageTileResult::kExactPending;
     }
 
     if (tile_class == RouteTileClass::kPartial || tile_class == RouteTileClass::kEmpty) {
-        noc_async_read(get_noc_addr(zero_tile_addr), destination_addr, kTileBytes);
+        noc.async_read(
+            local_endpoint,
+            CoreLocalMem<uint32_t>(destination_addr),
+            kTileBytes,
+            ttnn::operations::wavelet::kernels::primitives::local_noc_source(noc, zero_tile_addr),
+            {});
         return StageTileResult::kBoundedPending;
     }
 
@@ -1095,7 +1138,7 @@ __attribute__((noinline)) void assemble_bounded_tile(
     } else {
         assemble_bounded_tile(destination_addr, plane_addr, plane_tile_columns, stored, requested_y, requested_x);
     }
-    cb_push_back(cb, 1);
+    buffer.push_back(1);
     return StageTileResult::kCompleted;
 }
 
@@ -1110,11 +1153,12 @@ __attribute__((noinline)) void finish_pending_tile(
     if (result == StageTileResult::kCompleted) {
         return;
     }
-    const uint32_t destination_addr = get_write_ptr(cb);
+    CircularBuffer buffer(cb);
+    const uint32_t destination_addr = buffer.get_write_ptr();
     if (result == StageTileResult::kBoundedPending) {
         assemble_bounded_tile(destination_addr, plane_addr, plane_tile_columns, stored, requested_y, requested_x);
     }
-    cb_push_back(cb, 1);
+    buffer.push_back(1);
 }
 
 [[nodiscard]] ALWI int32_t base_requested_y(const Rect& source, const Rect& output, const uint32_t output_tile_y) {
@@ -1220,15 +1264,17 @@ void kernel_main() {
 #ifndef ILWT_2D
     const auto input = TensorAccessor(input_args, input_addr, kTileBytes);
 #endif
+    CircularBuffer sync_buffer(cb_sync);
+    Noc noc;
     // This CB is an L1 allocation only: no other RISC consumes it as a FIFO.
     // Keeping its cursor untouched makes persistent workload replay independent
     // of CB producer/consumer counter state from the preceding launch.
-    const uint32_t zero_tile_addr = get_write_ptr(cb_route_zero);
+    const uint32_t zero_tile_addr = CircularBuffer(cb_route_zero).get_write_ptr();
     auto* zero_tile = reinterpret_cast<volatile tt_l1_ptr uint32_t*>(zero_tile_addr);
     for (uint32_t word = 0; word < kTileElements; ++word) {
         zero_tile[word] = 0;
     }
-    const uint32_t noc_scratch_addr = get_write_ptr(cb_noc_scratch);
+    const uint32_t noc_scratch_addr = CircularBuffer(cb_noc_scratch).get_write_ptr();
     constexpr uint32_t reader_config_capacity = split_scratch_bytes / 2;
     const uint32_t reader_config_addr = noc_scratch_addr;
 
@@ -1394,7 +1440,7 @@ void kernel_main() {
                     }
                     if (source0_result != StageTileResult::kCompleted ||
                         source1_result != StageTileResult::kCompleted || base_result != StageTileResult::kCompleted) {
-                        noc_async_read_barrier();
+                        noc.async_read_barrier();
                     }
                     finish_pending_tile(
                         source0_result,
@@ -1422,15 +1468,15 @@ void kernel_main() {
                         base_requested_tile_x);
                 }
             }
-            cb_wait_front(cb_sync, 1);
-            cb_pop_front(cb_sync, 1);
+            sync_buffer.wait_front(1);
+            sync_buffer.pop_front(1);
             stored[output_slot] = output;
         }
         // The final route handshake only guarantees that its result has been
         // persisted to the local plane.  The writer still reads all four
         // terminal bands from those planes.  Do not reuse the workspace for
         // the next chunk until those DRAM writes have completed.
-        cb_wait_front(cb_sync, 1);
-        cb_pop_front(cb_sync, 1);
+        sync_buffer.wait_front(1);
+        sync_buffer.pop_front(1);
     }
 }

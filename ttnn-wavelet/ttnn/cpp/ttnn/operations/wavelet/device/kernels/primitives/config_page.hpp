@@ -6,7 +6,10 @@
 
 #include <cstdint>
 
+#include "api/dataflow/circular_buffer.h"
 #include "api/dataflow/dataflow_api.h"
+#include "api/dataflow/noc.h"
+#include "api/tensor/noc_traits.h"
 
 #ifndef ALWI
 #define ALWI inline __attribute__((always_inline))
@@ -24,16 +27,19 @@ ALWI void load_config_page(
     uint32_t* words,
     const uint32_t word_count) {
     const auto pages = TensorAccessor(accessor, address, page_bytes);
-    cb_reserve_back(cb, 1);
-    noc_async_read(pages.get_noc_addr(page_index), get_write_ptr(cb), page_bytes);
-    noc_async_read_barrier();
-    cb_push_back(cb, 1);
-    cb_wait_front(cb, 1);
-    const auto* loaded = reinterpret_cast<const uint32_t*>(get_read_ptr(cb));
+    CircularBuffer config_buffer(cb);
+    Noc noc;
+
+    config_buffer.reserve_back(1);
+    noc.async_read(pages, config_buffer, page_bytes, {.page_id = page_index}, {});
+    noc.async_read_barrier();
+    config_buffer.push_back(1);
+    config_buffer.wait_front(1);
+    const auto* loaded = reinterpret_cast<const uint32_t*>(config_buffer.get_read_ptr());
     for (uint32_t word = 0; word < word_count; ++word) {
         words[word] = loaded[word];
     }
-    cb_pop_front(cb, 1);
+    config_buffer.pop_front(1);
 }
 
 }  // namespace ttnn::operations::wavelet::kernels::primitives

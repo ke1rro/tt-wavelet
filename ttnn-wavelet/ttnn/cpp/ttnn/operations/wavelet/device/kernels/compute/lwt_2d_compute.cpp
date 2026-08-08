@@ -9,6 +9,7 @@
 #include "api/compute/common.h"
 #include "api/compute/eltwise_unary/eltwise_unary.h"
 #include "api/compute/tile_move_copy.h"
+#include "api/dataflow/circular_buffer.h"
 #include "ttnn/operations/wavelet/device/protocol/lwt_2d_config.hpp"
 #include "ttnn/operations/wavelet/planner/static_scheme.hpp"
 #include "../sfpi/horizontal_stencil_sfpi.h"
@@ -143,18 +144,20 @@ constexpr uint32_t maybe_inverse_scale_bits() noexcept {
 
 __attribute__((noinline)) void run_scale(
     const uint32_t tile_count, const uint32_t cb_source0, const uint32_t cb_output, const uint32_t coefficient) {
+    CircularBuffer source0_buffer(cb_source0);
+    CircularBuffer output_buffer(cb_output);
     for (uint32_t tile = 0; tile < tile_count; ++tile) {
         tile_regs_acquire();
-        cb_wait_front(cb_source0, 1);
+        source0_buffer.wait_front(1);
         copy_tile_to_dst_init_short(cb_source0);
         copy_tile(cb_source0, 0, 0);
-        cb_pop_front(cb_source0, 1);
+        source0_buffer.pop_front(1);
         scale_tile(0, coefficient);
         tile_regs_commit();
         tile_regs_wait();
-        cb_reserve_back(cb_output, 1);
+        output_buffer.reserve_back(1);
         pack_tile(0, cb_output);
-        cb_push_back(cb_output, 1);
+        output_buffer.push_back(1);
         tile_regs_release();
     }
 }
@@ -196,22 +199,26 @@ WAVELET_2D_STENCIL_ATTRIBUTES void run_stencil(
     const uint32_t cb_output,
     const ScalePolicy scale_policy,
     const std::array<uint32_t, K> coefficients) {
+    CircularBuffer source0_buffer(cb_source0);
+    CircularBuffer source1_buffer(cb_source1);
+    CircularBuffer base_buffer(cb_base);
+    CircularBuffer output_buffer(cb_output);
     for (uint32_t tile = 0; tile < tile_count; ++tile) {
         tile_regs_acquire();
-        cb_wait_front(cb_source0, 1);
+        source0_buffer.wait_front(1);
         copy_tile_to_dst_init_short(cb_source0);
         copy_tile(cb_source0, 0, 0);
-        cb_pop_front(cb_source0, 1);
+        source0_buffer.pop_front(1);
 
-        cb_wait_front(cb_source1, 1);
+        source1_buffer.wait_front(1);
         copy_tile_to_dst_init_short(cb_source1);
         copy_tile(cb_source1, 0, 1);
-        cb_pop_front(cb_source1, 1);
+        source1_buffer.pop_front(1);
 
-        cb_wait_front(cb_base, 1);
+        base_buffer.wait_front(1);
         copy_tile_to_dst_init_short(cb_base);
         copy_tile(cb_base, 0, 2);
-        cb_pop_front(cb_base, 1);
+        base_buffer.pop_front(1);
 
         scale_policy.apply(0, 1, 2);
         if constexpr (Vertical) {
@@ -229,9 +236,9 @@ WAVELET_2D_STENCIL_ATTRIBUTES void run_stencil(
         }
         tile_regs_commit();
         tile_regs_wait();
-        cb_reserve_back(cb_output, 1);
+        output_buffer.reserve_back(1);
         pack_tile(3, cb_output);
-        cb_push_back(cb_output, 1);
+        output_buffer.push_back(1);
         tile_regs_release();
     }
 }
@@ -347,6 +354,7 @@ void kernel_main() {
     constexpr uint32_t cb_source1 = get_compile_time_arg_val(1);
     constexpr uint32_t cb_base = get_compile_time_arg_val(2);
     constexpr uint32_t cb_output = get_compile_time_arg_val(3);
+    init_sfpu(cb_base, cb_output);
     const uint32_t chunk_count = get_arg_val<uint32_t>(0);
     constexpr uint32_t routes_per_axis = Scheme::num_steps;
     constexpr uint32_t routes_per_chunk = 4 * routes_per_axis;
@@ -354,7 +362,6 @@ void kernel_main() {
     constexpr uint32_t inverse_even_scale = maybe_inverse_scale_bits<ttnn::operations::wavelet::StepType::kScaleEven>();
     constexpr uint32_t inverse_odd_scale = maybe_inverse_scale_bits<ttnn::operations::wavelet::StepType::kScaleOdd>();
 
-    ckernel::init_sfpu(cb_base, cb_output);
     for (uint32_t chunk = 0; chunk < chunk_count; ++chunk) {
         const uint32_t runtime_arg_base = 1 + chunk * packed_words_per_chunk;
         if constexpr (kInverse) {

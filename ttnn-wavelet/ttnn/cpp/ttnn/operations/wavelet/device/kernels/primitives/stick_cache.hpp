@@ -6,7 +6,11 @@
 
 #include <cstdint>
 
+#include "api/core_local_mem.h"
+#include "api/dataflow/circular_buffer.h"
 #include "api/dataflow/dataflow_api.h"
+#include "api/dataflow/noc.h"
+#include "api/tensor/noc_traits.h"
 #include "ttnn/operations/wavelet/common/signal_extension.hpp"
 #define ALWI inline __attribute__((always_inline))
 
@@ -60,8 +64,11 @@ LWT_CACHE_REFILL_CALLABLE void cache_source_sticks(
     const uint32_t source_stick,
     const uint32_t source_stick_count,
     const uint32_t source_length) {
+    CircularBuffer cache_buffer(cache.cb_id);
+    Noc noc;
+
     if (cache.valid) {
-        cb_pop_front(cache.cb_id, cache.reserved_stick_count);
+        cache_buffer.pop_front(cache.reserved_stick_count);
     }
 
     const uint32_t available_sticks = source_stick_count - source_stick;
@@ -73,8 +80,8 @@ LWT_CACHE_REFILL_CALLABLE void cache_source_sticks(
     // zeroes so the producer and consumer pointers always return to origin.
     const uint32_t reserve_sticks = cache.stick_capacity;
 
-    cb_reserve_back(cache.cb_id, reserve_sticks);
-    const uint32_t cache_l1_addr = get_write_ptr(cache.cb_id);
+    cache_buffer.reserve_back(reserve_sticks);
+    const uint32_t cache_l1_addr = cache_buffer.get_write_ptr();
     const bool page_per_stick = cache.page_size == cache.stick_nbytes;
 #pragma GCC unroll 8
     for (uint32_t i = 0; i < reserve_sticks; ++i) {
@@ -93,14 +100,18 @@ LWT_CACHE_REFILL_CALLABLE void cache_source_sticks(
         if (!is_cached_stick) {
             continue;
         }
-        const uint64_t src_noc_addr = page_per_stick
-                                          ? src.get_noc_addr(cache.source_page + stick_index)
-                                          : src.get_noc_addr(cache.source_page, stick_index * cache.stick_nbytes);
-        noc_async_read(src_noc_addr, cache_l1_addr + i * cache.stick_nbytes, read_nbytes);
+        const uint32_t page_id = page_per_stick ? cache.source_page + stick_index : cache.source_page;
+        const uint32_t page_offset = page_per_stick ? 0 : stick_index * cache.stick_nbytes;
+        noc.async_read<NocOptions::DEFAULT, NOC_MAX_BURST_SIZE>(
+            src,
+            CoreLocalMem<uint32_t>(cache_l1_addr + i * cache.stick_nbytes),
+            read_nbytes,
+            {.page_id = page_id, .offset_bytes = page_offset},
+            {});
     }
-    noc_async_read_barrier();
-    cb_push_back(cache.cb_id, reserve_sticks);
-    cb_wait_front(cache.cb_id, reserve_sticks);
+    noc.async_read_barrier();
+    cache_buffer.push_back(reserve_sticks);
+    cache_buffer.wait_front(reserve_sticks);
 
     cache.cached_stick_id = source_stick;
     cache.cached_stick_count = cached_sticks;
@@ -119,7 +130,7 @@ ALWI float read_source_value(
         cache_source_sticks(src, cache, source_stick, source_stick_count, source_length);
     }
 
-    const auto* cached_values = reinterpret_cast<const float*>(get_read_ptr(cache.cb_id));
+    const auto* cached_values = reinterpret_cast<const float*>(CircularBuffer(cache.cb_id).get_read_ptr());
     const uint32_t cached_offset = source_stick - cache.cached_stick_id;
     return cached_values[cached_offset * cache.stick_width + source_lane];
 }
@@ -210,7 +221,7 @@ ALWI void release_cache(StickReadCache& cache) {
         return;
     }
 
-    cb_pop_front(cache.cb_id, cache.reserved_stick_count);
+    CircularBuffer(cache.cb_id).pop_front(cache.reserved_stick_count);
     cache.cached_stick_id = kInvalidStick;
     cache.cached_stick_count = 0;
     cache.reserved_stick_count = 0;

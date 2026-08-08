@@ -167,7 +167,11 @@ def test_batched_1d_matches_independent_samples(device: ttnn.MeshDevice, wavelet
             ttnn.to_torch(sample_approximation),
             coefficient_length,
         )
-        assert_fp32_identical_1d(detail_host[batch_index, 0], ttnn.to_torch(sample_detail), coefficient_length)
+        assert_fp32_identical_1d(
+            detail_host[batch_index, 0],
+            ttnn.to_torch(sample_detail),
+            coefficient_length,
+        )
         assert_fp32_identical_1d(
             reconstructed_host[batch_index, 0],
             ttnn.to_torch(sample_reconstructed),
@@ -296,13 +300,13 @@ def test_batched_preallocated_outputs_and_program_cache(
         device.disable_and_clear_program_cache()
 
 
-def test_batched_channel_validation(device: ttnn.MeshDevice) -> None:
+def test_batched_channel_validation(device: ttnn.MeshDevice, expect_error) -> None:
     invalid_1d = torch.zeros((2, 2, 1, 33), dtype=torch.float32)
-    with pytest.raises(RuntimeError, match="C == 1"):
+    with expect_error(RuntimeError, "C == 1"):
         ttnn.dwt(to_device_1d(device, invalid_1d), "db1")
 
     invalid_2d = torch.zeros((2, 2, 33, 35), dtype=torch.float32)
-    with pytest.raises(RuntimeError, match="C == 1"):
+    with expect_error(RuntimeError, "C == 1"):
         ttnn.dwt_2d(to_device_2d(device, invalid_2d), "db1")
 
 
@@ -791,9 +795,21 @@ def test_wavelet_2d_interleaved_l1_program_cache_keys_and_address_override(
         assert device.num_program_cache_entries() == 2
 
         mixed_reconstructed = ttnn.idwt_2d(
-            l1_bands_a[0], dram_bands_a[1], l1_bands_a[2], dram_bands_a[3], "bior1.3", shape
+            l1_bands_a[0],
+            dram_bands_a[1],
+            l1_bands_a[2],
+            dram_bands_a[3],
+            "bior1.3",
+            shape,
         )
-        ttnn.idwt_2d(l1_bands_b[0], dram_bands_b[1], l1_bands_b[2], dram_bands_b[3], "bior1.3", shape)
+        ttnn.idwt_2d(
+            l1_bands_b[0],
+            dram_bands_b[1],
+            l1_bands_b[2],
+            dram_bands_b[3],
+            "bior1.3",
+            shape,
+        )
         assert device.num_program_cache_entries() == 3
         assert_fp32_identical(ttnn.to_torch(l1_reconstructed), ttnn.to_torch(dram_reconstructed))
         assert_fp32_identical(ttnn.to_torch(mixed_reconstructed), ttnn.to_torch(dram_reconstructed))
@@ -801,43 +817,43 @@ def test_wavelet_2d_interleaved_l1_program_cache_keys_and_address_override(
         device.disable_and_clear_program_cache()
 
 
-def test_wavelet_1d_validation_errors(device: ttnn.MeshDevice) -> None:
+def test_wavelet_1d_validation_errors(device: ttnn.MeshDevice, expect_error) -> None:
     signal = torch.arange(20, dtype=torch.float32)
     input_tensor = to_device_1d(device, signal)
 
-    with pytest.raises(RuntimeError, match="wavelet"):
+    with expect_error(RuntimeError, "wavelet"):
         ttnn.dwt(input_tensor, "not-a-wavelet")
-    with pytest.raises(RuntimeError, match="boundary"):
+    with expect_error(RuntimeError, "boundary"):
         ttnn.dwt(input_tensor, "bior1.3", boundary_mode="not-a-mode")
-    with pytest.raises(RuntimeError, match="device tensor"):
+    with expect_error(RuntimeError, "device tensor"):
         ttnn.dwt(ttnn.from_torch(signal, layout=ttnn.ROW_MAJOR_LAYOUT), "bior1.3")
-    with pytest.raises(RuntimeError, match="FLOAT32"):
+    with expect_error(RuntimeError, "FLOAT32"):
         ttnn.dwt(
             ttnn.from_torch(signal, dtype=ttnn.bfloat16, layout=ttnn.ROW_MAJOR_LAYOUT, device=device),
             "bior1.3",
         )
-    with pytest.raises(RuntimeError, match="rank-2 shape requires W == 32"):
+    with expect_error(RuntimeError, "rank-2 shape requires W == 32"):
         ttnn.dwt(to_device_1d(device, signal.reshape(2, 10)), "bior1.3")
-    with pytest.raises(RuntimeError, match="DRAM-interleaved outputs"):
+    with expect_error(RuntimeError, "DRAM-interleaved outputs"):
         ttnn.dwt(input_tensor, "bior1.3", memory_config=ttnn.L1_MEMORY_CONFIG)
-    with pytest.raises(RuntimeError, match="greater than one"):
+    with expect_error(RuntimeError, "greater than one"):
         ttnn.dwt(to_device_1d(device, torch.ones(1)), "bior1.3", boundary_mode="reflect")
 
     approximation, detail = ttnn.dwt(input_tensor, "bior1.3")
     wrong_detail = to_device_1d(device, torch.zeros(detail.shape[0] + 1))
-    with pytest.raises(RuntimeError, match="identical shapes"):
+    with expect_error(RuntimeError, "identical shapes"):
         ttnn.idwt(approximation, wrong_detail, "bior1.3", signal.numel())
-    with pytest.raises(RuntimeError, match="greater than zero"):
+    with expect_error(RuntimeError, "greater than zero"):
         ttnn.idwt(approximation, detail, "bior1.3", 0)
 
     wrong_output = to_device_1d(device, torch.empty(approximation.shape[0] + 1))
-    with pytest.raises(RuntimeError, match="does not match"):
+    with expect_error(RuntimeError, "does not match"):
         ttnn.dwt(input_tensor, "bior1.3", output_tensors=(wrong_output, wrong_output))
-    with pytest.raises(RuntimeError, match="must not alias"):
+    with expect_error(RuntimeError, "must not alias"):
         ttnn.dwt(input_tensor, "bior1.3", output_tensors=(approximation, approximation))
 
 
-def test_wavelet_1d_rejects_sharded_input(device: ttnn.MeshDevice) -> None:
+def test_wavelet_1d_rejects_sharded_input(device: ttnn.MeshDevice, expect_error) -> None:
     sharded_memory_config = ttnn.create_sharded_memory_config(
         shape=(2, 32),
         core_grid=ttnn.CoreGrid(x=1, y=1),
@@ -849,18 +865,22 @@ def test_wavelet_1d_rejects_sharded_input(device: ttnn.MeshDevice) -> None:
         sharded_memory_config,
     )
 
-    with pytest.raises(RuntimeError, match="sharded inputs are unsupported"):
+    with expect_error(RuntimeError, "sharded inputs are unsupported"):
         ttnn.dwt(sharded_input, "bior1.3")
 
 
-def test_wavelet_2d_validation_errors(device: ttnn.MeshDevice) -> None:
+def test_wavelet_2d_validation_errors(device: ttnn.MeshDevice, expect_error) -> None:
     signal = torch.arange(35 * 37, dtype=torch.float32).reshape(35, 37)
     input_tensor = to_device_2d(device, signal)
 
-    with pytest.raises(RuntimeError, match="TILE layout"):
+    with expect_error(RuntimeError, "TILE layout"):
         ttnn.dwt_2d(to_device_1d(device, signal), "bior1.3")
-    with pytest.raises(RuntimeError, match="both dimensions greater than one"):
-        ttnn.dwt_2d(to_device_2d(device, torch.ones(1, 8)), "bior1.3", boundary_mode="antireflect")
+    with expect_error(RuntimeError, "both dimensions greater than one"):
+        ttnn.dwt_2d(
+            to_device_2d(device, torch.ones(1, 8)),
+            "bior1.3",
+            boundary_mode="antireflect",
+        )
 
     sharded_memory_config = ttnn.create_sharded_memory_config(
         shape=(64, 64),
@@ -872,16 +892,16 @@ def test_wavelet_2d_validation_errors(device: ttnn.MeshDevice) -> None:
         torch.arange(64 * 64, dtype=torch.float32).reshape(64, 64),
         sharded_memory_config,
     )
-    with pytest.raises(RuntimeError, match="sharded inputs are unsupported"):
+    with expect_error(RuntimeError, "sharded inputs are unsupported"):
         ttnn.dwt_2d(sharded_input, "bior1.3")
 
     bands = ttnn.dwt_2d(input_tensor, "bior1.3")
     wrong_band = to_device_2d(device, torch.zeros(bands[0].shape[0] + 1, bands[0].shape[1]))
-    with pytest.raises(RuntimeError, match="identical shapes"):
+    with expect_error(RuntimeError, "identical shapes"):
         ttnn.idwt_2d(bands[0], wrong_band, bands[2], bands[3], "bior1.3", signal.shape)
-    with pytest.raises(RuntimeError, match="must be positive"):
+    with expect_error(RuntimeError, "must be positive"):
         ttnn.idwt_2d(*bands, "bior1.3", (0, signal.shape[1]))
-    with pytest.raises(RuntimeError, match="does not match expected shape"):
+    with expect_error(RuntimeError, "does not match expected shape"):
         ttnn.idwt_2d(*bands, "bior1.3", (signal.shape[0] + 2, signal.shape[1]))
-    with pytest.raises(RuntimeError, match="must not alias"):
+    with expect_error(RuntimeError, "must not alias"):
         ttnn.dwt_2d(input_tensor, "bior1.3", output_tensors=(bands[0],) * 4)

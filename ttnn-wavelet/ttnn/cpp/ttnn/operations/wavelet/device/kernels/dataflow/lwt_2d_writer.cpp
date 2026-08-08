@@ -4,9 +4,15 @@
 
 #include <cstdint>
 
-#include "ttnn/operations/wavelet/device/protocol/lwt_2d_config.hpp"
 #include "../primitives/config_page.hpp"
+#include "../primitives/noc_local.hpp"
 #include "../primitives/tile_2d_layout.hpp"
+#include "api/core_local_mem.h"
+#include "api/dataflow/circular_buffer.h"
+#include "api/dataflow/endpoints.h"
+#include "api/dataflow/noc.h"
+#include "api/tensor/noc_traits.h"
+#include "ttnn/operations/wavelet/device/protocol/lwt_2d_config.hpp"
 
 namespace {
 
@@ -48,33 +54,47 @@ ALWI void preload_config_pages(
     const uint32_t page_count,
     const uint32_t destination_addr) {
     const auto pages = TensorAccessor(accessor, address, page_bytes);
+    Noc noc;
     for (uint32_t page = 0; page < page_count; ++page) {
-        noc_async_read(pages.get_noc_addr(page_begin + page), destination_addr + page * page_bytes, page_bytes);
+        noc.async_read(
+            pages,
+            CoreLocalMem<uint32_t>(destination_addr + page * page_bytes),
+            page_bytes,
+            {.page_id = page_begin + page},
+            {});
     }
-    noc_async_read_barrier();
+    noc.async_read_barrier();
 }
 
 ALWI void write_local_output(
     const uint32_t cb_output, const uint32_t plane_addr, const uint32_t plane_tile_columns, const Rect& output) {
+    CircularBuffer output_buffer(cb_output);
+    Noc noc;
+    UnicastEndpoint local_endpoint;
     const uint32_t tile_rows =
         (aligned_end(output.y_begin, output.y_length) - aligned_begin(output.y_begin)) / kTileSide;
     const uint32_t tile_columns =
         (aligned_end(output.x_begin, output.x_length) - aligned_begin(output.x_begin)) / kTileSide;
     const uint32_t tile_count = tile_rows * tile_columns;
     for (uint32_t first_tile = 0; first_tile < tile_count;) {
-        const uint32_t read_ptr = get_read_ptr(cb_output);
+        const uint32_t read_ptr = output_buffer.get_read_ptr();
         const uint32_t fifo_limit = get_local_cb_interface(cb_output).fifo_limit;
         const uint32_t batch = first_tile + 1 < tile_count && read_ptr + 2 * kTileBytes <= fifo_limit ? 2U : 1U;
-        cb_wait_front(cb_output, batch);
+        output_buffer.wait_front(batch);
         for (uint32_t tile_in_batch = 0; tile_in_batch < batch; ++tile_in_batch) {
             const uint32_t flat_tile = first_tile + tile_in_batch;
             const uint32_t tile_y = flat_tile / tile_columns;
             const uint32_t tile_x = flat_tile % tile_columns;
             const uint32_t destination_addr = plane_addr + (tile_y * plane_tile_columns + tile_x) * kTileBytes;
-            noc_async_write(read_ptr + tile_in_batch * kTileBytes, get_noc_addr(destination_addr), kTileBytes);
+            noc.async_write(
+                CoreLocalMem<uint32_t>(read_ptr + tile_in_batch * kTileBytes),
+                local_endpoint,
+                kTileBytes,
+                {},
+                ttnn::operations::wavelet::kernels::primitives::local_noc_destination(noc, destination_addr));
         }
-        noc_async_write_barrier();
-        cb_pop_front(cb_output, batch);
+        noc.async_write_barrier();
+        output_buffer.pop_front(batch);
         first_tile += batch;
     }
 }
@@ -94,6 +114,7 @@ ALWI void write_band_fragmented(
     const uint32_t final_x_length,
     const uint32_t noc_scratch_addr) {
     const auto output = TensorAccessor(output_args, output_addr, kTileBytes);
+    Noc noc;
     const uint32_t source_y_origin = aligned_begin(source.y_begin);
     const uint32_t source_x_origin = aligned_begin(source.x_begin);
     for (uint32_t local_y = 0; local_y < final_y_length; ++local_y) {
@@ -111,16 +132,19 @@ ALWI void write_band_fragmented(
                 (destination_y / kTileSide) * output_tile_columns + destination_x / kTileSide;
             const uint32_t destination_offset =
                 tile_element_offset(destination_y % kTileSide, destination_x % kTileSide) * sizeof(float);
-            const uint64_t destination_noc_addr =
-                output.get_noc_addr(output_tile_base + destination_tile) + destination_offset;
-            const uint32_t scratch_lane = static_cast<uint32_t>(destination_noc_addr) & 63U;
+            const uint32_t scratch_lane = destination_offset & 63U;
             auto* staged = reinterpret_cast<volatile tt_l1_ptr float*>(noc_scratch_addr + scratch_lane);
             const auto* source_values = reinterpret_cast<volatile tt_l1_ptr float*>(plane_addr + source_offset);
             for (uint32_t value = 0; value < count; ++value) {
                 staged[value] = source_values[value];
             }
-            noc_async_write(noc_scratch_addr + scratch_lane, destination_noc_addr, count * sizeof(float));
-            noc_async_write_barrier();
+            noc.async_write(
+                CoreLocalMem<uint32_t>(noc_scratch_addr + scratch_lane),
+                output,
+                count * sizeof(float),
+                {},
+                {.page_id = output_tile_base + destination_tile, .offset_bytes = destination_offset});
+            noc.async_write_barrier();
             local_x += count;
         }
     }
@@ -149,6 +173,7 @@ template <typename OutputAccessor>
 
     constexpr uint32_t kWriteBatchTiles = 16;
     const auto output = TensorAccessor(output_args, output_addr, kTileBytes);
+    Noc noc;
     const uint32_t tile_rows = final_y_length / kTileSide;
     const uint32_t tile_columns = final_x_length / kTileSide;
     uint32_t outstanding = 0;
@@ -157,18 +182,20 @@ template <typename OutputAccessor>
             const uint32_t source_tile = tile_y * plane_tile_columns + tile_x;
             const uint32_t destination_tile =
                 (final_y_begin / kTileSide + tile_y) * output_tile_columns + final_x_begin / kTileSide + tile_x;
-            noc_async_write(
-                plane_addr + source_tile * kTileBytes,
-                output.get_noc_addr(output_tile_base + destination_tile),
-                kTileBytes);
+            noc.async_write(
+                CoreLocalMem<uint32_t>(plane_addr + source_tile * kTileBytes),
+                output,
+                kTileBytes,
+                {},
+                {.page_id = output_tile_base + destination_tile});
             if (++outstanding == kWriteBatchTiles) {
-                noc_async_write_barrier();
+                noc.async_write_barrier();
                 outstanding = 0;
             }
         }
     }
     if (outstanding != 0) {
-        noc_async_write_barrier();
+        noc.async_write_barrier();
     }
     return true;
 }
@@ -338,6 +365,7 @@ ALWI void write_interleaved_output(
     const uint32_t pad_x,
     const uint32_t scratch_addr) {
     const auto output = TensorAccessor(output_args, output_addr, kTileBytes);
+    Noc noc;
     const uint32_t tile_y_begin = aligned_begin(final_y_begin);
     const uint32_t tile_y_end = aligned_end(final_y_begin, final_y_length);
     const uint32_t tile_x_begin = aligned_begin(final_x_begin);
@@ -365,7 +393,12 @@ ALWI void write_interleaved_output(
                     pad_y,
                     pad_x,
                     scratch_addr);
-                noc_async_write(scratch_addr, output.get_noc_addr(output_tile_base + destination_tile), kTileBytes);
+                noc.async_write(
+                    CoreLocalMem<uint32_t>(scratch_addr),
+                    output,
+                    kTileBytes,
+                    {},
+                    {.page_id = output_tile_base + destination_tile});
             } else {
                 for (uint32_t y = std::max(tile_y, final_y_begin); y < y_end; ++y) {
                     const uint32_t padded_y = y + pad_y;
@@ -392,15 +425,17 @@ ALWI void write_interleaved_output(
                         const uint32_t local_x = x - tile_x;
                         const uint32_t count = std::min(x_end - x, kFaceSide - local_x % kFaceSide);
                         const uint32_t byte_offset = tile_element_offset(y - tile_y, local_x) * sizeof(float);
-                        noc_async_write(
-                            scratch_addr + byte_offset,
-                            output.get_noc_addr(output_tile_base + destination_tile) + byte_offset,
-                            count * sizeof(float));
+                        noc.async_write(
+                            CoreLocalMem<uint32_t>(scratch_addr + byte_offset),
+                            output,
+                            count * sizeof(float),
+                            {},
+                            {.page_id = output_tile_base + destination_tile, .offset_bytes = byte_offset});
                         x += count;
                     }
                 }
             }
-            noc_async_write_barrier();
+            noc.async_write_barrier();
         }
     }
 }
@@ -445,7 +480,9 @@ void kernel_main() {
     constexpr auto band_args = TensorAccessorArgs<route_args.next_compile_time_args_offset()>();
     constexpr auto output_args = TensorAccessorArgs<band_args.next_compile_time_args_offset()>();
     constexpr uint32_t split_scratch_bytes = get_compile_time_arg_val(output_args.next_compile_time_args_offset());
-    const uint32_t noc_scratch_addr = get_write_ptr(cb_noc_scratch);
+    CircularBuffer output_buffer(cb_output);
+    CircularBuffer sync_buffer(cb_sync);
+    const uint32_t noc_scratch_addr = CircularBuffer(cb_noc_scratch).get_write_ptr();
     constexpr uint32_t writer_config_capacity = split_scratch_bytes / 2;
     const uint32_t writer_config_addr = noc_scratch_addr + split_scratch_bytes / 2;
 
@@ -457,7 +494,7 @@ void kernel_main() {
         // The first packed output proves that split and reader preloading no
         // longer use the shared split scratch. Leave the page in the CB for
         // write_local_output() to consume after descriptor preloading.
-        cb_wait_front(cb_output, 1);
+        output_buffer.wait_front(1);
         ASSERT(
             route_count * ttnn::operations::wavelet::device_protocol::kLwt2DRouteConfigPageBytes <=
             writer_config_capacity);
@@ -480,8 +517,8 @@ void kernel_main() {
             const Rect output =
                 load_rect(route_words, ttnn::operations::wavelet::device_protocol::kLwt2DRouteOutputRect);
             write_local_output(cb_output, plane_addrs[output_slot], plane_tile_columns[output_slot], output);
-            cb_reserve_back(cb_sync, 1);
-            cb_push_back(cb_sync, 1);
+            sync_buffer.reserve_back(1);
+            sync_buffer.push_back(1);
         }
 
         uint32_t band_words[ttnn::operations::wavelet::device_protocol::kLwt2DBandConfigWordCount];
@@ -553,7 +590,7 @@ void kernel_main() {
 #endif
         // Release the reader only after every final band has stopped reading
         // this chunk's workspace.
-        cb_reserve_back(cb_sync, 1);
-        cb_push_back(cb_sync, 1);
+        sync_buffer.reserve_back(1);
+        sync_buffer.push_back(1);
     }
 }

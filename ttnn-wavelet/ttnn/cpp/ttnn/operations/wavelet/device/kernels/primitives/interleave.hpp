@@ -6,7 +6,11 @@
 
 #include <cstdint>
 
+#include "api/core_local_mem.h"
+#include "api/dataflow/circular_buffer.h"
 #include "api/dataflow/dataflow_api.h"
+#include "api/dataflow/noc.h"
+#include "api/tensor/noc_traits.h"
 #include "ttnn/operations/wavelet/device/protocol/lwt_config.hpp"
 #include "ttnn/operations/wavelet/planner/step.hpp"
 #include "workspace_layout.hpp"
@@ -27,6 +31,8 @@ ALWI void write_reconstructed_signal(
     const uint32_t odd_begin,
     const uint32_t output_begin,
     const uint32_t output_length) {
+    CircularBuffer interleave_buffer(cb_interleave);
+    Noc noc;
     const auto* even = reinterpret_cast<volatile tt_l1_ptr float*>(even_addr);
     const auto* odd = reinterpret_cast<volatile tt_l1_ptr float*>(odd_addr);
     const uint32_t output_end = output_begin + output_length;
@@ -37,8 +43,8 @@ ALWI void write_reconstructed_signal(
     static_assert(BatchSticks > 0, "ILWT interleave batch must be non-zero");
     for (uint32_t batch_begin = 0; batch_begin < stick_count; batch_begin += BatchSticks) {
         const uint32_t batch_count = stick_count - batch_begin < BatchSticks ? stick_count - batch_begin : BatchSticks;
-        cb_reserve_back(cb_interleave, batch_count);
-        const uint32_t staging_base = get_write_ptr(cb_interleave);
+        interleave_buffer.reserve_back(batch_count);
+        const uint32_t staging_base = interleave_buffer.get_write_ptr();
         for (uint32_t batch_stick = 0; batch_stick < batch_count; ++batch_stick) {
             const uint32_t local_stick = batch_begin + batch_stick;
             auto* staging = reinterpret_cast<float*>(
@@ -61,15 +67,18 @@ ALWI void write_reconstructed_signal(
                 }
                 staging[lane] = value;
             }
-            noc_async_write(
-                staging_base + batch_stick * ttnn::operations::wavelet::device_protocol::kStickBytes,
-                dst.get_noc_addr(output_page + first_stick + local_stick),
-                ttnn::operations::wavelet::device_protocol::kStickBytes);
+            noc.async_write(
+                CoreLocalMem<uint32_t>(
+                    staging_base + batch_stick * ttnn::operations::wavelet::device_protocol::kStickBytes),
+                dst,
+                ttnn::operations::wavelet::device_protocol::kStickBytes,
+                {},
+                {.page_id = output_page + first_stick + local_stick});
         }
-        noc_async_write_barrier();
-        cb_push_back(cb_interleave, batch_count);
-        cb_wait_front(cb_interleave, batch_count);
-        cb_pop_front(cb_interleave, batch_count);
+        noc.async_write_barrier();
+        interleave_buffer.push_back(batch_count);
+        interleave_buffer.wait_front(batch_count);
+        interleave_buffer.pop_front(batch_count);
     }
 }
 
@@ -103,6 +112,9 @@ ALWI void write_direct_interleaved_signal(
     const uint32_t odd_begin,
     const uint32_t output_begin,
     const uint32_t output_length) {
+    CircularBuffer output_buffer(cb_output);
+    CircularBuffer interleave_buffer(cb_interleave);
+    Noc noc;
     constexpr uint32_t split_group_elements = ttnn::operations::wavelet::device_protocol::kLwtGroupOutputElements;
     constexpr uint32_t signal_group_elements = ttnn::operations::wavelet::device_protocol::kIlwtGroupOutputElements;
     const bool updates_even = route_type == static_cast<uint32_t>(ttnn::operations::wavelet::StepType::kUpdate);
@@ -114,8 +126,8 @@ ALWI void write_direct_interleaved_signal(
         const bool has_updated_values = group < updated_group_count;
         uint32_t output_tiles = 0;
         if (has_updated_values) {
-            cb_wait_front(cb_output, 3);
-            output_tiles = get_read_ptr(cb_output);
+            output_buffer.wait_front(3);
+            output_tiles = output_buffer.get_read_ptr();
         }
 
         const uint32_t group_signal_offset = group * signal_group_elements;
@@ -131,8 +143,8 @@ ALWI void write_direct_interleaved_signal(
         for (uint32_t batch_begin = 0; batch_begin < stick_count; batch_begin += BatchSticks) {
             const uint32_t batch_count =
                 stick_count - batch_begin < BatchSticks ? stick_count - batch_begin : BatchSticks;
-            cb_reserve_back(cb_interleave, batch_count);
-            const uint32_t staging_base = get_write_ptr(cb_interleave);
+            interleave_buffer.reserve_back(batch_count);
+            const uint32_t staging_base = interleave_buffer.get_write_ptr();
             for (uint32_t batch_stick = 0; batch_stick < batch_count; ++batch_stick) {
                 const uint32_t local_stick = batch_begin + batch_stick;
                 auto* staging = reinterpret_cast<float*>(
@@ -172,19 +184,22 @@ ALWI void write_direct_interleaved_signal(
                     }
                     staging[lane] = value;
                 }
-                noc_async_write(
-                    staging_base + batch_stick * ttnn::operations::wavelet::device_protocol::kStickBytes,
-                    dst.get_noc_addr(output_page + first_stick + local_stick),
-                    ttnn::operations::wavelet::device_protocol::kStickBytes);
+                noc.async_write(
+                    CoreLocalMem<uint32_t>(
+                        staging_base + batch_stick * ttnn::operations::wavelet::device_protocol::kStickBytes),
+                    dst,
+                    ttnn::operations::wavelet::device_protocol::kStickBytes,
+                    {},
+                    {.page_id = output_page + first_stick + local_stick});
             }
-            noc_async_write_barrier();
-            cb_push_back(cb_interleave, batch_count);
-            cb_wait_front(cb_interleave, batch_count);
-            cb_pop_front(cb_interleave, batch_count);
+            noc.async_write_barrier();
+            interleave_buffer.push_back(batch_count);
+            interleave_buffer.wait_front(batch_count);
+            interleave_buffer.pop_front(batch_count);
         }
 
         if (has_updated_values) {
-            cb_pop_front(cb_output, 3);
+            output_buffer.pop_front(3);
         }
     }
 }
