@@ -104,7 +104,7 @@ device = ttnn.open_mesh_device(
     mesh_shape=ttnn.MeshShape(1, 1), physical_device_ids=[0]
 )
 try:
-    print(str(device.arch()).replace("Arch.", "").lower())
+    print(f"TT_WAVELET_ARCH={str(device.arch()).replace('Arch.', '').lower()}")
 finally:
     ttnn.close_mesh_device(device)
 PY
@@ -313,7 +313,11 @@ if [[ $SETUP_ONLY == true ]]; then
 fi
 
 if [[ $OUTPUT_BASE_EXPLICIT == false ]]; then
-    DEVICE_ARCHITECTURE=$(detect_device_architecture)
+    DEVICE_ARCHITECTURE=$(detect_device_architecture | sed -n 's/^TT_WAVELET_ARCH=//p' | tail -n 1)
+    if [[ ! $DEVICE_ARCHITECTURE =~ ^[a-z0-9_]+$ ]]; then
+        echo "Could not determine a valid TT device architecture for the output directory." >&2
+        exit 2
+    fi
     REPOSITORY_REVISION=$(git rev-parse --short HEAD)
     TT_METAL_REVISION=$(git -C tt-metal rev-parse --short HEAD)
     OUTPUT_BASE="$ROOT_DIR/benchmarks/bringup/${DEVICE_ARCHITECTURE}-${REPOSITORY_REVISION}-${TT_METAL_REVISION}"
