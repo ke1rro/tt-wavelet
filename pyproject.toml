@@ -26,7 +26,6 @@ minimum-version = "build-system.requires"
 wheel.packages = ["python/ttwt"]
 install.components = ["ttwt-python"]
 build.targets = ["_ttwt"]
-sdist.exclude = ["third_party/**", "EXTRACTION_RESEARCH.md", "PHASE*.md", "TT_UMD_REFERENCE.md"]
 
 [tool.scikit-build.cmake.define]
 TT_WAVELET_TT_METAL_MODE = "SYSTEM"
