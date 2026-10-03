@@ -10,18 +10,7 @@ TT-Wavelet provides standalone lifting wavelet transforms for Tenstorrent TTNN t
 - Direct TTNN Tensor and MemoryConfig interoperability.
 - Package-local runtime JIT resources.
 
-## Status
-
-Version **0.1.0 is a release candidate**, not a published release. The current validation target is
-Ubuntu 22.04 x86_64, CPython 3.10 and Blackhole p150b. Other platforms and Wormhole are unvalidated.
-
-Installed-wheel integration and representative db1 transforms have passed hardware validation.
-Full-scheme qualification found numerical failures, including `dmey` and boundary extrapolation
-cases. The catalog is not a guarantee of uniform numerical accuracy; release qualification remains
-open. Local wheels currently use `linux_x86_64`, which PyPI does not accept; a qualified
-PyPI-supported wheel is also required before publication.
-
-## Requirements
+п## Requirements
 
 - Ubuntu 22.04 LTS, x86_64.
 - CPython 3.10.
@@ -41,10 +30,6 @@ Install a locally built candidate wheel in a CPython 3.10 environment:
 python -m pip install /path/to/tt_wavelet-0.1.0-cp310-cp310-linux_x86_64.whl
 ```
 
-Pip resolves the pinned TTNN runtime. Hardware prerequisites must be provisioned separately.
-TT-Wavelet is not yet published on PyPI; public `pip install tt-wavelet` is not currently
-advertised. See Development for source builds.
-
 ## Quick start
 
 ```python
@@ -62,57 +47,6 @@ cA, cD = ttwt.dwt(x, "db1")
 - `ttwt.idwt`
 - `ttwt.dwt_2d`
 - `ttwt.idwt_2d`
-
-Function docstrings describe arguments, boundary modes and output layouts.
-
-## Runtime model
-
-`ttwt` calls its private extension `ttwt._ttwt`, which shares the official TTNN / Metalium runtime.
-TT-Wavelet ships its own Wavelet JIT kernels and generated scheme headers. It does not bundle TTNN,
-Metalium, UMD, STL or SFPI.
-
-## Hardware validation
-
-Regular CI validates builds, packaging, host-side behavior and non-device tests without requiring
-Tenstorrent hardware. Accelerator validation is performed separately when hardware is available and
-is required before a public release is tagged. Hardware validation is not guaranteed for every
-commit or pull request.
-
-Release eligibility requires green CI and manual hardware qualification of the exact commit SHA,
-then a version tag on that SHA. The release workflow builds that tag and publishes its wheel through
-PyPI Trusted Publishing.
-
-## Development
-
-Clone with submodules. The build baseline is TT-Metal / TTNN `v0.79.0`; compiler and dependency
-prerequisites must be provisioned independently.
-
-```bash
-git clone --recurse-submodules https://github.com/ke1rro/tt-wavelet.git
-cd tt-wavelet
-cmake -S . -B build -G Ninja \
-  -DCMAKE_C_COMPILER=clang-20 -DCMAKE_CXX_COMPILER=clang++-20 \
-  -DTT_WAVELET_BUILD_PYTHON=ON
-cmake --build build -j
-PYTHONPATH="$PWD/build/python" python -m pytest tests/python/test_companion_module.py
-```
-
-To build a local wheel with the matching external development SDK:
-
-```bash
-CMAKE_PREFIX_PATH=/path/to/ttnn-0.79.0-sdk CC=clang-20 CXX=clang++-20 \
-  python -m build --wheel
-```
-
-The official runtime wheel does not provide development CMake packages. Native implementation is in
-`src/ttwt/`, Python bindings in `bindings/`, the Python package in `python/ttwt/`, and tests in
-`tests/cpp/` and `tests/python/`. Installed-wheel, resource-failure and full numerical qualification
-checks live alongside the development regression tests.
-
-Formatting uses clang-format 19.1.4, cmake-format 0.6.13, Black 26.3.1 and mdformat 0.7.22. Run
-Black with `black --check .` and Markdown checks with `mdformat --check README.md`. Apply C++ and
-CMake checks only to owned files; exclude `third_party/`, generated outputs and build directories.
-Historical research reports are excluded from Markdown formatting.
 
 ## License
 
