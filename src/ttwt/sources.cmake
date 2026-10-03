@@ -1,9 +1,10 @@
-set(TTNN_OP_WAVELET_API_HEADERS
+set(TT_WAVELET_HEADERS
     wavelet.hpp
     wavelet_types.hpp
+    runtime_resources.hpp
 )
 
-set(TTNN_OP_WAVELET_SRCS
+set(TT_WAVELET_SRCS
     common/wavelet_host.cpp
     device/ilwt_1d_device_operation.cpp
     device/ilwt_1d_program_factory.cpp
@@ -18,6 +19,5 @@ set(TTNN_OP_WAVELET_SRCS
     device/wavelet_program_utils.cpp
     device/wavelet_tensor_validation.cpp
     wavelet.cpp
+    runtime_resources.cpp
 )
-
-set(TTNN_OP_WAVELET_NANOBIND_SRCS wavelet_nanobind.cpp)

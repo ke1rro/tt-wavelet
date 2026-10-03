@@ -11,14 +11,18 @@
 #include <nanobind/stl/tuple.h>
 
 #include "ttwt/wavelet.hpp"
+#include "ttwt/runtime_resources.hpp"
 
 namespace nb = nanobind;
 
 NB_MODULE(_ttwt, mod) {
     nb::module_::import_("ttnn");
+    mod.def("_set_resource_root", &ttwt::detail::runtime_resources::set_root,
+            nb::call_guard<nb::gil_scoped_release>());
+    mod.def("_get_resource_root", &ttwt::detail::runtime_resources::get_root);
     mod.def(
         "dwt_coeff_len",
-        &ttnn::dwt_coeff_len,
+        &ttwt::dwt_coeff_len,
         R"doc(
 Return the valid coefficient count for one level of ``ttwt.dwt``.
 )doc",
@@ -28,7 +32,7 @@ Return the valid coefficient count for one level of ``ttwt.dwt``.
 
     mod.def(
         "dwt",
-        &ttnn::dwt,
+        &ttwt::dwt,
         R"doc(
 Compute one level of the FP32 1D Discrete Wavelet Transform.
 
@@ -61,7 +65,7 @@ specification.
 
     mod.def(
         "idwt",
-        &ttnn::idwt,
+        &ttwt::idwt,
         R"doc(
 Compute one level of the FP32 1D Inverse Discrete Wavelet Transform.
 
@@ -92,7 +96,7 @@ storage and must not alias either input.
 
     mod.def(
         "dwt_2d",
-        &ttnn::dwt_2d,
+        &ttwt::dwt_2d,
         R"doc(
 Compute one level of the FP32 separable 2D discrete wavelet transform.
 
@@ -119,7 +123,7 @@ inferred specifications.
 
     mod.def(
         "idwt_2d",
-        &ttnn::idwt_2d,
+        &ttwt::idwt_2d,
         R"doc(
 Compute one level of the FP32 separable 2D inverse discrete wavelet transform.
 

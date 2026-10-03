@@ -6,7 +6,7 @@
 
 #include <cstdint>
 
-namespace ttnn::operations::wavelet::device_protocol {
+namespace ttwt::operations::wavelet::device_protocol {
 
 inline constexpr uint32_t kLwt2DTileHeight = 32;
 inline constexpr uint32_t kLwt2DTileWidth = 32;
@@ -70,4 +70,4 @@ static_assert(kLwt2DRouteConfigPageBytes % 64 == 0);
 static_assert(kLwt2DBandConfigPageBytes % 64 == 0);
 static_assert(kLwt2DInitialPlaneCount + 1 == kLwt2DPlaneCount);
 
-}  // namespace ttnn::operations::wavelet::device_protocol
+}  // namespace ttwt::operations::wavelet::device_protocol

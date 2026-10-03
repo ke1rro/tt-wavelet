@@ -6,7 +6,7 @@
 
 #include <cstdint>
 
-namespace ttnn::operations::wavelet {
+namespace ttwt::operations::wavelet {
 
 enum class StepType : uint8_t {
     kPredict = 0,
@@ -16,4 +16,4 @@ enum class StepType : uint8_t {
     kSwap = 4,
 };
 
-}  // namespace ttnn::operations::wavelet
+}  // namespace ttwt::operations::wavelet

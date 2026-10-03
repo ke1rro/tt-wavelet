@@ -7,7 +7,7 @@
 #include "ttwt/device/wavelet_2d_operation_impl.hpp"
 #include "ttwt/device/wavelet_l1_budget.hpp"
 
-namespace ttnn::prim {
+namespace ttwt::prim {
 
 void Ilwt2DDeviceOperation::validate_on_program_cache_miss(
     const operation_attributes_t& operation_attributes, const tensor_args_t& tensor_args) {
@@ -24,18 +24,18 @@ Ilwt2DDeviceOperation::tensor_return_value_t Ilwt2DDeviceOperation::create_outpu
     return detail::create_ilwt_2d_output_tensor(operation_attributes, tensor_args);
 }
 
-Tensor ilwt_2d(
-    const Tensor& ll,
-    const Tensor& lh,
-    const Tensor& hl,
-    const Tensor& hh,
+ttnn::Tensor ilwt_2d(
+    const ttnn::Tensor& ll,
+    const ttnn::Tensor& lh,
+    const ttnn::Tensor& hl,
+    const ttnn::Tensor& hh,
     const operations::wavelet::SchemeId scheme_id,
     const operations::wavelet::BoundaryMode boundary_mode,
     const uint32_t output_height,
     const uint32_t output_width,
-    const MemoryConfig& output_memory_config,
-    const std::optional<Tensor>& preallocated_output) {
-    return device_operation::launch<Ilwt2DDeviceOperation>(
+    const ttnn::MemoryConfig& output_memory_config,
+    const std::optional<ttnn::Tensor>& preallocated_output) {
+    return ttnn::device_operation::launch<Ilwt2DDeviceOperation>(
         Ilwt2DParams{
             .scheme_id = scheme_id,
             .boundary_mode = boundary_mode,
@@ -53,4 +53,4 @@ Tensor ilwt_2d(
         });
 }
 
-}  // namespace ttnn::prim
+}  // namespace ttwt::prim

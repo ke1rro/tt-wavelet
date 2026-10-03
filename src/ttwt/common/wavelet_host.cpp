@@ -10,7 +10,7 @@
 #include <string>
 #include <tt_stl/assert.hpp>
 
-namespace ttnn::operations::wavelet {
+namespace ttwt::operations::wavelet {
 namespace {
 
 [[nodiscard]] constexpr bool parse_boundary_mode(const std::string_view name, BoundaryMode& mode) noexcept {
@@ -72,4 +72,4 @@ uint32_t dwt_coefficient_length(const uint32_t input_length, const SchemeId id) 
     return static_cast<uint32_t>(coefficient_length);
 }
 
-}  // namespace ttnn::operations::wavelet
+}  // namespace ttwt::operations::wavelet

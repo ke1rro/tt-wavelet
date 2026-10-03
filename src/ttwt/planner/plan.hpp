@@ -18,7 +18,7 @@
 #include "ttwt/planner/step.hpp"
 #include "ttwt/planner/pad_split_layout.hpp"
 
-namespace ttnn::operations::wavelet {
+namespace ttwt::operations::wavelet {
 
 enum class StorageSlot : uint8_t {
     kA = 0,
@@ -305,4 +305,4 @@ template <typename Scheme>
     };
 }
 
-}  // namespace ttnn::operations::wavelet
+}  // namespace ttwt::operations::wavelet

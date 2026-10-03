@@ -9,7 +9,7 @@
 #include "api/dataflow/endpoints.h"
 #include "api/dataflow/noc.h"
 
-namespace ttnn::operations::wavelet::kernels::primitives {
+namespace ttwt::operations::wavelet::kernels::primitives {
 
 struct LocalNocCoordinates {
     uint32_t noc_x;
@@ -41,4 +41,4 @@ struct LocalNocCoordinates {
     return local_noc_destination(local_noc_coordinates(noc), address);
 }
 
-}  // namespace ttnn::operations::wavelet::kernels::primitives
+}  // namespace ttwt::operations::wavelet::kernels::primitives

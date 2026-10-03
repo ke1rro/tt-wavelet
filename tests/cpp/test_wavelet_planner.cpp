@@ -27,7 +27,7 @@
 
 namespace {
 
-namespace wavelet = ttnn::operations::wavelet;
+namespace wavelet = ttwt::operations::wavelet;
 
 struct PlannerTestScheme {
     static constexpr uint32_t tap_size = 2;
@@ -780,7 +780,7 @@ TEST(WaveletPlanner, LongSignalComputeRouteCountsFitRuntimeArgs) {
             }
         }
         ASSERT_GT(group_counts.size() + 3, 4094U);
-        const auto encoded = ttnn::prim::wavelet_program_utils::encode_compute_route_counts(group_counts, route_count);
+        const auto encoded = ttwt::prim::wavelet_program_utils::encode_compute_route_counts(group_counts, route_count);
         ASSERT_LE(encoded.size() + 2, 4094U);
         ASSERT_EQ(encoded.front(), plan.chunks.size());
         size_t run_base = 1;

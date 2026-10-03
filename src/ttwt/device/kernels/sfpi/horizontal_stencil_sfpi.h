@@ -175,7 +175,7 @@ inline void _horizontal_stencil_dense_tile(
     const uint32_t base,
     const uint32_t output) {
     static_assert(
-        K > 0 && K <= ttnn::operations::wavelet::device_protocol::kStepCoeffCapacity,
+        K > 0 && K <= ttwt::operations::wavelet::device_protocol::kStepCoeffCapacity,
         "Dense horizontal stencil coefficient count exceeds device capacity");
     math::set_dst_write_addr<DstTileShape::Tile32x32, UnpackDestination::SrcRegs>(0);
     _lwt_clear_addr_mod_base_();

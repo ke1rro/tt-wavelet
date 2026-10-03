@@ -16,7 +16,7 @@
 #define ALWI inline __attribute__((always_inline))
 #endif
 
-namespace ttnn::operations::wavelet::kernels::primitives {
+namespace ttwt::operations::wavelet::kernels::primitives {
 
 class ConfigWords {
 public:
@@ -77,4 +77,4 @@ ALWI void load_config_page(
     config_buffer.pop_front(1);
 }
 
-}  // namespace ttnn::operations::wavelet::kernels::primitives
+}  // namespace ttwt::operations::wavelet::kernels::primitives

@@ -7,7 +7,7 @@
 #include "ttwt/device/wavelet_1d_operation_impl.hpp"
 #include "ttwt/device/wavelet_l1_budget.hpp"
 
-namespace ttnn::prim {
+namespace ttwt::prim {
 
 void Ilwt1DDeviceOperation::validate_on_program_cache_miss(
     const operation_attributes_t& operation_attributes, const tensor_args_t& tensor_args) {
@@ -24,15 +24,15 @@ Ilwt1DDeviceOperation::tensor_return_value_t Ilwt1DDeviceOperation::create_outpu
     return detail::create_ilwt_1d_output_tensor(operation_attributes, tensor_args);
 }
 
-Tensor ilwt(
-    const Tensor& approximation,
-    const Tensor& detail,
+ttnn::Tensor ilwt(
+    const ttnn::Tensor& approximation,
+    const ttnn::Tensor& detail,
     const operations::wavelet::SchemeId scheme_id,
     const operations::wavelet::BoundaryMode boundary_mode,
     const uint32_t original_length,
-    const MemoryConfig& output_memory_config,
-    const std::optional<Tensor>& preallocated_output) {
-    return device_operation::launch<Ilwt1DDeviceOperation>(
+    const ttnn::MemoryConfig& output_memory_config,
+    const std::optional<ttnn::Tensor>& preallocated_output) {
+    return ttnn::device_operation::launch<Ilwt1DDeviceOperation>(
         Ilwt1DParams{
             .scheme_id = scheme_id,
             .boundary_mode = boundary_mode,
@@ -47,4 +47,4 @@ Tensor ilwt(
         });
 }
 
-}  // namespace ttnn::prim
+}  // namespace ttwt::prim

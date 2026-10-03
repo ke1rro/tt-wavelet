@@ -7,7 +7,7 @@
 #include "ttwt/device/wavelet_1d_operation_impl.hpp"
 #include "ttwt/device/wavelet_l1_budget.hpp"
 
-namespace ttnn::prim {
+namespace ttwt::prim {
 
 void Lwt1DDeviceOperation::validate_on_program_cache_miss(
     const operation_attributes_t& operation_attributes, const tensor_args_t& tensor_args) {
@@ -25,12 +25,12 @@ Lwt1DDeviceOperation::tensor_return_value_t Lwt1DDeviceOperation::create_output_
 }
 
 Lwt1DOutputs lwt(
-    const Tensor& input,
+    const ttnn::Tensor& input,
     const operations::wavelet::SchemeId scheme_id,
     const operations::wavelet::BoundaryMode boundary_mode,
-    const MemoryConfig& output_memory_config,
+    const ttnn::MemoryConfig& output_memory_config,
     const std::optional<Lwt1DOutputs>& preallocated_outputs) {
-    return device_operation::launch<Lwt1DDeviceOperation>(
+    return ttnn::device_operation::launch<Lwt1DDeviceOperation>(
         Lwt1DParams{
             .scheme_id = scheme_id,
             .boundary_mode = boundary_mode,
@@ -43,4 +43,4 @@ Lwt1DOutputs lwt(
         });
 }
 
-}  // namespace ttnn::prim
+}  // namespace ttwt::prim

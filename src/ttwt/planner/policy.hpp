@@ -13,7 +13,7 @@
 #include "ttwt/planner/cost_model.hpp"
 #include "ttwt/planner/execution_plan.hpp"
 
-namespace ttnn::operations::wavelet {
+namespace ttwt::operations::wavelet {
 
 struct ArchitecturePolicy {
     tt::ARCH architecture{tt::ARCH::Invalid};
@@ -48,4 +48,4 @@ struct ArchitecturePolicy {
     }
 }
 
-}  // namespace ttnn::operations::wavelet
+}  // namespace ttwt::operations::wavelet

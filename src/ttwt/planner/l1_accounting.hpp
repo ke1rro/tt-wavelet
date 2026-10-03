@@ -9,7 +9,7 @@
 
 #include "ttwt/device/protocol/lwt_config.hpp"
 
-namespace ttnn::operations::wavelet {
+namespace ttwt::operations::wavelet {
 
 namespace l1_detail {
 
@@ -63,4 +63,4 @@ static_assert(kOutputTileCircularBufferBytes == 12288);
     return total_bytes;
 }
 
-}  // namespace ttnn::operations::wavelet
+}  // namespace ttwt::operations::wavelet

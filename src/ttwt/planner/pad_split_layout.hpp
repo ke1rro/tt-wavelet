@@ -10,7 +10,7 @@
 #include "ttwt/common/boundary.hpp"
 #include "ttwt/common/signal.hpp"
 
-namespace ttnn::operations::wavelet {
+namespace ttwt::operations::wavelet {
 
 struct Pad1DConfig {
     BoundaryMode mode{BoundaryMode::kSymmetric};
@@ -35,4 +35,4 @@ struct PadSplit1DLayout {
     return PadSplit1DLayout{.input = input, .pad_config = config, .output = make_split_signal(input, length)};
 }
 
-}  // namespace ttnn::operations::wavelet
+}  // namespace ttwt::operations::wavelet

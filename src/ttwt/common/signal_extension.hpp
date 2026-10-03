@@ -9,7 +9,7 @@
 
 #define WAVELET_EXTENSION_ALWI inline __attribute__((always_inline))
 
-namespace ttnn::operations::wavelet {
+namespace ttwt::operations::wavelet {
 
 enum class ExtensionOperation : uint8_t {
     kZero = 0,
@@ -381,6 +381,6 @@ WAVELET_EXTENSION_ALWI void visit_extended_source_indices_i32(
     detail::BoundaryExtensionPolicy<Mode>::visit_i32(extended, length, consume);
 }
 
-}  // namespace ttnn::operations::wavelet
+}  // namespace ttwt::operations::wavelet
 
 #undef WAVELET_EXTENSION_ALWI

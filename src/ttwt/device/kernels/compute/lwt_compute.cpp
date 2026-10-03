@@ -18,7 +18,7 @@
 // clang-format off
 #include "api/compute/common.h"
 #include "api/dataflow/circular_buffer.h"
-#include "api/compute/experimental/tile_move_copy_32x16.h"
+#include "../primitives/tile_move_copy_32x16.h"
 #include "../../protocol/lwt_config.hpp"
 #include "../../../planner/static_scheme.hpp"
 #include "../sfpi/horizontal_stencil_sfpi.h"
@@ -33,7 +33,7 @@
 #define ILWT_INLINE_INVERSE_SCALE 0
 #endif
 
-namespace ttnn::operations::wavelet::kernels {
+namespace ttwt::operations::wavelet::kernels {
 
 // Seven 32x16 FP32 tiles fit in the four 32x32 slots available under
 // tile_regs_acquire(). Place outputs on even narrow tile indices so the
@@ -435,7 +435,7 @@ void lwt_compute() {
     }
 }
 
-}  // namespace ttnn::operations::wavelet::kernels
+}  // namespace ttwt::operations::wavelet::kernels
 
 #undef WAVELET_1D_STEP_ATTRIBUTES
 
@@ -444,5 +444,5 @@ void kernel_main() {
     constexpr uint32_t cb_output = get_compile_time_arg_val(3);
     compute_kernel_hw_startup(cb_base, cb_output);
     copy_init(cb_base);
-    ttnn::operations::wavelet::kernels::lwt_compute<WAVELET_1D_ACTIVE_SCHEME_TYPE>();
+    ttwt::operations::wavelet::kernels::lwt_compute<WAVELET_1D_ACTIVE_SCHEME_TYPE>();
 }

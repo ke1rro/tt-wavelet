@@ -8,7 +8,7 @@
 
 #include "../../common/storage_contract.hpp"
 
-namespace ttnn::operations::wavelet::device_protocol {
+namespace ttwt::operations::wavelet::device_protocol {
 
 constexpr uint32_t kStepCoeffCapacity = 17;
 constexpr uint32_t kStickBytes = kStickPageBytes;
@@ -86,4 +86,4 @@ enum class LwtChunkConfigWord : uint32_t {
     return static_cast<uint32_t>(word);
 }
 
-}  // namespace ttnn::operations::wavelet::device_protocol
+}  // namespace ttwt::operations::wavelet::device_protocol

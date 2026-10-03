@@ -34,11 +34,12 @@
 #include "ttwt/planner/plan_2d.hpp"
 #include "ttwt/planner/policy.hpp"
 #include "ttnn/tensor/tensor_ops.hpp"
+#include "ttwt/runtime_resources.hpp"
 
-namespace ttnn::prim {
+namespace ttwt::prim {
 
 using namespace operations::wavelet;
-using wavelet_program_utils::add_generated_scheme_include_path;
+using wavelet_program_utils::add_runtime_resource_include_path;
 using wavelet_program_utils::checked_u32;
 using wavelet_program_utils::core_range_set;
 using wavelet_program_utils::CoreChunkWork;
@@ -61,9 +62,9 @@ constexpr uint32_t kOutputCb = tt::CBIndex::c_16;
 constexpr uint32_t kTileBuffering = 2;
 constexpr uint32_t kConfigNocAlignmentBytes = 64;
 
-constexpr const char* kReaderKernel = TT_WAVELET_KERNEL_ROOT "/dataflow/lwt_2d_reader.cpp";
-constexpr const char* kComputeKernel = TT_WAVELET_KERNEL_ROOT "/compute/lwt_2d_compute.cpp";
-constexpr const char* kWriterKernel = TT_WAVELET_KERNEL_ROOT "/dataflow/lwt_2d_writer.cpp";
+constexpr const char* kReaderKernel = "dataflow/lwt_2d_reader.cpp";
+constexpr const char* kComputeKernel = "compute/lwt_2d_compute.cpp";
+constexpr const char* kWriterKernel = "dataflow/lwt_2d_writer.cpp";
 
 [[nodiscard]] constexpr uint32_t split_scratch_tile_count(const BoundaryMode boundary_mode, const bool inverse) {
     return !inverse && boundary_mode == BoundaryMode::kSymmetric ? device_protocol::kLwt2DSymmetricSplitScratchTileCount
@@ -86,7 +87,7 @@ struct Logical2DShape {
     bool rank_four{false};
 };
 
-[[nodiscard]] Logical2DShape logical_2d_shape(const Tensor& tensor, const char* tensor_name) {
+[[nodiscard]] Logical2DShape logical_2d_shape(const ttnn::Tensor& tensor, const char* tensor_name) {
     const auto& shape = tensor.logical_shape();
     if (shape.rank() == 2) {
         return Logical2DShape{
@@ -108,7 +109,7 @@ struct Logical2DShape {
 }
 
 [[nodiscard]] uint32_t tile_pages_per_batch_item(
-    const Tensor& tensor, const uint32_t batch_count, const char* tensor_name) {
+    const ttnn::Tensor& tensor, const uint32_t batch_count, const char* tensor_name) {
     TT_FATAL(batch_count > 0, "{} batch count must be positive", tensor_name);
     const uint64_t physical_elements = tensor.physical_volume();
     TT_FATAL(
@@ -373,9 +374,9 @@ template <typename Plan>
         reader_defines.emplace_back("ILWT_2D", "1");
     }
     tt::tt_metal::KernelDescriptor reader_descriptor;
-    reader_descriptor.kernel_source = kReaderKernel;
+    reader_descriptor.kernel_source = ttwt::detail::runtime_resources::kernel_path(kReaderKernel);
     reader_descriptor.source_type = tt::tt_metal::KernelDescriptor::SourceType::FILE_PATH;
-    add_generated_scheme_include_path(reader_descriptor);
+    add_runtime_resource_include_path(reader_descriptor);
     reader_descriptor.core_ranges = cores;
     reader_descriptor.compile_time_args = std::move(reader_compile_args);
     reader_descriptor.defines = std::move(reader_defines);
@@ -396,9 +397,9 @@ template <typename Plan>
         writer_defines.emplace_back("ILWT_2D", "1");
     }
     tt::tt_metal::KernelDescriptor writer_descriptor;
-    writer_descriptor.kernel_source = kWriterKernel;
+    writer_descriptor.kernel_source = ttwt::detail::runtime_resources::kernel_path(kWriterKernel);
     writer_descriptor.source_type = tt::tt_metal::KernelDescriptor::SourceType::FILE_PATH;
-    add_generated_scheme_include_path(writer_descriptor);
+    add_runtime_resource_include_path(writer_descriptor);
     writer_descriptor.core_ranges = cores;
     writer_descriptor.compile_time_args = std::move(writer_compile_args);
     writer_descriptor.defines = std::move(writer_defines);
@@ -411,20 +412,20 @@ template <typename Plan>
     unpack_modes[kBaseCb] = tt::tt_metal::UnpackToDestMode::UnpackToDestFp32;
     tt::tt_metal::KernelDescriptor::Defines compute_defines;
     if (inverse) {
-        compute_defines.emplace_back("ILWT_2D_SCHEME_HEADER", compute_scheme_header);
+        compute_defines.emplace_back("ILWT_2D_SCHEME_HEADER", ttwt::detail::runtime_resources::scheme_header(compute_scheme_header));
         compute_defines.emplace_back("ILWT_2D_SCHEME_TYPE", compute_scheme_type);
         compute_defines.emplace_back("ILWT_2D", "1");
     } else {
-        compute_defines.emplace_back("LWT_2D_SCHEME_HEADER", compute_scheme_header);
+        compute_defines.emplace_back("LWT_2D_SCHEME_HEADER", ttwt::detail::runtime_resources::scheme_header(compute_scheme_header));
         compute_defines.emplace_back("LWT_2D_SCHEME_TYPE", compute_scheme_type);
     }
     tt::tt_metal::KernelDescriptor compute_descriptor;
-    compute_descriptor.kernel_source = kComputeKernel;
+    compute_descriptor.kernel_source = ttwt::detail::runtime_resources::kernel_path(kComputeKernel);
     compute_descriptor.source_type = tt::tt_metal::KernelDescriptor::SourceType::FILE_PATH;
     compute_descriptor.core_ranges = cores;
     compute_descriptor.compile_time_args = {kSource0Cb, kSource1Cb, kBaseCb, kOutputCb};
     compute_descriptor.defines = std::move(compute_defines);
-    add_generated_scheme_include_path(compute_descriptor);
+    add_runtime_resource_include_path(compute_descriptor);
     compute_descriptor.config = tt::tt_metal::ComputeConfigDescriptor{
         .math_fidelity = tt::tt_metal::MathFidelity::HiFi4,
         .fp32_dest_acc_en = true,
@@ -443,9 +444,9 @@ namespace {
 
 constexpr uint32_t kL1SignalBudgetBytes2D = 768 * 1024;
 
-void validate_2d_tensor(const Tensor& tensor, const char* tensor_name) {
+void validate_2d_tensor(const ttnn::Tensor& tensor, const char* tensor_name) {
     wavelet_tensor_validation::validate_device_tensor(tensor, tensor_name);
-    TT_FATAL(tensor.layout() == Layout::TILE, "{} must use TILE layout", tensor_name);
+    TT_FATAL(tensor.layout() == ttnn::Layout::TILE, "{} must use TILE layout", tensor_name);
     const Logical2DShape shape = logical_2d_shape(tensor, tensor_name);
     TT_FATAL(shape.height > 0 && shape.width > 0, "{} height and width must be positive", tensor_name);
     const auto tile = tensor.tensor_spec().tile();
@@ -478,16 +479,16 @@ void validate_2d_tensor(const Tensor& tensor, const char* tensor_name) {
 }
 
 [[nodiscard]] tt::tt_metal::TensorSpec output_spec_2d(
-    const Logical2DShape& input_shape, const uint32_t height, const uint32_t width, const MemoryConfig& memory_config) {
-    const Shape output_shape =
-        input_shape.rank_four ? Shape({input_shape.batch_count, 1, height, width}) : Shape({height, width});
+    const Logical2DShape& input_shape, const uint32_t height, const uint32_t width, const ttnn::MemoryConfig& memory_config) {
+    const ttnn::Shape output_shape =
+        input_shape.rank_four ? ttnn::Shape({input_shape.batch_count, 1, height, width}) : ttnn::Shape({height, width});
     return tt::tt_metal::TensorSpec(
         output_shape,
-        tt::tt_metal::TensorLayout(DataType::FLOAT32, tt::tt_metal::PageConfig(Layout::TILE), memory_config));
+        tt::tt_metal::TensorLayout(ttnn::DataType::FLOAT32, tt::tt_metal::PageConfig(ttnn::Layout::TILE), memory_config));
 }
 
 void validate_preallocated_output_2d(
-    const Tensor& output,
+    const ttnn::Tensor& output,
     const tt::tt_metal::TensorSpec& expected_spec,
     const tt::tt_metal::distributed::MeshDevice* expected_device,
     const char* output_name) {
@@ -549,8 +550,8 @@ template <typename Scheme>
 [[nodiscard]] tt::tt_metal::WorkloadDescriptor build_forward_workload_2d(
     const Lwt2DParams& operation_attributes,
     const Lwt2DInputs& tensor_args,
-    std::tuple<Tensor, Tensor, Tensor, Tensor>& tensor_return_value,
-    const MeshCoordinateRangeSet& tensor_coords) {
+    std::tuple<ttnn::Tensor, ttnn::Tensor, ttnn::Tensor, ttnn::Tensor>& tensor_return_value,
+    const ttnn::MeshCoordinateRangeSet& tensor_coords) {
     auto& mesh_device = *tensor_args.input.device();
     const auto& input_buffer = *tensor_args.input.buffer();
     const Logical2DShape input_shape = logical_2d_shape(tensor_args.input, "2D DWT input");
@@ -647,7 +648,7 @@ template <typename Scheme>
         work.begin(), work.end(), [](const auto& lhs, const auto& rhs) { return lhs.chunk_count < rhs.chunk_count; });
     log_debug(
         tt::LogOp,
-        "ttnn::dwt_2d batch scheduler: B={}, chunks_per_sample={}, total_work_items={}, active_cores={}, "
+        "ttwt::dwt_2d batch scheduler: B={}, chunks_per_sample={}, total_work_items={}, active_cores={}, "
         "work_items_per_core={}..{}, max_per_core_workspace_bytes={}",
         input_shape.batch_count,
         chunks_per_sample,
@@ -677,8 +678,8 @@ template <typename Scheme>
 [[nodiscard]] tt::tt_metal::WorkloadDescriptor build_inverse_workload_2d(
     const Ilwt2DParams& operation_attributes,
     const Ilwt2DInputs& tensor_args,
-    Tensor& tensor_return_value,
-    const MeshCoordinateRangeSet& tensor_coords) {
+    ttnn::Tensor& tensor_return_value,
+    const ttnn::MeshCoordinateRangeSet& tensor_coords) {
     auto& mesh_device = *tensor_args.ll.device();
     const Logical2DShape band_shape = logical_2d_shape(tensor_args.ll, "2D ILWT LL input");
     const std::array<const tt::tt_metal::Buffer*, device_protocol::kLwt2DBandCount> band_buffers = {
@@ -772,7 +773,7 @@ template <typename Scheme>
         work.begin(), work.end(), [](const auto& lhs, const auto& rhs) { return lhs.chunk_count < rhs.chunk_count; });
     log_debug(
         tt::LogOp,
-        "ttnn::idwt_2d batch scheduler: B={}, chunks_per_sample={}, total_work_items={}, active_cores={}, "
+        "ttwt::idwt_2d batch scheduler: B={}, chunks_per_sample={}, total_work_items={}, active_cores={}, "
         "work_items_per_core={}..{}, max_per_core_workspace_bytes={}",
         band_shape.batch_count,
         chunks_per_sample,
@@ -837,7 +838,7 @@ void validate_forward_inputs_2d(const Lwt2DParams& operation_attributes, const L
 }
 
 void validate_inverse_inputs_2d(const Ilwt2DParams& operation_attributes, const Ilwt2DInputs& tensor_args) {
-    const std::array<const Tensor*, 4> inputs = {&tensor_args.ll, &tensor_args.lh, &tensor_args.hl, &tensor_args.hh};
+    const std::array<const ttnn::Tensor*, 4> inputs = {&tensor_args.ll, &tensor_args.lh, &tensor_args.hl, &tensor_args.hh};
     for (const auto* input : inputs) {
         validate_2d_tensor(*input, "2D IDWT input band");
         wavelet_tensor_validation::validate_same_device(
@@ -901,7 +902,7 @@ tt::tt_metal::WorkloadDescriptor create_lwt_2d_workload(
     const Lwt2DParams& operation_attributes,
     const Lwt2DInputs& tensor_args,
     Lwt2DOutputs& tensor_return_value,
-    const MeshCoordinateRangeSet& tensor_coords) {
+    const ttnn::MeshCoordinateRangeSet& tensor_coords) {
     return dispatch_scheme(operation_attributes.scheme_id, [&]<typename Scheme>() {
         return build_forward_workload_2d<Scheme>(operation_attributes, tensor_args, tensor_return_value, tensor_coords);
     });
@@ -934,18 +935,18 @@ Lwt2DOutputs create_lwt_2d_output_tensors(const Lwt2DParams& operation_attribute
     }
     auto specs = compute_lwt_2d_output_specs(operation_attributes, tensor_args);
     return {
-        create_device_tensor(std::get<0>(specs), tensor_args.input.device()),
-        create_device_tensor(std::get<1>(specs), tensor_args.input.device()),
-        create_device_tensor(std::get<2>(specs), tensor_args.input.device()),
-        create_device_tensor(std::get<3>(specs), tensor_args.input.device()),
+        ttnn::create_device_tensor(std::get<0>(specs), tensor_args.input.device()),
+        ttnn::create_device_tensor(std::get<1>(specs), tensor_args.input.device()),
+        ttnn::create_device_tensor(std::get<2>(specs), tensor_args.input.device()),
+        ttnn::create_device_tensor(std::get<3>(specs), tensor_args.input.device()),
     };
 }
 
 tt::tt_metal::WorkloadDescriptor create_ilwt_2d_workload(
     const Ilwt2DParams& operation_attributes,
     const Ilwt2DInputs& tensor_args,
-    Tensor& tensor_return_value,
-    const MeshCoordinateRangeSet& tensor_coords) {
+    ttnn::Tensor& tensor_return_value,
+    const ttnn::MeshCoordinateRangeSet& tensor_coords) {
     return dispatch_scheme(operation_attributes.scheme_id, [&]<typename Scheme>() {
         return build_inverse_workload_2d<Scheme>(operation_attributes, tensor_args, tensor_return_value, tensor_coords);
     });
@@ -964,14 +965,14 @@ tt::tt_metal::TensorSpec compute_ilwt_2d_output_spec(
         operation_attributes.output_memory_config);
 }
 
-Tensor create_ilwt_2d_output_tensor(const Ilwt2DParams& operation_attributes, const Ilwt2DInputs& tensor_args) {
+ttnn::Tensor create_ilwt_2d_output_tensor(const Ilwt2DParams& operation_attributes, const Ilwt2DInputs& tensor_args) {
     if (tensor_args.preallocated_output.has_value()) {
         return *tensor_args.preallocated_output;
     }
-    return create_device_tensor(
+    return ttnn::create_device_tensor(
         compute_ilwt_2d_output_spec(operation_attributes, tensor_args), tensor_args.ll.device());
 }
 
 }  // namespace detail
 
-}  // namespace ttnn::prim
+}  // namespace ttwt::prim

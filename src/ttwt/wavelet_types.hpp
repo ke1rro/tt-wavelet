@@ -7,8 +7,8 @@
 #include <array>
 #include <cstdint>
 
-namespace ttnn {
+namespace ttwt {
 
 using WaveletOutputShape2D = std::array<uint32_t, 2>;
 
-}  // namespace ttnn
+}  // namespace ttwt

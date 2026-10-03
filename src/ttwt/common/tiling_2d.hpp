@@ -11,7 +11,7 @@
 
 #include "tt-metalium/math.hpp"
 
-namespace ttnn::operations::wavelet {
+namespace ttwt::operations::wavelet {
 
 inline constexpr size_t kTileHeight2D = 32;
 inline constexpr size_t kTileWidth2D = 32;
@@ -106,4 +106,4 @@ inline void validate_lwt_2d_tiling_contract(const Lwt2DTilingContract& contract)
     validate_tiled_shape_2d(contract.band, "2D LWT output band");
 }
 
-}  // namespace ttnn::operations::wavelet
+}  // namespace ttwt::operations::wavelet

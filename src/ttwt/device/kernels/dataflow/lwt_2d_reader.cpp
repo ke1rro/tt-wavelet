@@ -18,17 +18,17 @@
 
 namespace {
 
-using ttnn::operations::wavelet::kernels::primitives::ConfigWords;
-using ttnn::operations::wavelet::kernels::primitives::kFaceSide;
-using ttnn::operations::wavelet::kernels::primitives::kTileBytes;
-using ttnn::operations::wavelet::kernels::primitives::kTileElements;
-using ttnn::operations::wavelet::kernels::primitives::kTileSide;
-using ttnn::operations::wavelet::kernels::primitives::load_config_page;
-using ttnn::operations::wavelet::kernels::primitives::preload_config_pages;
-using ttnn::operations::wavelet::kernels::primitives::tile_element_offset;
-using ttnn::operations::wavelet::kernels::primitives::tile_face_column_offset;
-using ttnn::operations::wavelet::kernels::primitives::tile_face_row_offset;
-using ttnn::operations::wavelet::kernels::primitives::tiled_element_offset;
+using ttwt::operations::wavelet::kernels::primitives::ConfigWords;
+using ttwt::operations::wavelet::kernels::primitives::kFaceSide;
+using ttwt::operations::wavelet::kernels::primitives::kTileBytes;
+using ttwt::operations::wavelet::kernels::primitives::kTileElements;
+using ttwt::operations::wavelet::kernels::primitives::kTileSide;
+using ttwt::operations::wavelet::kernels::primitives::load_config_page;
+using ttwt::operations::wavelet::kernels::primitives::preload_config_pages;
+using ttwt::operations::wavelet::kernels::primitives::tile_element_offset;
+using ttwt::operations::wavelet::kernels::primitives::tile_face_column_offset;
+using ttwt::operations::wavelet::kernels::primitives::tile_face_row_offset;
+using ttwt::operations::wavelet::kernels::primitives::tiled_element_offset;
 
 struct Rect {
     uint32_t y_begin{0};
@@ -39,10 +39,10 @@ struct Rect {
     Rect() = default;
 
     ALWI Rect(const ConfigWords words, const uint32_t offset) :
-        y_begin(words[offset + ttnn::operations::wavelet::device_protocol::kLwt2DRectYBegin]),
-        y_length(words[offset + ttnn::operations::wavelet::device_protocol::kLwt2DRectYLength]),
-        x_begin(words[offset + ttnn::operations::wavelet::device_protocol::kLwt2DRectXBegin]),
-        x_length(words[offset + ttnn::operations::wavelet::device_protocol::kLwt2DRectXLength]) {}
+        y_begin(words[offset + ttwt::operations::wavelet::device_protocol::kLwt2DRectYBegin]),
+        y_length(words[offset + ttwt::operations::wavelet::device_protocol::kLwt2DRectYLength]),
+        x_begin(words[offset + ttwt::operations::wavelet::device_protocol::kLwt2DRectXBegin]),
+        x_length(words[offset + ttwt::operations::wavelet::device_protocol::kLwt2DRectXLength]) {}
 };
 
 [[nodiscard]] ALWI uint32_t aligned_begin(const uint32_t value) { return (value / kTileSide) * kTileSide; }
@@ -51,12 +51,12 @@ struct Rect {
     return ((begin + length + kTileSide - 1) / kTileSide) * kTileSide;
 }
 
-template <ttnn::operations::wavelet::BoundaryMode Mode>
+template <ttwt::operations::wavelet::BoundaryMode Mode>
 struct SplitSourceTiles {
     static constexpr uint32_t kAxisCapacity =
-        Mode == ttnn::operations::wavelet::BoundaryMode::kSymmetric
-            ? ttnn::operations::wavelet::device_protocol::kLwt2DSymmetricSplitScratchTileRows
-            : ttnn::operations::wavelet::device_protocol::kLwt2DSplitScratchTileRows;
+        Mode == ttwt::operations::wavelet::BoundaryMode::kSymmetric
+            ? ttwt::operations::wavelet::device_protocol::kLwt2DSymmetricSplitScratchTileRows
+            : ttwt::operations::wavelet::device_protocol::kLwt2DSplitScratchTileRows;
     uint32_t rows[kAxisCapacity];
     uint32_t columns[kAxisCapacity];
     uint32_t row_count;
@@ -102,12 +102,12 @@ template <uint32_t Capacity>
     __builtin_trap();
 }
 
-template <ttnn::operations::wavelet::BoundaryMode Mode>
+template <ttwt::operations::wavelet::BoundaryMode Mode>
 __attribute__((noinline)) void collect_boundary_source_axis_tiles(
     uint32_t* tiles, uint32_t& count, const uint32_t capacity, const int32_t raw_begin, const uint32_t logical_length) {
-    if constexpr (Mode == ttnn::operations::wavelet::BoundaryMode::kSymmetric) {
+    if constexpr (Mode == ttwt::operations::wavelet::BoundaryMode::kSymmetric) {
         for (uint32_t offset = 0; offset < 2 * kTileSide; ++offset) {
-            const uint32_t source_tile = ttnn::operations::wavelet::make_symmetric_index_i32(
+            const uint32_t source_tile = ttwt::operations::wavelet::make_symmetric_index_i32(
                                              raw_begin + static_cast<int32_t>(offset), logical_length) /
                                          kTileSide;
             bool found = false;
@@ -128,35 +128,35 @@ __attribute__((noinline)) void collect_boundary_source_axis_tiles(
         .count = count,
         .capacity = capacity,
     };
-    if constexpr (Mode == ttnn::operations::wavelet::BoundaryMode::kAntireflect) {
+    if constexpr (Mode == ttwt::operations::wavelet::BoundaryMode::kAntireflect) {
         for (uint32_t offset = 0; offset < 2 * kTileSide; ++offset) {
             const int32_t raw_index = raw_begin + static_cast<int32_t>(offset);
-            const ttnn::operations::wavelet::AntireflectIndexI32 extended =
-                ttnn::operations::wavelet::make_antireflect_index_i32(raw_index, logical_length);
+            const ttwt::operations::wavelet::AntireflectIndexI32 extended =
+                ttwt::operations::wavelet::make_antireflect_index_i32(raw_index, logical_length);
             collector(extended.source_index);
         }
         // Affine extension may use both endpoint values, but their tile IDs
         // are invariant across this whole macro tile.
         collector(0);
         collector(logical_length - 1U);
-    } else if constexpr (Mode == ttnn::operations::wavelet::BoundaryMode::kSmooth) {
+    } else if constexpr (Mode == ttwt::operations::wavelet::BoundaryMode::kSmooth) {
         for (uint32_t offset = 0; offset < 2 * kTileSide; ++offset) {
             const int32_t raw_index = raw_begin + static_cast<int32_t>(offset);
-            const ttnn::operations::wavelet::SmoothIndexI32 extended =
-                ttnn::operations::wavelet::make_smooth_index_i32(raw_index, logical_length);
-            ttnn::operations::wavelet::visit_smooth_source_indices_i32(extended, collector);
+            const ttwt::operations::wavelet::SmoothIndexI32 extended =
+                ttwt::operations::wavelet::make_smooth_index_i32(raw_index, logical_length);
+            ttwt::operations::wavelet::visit_smooth_source_indices_i32(extended, collector);
         }
     } else {
         for (uint32_t offset = 0; offset < 2 * kTileSide; ++offset) {
             const int32_t raw_index = raw_begin + static_cast<int32_t>(offset);
-            const ttnn::operations::wavelet::ExtendedIndexI32 extended =
-                ttnn::operations::wavelet::make_extended_index_i32<Mode>(raw_index, logical_length);
-            ttnn::operations::wavelet::visit_extended_source_indices_i32<Mode>(extended, logical_length, collector);
+            const ttwt::operations::wavelet::ExtendedIndexI32 extended =
+                ttwt::operations::wavelet::make_extended_index_i32<Mode>(raw_index, logical_length);
+            ttwt::operations::wavelet::visit_extended_source_indices_i32<Mode>(extended, logical_length, collector);
         }
     }
 }
 
-template <bool Interior, ttnn::operations::wavelet::BoundaryMode Mode>
+template <bool Interior, ttwt::operations::wavelet::BoundaryMode Mode>
 ALWI void collect_source_axis_tiles(
     uint32_t* tiles, uint32_t& count, const uint32_t capacity, const int32_t raw_begin, const uint32_t logical_length) {
     if constexpr (Interior) {
@@ -173,7 +173,7 @@ ALWI void collect_source_axis_tiles(
     }
 }
 
-template <bool Interior, ttnn::operations::wavelet::BoundaryMode Mode, typename InputAccessor>
+template <bool Interior, ttwt::operations::wavelet::BoundaryMode Mode, typename InputAccessor>
 [[nodiscard]] ALWI SplitSourceTiles<Mode> stage_split_source_tiles(
     const InputAccessor& input,
     const uint32_t input_height,
@@ -206,7 +206,7 @@ template <bool Interior, ttnn::operations::wavelet::BoundaryMode Mode, typename 
     return tiles;
 }
 
-template <ttnn::operations::wavelet::BoundaryMode Mode>
+template <ttwt::operations::wavelet::BoundaryMode Mode>
 struct StagedInputColumnReader {
     uint32_t source_y;
     const SplitSourceTiles<Mode>& source_tiles;
@@ -222,15 +222,15 @@ struct StagedInputColumnReader {
     }
 };
 
-template <ttnn::operations::wavelet::BoundaryMode Mode>
+template <ttwt::operations::wavelet::BoundaryMode Mode>
 struct StagedInputRowReader {
-    const ttnn::operations::wavelet::ExtendedIndexI32& x_extended;
+    const ttwt::operations::wavelet::ExtendedIndexI32& x_extended;
     uint32_t input_width;
     const SplitSourceTiles<Mode>& source_tiles;
     uint32_t scratch_addr;
 
     ALWI float operator()(const uint32_t source_y) const {
-        return ttnn::operations::wavelet::evaluate_extended_index_i32<Mode>(
+        return ttwt::operations::wavelet::evaluate_extended_index_i32<Mode>(
             x_extended,
             input_width,
             StagedInputColumnReader<Mode>{
@@ -242,16 +242,16 @@ struct StagedInputRowReader {
 };
 
 struct StagedAntireflectInputRowReader {
-    const ttnn::operations::wavelet::AntireflectIndexI32& x_extended;
+    const ttwt::operations::wavelet::AntireflectIndexI32& x_extended;
     uint32_t input_width;
-    const SplitSourceTiles<ttnn::operations::wavelet::BoundaryMode::kAntireflect>& source_tiles;
+    const SplitSourceTiles<ttwt::operations::wavelet::BoundaryMode::kAntireflect>& source_tiles;
     uint32_t scratch_addr;
 
     __attribute__((noinline)) float operator()(const uint32_t source_y) const {
-        return ttnn::operations::wavelet::evaluate_antireflect_index_i32(
+        return ttwt::operations::wavelet::evaluate_antireflect_index_i32(
             x_extended,
             input_width,
-            StagedInputColumnReader<ttnn::operations::wavelet::BoundaryMode::kAntireflect>{
+            StagedInputColumnReader<ttwt::operations::wavelet::BoundaryMode::kAntireflect>{
                 .source_y = source_y,
                 .source_tiles = source_tiles,
                 .scratch_addr = scratch_addr,
@@ -260,14 +260,14 @@ struct StagedAntireflectInputRowReader {
 };
 
 struct StagedSmoothInputRowReader {
-    const ttnn::operations::wavelet::SmoothIndexI32& x_extended;
-    const SplitSourceTiles<ttnn::operations::wavelet::BoundaryMode::kSmooth>& source_tiles;
+    const ttwt::operations::wavelet::SmoothIndexI32& x_extended;
+    const SplitSourceTiles<ttwt::operations::wavelet::BoundaryMode::kSmooth>& source_tiles;
     uint32_t scratch_addr;
 
     __attribute__((noinline)) float operator()(const uint32_t source_y) const {
-        return ttnn::operations::wavelet::evaluate_smooth_index_i32(
+        return ttwt::operations::wavelet::evaluate_smooth_index_i32(
             x_extended,
-            StagedInputColumnReader<ttnn::operations::wavelet::BoundaryMode::kSmooth>{
+            StagedInputColumnReader<ttwt::operations::wavelet::BoundaryMode::kSmooth>{
                 .source_y = source_y,
                 .source_tiles = source_tiles,
                 .scratch_addr = scratch_addr,
@@ -275,7 +275,7 @@ struct StagedSmoothInputRowReader {
     }
 };
 
-template <ttnn::operations::wavelet::BoundaryMode Mode>
+template <ttwt::operations::wavelet::BoundaryMode Mode>
 [[nodiscard]] ALWI float read_staged_extended_2d(
     const int32_t raw_y,
     const int32_t raw_x,
@@ -283,12 +283,12 @@ template <ttnn::operations::wavelet::BoundaryMode Mode>
     const uint32_t input_width,
     const SplitSourceTiles<Mode>& source_tiles,
     const uint32_t scratch_addr) {
-    if constexpr (Mode == ttnn::operations::wavelet::BoundaryMode::kAntireflect) {
-        const ttnn::operations::wavelet::AntireflectIndexI32 y_extended =
-            ttnn::operations::wavelet::make_antireflect_index_i32(raw_y, input_height);
-        const ttnn::operations::wavelet::AntireflectIndexI32 x_extended =
-            ttnn::operations::wavelet::make_antireflect_index_i32(raw_x, input_width);
-        return ttnn::operations::wavelet::evaluate_antireflect_index_i32(
+    if constexpr (Mode == ttwt::operations::wavelet::BoundaryMode::kAntireflect) {
+        const ttwt::operations::wavelet::AntireflectIndexI32 y_extended =
+            ttwt::operations::wavelet::make_antireflect_index_i32(raw_y, input_height);
+        const ttwt::operations::wavelet::AntireflectIndexI32 x_extended =
+            ttwt::operations::wavelet::make_antireflect_index_i32(raw_x, input_width);
+        return ttwt::operations::wavelet::evaluate_antireflect_index_i32(
             y_extended,
             input_height,
             StagedAntireflectInputRowReader{
@@ -298,12 +298,12 @@ template <ttnn::operations::wavelet::BoundaryMode Mode>
                 .scratch_addr = scratch_addr,
             });
     }
-    if constexpr (Mode == ttnn::operations::wavelet::BoundaryMode::kSmooth) {
-        const ttnn::operations::wavelet::SmoothIndexI32 y_extended =
-            ttnn::operations::wavelet::make_smooth_index_i32(raw_y, input_height);
-        const ttnn::operations::wavelet::SmoothIndexI32 x_extended =
-            ttnn::operations::wavelet::make_smooth_index_i32(raw_x, input_width);
-        return ttnn::operations::wavelet::evaluate_smooth_index_i32(
+    if constexpr (Mode == ttwt::operations::wavelet::BoundaryMode::kSmooth) {
+        const ttwt::operations::wavelet::SmoothIndexI32 y_extended =
+            ttwt::operations::wavelet::make_smooth_index_i32(raw_y, input_height);
+        const ttwt::operations::wavelet::SmoothIndexI32 x_extended =
+            ttwt::operations::wavelet::make_smooth_index_i32(raw_x, input_width);
+        return ttwt::operations::wavelet::evaluate_smooth_index_i32(
             y_extended,
             StagedSmoothInputRowReader{
                 .x_extended = x_extended,
@@ -311,20 +311,20 @@ template <ttnn::operations::wavelet::BoundaryMode Mode>
                 .scratch_addr = scratch_addr,
             });
     }
-    if constexpr (Mode == ttnn::operations::wavelet::BoundaryMode::kSymmetric) {
-        const uint32_t source_y = ttnn::operations::wavelet::make_symmetric_index_i32(raw_y, input_height);
-        const uint32_t source_x = ttnn::operations::wavelet::make_symmetric_index_i32(raw_x, input_width);
+    if constexpr (Mode == ttwt::operations::wavelet::BoundaryMode::kSymmetric) {
+        const uint32_t source_y = ttwt::operations::wavelet::make_symmetric_index_i32(raw_y, input_height);
+        const uint32_t source_x = ttwt::operations::wavelet::make_symmetric_index_i32(raw_x, input_width);
         return StagedInputColumnReader<Mode>{
             .source_y = source_y,
             .source_tiles = source_tiles,
             .scratch_addr = scratch_addr,
         }(source_x);
     }
-    const ttnn::operations::wavelet::ExtendedIndexI32 y_extended =
-        ttnn::operations::wavelet::make_extended_index_i32<Mode>(raw_y, input_height);
-    const ttnn::operations::wavelet::ExtendedIndexI32 x_extended =
-        ttnn::operations::wavelet::make_extended_index_i32<Mode>(raw_x, input_width);
-    return ttnn::operations::wavelet::evaluate_extended_index_i32<Mode>(
+    const ttwt::operations::wavelet::ExtendedIndexI32 y_extended =
+        ttwt::operations::wavelet::make_extended_index_i32<Mode>(raw_y, input_height);
+    const ttwt::operations::wavelet::ExtendedIndexI32 x_extended =
+        ttwt::operations::wavelet::make_extended_index_i32<Mode>(raw_x, input_width);
+    return ttwt::operations::wavelet::evaluate_extended_index_i32<Mode>(
         y_extended,
         input_height,
         StagedInputRowReader<Mode>{
@@ -335,7 +335,7 @@ template <ttnn::operations::wavelet::BoundaryMode Mode>
         });
 }
 
-template <bool Interior, ttnn::operations::wavelet::BoundaryMode Mode>
+template <bool Interior, ttwt::operations::wavelet::BoundaryMode Mode>
 __attribute__((noinline)) void write_polyphase_tile(
     const uint32_t input_height,
     const uint32_t input_width,
@@ -409,7 +409,7 @@ struct SplitSourceColumn {
     return plane_addr + (plane_tile_y * plane_tile_columns + plane_tile_x) * kTileBytes;
 }
 
-template <ttnn::operations::wavelet::BoundaryMode Mode>
+template <ttwt::operations::wavelet::BoundaryMode Mode>
 ALWI void write_full_interior_polyphase_tiles(
     const int32_t raw_y_begin,
     const int32_t raw_x_begin,
@@ -480,7 +480,7 @@ ALWI void write_full_interior_polyphase_tiles(
     }
 }
 
-template <bool Interior, ttnn::operations::wavelet::BoundaryMode Mode, typename InputAccessor>
+template <bool Interior, ttwt::operations::wavelet::BoundaryMode Mode, typename InputAccessor>
 ALWI void split_macro_tile(
     const InputAccessor& input,
     const uint32_t input_height,
@@ -502,7 +502,7 @@ ALWI void split_macro_tile(
 
     if constexpr (Interior) {
         bool complete = true;
-        for (uint32_t plane = 0; plane < ttnn::operations::wavelet::device_protocol::kLwt2DInitialPlaneCount; ++plane) {
+        for (uint32_t plane = 0; plane < ttwt::operations::wavelet::device_protocol::kLwt2DInitialPlaneCount; ++plane) {
             complete = complete && covers_tile(rectangles[plane], tile_y, tile_x);
         }
         if (complete) {
@@ -578,7 +578,7 @@ ALWI void split_macro_tile(
         scratch_addr);
 }
 
-template <ttnn::operations::wavelet::BoundaryMode Mode, typename InputAccessor>
+template <ttwt::operations::wavelet::BoundaryMode Mode, typename InputAccessor>
 ALWI void initialize_planes_tiled(
     const InputAccessor& input,
     const uint32_t input_height,
@@ -595,7 +595,7 @@ ALWI void initialize_planes_tiled(
     uint32_t y_end = rectangles[0].y_begin + rectangles[0].y_length;
     uint32_t x_begin = rectangles[0].x_begin;
     uint32_t x_end = rectangles[0].x_begin + rectangles[0].x_length;
-    for (uint32_t plane = 1; plane < ttnn::operations::wavelet::device_protocol::kLwt2DInitialPlaneCount; ++plane) {
+    for (uint32_t plane = 1; plane < ttwt::operations::wavelet::device_protocol::kLwt2DInitialPlaneCount; ++plane) {
         y_begin = std::min(y_begin, rectangles[plane].y_begin);
         y_end = std::max(y_end, rectangles[plane].y_begin + rectangles[plane].y_length);
         x_begin = std::min(x_begin, rectangles[plane].x_begin);
@@ -606,7 +606,7 @@ ALWI void initialize_planes_tiled(
         for (uint32_t tile_x = aligned_begin(x_begin); tile_x < aligned_end(x_begin, x_end - x_begin);
              tile_x += kTileSide) {
             bool active = false;
-            for (uint32_t plane = 0; plane < ttnn::operations::wavelet::device_protocol::kLwt2DInitialPlaneCount;
+            for (uint32_t plane = 0; plane < ttwt::operations::wavelet::device_protocol::kLwt2DInitialPlaneCount;
                  ++plane) {
                 active = active || intersects_tile(rectangles[plane], tile_y, tile_x);
             }
@@ -708,7 +708,7 @@ ALWI void initialize_inverse_band_plane(
                 local_endpoint,
                 CoreLocalMem<uint32_t>(destination_addr),
                 kTileBytes,
-                ttnn::operations::wavelet::kernels::primitives::local_noc_source(noc, zero_tile_addr),
+                ttwt::operations::wavelet::kernels::primitives::local_noc_source(noc, zero_tile_addr),
                 {});
             noc.async_read_barrier();
 
@@ -734,8 +734,8 @@ ALWI void initialize_inverse_band_plane(
             const uint32_t source_tile_x_end = (static_cast<uint32_t>(canonical_x_end - 1) / kTileSide) + 1;
             const uint32_t source_tile_rows = source_tile_y_end - source_tile_y_begin;
             const uint32_t source_tile_columns = source_tile_x_end - source_tile_x_begin;
-            ASSERT(source_tile_rows <= ttnn::operations::wavelet::device_protocol::kLwt2DSplitScratchTileRows);
-            ASSERT(source_tile_columns <= ttnn::operations::wavelet::device_protocol::kLwt2DSplitScratchTileColumns);
+            ASSERT(source_tile_rows <= ttwt::operations::wavelet::device_protocol::kLwt2DSplitScratchTileRows);
+            ASSERT(source_tile_columns <= ttwt::operations::wavelet::device_protocol::kLwt2DSplitScratchTileColumns);
 
             for (uint32_t source_tile_y = 0; source_tile_y < source_tile_rows; ++source_tile_y) {
                 for (uint32_t source_tile_x = 0; source_tile_x < source_tile_columns; ++source_tile_x) {
@@ -1023,7 +1023,7 @@ __attribute__((noinline)) void assemble_bounded_tile(
 
     Noc noc;
     UnicastEndpoint local_endpoint;
-    const auto local_coordinates = ttnn::operations::wavelet::kernels::primitives::local_noc_coordinates(noc);
+    const auto local_coordinates = ttwt::operations::wavelet::kernels::primitives::local_noc_coordinates(noc);
     const uint32_t source_x = static_cast<uint32_t>(requested_x) - aligned_begin(stored.x_begin);
     const uint32_t destination_y_begin = static_cast<uint32_t>(valid_y_begin - requested_y);
     const uint32_t destination_y_end = static_cast<uint32_t>(valid_y_end - requested_y);
@@ -1039,7 +1039,7 @@ __attribute__((noinline)) void assemble_bounded_tile(
                 CoreLocalMem<uint32_t>(
                     destination_addr + tile_element_offset(destination_y, column) * sizeof(uint32_t)),
                 rows * kFaceSide * sizeof(uint32_t),
-                ttnn::operations::wavelet::kernels::primitives::local_noc_source(
+                ttwt::operations::wavelet::kernels::primitives::local_noc_source(
                     local_coordinates,
                     plane_addr +
                         tiled_element_offset(source_y, source_x + column, plane_tile_columns) * sizeof(uint32_t)),
@@ -1073,7 +1073,7 @@ __attribute__((noinline)) void assemble_bounded_tile(
             local_endpoint,
             CoreLocalMem<uint32_t>(destination_addr),
             kTileBytes,
-            ttnn::operations::wavelet::kernels::primitives::local_noc_source(noc, source_addr),
+            ttwt::operations::wavelet::kernels::primitives::local_noc_source(noc, source_addr),
             {});
         return StageTileResult::kExactPending;
     }
@@ -1083,14 +1083,14 @@ __attribute__((noinline)) void assemble_bounded_tile(
             local_endpoint,
             CoreLocalMem<uint32_t>(destination_addr),
             kTileBytes,
-            ttnn::operations::wavelet::kernels::primitives::local_noc_source(noc, zero_tile_addr),
+            ttwt::operations::wavelet::kernels::primitives::local_noc_source(noc, zero_tile_addr),
             {});
         return StageTileResult::kBoundedPending;
     }
 
     if (tile_class == RouteTileClass::kOneAxisShifted) {
         if (requested_x % static_cast<int32_t>(kFaceSide) == 0) {
-            const auto local_coordinates = ttnn::operations::wavelet::kernels::primitives::local_noc_coordinates(noc);
+            const auto local_coordinates = ttwt::operations::wavelet::kernels::primitives::local_noc_coordinates(noc);
             uint32_t row = 0;
             while (row < kTileSide) {
                 const uint32_t source_y = static_cast<uint32_t>(requested_y) + row - aligned_begin(stored.y_begin);
@@ -1101,7 +1101,7 @@ __attribute__((noinline)) void assemble_bounded_tile(
                         local_endpoint,
                         CoreLocalMem<uint32_t>(destination_addr + tile_element_offset(row, column) * sizeof(uint32_t)),
                         rows * kFaceSide * sizeof(uint32_t),
-                        ttnn::operations::wavelet::kernels::primitives::local_noc_source(
+                        ttwt::operations::wavelet::kernels::primitives::local_noc_source(
                             local_coordinates,
                             plane_addr + tiled_element_offset(source_y, source_x + column, plane_tile_columns) *
                                              sizeof(uint32_t)),
@@ -1171,7 +1171,7 @@ ALWI void stencil_requested_origin(
     } else {
         requested_x +=
             static_cast<int32_t>(source_tile_index * kTileSide) -
-            static_cast<int32_t>(ttnn::operations::wavelet::device_protocol::kStepCoeffCapacity - coefficient_count);
+            static_cast<int32_t>(ttwt::operations::wavelet::device_protocol::kStepCoeffCapacity - coefficient_count);
     }
 }
 
@@ -1179,8 +1179,8 @@ ALWI void stencil_requested_origin(
 
 void kernel_main() {
 #ifdef ILWT_2D
-    uint32_t band_addrs[ttnn::operations::wavelet::device_protocol::kLwt2DBandCount];
-    for (uint32_t band = 0; band < ttnn::operations::wavelet::device_protocol::kLwt2DBandCount; ++band) {
+    uint32_t band_addrs[ttwt::operations::wavelet::device_protocol::kLwt2DBandCount];
+    for (uint32_t band = 0; band < ttwt::operations::wavelet::device_protocol::kLwt2DBandCount; ++band) {
         band_addrs[band] = get_arg_val<uint32_t>(band);
     }
     const uint32_t input_height = get_arg_val<uint32_t>(4);
@@ -1204,16 +1204,16 @@ void kernel_main() {
     const uint32_t pad_x = get_arg_val<uint32_t>(5);
     constexpr uint32_t plane_arg_base = 6;
 #endif
-    uint32_t plane_addrs[ttnn::operations::wavelet::device_protocol::kLwt2DPlaneCount];
-    uint32_t plane_tile_columns[ttnn::operations::wavelet::device_protocol::kLwt2DPlaneCount];
+    uint32_t plane_addrs[ttwt::operations::wavelet::device_protocol::kLwt2DPlaneCount];
+    uint32_t plane_tile_columns[ttwt::operations::wavelet::device_protocol::kLwt2DPlaneCount];
     const uint32_t workspace_base =
-        CircularBuffer(ttnn::operations::wavelet::device_protocol::kLwt2DWorkspaceCb).get_write_ptr();
-    for (uint32_t slot = 0; slot < ttnn::operations::wavelet::device_protocol::kLwt2DPlaneCount; ++slot) {
+        CircularBuffer(ttwt::operations::wavelet::device_protocol::kLwt2DWorkspaceCb).get_write_ptr();
+    for (uint32_t slot = 0; slot < ttwt::operations::wavelet::device_protocol::kLwt2DPlaneCount; ++slot) {
         plane_addrs[slot] = workspace_base + get_arg_val<uint32_t>(plane_arg_base + slot);
         plane_tile_columns[slot] =
-            get_arg_val<uint32_t>(plane_arg_base + ttnn::operations::wavelet::device_protocol::kLwt2DPlaneCount + slot);
+            get_arg_val<uint32_t>(plane_arg_base + ttwt::operations::wavelet::device_protocol::kLwt2DPlaneCount + slot);
     }
-    constexpr uint32_t plane_arg_count = 2 * ttnn::operations::wavelet::device_protocol::kLwt2DPlaneCount;
+    constexpr uint32_t plane_arg_count = 2 * ttwt::operations::wavelet::device_protocol::kLwt2DPlaneCount;
     const uint32_t chunk_config_addr = get_arg_val<uint32_t>(plane_arg_base + plane_arg_count);
     const uint32_t route_config_addr = get_arg_val<uint32_t>(plane_arg_base + plane_arg_count + 1);
     const uint32_t chunk_begin = get_arg_val<uint32_t>(plane_arg_base + plane_arg_count + 2);
@@ -1252,9 +1252,9 @@ void kernel_main() {
 #ifndef ILWT_2D
     constexpr uint32_t boundary_mode_arg_offset = route_args.next_compile_time_args_offset();
     constexpr auto boundary_mode =
-        static_cast<ttnn::operations::wavelet::BoundaryMode>(get_compile_time_arg_val(boundary_mode_arg_offset));
+        static_cast<ttwt::operations::wavelet::BoundaryMode>(get_compile_time_arg_val(boundary_mode_arg_offset));
     static_assert(
-        ttnn::operations::wavelet::is_supported_lwt_boundary_mode(boundary_mode),
+        ttwt::operations::wavelet::is_supported_lwt_boundary_mode(boundary_mode),
         "Unsupported 2D signal-extension mode");
     const auto input = TensorAccessor(input_args, input_addr, kTileBytes);
 #endif
@@ -1273,22 +1273,22 @@ void kernel_main() {
         const uint32_t batch_index = global_work_item / chunks_per_sample;
         const uint32_t global_chunk = global_work_item - batch_index * chunks_per_sample;
         const uint32_t input_tile_base = batch_index * input_tiles_per_sample;
-        uint32_t chunk_words[ttnn::operations::wavelet::device_protocol::kLwt2DChunkConfigWordCount];
+        uint32_t chunk_words[ttwt::operations::wavelet::device_protocol::kLwt2DChunkConfigWordCount];
         load_config_page(
             chunk_args,
             chunk_config_addr,
-            ttnn::operations::wavelet::device_protocol::kLwt2DChunkConfigPageBytes,
+            ttwt::operations::wavelet::device_protocol::kLwt2DChunkConfigPageBytes,
             global_chunk,
             cb_chunk_config,
             chunk_words,
-            ttnn::operations::wavelet::device_protocol::kLwt2DChunkConfigWordCount);
+            ttwt::operations::wavelet::device_protocol::kLwt2DChunkConfigWordCount);
 
         const ConfigWords chunk_config{chunk_words};
-        Rect stored[ttnn::operations::wavelet::device_protocol::kLwt2DPlaneCount];
-        stored[0] = Rect{chunk_config, ttnn::operations::wavelet::device_protocol::kLwt2DInitialEe};
-        stored[1] = Rect{chunk_config, ttnn::operations::wavelet::device_protocol::kLwt2DInitialEo};
-        stored[2] = Rect{chunk_config, ttnn::operations::wavelet::device_protocol::kLwt2DInitialOe};
-        stored[3] = Rect{chunk_config, ttnn::operations::wavelet::device_protocol::kLwt2DInitialOo};
+        Rect stored[ttwt::operations::wavelet::device_protocol::kLwt2DPlaneCount];
+        stored[0] = Rect{chunk_config, ttwt::operations::wavelet::device_protocol::kLwt2DInitialEe};
+        stored[1] = Rect{chunk_config, ttwt::operations::wavelet::device_protocol::kLwt2DInitialEo};
+        stored[2] = Rect{chunk_config, ttwt::operations::wavelet::device_protocol::kLwt2DInitialOe};
+        stored[3] = Rect{chunk_config, ttwt::operations::wavelet::device_protocol::kLwt2DInitialOo};
         stored[4] = Rect{};
 
 #ifdef ILWT_2D
@@ -1326,34 +1326,34 @@ void kernel_main() {
         preload_config_pages(
             route_args,
             route_config_addr,
-            ttnn::operations::wavelet::device_protocol::kLwt2DRouteConfigPageBytes,
+            ttwt::operations::wavelet::device_protocol::kLwt2DRouteConfigPageBytes,
             global_chunk * route_count,
             route_count,
             reader_config_addr);
         for (uint32_t route_index = 0; route_index < route_count; ++route_index) {
             const auto* route_words = reinterpret_cast<const uint32_t*>(
                 reader_config_addr +
-                route_index * ttnn::operations::wavelet::device_protocol::kLwt2DRouteConfigPageBytes);
+                route_index * ttwt::operations::wavelet::device_protocol::kLwt2DRouteConfigPageBytes);
             const ConfigWords route_config{route_words};
-            const uint32_t flags = route_words[ttnn::operations::wavelet::device_protocol::kLwt2DRouteFlags];
-            if ((flags & ttnn::operations::wavelet::device_protocol::kLwt2DRouteFlagMetadataOnly) != 0) {
+            const uint32_t flags = route_words[ttwt::operations::wavelet::device_protocol::kLwt2DRouteFlags];
+            if ((flags & ttwt::operations::wavelet::device_protocol::kLwt2DRouteFlagMetadataOnly) != 0) {
                 continue;
             }
-            const bool vertical = route_words[ttnn::operations::wavelet::device_protocol::kLwt2DRouteAxis] == 0;
-            const uint32_t source_slot = route_words[ttnn::operations::wavelet::device_protocol::kLwt2DRouteSourceSlot];
-            const uint32_t base_slot = route_words[ttnn::operations::wavelet::device_protocol::kLwt2DRouteBaseSlot];
-            const uint32_t output_slot = route_words[ttnn::operations::wavelet::device_protocol::kLwt2DRouteOutputSlot];
-            const Rect source{route_config, ttnn::operations::wavelet::device_protocol::kLwt2DRouteSourceRect};
-            const Rect base{route_config, ttnn::operations::wavelet::device_protocol::kLwt2DRouteBaseRect};
-            const Rect output{route_config, ttnn::operations::wavelet::device_protocol::kLwt2DRouteOutputRect};
+            const bool vertical = route_words[ttwt::operations::wavelet::device_protocol::kLwt2DRouteAxis] == 0;
+            const uint32_t source_slot = route_words[ttwt::operations::wavelet::device_protocol::kLwt2DRouteSourceSlot];
+            const uint32_t base_slot = route_words[ttwt::operations::wavelet::device_protocol::kLwt2DRouteBaseSlot];
+            const uint32_t output_slot = route_words[ttwt::operations::wavelet::device_protocol::kLwt2DRouteOutputSlot];
+            const Rect source{route_config, ttwt::operations::wavelet::device_protocol::kLwt2DRouteSourceRect};
+            const Rect base{route_config, ttwt::operations::wavelet::device_protocol::kLwt2DRouteBaseRect};
+            const Rect output{route_config, ttwt::operations::wavelet::device_protocol::kLwt2DRouteOutputRect};
             const uint32_t output_tile_rows =
                 (aligned_end(output.y_begin, output.y_length) - aligned_begin(output.y_begin)) / kTileSide;
             const uint32_t output_tile_columns =
                 (aligned_end(output.x_begin, output.x_length) - aligned_begin(output.x_begin)) / kTileSide;
-            const bool scale = (flags & ttnn::operations::wavelet::device_protocol::kLwt2DRouteFlagScale) != 0;
+            const bool scale = (flags & ttwt::operations::wavelet::device_protocol::kLwt2DRouteFlagScale) != 0;
             const uint32_t coefficient_count =
                 scale ? 1 : (vertical ? source.y_length - output.y_length + 1 : source.x_length - output.x_length + 1);
-            ASSERT(coefficient_count <= ttnn::operations::wavelet::device_protocol::kStepCoeffCapacity);
+            ASSERT(coefficient_count <= ttwt::operations::wavelet::device_protocol::kStepCoeffCapacity);
 
             for (uint32_t tile_y = 0; tile_y < output_tile_rows; ++tile_y) {
                 for (uint32_t tile_x = 0; tile_x < output_tile_columns; ++tile_x) {

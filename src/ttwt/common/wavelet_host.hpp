@@ -10,7 +10,7 @@
 #include "ttwt/common/boundary.hpp"
 #include "ttwt/generated/wavelet_schemes/scheme_catalog.hpp"
 
-namespace ttnn::operations::wavelet {
+namespace ttwt::operations::wavelet {
 
 [[nodiscard]] BoundaryMode boundary_mode_from_string(std::string_view name);
 
@@ -20,4 +20,4 @@ namespace ttnn::operations::wavelet {
 
 [[nodiscard]] uint32_t dwt_coefficient_length(uint32_t input_length, SchemeId id);
 
-}  // namespace ttnn::operations::wavelet
+}  // namespace ttwt::operations::wavelet

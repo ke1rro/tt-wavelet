@@ -10,7 +10,7 @@
 #include "tt-metalium/math.hpp"
 #include "ttwt/common/storage_contract.hpp"
 
-namespace ttnn::operations::wavelet {
+namespace ttwt::operations::wavelet {
 
 struct SignalBuffer {
     size_t length{0};
@@ -35,4 +35,4 @@ struct Signal {
             .length = odd_len, .stick_width = input.stick_width, .element_size_bytes = input.element_size_bytes}};
 }
 
-}  // namespace ttnn::operations::wavelet
+}  // namespace ttwt::operations::wavelet

@@ -50,8 +50,8 @@ constexpr uint32_t first_predict_update_step_index() noexcept {
     if constexpr (Index >= Scheme::num_steps) {
         return Scheme::num_steps;
     } else {
-        using Step = ttnn::operations::wavelet::SchemeStep<Scheme, Index>;
-        if constexpr (ttnn::operations::wavelet::is_predict_update_step(Step::type)) {
+        using Step = ttwt::operations::wavelet::SchemeStep<Scheme, Index>;
+        if constexpr (ttwt::operations::wavelet::is_predict_update_step(Step::type)) {
             return Index;
         } else {
             return first_predict_update_step_index<Index + 1>();
@@ -64,8 +64,8 @@ constexpr uint32_t scale_count_before() noexcept {
     if constexpr (Index >= End) {
         return 0;
     } else {
-        using Step = ttnn::operations::wavelet::SchemeStep<Scheme, Index>;
-        return (ttnn::operations::wavelet::is_scale_step(Step::type) ? 1U : 0U) + scale_count_before<End, Index + 1>();
+        using Step = ttwt::operations::wavelet::SchemeStep<Scheme, Index>;
+        return (ttwt::operations::wavelet::is_scale_step(Step::type) ? 1U : 0U) + scale_count_before<End, Index + 1>();
     }
 }
 
@@ -75,10 +75,10 @@ constexpr uint32_t last_predict_update_step_index() noexcept {
         return Scheme::num_steps;
     } else {
         constexpr uint32_t later = last_predict_update_step_index<Index + 1>();
-        using Step = ttnn::operations::wavelet::SchemeStep<Scheme, Index>;
+        using Step = ttwt::operations::wavelet::SchemeStep<Scheme, Index>;
         if constexpr (later < Scheme::num_steps) {
             return later;
-        } else if constexpr (ttnn::operations::wavelet::is_predict_update_step(Step::type)) {
+        } else if constexpr (ttwt::operations::wavelet::is_predict_update_step(Step::type)) {
             return Index;
         } else {
             return Scheme::num_steps;
@@ -91,28 +91,28 @@ constexpr uint32_t swap_count_from() noexcept {
     if constexpr (Index >= Scheme::num_steps) {
         return 0;
     } else {
-        using Step = ttnn::operations::wavelet::SchemeStep<Scheme, Index>;
-        return (Step::type == ttnn::operations::wavelet::StepType::kSwap ? 1U : 0U) + swap_count_from<Index + 1>();
+        using Step = ttwt::operations::wavelet::SchemeStep<Scheme, Index>;
+        return (Step::type == ttwt::operations::wavelet::StepType::kSwap ? 1U : 0U) + swap_count_from<Index + 1>();
     }
 }
 
-constexpr ttnn::operations::wavelet::StepType inline_terminal_scale_type() noexcept {
+constexpr ttwt::operations::wavelet::StepType inline_terminal_scale_type() noexcept {
     constexpr uint32_t last_step = last_predict_update_step_index();
     static_assert(last_step < Scheme::num_steps, "2D terminal scale fusion requires a predict/update step");
-    using LastStep = ttnn::operations::wavelet::SchemeStep<Scheme, last_step>;
-    constexpr bool target_even = LastStep::type == ttnn::operations::wavelet::StepType::kUpdate;
+    using LastStep = ttwt::operations::wavelet::SchemeStep<Scheme, last_step>;
+    constexpr bool target_even = LastStep::type == ttwt::operations::wavelet::StepType::kUpdate;
     constexpr bool swapped = (swap_count_from<last_step + 1>() & 1U) != 0;
     constexpr bool final_even = target_even != swapped;
-    return final_even ? ttnn::operations::wavelet::StepType::kScaleEven
-                      : ttnn::operations::wavelet::StepType::kScaleOdd;
+    return final_even ? ttwt::operations::wavelet::StepType::kScaleEven
+                      : ttwt::operations::wavelet::StepType::kScaleOdd;
 }
 
-template <ttnn::operations::wavelet::StepType ScaleType, uint32_t Index = 0>
+template <ttwt::operations::wavelet::StepType ScaleType, uint32_t Index = 0>
 constexpr uint32_t terminal_scale_bits() noexcept {
     if constexpr (Index >= Scheme::num_steps) {
         return 0;
     } else {
-        using Step = ttnn::operations::wavelet::SchemeStep<Scheme, Index>;
+        using Step = ttwt::operations::wavelet::SchemeStep<Scheme, Index>;
         if constexpr (Step::type == ScaleType) {
             static_assert(Step::k == 1, "2D terminal scale must contain one coefficient");
             return Step::coeff_bits[0];
@@ -122,7 +122,7 @@ constexpr uint32_t terminal_scale_bits() noexcept {
     }
 }
 
-template <ttnn::operations::wavelet::StepType ScaleType>
+template <ttwt::operations::wavelet::StepType ScaleType>
 constexpr uint32_t inverse_scale_bits() noexcept {
     constexpr uint32_t first_step = first_predict_update_step_index();
     static_assert(first_step < Scheme::num_steps, "2D inline inverse scaling requires a predict/update step");
@@ -132,7 +132,7 @@ constexpr uint32_t inverse_scale_bits() noexcept {
     return bits;
 }
 
-template <ttnn::operations::wavelet::StepType ScaleType>
+template <ttwt::operations::wavelet::StepType ScaleType>
 constexpr uint32_t maybe_inverse_scale_bits() noexcept {
     if constexpr (kInverse) {
         return inverse_scale_bits<ScaleType>();
@@ -234,7 +234,7 @@ WAVELET_2D_STENCIL_ATTRIBUTES void run_stencil(
             hstencil_dense_tile<K>(coefficients, kDstSource0, kDstSource1, kDstBase, kDstOutput);
         }
         if constexpr (InlineTerminalScale) {
-            constexpr ttnn::operations::wavelet::StepType scale_type = inline_terminal_scale_type();
+            constexpr ttwt::operations::wavelet::StepType scale_type = inline_terminal_scale_type();
             constexpr uint32_t scale_bits = terminal_scale_bits<scale_type>();
             static_assert(scale_bits != 0, "2D terminal scale fusion could not find its scale coefficient");
             scale_tile(kDstOutput, scale_bits);
@@ -262,9 +262,9 @@ inline void run_step(
     const uint32_t cb_source1,
     const uint32_t cb_base,
     const uint32_t cb_output) {
-    if constexpr (Step::type == ttnn::operations::wavelet::StepType::kSwap) {
+    if constexpr (Step::type == ttwt::operations::wavelet::StepType::kSwap) {
         return;
-    } else if constexpr (ttnn::operations::wavelet::is_scale_step(Step::type)) {
+    } else if constexpr (ttwt::operations::wavelet::is_scale_step(Step::type)) {
         if constexpr (kInverse || Step::type == inline_terminal_scale_type()) {
             // The terminal forward scale and both inverse reciprocal scales
             // are metadata-only. The companion forward stream remains an
@@ -315,24 +315,24 @@ WAVELET_2D_AXIS_ATTRIBUTES void run_axis(
     const uint32_t cb_base,
     const uint32_t cb_output) {
     if constexpr (StepIndex < Scheme::num_steps) {
-        using Step = ttnn::operations::wavelet::SchemeStep<Scheme, StepIndex>;
+        using Step = ttwt::operations::wavelet::SchemeStep<Scheme, StepIndex>;
         const uint32_t route_index = route_offset + StepIndex;
         const uint32_t packed_counts = get_arg_val<uint32_t>(runtime_arg_base + route_index / 4);
         const uint32_t tile_count = (packed_counts >> (8 * (route_index % 4))) & 0xFFU;
-        constexpr bool predict = Step::type == ttnn::operations::wavelet::StepType::kPredict;
-        constexpr bool scale_source = kInverse && ttnn::operations::wavelet::is_predict_update_step(Step::type) &&
+        constexpr bool predict = Step::type == ttwt::operations::wavelet::StepType::kPredict;
+        constexpr bool scale_source = kInverse && ttwt::operations::wavelet::is_predict_update_step(Step::type) &&
                                       (predict ? EvenNeedsScale : OddNeedsScale);
-        constexpr bool scale_base = kInverse && ttnn::operations::wavelet::is_predict_update_step(Step::type) &&
+        constexpr bool scale_base = kInverse && ttwt::operations::wavelet::is_predict_update_step(Step::type) &&
                                     (predict ? OddNeedsScale : EvenNeedsScale);
         constexpr uint32_t source_scale_bits = predict ? EvenScaleBits : OddScaleBits;
         constexpr uint32_t base_scale_bits = predict ? OddScaleBits : EvenScaleBits;
         constexpr bool inline_terminal_scale = !kInverse && StepIndex == last_predict_update_step_index();
         run_step<Step, Vertical, inline_terminal_scale, scale_source, scale_base, source_scale_bits, base_scale_bits>(
             tile_count, cb_source0, cb_source1, cb_base, cb_output);
-        if constexpr (Step::type == ttnn::operations::wavelet::StepType::kSwap) {
+        if constexpr (Step::type == ttwt::operations::wavelet::StepType::kSwap) {
             run_axis<Vertical, OddNeedsScale, EvenNeedsScale, OddScaleBits, EvenScaleBits, StepIndex + 1>(
                 runtime_arg_base, route_offset, cb_source0, cb_source1, cb_base, cb_output);
-        } else if constexpr (ttnn::operations::wavelet::is_predict_update_step(Step::type)) {
+        } else if constexpr (ttwt::operations::wavelet::is_predict_update_step(Step::type)) {
             run_axis<
                 Vertical,
                 predict ? EvenNeedsScale : false,
@@ -365,8 +365,8 @@ void kernel_main() {
     constexpr uint32_t routes_per_axis = Scheme::num_steps;
     constexpr uint32_t routes_per_chunk = 4 * routes_per_axis;
     constexpr uint32_t packed_words_per_chunk = (routes_per_chunk + 3) / 4;
-    constexpr uint32_t inverse_even_scale = maybe_inverse_scale_bits<ttnn::operations::wavelet::StepType::kScaleEven>();
-    constexpr uint32_t inverse_odd_scale = maybe_inverse_scale_bits<ttnn::operations::wavelet::StepType::kScaleOdd>();
+    constexpr uint32_t inverse_even_scale = maybe_inverse_scale_bits<ttwt::operations::wavelet::StepType::kScaleEven>();
+    constexpr uint32_t inverse_odd_scale = maybe_inverse_scale_bits<ttwt::operations::wavelet::StepType::kScaleOdd>();
 
     for (uint32_t chunk = 0; chunk < chunk_count; ++chunk) {
         const uint32_t runtime_arg_base = 1 + chunk * packed_words_per_chunk;

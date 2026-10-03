@@ -6,7 +6,7 @@
 
 #include <cstdint>
 
-namespace ttnn::operations::wavelet::planner_cost_model {
+namespace ttwt::operations::wavelet::planner_cost_model {
 
 // Dimensionless relative weights used only to rank planner candidates; they are not profiler measurements.
 inline constexpr uint64_t kCoreStartup = 30'000;
@@ -28,4 +28,4 @@ inline constexpr uint64_t kTiledTerminalTile = 1'200;
 inline constexpr uint64_t kBlackholeInversePenaltyPerCore = 6'000;
 inline constexpr long double kMoreCoresCostRatio = 1.10L;
 
-}  // namespace ttnn::operations::wavelet::planner_cost_model
+}  // namespace ttwt::operations::wavelet::planner_cost_model

@@ -9,7 +9,7 @@
 
 #include "ttwt/device/lwt_1d_program_factory.hpp"
 
-namespace ttnn::prim {
+namespace ttwt::prim {
 
 struct Lwt1DDeviceOperation {
     using operation_attributes_t = Lwt1DParams;
@@ -24,10 +24,10 @@ struct Lwt1DDeviceOperation {
 };
 
 Lwt1DOutputs lwt(
-    const Tensor& input,
+    const ttnn::Tensor& input,
     operations::wavelet::SchemeId scheme_id,
     operations::wavelet::BoundaryMode boundary_mode,
-    const MemoryConfig& output_memory_config,
+    const ttnn::MemoryConfig& output_memory_config,
     const std::optional<Lwt1DOutputs>& preallocated_outputs = std::nullopt);
 
-}  // namespace ttnn::prim
+}  // namespace ttwt::prim

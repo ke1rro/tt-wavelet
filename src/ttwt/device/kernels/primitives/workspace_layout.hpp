@@ -13,7 +13,7 @@
 #define ALWI inline __attribute__((always_inline))
 #endif
 
-namespace ttnn::operations::wavelet::kernels::primitives {
+namespace ttwt::operations::wavelet::kernels::primitives {
 
 struct WorkspaceIndexCursor {
     uint32_t group{0};
@@ -86,4 +86,4 @@ template <bool TileNative>
     return WorkspaceIndexCursor(logical_index).physical;
 }
 
-}  // namespace ttnn::operations::wavelet::kernels::primitives
+}  // namespace ttwt::operations::wavelet::kernels::primitives

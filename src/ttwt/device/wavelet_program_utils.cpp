@@ -3,9 +3,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "ttwt/device/wavelet_program_utils.hpp"
+#include "ttwt/runtime_resources.hpp"
 
 #include <algorithm>
-#include <filesystem>
 #include <limits>
 #include <utility>
 
@@ -17,7 +17,7 @@
 #include "tt-metalium/program_descriptors.hpp"
 #include "tt-metalium/workload_descriptor.hpp"
 
-namespace ttnn::prim::wavelet_program_utils {
+namespace ttwt::prim::wavelet_program_utils {
 namespace {
 
 struct UploadedMetadataOwner {
@@ -152,18 +152,14 @@ std::shared_ptr<tt::tt_metal::distributed::MeshBuffer> upload_replicated_dram_me
     return buffer;
 }
 
-void add_generated_scheme_include_path(tt::tt_metal::KernelDescriptor& descriptor) {
-    descriptor.compiler_include_paths.emplace_back(TT_WAVELET_SOURCE_INCLUDE_ROOT);
-    const std::filesystem::path include_root = TTNN_WAVELET_GENERATED_INCLUDE_ROOT;
-    if (std::filesystem::is_directory(include_root)) {
-        descriptor.compiler_include_paths.push_back(include_root);
-    }
+void add_runtime_resource_include_path(tt::tt_metal::KernelDescriptor& descriptor) {
+    descriptor.compiler_include_paths.push_back(ttwt::detail::runtime_resources::root_for_use());
 }
 
 void append_program_to_mesh_ranges(
     tt::tt_metal::WorkloadDescriptor& workload,
     tt::tt_metal::ProgramDescriptor descriptor,
-    const MeshCoordinateRangeSet& tensor_coords,
+    const ttnn::MeshCoordinateRangeSet& tensor_coords,
     const char* empty_range_error) {
     const auto& ranges = tensor_coords.ranges();
     TT_FATAL(!ranges.empty(), "{}", empty_range_error);
@@ -173,4 +169,4 @@ void append_program_to_mesh_ranges(
     workload.programs.push_back({ranges.back(), std::move(descriptor)});
 }
 
-}  // namespace ttnn::prim::wavelet_program_utils
+}  // namespace ttwt::prim::wavelet_program_utils

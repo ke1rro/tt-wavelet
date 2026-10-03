@@ -35,14 +35,15 @@
 #include "ttwt/planner/l1_accounting.hpp"
 #include "ttwt/planner/policy.hpp"
 #include "ttnn/tensor/tensor_ops.hpp"
+#include "ttwt/runtime_resources.hpp"
 
-namespace ttnn::prim {
+namespace ttwt::prim {
 
 using namespace operations::wavelet;
 using operations::wavelet::device_protocol::config_word_index;
 using operations::wavelet::device_protocol::LwtChunkConfigWord;
 using operations::wavelet::device_protocol::RouteConfigWord;
-using wavelet_program_utils::add_generated_scheme_include_path;
+using wavelet_program_utils::add_runtime_resource_include_path;
 using wavelet_program_utils::checked_u32;
 using wavelet_program_utils::core_range_set;
 using wavelet_program_utils::CoreChunkWork;
@@ -53,9 +54,9 @@ namespace {
 
 constexpr tt::DataFormat kDataFormat = tt::DataFormat::Float32;
 
-constexpr const char* kLwtReaderKernelPath = TT_WAVELET_KERNEL_ROOT "/dataflow/lwt_reader.cpp";
-constexpr const char* kLwtWriterKernelPath = TT_WAVELET_KERNEL_ROOT "/dataflow/lwt_writer.cpp";
-constexpr const char* kLwtComputeKernelPath = TT_WAVELET_KERNEL_ROOT "/compute/lwt_compute.cpp";
+constexpr const char* kLwtReaderKernelPath = "dataflow/lwt_reader.cpp";
+constexpr const char* kLwtWriterKernelPath = "dataflow/lwt_writer.cpp";
+constexpr const char* kLwtComputeKernelPath = "compute/lwt_compute.cpp";
 
 constexpr uint32_t kSrcTile0Cb = tt::CBIndex::c_0;
 constexpr uint32_t kSrcTile1Cb = tt::CBIndex::c_1;
@@ -111,7 +112,7 @@ struct Logical1DShape {
     bool rank_four{false};
 };
 
-[[nodiscard]] Logical1DShape logical_1d_shape(const Tensor& tensor, const char* tensor_name) {
+[[nodiscard]] Logical1DShape logical_1d_shape(const ttnn::Tensor& tensor, const char* tensor_name) {
     const auto& shape = tensor.logical_shape();
     if (shape.rank() == 2) {
         TT_FATAL(
@@ -155,7 +156,7 @@ struct Logical1DShape {
     };
 }
 
-[[nodiscard]] Logical1DShape logical_1d_signal_shape(const Tensor& tensor, const char* tensor_name) {
+[[nodiscard]] Logical1DShape logical_1d_signal_shape(const ttnn::Tensor& tensor, const char* tensor_name) {
     const auto& shape = tensor.logical_shape();
     if (shape.rank() == 1) {
         return Logical1DShape{
@@ -175,7 +176,7 @@ struct Logical1DShape {
     };
 }
 
-[[nodiscard]] uint32_t pages_per_batch_item(const Tensor& tensor, const uint32_t batch_count, const char* tensor_name) {
+[[nodiscard]] uint32_t pages_per_batch_item(const ttnn::Tensor& tensor, const uint32_t batch_count, const char* tensor_name) {
     TT_FATAL(batch_count > 0, "{} batch count must be positive", tensor_name);
     const uint64_t physical_bytes = static_cast<uint64_t>(tensor.physical_volume()) * sizeof(float);
     TT_FATAL(physical_bytes % batch_count == 0, "{} physical volume is not divisible by its batch count", tensor_name);
@@ -559,32 +560,32 @@ template <typename Plan>
     unpack_to_dest_mode[kBaseTileCb] = tt::tt_metal::UnpackToDestMode::UnpackToDestFp32;
 
     tt::tt_metal::KernelDescriptor reader_descriptor;
-    reader_descriptor.kernel_source = kLwtReaderKernelPath;
+    reader_descriptor.kernel_source = ttwt::detail::runtime_resources::kernel_path(kLwtReaderKernelPath);
     reader_descriptor.source_type = tt::tt_metal::KernelDescriptor::SourceType::FILE_PATH;
-    add_generated_scheme_include_path(reader_descriptor);
+    add_runtime_resource_include_path(reader_descriptor);
     reader_descriptor.core_ranges = cores;
     reader_descriptor.compile_time_args = std::move(reader_compile_args);
     reader_descriptor.config = tt::tt_metal::ReaderConfigDescriptor{};
 
     tt::tt_metal::KernelDescriptor writer_descriptor;
-    writer_descriptor.kernel_source = kLwtWriterKernelPath;
+    writer_descriptor.kernel_source = ttwt::detail::runtime_resources::kernel_path(kLwtWriterKernelPath);
     writer_descriptor.source_type = tt::tt_metal::KernelDescriptor::SourceType::FILE_PATH;
-    add_generated_scheme_include_path(writer_descriptor);
+    add_runtime_resource_include_path(writer_descriptor);
     writer_descriptor.core_ranges = cores;
     writer_descriptor.compile_time_args = std::move(writer_compile_args);
     writer_descriptor.config = tt::tt_metal::WriterConfigDescriptor{};
 
     tt::tt_metal::KernelDescriptor compute_descriptor;
-    compute_descriptor.kernel_source = kLwtComputeKernelPath;
+    compute_descriptor.kernel_source = ttwt::detail::runtime_resources::kernel_path(kLwtComputeKernelPath);
     compute_descriptor.source_type = tt::tt_metal::KernelDescriptor::SourceType::FILE_PATH;
     compute_descriptor.core_ranges = cores;
     compute_descriptor.compile_time_args = compute_compile_args;
     compute_descriptor.defines = {
-        {"LWT_SCHEME_HEADER", compute_scheme_header},
+        {"LWT_SCHEME_HEADER", ttwt::detail::runtime_resources::scheme_header(compute_scheme_header)},
         {"LWT_SCHEME_TYPE", compute_scheme_type},
         {"LWT_INLINE_TERMINAL_SCALE", "1"},
     };
-    add_generated_scheme_include_path(compute_descriptor);
+    add_runtime_resource_include_path(compute_descriptor);
     compute_descriptor.config = tt::tt_metal::ComputeConfigDescriptor{
         .math_fidelity = tt::tt_metal::MathFidelity::HiFi4,
         .fp32_dest_acc_en = true,
@@ -838,32 +839,32 @@ template <typename Plan>
     unpack_to_dest_mode[kBaseTileCb] = tt::tt_metal::UnpackToDestMode::UnpackToDestFp32;
 
     tt::tt_metal::KernelDescriptor reader_descriptor;
-    reader_descriptor.kernel_source = kLwtReaderKernelPath;
+    reader_descriptor.kernel_source = ttwt::detail::runtime_resources::kernel_path(kLwtReaderKernelPath);
     reader_descriptor.source_type = tt::tt_metal::KernelDescriptor::SourceType::FILE_PATH;
-    add_generated_scheme_include_path(reader_descriptor);
+    add_runtime_resource_include_path(reader_descriptor);
     reader_descriptor.core_ranges = cores;
     reader_descriptor.compile_time_args = std::move(reader_compile_args);
     reader_descriptor.config = tt::tt_metal::ReaderConfigDescriptor{};
 
     tt::tt_metal::KernelDescriptor writer_descriptor;
-    writer_descriptor.kernel_source = kLwtWriterKernelPath;
+    writer_descriptor.kernel_source = ttwt::detail::runtime_resources::kernel_path(kLwtWriterKernelPath);
     writer_descriptor.source_type = tt::tt_metal::KernelDescriptor::SourceType::FILE_PATH;
-    add_generated_scheme_include_path(writer_descriptor);
+    add_runtime_resource_include_path(writer_descriptor);
     writer_descriptor.core_ranges = cores;
     writer_descriptor.compile_time_args = std::move(writer_compile_args);
     writer_descriptor.config = tt::tt_metal::WriterConfigDescriptor{};
 
     tt::tt_metal::KernelDescriptor compute_descriptor;
-    compute_descriptor.kernel_source = kLwtComputeKernelPath;
+    compute_descriptor.kernel_source = ttwt::detail::runtime_resources::kernel_path(kLwtComputeKernelPath);
     compute_descriptor.source_type = tt::tt_metal::KernelDescriptor::SourceType::FILE_PATH;
     compute_descriptor.core_ranges = cores;
     compute_descriptor.compile_time_args = compute_compile_args;
     compute_descriptor.defines = {
-        {"ILWT_SCHEME_HEADER", compute_scheme_header},
+        {"ILWT_SCHEME_HEADER", ttwt::detail::runtime_resources::scheme_header(compute_scheme_header)},
         {"ILWT_SCHEME_TYPE", compute_scheme_type},
         {"ILWT_INLINE_INVERSE_SCALE", "1"},
     };
-    add_generated_scheme_include_path(compute_descriptor);
+    add_runtime_resource_include_path(compute_descriptor);
     compute_descriptor.config = tt::tt_metal::ComputeConfigDescriptor{
         .math_fidelity = tt::tt_metal::MathFidelity::HiFi4,
         .fp32_dest_acc_en = true,
@@ -905,9 +906,9 @@ template <typename Plan>
 
 namespace {
 
-void validate_1d_tensor(const Tensor& tensor, const char* tensor_name) {
+void validate_1d_tensor(const ttnn::Tensor& tensor, const char* tensor_name) {
     wavelet_tensor_validation::validate_device_tensor(tensor, tensor_name);
-    TT_FATAL(tensor.layout() == Layout::ROW_MAJOR, "{} must use ROW_MAJOR layout", tensor_name);
+    TT_FATAL(tensor.layout() == ttnn::Layout::ROW_MAJOR, "{} must use ROW_MAJOR layout", tensor_name);
     const Logical1DShape shape = logical_1d_shape(tensor, tensor_name);
     TT_FATAL(shape.length > 0, "{} must be non-empty", tensor_name);
     validate_input_memory_config(tensor.memory_config(), tensor_name);
@@ -923,21 +924,21 @@ void validate_1d_tensor(const Tensor& tensor, const char* tensor_name) {
 }
 
 [[nodiscard]] tt::tt_metal::TensorSpec output_spec_1d(
-    const Logical1DShape& input_shape, const uint32_t length, const MemoryConfig& memory_config) {
+    const Logical1DShape& input_shape, const uint32_t length, const ttnn::MemoryConfig& memory_config) {
     const uint32_t stick_count = checked_u32(tt::div_up(length, kStickWidth), "1D wavelet output stick count");
-    const Shape output_shape = input_shape.rank_four ? Shape({input_shape.batch_count, 1, stick_count, kStickWidth})
-                                                     : Shape({stick_count, kStickWidth});
+    const ttnn::Shape output_shape = input_shape.rank_four ? ttnn::Shape({input_shape.batch_count, 1, stick_count, kStickWidth})
+                                                     : ttnn::Shape({stick_count, kStickWidth});
     return tt::tt_metal::TensorSpec(
         output_shape,
         tt::tt_metal::TensorLayout(
-            DataType::FLOAT32,
-            tt::tt_metal::PageConfig(Layout::ROW_MAJOR),
+            ttnn::DataType::FLOAT32,
+            tt::tt_metal::PageConfig(ttnn::Layout::ROW_MAJOR),
             memory_config,
             tt::tt_metal::Alignment{kStickWidth}));
 }
 
 void validate_preallocated_output(
-    const Tensor& output,
+    const ttnn::Tensor& output,
     const tt::tt_metal::TensorSpec& expected_spec,
     const tt::tt_metal::distributed::MeshDevice* expected_device,
     const char* output_name) {
@@ -1060,8 +1061,8 @@ template <typename Scheme>
 [[nodiscard]] tt::tt_metal::WorkloadDescriptor build_forward_workload(
     const Lwt1DParams& operation_attributes,
     const Lwt1DInputs& tensor_args,
-    std::tuple<Tensor, Tensor>& tensor_return_value,
-    const MeshCoordinateRangeSet& tensor_coords) {
+    std::tuple<ttnn::Tensor, ttnn::Tensor>& tensor_return_value,
+    const ttnn::MeshCoordinateRangeSet& tensor_coords) {
     auto& mesh_device = *tensor_args.input.device();
     const auto& input_buffer = *tensor_args.input.buffer();
     const Logical1DShape input_shape = logical_1d_signal_shape(tensor_args.input, "DWT input");
@@ -1138,7 +1139,7 @@ template <typename Scheme>
         work.begin(), work.end(), [](const auto& lhs, const auto& rhs) { return lhs.chunk_count < rhs.chunk_count; });
     log_debug(
         tt::LogOp,
-        "ttnn::dwt batch scheduler: B={}, chunks_per_sample={}, total_work_items={}, active_cores={}, "
+        "ttwt::dwt batch scheduler: B={}, chunks_per_sample={}, total_work_items={}, active_cores={}, "
         "work_items_per_core={}..{}, max_per_core_workspace_bytes={}, arch={}, scheme={}, layout={}, "
         "routes={}, groups_per_chunk={}, dependency_overhead={}, hybrid_tile_mirror={}, row_major_noc_staging={}",
         input_shape.batch_count,
@@ -1189,8 +1190,8 @@ template <typename Scheme>
 [[nodiscard]] tt::tt_metal::WorkloadDescriptor build_inverse_workload(
     const Ilwt1DParams& operation_attributes,
     const Ilwt1DInputs& tensor_args,
-    Tensor& tensor_return_value,
-    const MeshCoordinateRangeSet& tensor_coords) {
+    ttnn::Tensor& tensor_return_value,
+    const ttnn::MeshCoordinateRangeSet& tensor_coords) {
     auto& mesh_device = *tensor_args.approximation.device();
     const auto& approximation_buffer = *tensor_args.approximation.buffer();
     const auto& detail_buffer = *tensor_args.detail.buffer();
@@ -1261,7 +1262,7 @@ template <typename Scheme>
         work.begin(), work.end(), [](const auto& lhs, const auto& rhs) { return lhs.chunk_count < rhs.chunk_count; });
     log_debug(
         tt::LogOp,
-        "ttnn::idwt batch scheduler: B={}, chunks_per_sample={}, total_work_items={}, active_cores={}, "
+        "ttwt::idwt batch scheduler: B={}, chunks_per_sample={}, total_work_items={}, active_cores={}, "
         "work_items_per_core={}..{}, max_per_core_workspace_bytes={}, arch={}, scheme={}, layout={}, "
         "routes={}, groups_per_chunk={}, dependency_overhead={}, hybrid_tile_mirror={}, row_major_noc_staging={}, "
         "interleave_batch_sticks={}",
@@ -1405,7 +1406,7 @@ tt::tt_metal::WorkloadDescriptor create_lwt_1d_workload(
     const Lwt1DParams& operation_attributes,
     const Lwt1DInputs& tensor_args,
     Lwt1DOutputs& tensor_return_value,
-    const MeshCoordinateRangeSet& tensor_coords) {
+    const ttnn::MeshCoordinateRangeSet& tensor_coords) {
     return dispatch_scheme(operation_attributes.scheme_id, [&]<typename Scheme>() {
         return build_forward_workload<Scheme>(operation_attributes, tensor_args, tensor_return_value, tensor_coords);
     });
@@ -1428,16 +1429,16 @@ Lwt1DOutputs create_lwt_1d_output_tensors(const Lwt1DParams& operation_attribute
     }
     auto specs = compute_lwt_1d_output_specs(operation_attributes, tensor_args);
     return {
-        create_device_tensor(std::get<0>(specs), tensor_args.input.device()),
-        create_device_tensor(std::get<1>(specs), tensor_args.input.device()),
+        ttnn::create_device_tensor(std::get<0>(specs), tensor_args.input.device()),
+        ttnn::create_device_tensor(std::get<1>(specs), tensor_args.input.device()),
     };
 }
 
 tt::tt_metal::WorkloadDescriptor create_ilwt_1d_workload(
     const Ilwt1DParams& operation_attributes,
     const Ilwt1DInputs& tensor_args,
-    Tensor& tensor_return_value,
-    const MeshCoordinateRangeSet& tensor_coords) {
+    ttnn::Tensor& tensor_return_value,
+    const ttnn::MeshCoordinateRangeSet& tensor_coords) {
     return dispatch_scheme(operation_attributes.scheme_id, [&]<typename Scheme>() {
         return build_inverse_workload<Scheme>(operation_attributes, tensor_args, tensor_return_value, tensor_coords);
     });
@@ -1455,14 +1456,14 @@ tt::tt_metal::TensorSpec compute_ilwt_1d_output_spec(
         operation_attributes.output_memory_config);
 }
 
-Tensor create_ilwt_1d_output_tensor(const Ilwt1DParams& operation_attributes, const Ilwt1DInputs& tensor_args) {
+ttnn::Tensor create_ilwt_1d_output_tensor(const Ilwt1DParams& operation_attributes, const Ilwt1DInputs& tensor_args) {
     if (tensor_args.preallocated_output.has_value()) {
         return *tensor_args.preallocated_output;
     }
-    return create_device_tensor(
+    return ttnn::create_device_tensor(
         compute_ilwt_1d_output_spec(operation_attributes, tensor_args), tensor_args.approximation.device());
 }
 
 }  // namespace detail
 
-}  // namespace ttnn::prim
+}  // namespace ttwt::prim

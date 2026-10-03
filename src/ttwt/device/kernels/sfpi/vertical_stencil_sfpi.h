@@ -85,7 +85,7 @@ inline void _vertical_stencil_block(
     const uint32_t dst_base1,
     const uint32_t dst_base2) {
     static_assert(
-        K > 0 && K <= ttnn::operations::wavelet::device_protocol::kStepCoeffCapacity,
+        K > 0 && K <= ttwt::operations::wavelet::device_protocol::kStepCoeffCapacity,
         "Vertical stencil coefficient count exceeds device capacity");
     static_assert(OutputGroupCount > 0 && OutputGroupCount <= kSmallStencilOutputGroupCount);
 

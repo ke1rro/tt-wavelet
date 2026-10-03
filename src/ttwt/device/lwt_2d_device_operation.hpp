@@ -10,7 +10,7 @@
 
 #include "ttwt/device/lwt_2d_program_factory.hpp"
 
-namespace ttnn::prim {
+namespace ttwt::prim {
 
 struct Lwt2DDeviceOperation {
     using operation_attributes_t = Lwt2DParams;
@@ -25,10 +25,10 @@ struct Lwt2DDeviceOperation {
 };
 
 Lwt2DOutputs lwt_2d(
-    const Tensor& input,
+    const ttnn::Tensor& input,
     operations::wavelet::SchemeId scheme_id,
     operations::wavelet::BoundaryMode boundary_mode,
-    const MemoryConfig& output_memory_config,
-    const std::optional<std::array<Tensor, 4>>& preallocated_outputs = std::nullopt);
+    const ttnn::MemoryConfig& output_memory_config,
+    const std::optional<std::array<ttnn::Tensor, 4>>& preallocated_outputs = std::nullopt);
 
-}  // namespace ttnn::prim
+}  // namespace ttwt::prim

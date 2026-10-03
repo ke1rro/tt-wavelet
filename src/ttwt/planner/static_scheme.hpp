@@ -11,7 +11,7 @@
 
 #include "step.hpp"
 
-namespace ttnn::operations::wavelet {
+namespace ttwt::operations::wavelet {
 
 template <StepType Type, int32_t Shift, uint32_t... CoeffBits>
 struct StaticStep {
@@ -47,4 +47,4 @@ template <typename Scheme, size_t Index = 0>
     }
 }
 
-}  // namespace ttnn::operations::wavelet
+}  // namespace ttwt::operations::wavelet

@@ -10,7 +10,7 @@
 #define ALWI inline __attribute__((always_inline))
 #endif
 
-namespace ttnn::operations::wavelet::kernels::primitives {
+namespace ttwt::operations::wavelet::kernels::primitives {
 
 constexpr uint32_t kTileSide = 32;
 constexpr uint32_t kFaceSide = 16;
@@ -41,4 +41,4 @@ static_assert(tile_element_offset(0, 16) == kFaceElements);
 static_assert(tile_element_offset(16, 0) == 2 * kFaceElements);
 static_assert(tile_element_offset(31, 31) == kTileElements - 1);
 
-}  // namespace ttnn::operations::wavelet::kernels::primitives
+}  // namespace ttwt::operations::wavelet::kernels::primitives

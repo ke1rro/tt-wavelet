@@ -6,7 +6,7 @@
 
 #include <cstdint>
 
-namespace ttnn::operations::wavelet {
+namespace ttwt::operations::wavelet {
 
 enum class BoundaryMode : uint8_t {
     kZero = 0,           // Pad with zeros
@@ -37,4 +37,4 @@ enum class BoundaryMode : uint8_t {
     return mode == BoundaryMode::kReflect || mode == BoundaryMode::kAntireflect;
 }
 
-}  // namespace ttnn::operations::wavelet
+}  // namespace ttwt::operations::wavelet

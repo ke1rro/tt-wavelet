@@ -28,7 +28,7 @@ class MeshDevice;
 
 }  // namespace tt::tt_metal
 
-namespace ttnn::prim::wavelet_program_utils {
+namespace ttwt::prim::wavelet_program_utils {
 
 struct CoreChunkWork {
     tt::tt_metal::CoreCoord core;
@@ -65,12 +65,12 @@ struct CoreChunkWork {
     tt::tt_metal::WorkloadDescriptor& workload,
     const char* payload_name);
 
-void add_generated_scheme_include_path(tt::tt_metal::KernelDescriptor& descriptor);
+void add_runtime_resource_include_path(tt::tt_metal::KernelDescriptor& descriptor);
 
 void append_program_to_mesh_ranges(
     tt::tt_metal::WorkloadDescriptor& workload,
     tt::tt_metal::ProgramDescriptor descriptor,
-    const MeshCoordinateRangeSet& tensor_coords,
+    const ttnn::MeshCoordinateRangeSet& tensor_coords,
     const char* empty_range_error);
 
-}  // namespace ttnn::prim::wavelet_program_utils
+}  // namespace ttwt::prim::wavelet_program_utils

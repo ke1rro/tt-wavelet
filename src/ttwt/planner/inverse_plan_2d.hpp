@@ -20,7 +20,7 @@
 #include "ttwt/planner/inverse_plan.hpp"
 #include "ttwt/planner/plan_2d.hpp"
 
-namespace ttnn::operations::wavelet {
+namespace ttwt::operations::wavelet {
 
 struct Ilwt2DExecutionPlan {
     LiftingInversePlan y_plan{};
@@ -518,4 +518,4 @@ template <typename Scheme>
     return words;
 }
 
-}  // namespace ttnn::operations::wavelet
+}  // namespace ttwt::operations::wavelet

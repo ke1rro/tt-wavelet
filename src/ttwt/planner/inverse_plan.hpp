@@ -20,7 +20,7 @@
 #include "ttwt/planner/execution_plan.hpp"
 #include "ttwt/planner/plan.hpp"
 
-namespace ttnn::operations::wavelet {
+namespace ttwt::operations::wavelet {
 
 struct LiftingInversePlan {
     LiftingForwardPlan forward_trace{};
@@ -501,4 +501,4 @@ template <typename Scheme>
     };
 }
 
-}  // namespace ttnn::operations::wavelet
+}  // namespace ttwt::operations::wavelet

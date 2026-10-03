@@ -16,15 +16,15 @@
 
 namespace {
 
-using ttnn::operations::wavelet::kernels::primitives::ConfigWords;
-using ttnn::operations::wavelet::kernels::primitives::kFaceSide;
-using ttnn::operations::wavelet::kernels::primitives::kTileBytes;
-using ttnn::operations::wavelet::kernels::primitives::kTileElements;
-using ttnn::operations::wavelet::kernels::primitives::kTileSide;
-using ttnn::operations::wavelet::kernels::primitives::load_config_page;
-using ttnn::operations::wavelet::kernels::primitives::preload_config_pages;
-using ttnn::operations::wavelet::kernels::primitives::tile_element_offset;
-using ttnn::operations::wavelet::kernels::primitives::tiled_element_offset;
+using ttwt::operations::wavelet::kernels::primitives::ConfigWords;
+using ttwt::operations::wavelet::kernels::primitives::kFaceSide;
+using ttwt::operations::wavelet::kernels::primitives::kTileBytes;
+using ttwt::operations::wavelet::kernels::primitives::kTileElements;
+using ttwt::operations::wavelet::kernels::primitives::kTileSide;
+using ttwt::operations::wavelet::kernels::primitives::load_config_page;
+using ttwt::operations::wavelet::kernels::primitives::preload_config_pages;
+using ttwt::operations::wavelet::kernels::primitives::tile_element_offset;
+using ttwt::operations::wavelet::kernels::primitives::tiled_element_offset;
 
 constexpr uint32_t kFragmentScratchBytes = 64;
 constexpr uint32_t kFragmentWriteBatch = 16;
@@ -38,10 +38,10 @@ struct Rect {
     Rect() = default;
 
     ALWI Rect(const ConfigWords words, const uint32_t offset) :
-        y_begin(words[offset + ttnn::operations::wavelet::device_protocol::kLwt2DRectYBegin]),
-        y_length(words[offset + ttnn::operations::wavelet::device_protocol::kLwt2DRectYLength]),
-        x_begin(words[offset + ttnn::operations::wavelet::device_protocol::kLwt2DRectXBegin]),
-        x_length(words[offset + ttnn::operations::wavelet::device_protocol::kLwt2DRectXLength]) {}
+        y_begin(words[offset + ttwt::operations::wavelet::device_protocol::kLwt2DRectYBegin]),
+        y_length(words[offset + ttwt::operations::wavelet::device_protocol::kLwt2DRectYLength]),
+        x_begin(words[offset + ttwt::operations::wavelet::device_protocol::kLwt2DRectXBegin]),
+        x_length(words[offset + ttwt::operations::wavelet::device_protocol::kLwt2DRectXLength]) {}
 };
 
 [[nodiscard]] ALWI uint32_t aligned_begin(const uint32_t value) { return (value / kTileSide) * kTileSide; }
@@ -75,7 +75,7 @@ ALWI void write_local_output(
                 local_endpoint,
                 kTileBytes,
                 {},
-                ttnn::operations::wavelet::kernels::primitives::local_noc_destination(noc, destination_addr));
+                ttwt::operations::wavelet::kernels::primitives::local_noc_destination(noc, destination_addr));
         }
         noc.async_write_barrier();
         output_buffer.pop_front(batch);
@@ -428,16 +428,16 @@ ALWI void write_interleaved_output(
 }  // namespace
 
 void kernel_main() {
-    uint32_t plane_addrs[ttnn::operations::wavelet::device_protocol::kLwt2DPlaneCount];
-    uint32_t plane_tile_columns[ttnn::operations::wavelet::device_protocol::kLwt2DPlaneCount];
+    uint32_t plane_addrs[ttwt::operations::wavelet::device_protocol::kLwt2DPlaneCount];
+    uint32_t plane_tile_columns[ttwt::operations::wavelet::device_protocol::kLwt2DPlaneCount];
     const uint32_t workspace_base =
-        CircularBuffer(ttnn::operations::wavelet::device_protocol::kLwt2DWorkspaceCb).get_write_ptr();
-    for (uint32_t slot = 0; slot < ttnn::operations::wavelet::device_protocol::kLwt2DPlaneCount; ++slot) {
+        CircularBuffer(ttwt::operations::wavelet::device_protocol::kLwt2DWorkspaceCb).get_write_ptr();
+    for (uint32_t slot = 0; slot < ttwt::operations::wavelet::device_protocol::kLwt2DPlaneCount; ++slot) {
         plane_addrs[slot] = workspace_base + get_arg_val<uint32_t>(slot);
         plane_tile_columns[slot] =
-            get_arg_val<uint32_t>(ttnn::operations::wavelet::device_protocol::kLwt2DPlaneCount + slot);
+            get_arg_val<uint32_t>(ttwt::operations::wavelet::device_protocol::kLwt2DPlaneCount + slot);
     }
-    constexpr uint32_t plane_arg_count = 2 * ttnn::operations::wavelet::device_protocol::kLwt2DPlaneCount;
+    constexpr uint32_t plane_arg_count = 2 * ttwt::operations::wavelet::device_protocol::kLwt2DPlaneCount;
     const uint32_t route_config_addr = get_arg_val<uint32_t>(plane_arg_count);
     const uint32_t band_config_addr = get_arg_val<uint32_t>(plane_arg_count + 1);
 #ifdef ILWT_2D
@@ -451,8 +451,8 @@ void kernel_main() {
     const uint32_t chunks_per_sample = get_arg_val<uint32_t>(plane_arg_count + 9);
     const uint32_t output_tiles_per_sample = get_arg_val<uint32_t>(plane_arg_count + 10);
 #else
-    uint32_t output_addrs[ttnn::operations::wavelet::device_protocol::kLwt2DBandCount];
-    for (uint32_t band = 0; band < ttnn::operations::wavelet::device_protocol::kLwt2DBandCount; ++band) {
+    uint32_t output_addrs[ttwt::operations::wavelet::device_protocol::kLwt2DBandCount];
+    for (uint32_t band = 0; band < ttwt::operations::wavelet::device_protocol::kLwt2DBandCount; ++band) {
         output_addrs[band] = get_arg_val<uint32_t>(plane_arg_count + 2 + band);
     }
     const uint32_t output_tile_columns = get_arg_val<uint32_t>(plane_arg_count + 6);
@@ -486,55 +486,55 @@ void kernel_main() {
         preload_config_pages(
             route_args,
             route_config_addr,
-            ttnn::operations::wavelet::device_protocol::kLwt2DRouteConfigPageBytes,
+            ttwt::operations::wavelet::device_protocol::kLwt2DRouteConfigPageBytes,
             global_chunk * route_count,
             route_count,
             writer_config_addr);
         for (uint32_t route_index = 0; route_index < route_count; ++route_index) {
             const auto* route_words = reinterpret_cast<const uint32_t*>(
                 writer_config_addr +
-                route_index * ttnn::operations::wavelet::device_protocol::kLwt2DRouteConfigPageBytes);
+                route_index * ttwt::operations::wavelet::device_protocol::kLwt2DRouteConfigPageBytes);
             const ConfigWords route_config{route_words};
-            const uint32_t flags = route_words[ttnn::operations::wavelet::device_protocol::kLwt2DRouteFlags];
-            if ((flags & ttnn::operations::wavelet::device_protocol::kLwt2DRouteFlagMetadataOnly) != 0) {
+            const uint32_t flags = route_words[ttwt::operations::wavelet::device_protocol::kLwt2DRouteFlags];
+            if ((flags & ttwt::operations::wavelet::device_protocol::kLwt2DRouteFlagMetadataOnly) != 0) {
                 continue;
             }
-            const uint32_t output_slot = route_words[ttnn::operations::wavelet::device_protocol::kLwt2DRouteOutputSlot];
-            const Rect output{route_config, ttnn::operations::wavelet::device_protocol::kLwt2DRouteOutputRect};
+            const uint32_t output_slot = route_words[ttwt::operations::wavelet::device_protocol::kLwt2DRouteOutputSlot];
+            const Rect output{route_config, ttwt::operations::wavelet::device_protocol::kLwt2DRouteOutputRect};
             write_local_output(cb_output, plane_addrs[output_slot], plane_tile_columns[output_slot], output);
             sync_buffer.reserve_back(1);
             sync_buffer.push_back(1);
         }
 
-        uint32_t band_words[ttnn::operations::wavelet::device_protocol::kLwt2DBandConfigWordCount];
+        uint32_t band_words[ttwt::operations::wavelet::device_protocol::kLwt2DBandConfigWordCount];
         load_config_page(
             band_args,
             band_config_addr,
-            ttnn::operations::wavelet::device_protocol::kLwt2DBandConfigPageBytes,
+            ttwt::operations::wavelet::device_protocol::kLwt2DBandConfigPageBytes,
             global_chunk,
             cb_band_config,
             band_words,
-            ttnn::operations::wavelet::device_protocol::kLwt2DBandConfigWordCount);
-        const uint32_t final_y_begin = band_words[ttnn::operations::wavelet::device_protocol::kLwt2DBandFinalYBegin];
-        const uint32_t final_y_length = band_words[ttnn::operations::wavelet::device_protocol::kLwt2DBandFinalYLength];
-        const uint32_t final_x_begin = band_words[ttnn::operations::wavelet::device_protocol::kLwt2DBandFinalXBegin];
-        const uint32_t final_x_length = band_words[ttnn::operations::wavelet::device_protocol::kLwt2DBandFinalXLength];
-        constexpr uint32_t band_offsets[ttnn::operations::wavelet::device_protocol::kLwt2DBandCount] = {
-            ttnn::operations::wavelet::device_protocol::kLwt2DBandLl,
-            ttnn::operations::wavelet::device_protocol::kLwt2DBandLh,
-            ttnn::operations::wavelet::device_protocol::kLwt2DBandHl,
-            ttnn::operations::wavelet::device_protocol::kLwt2DBandHh,
+            ttwt::operations::wavelet::device_protocol::kLwt2DBandConfigWordCount);
+        const uint32_t final_y_begin = band_words[ttwt::operations::wavelet::device_protocol::kLwt2DBandFinalYBegin];
+        const uint32_t final_y_length = band_words[ttwt::operations::wavelet::device_protocol::kLwt2DBandFinalYLength];
+        const uint32_t final_x_begin = band_words[ttwt::operations::wavelet::device_protocol::kLwt2DBandFinalXBegin];
+        const uint32_t final_x_length = band_words[ttwt::operations::wavelet::device_protocol::kLwt2DBandFinalXLength];
+        constexpr uint32_t band_offsets[ttwt::operations::wavelet::device_protocol::kLwt2DBandCount] = {
+            ttwt::operations::wavelet::device_protocol::kLwt2DBandLl,
+            ttwt::operations::wavelet::device_protocol::kLwt2DBandLh,
+            ttwt::operations::wavelet::device_protocol::kLwt2DBandHl,
+            ttwt::operations::wavelet::device_protocol::kLwt2DBandHh,
         };
         const ConfigWords band_config{band_words};
 #ifdef ILWT_2D
-        uint32_t parity_slots[ttnn::operations::wavelet::device_protocol::kLwt2DBandCount];
-        Rect parity_sources[ttnn::operations::wavelet::device_protocol::kLwt2DBandCount];
-        for (uint32_t parity = 0; parity < ttnn::operations::wavelet::device_protocol::kLwt2DBandCount; ++parity) {
+        uint32_t parity_slots[ttwt::operations::wavelet::device_protocol::kLwt2DBandCount];
+        Rect parity_sources[ttwt::operations::wavelet::device_protocol::kLwt2DBandCount];
+        for (uint32_t parity = 0; parity < ttwt::operations::wavelet::device_protocol::kLwt2DBandCount; ++parity) {
             const uint32_t band_offset = band_offsets[parity];
             parity_slots[parity] =
-                band_words[band_offset + ttnn::operations::wavelet::device_protocol::kLwt2DBandSourceSlot];
+                band_words[band_offset + ttwt::operations::wavelet::device_protocol::kLwt2DBandSourceSlot];
             parity_sources[parity] =
-                Rect{band_config, band_offset + ttnn::operations::wavelet::device_protocol::kLwt2DBandSourceRect};
+                Rect{band_config, band_offset + ttwt::operations::wavelet::device_protocol::kLwt2DBandSourceRect};
         }
         write_interleaved_output(
             output_args,
@@ -553,12 +553,12 @@ void kernel_main() {
             pad_x,
             noc_scratch_addr);
 #else
-        for (uint32_t band = 0; band < ttnn::operations::wavelet::device_protocol::kLwt2DBandCount; ++band) {
+        for (uint32_t band = 0; band < ttwt::operations::wavelet::device_protocol::kLwt2DBandCount; ++band) {
             const uint32_t band_offset = band_offsets[band];
             const uint32_t source_slot =
-                band_words[band_offset + ttnn::operations::wavelet::device_protocol::kLwt2DBandSourceSlot];
+                band_words[band_offset + ttwt::operations::wavelet::device_protocol::kLwt2DBandSourceSlot];
             const Rect source{
-                band_config, band_offset + ttnn::operations::wavelet::device_protocol::kLwt2DBandSourceRect};
+                band_config, band_offset + ttwt::operations::wavelet::device_protocol::kLwt2DBandSourceRect};
             write_band(
                 output_args,
                 output_addrs[band],

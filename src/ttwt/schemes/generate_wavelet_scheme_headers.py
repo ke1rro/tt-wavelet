@@ -149,16 +149,11 @@ def render_steps(owner: str, steps: tuple[Step, ...]) -> list[str]:
     return lines
 
 
-def render_scheme_header(
-    scheme: Scheme, generated_directory: Path | None = None, source_directory: Path | None = None
-) -> str:
+def render_scheme_header(scheme: Scheme) -> str:
     inverse_identifier = f"{scheme.identifier}_inverse"
     inverse = inverse_steps(scheme.steps)
-    include_path = (generated_directory or GENERATED_INCLUDE_DIRECTORY) / f"{scheme.identifier}.hpp"
-    static_header = (
-        source_directory / "planner/static_scheme.hpp"
-        if source_directory else "ttwt/planner/static_scheme.hpp"
-    )
+    include_path = GENERATED_INCLUDE_DIRECTORY / f"{scheme.identifier}.hpp"
+    static_header = "ttwt/planner/static_scheme.hpp"
     lines = [
         LICENSE_HEADER.rstrip(),
         "",
@@ -166,7 +161,7 @@ def render_scheme_header(
         "",
         f'#include "{static_header}"',
         "",
-        "namespace ttnn::operations::wavelet::schemes {",
+        "namespace ttwt::operations::wavelet::schemes {",
         "",
         f"struct {inverse_identifier};",
         "",
@@ -179,7 +174,7 @@ def render_scheme_header(
         f'    static constexpr const char* compute_scheme_header = "\\"{include_path}\\"";',
         (
             "    static constexpr const char* compute_scheme_type = "
-            f'"ttnn::operations::wavelet::schemes::{scheme.identifier}";'
+            f'"ttwt::operations::wavelet::schemes::{scheme.identifier}";'
         ),
         f"    using inverse = {inverse_identifier};",
         "",
@@ -198,7 +193,7 @@ def render_scheme_header(
             f'    static constexpr const char* compute_scheme_header = "\\"{include_path}\\"";',
             (
                 "    static constexpr const char* compute_scheme_type = "
-                f'"ttnn::operations::wavelet::schemes::{inverse_identifier}";'
+                f'"ttwt::operations::wavelet::schemes::{inverse_identifier}";'
             ),
             "",
             "    template <std::size_t I>",
@@ -208,7 +203,7 @@ def render_scheme_header(
         ]
     )
     lines.extend(render_steps(inverse_identifier, inverse))
-    lines.extend(["}  // namespace ttnn::operations::wavelet::schemes", ""])
+    lines.extend(["}  // namespace ttwt::operations::wavelet::schemes", ""])
     return "\n".join(lines)
 
 
@@ -240,7 +235,7 @@ def render_catalog(schemes: list[Scheme]) -> str:
         "#include <span>",
         "#include <string_view>",
         "",
-        "namespace ttnn::operations::wavelet {",
+        "namespace ttwt::operations::wavelet {",
         "",
         "struct SchemeInfo {",
         "    std::string_view name;",
@@ -268,7 +263,7 @@ def render_catalog(schemes: list[Scheme]) -> str:
         "    return SchemeId::kUnknown;",
         "}",
         "",
-        "}  // namespace ttnn::operations::wavelet",
+        "}  // namespace ttwt::operations::wavelet",
         "",
     ]
     return "\n".join(lines)
@@ -298,7 +293,7 @@ def render_dispatch(schemes: list[Scheme]) -> str:
         "",
         "#include <tt_stl/assert.hpp>",
         "",
-        "namespace ttnn::operations::wavelet {",
+        "namespace ttwt::operations::wavelet {",
         "",
         "template <typename Fn>",
         "decltype(auto) dispatch_scheme(const SchemeId id, Fn&& fn) {",
@@ -315,7 +310,7 @@ def render_dispatch(schemes: list[Scheme]) -> str:
         "    return dispatch_scheme(scheme_id(name), std::forward<Fn>(fn));",
         "}",
         "",
-        "}  // namespace ttnn::operations::wavelet",
+        "}  // namespace ttwt::operations::wavelet",
         "",
     ]
     return "\n".join(lines)
@@ -346,10 +341,9 @@ def load_catalog() -> dict[str, dict]:
 
 
 def main() -> None:
-    if len(sys.argv) not in (2, 3):
-        raise RuntimeError("expected output directory and optional standalone Wavelet source directory")
+    if len(sys.argv) != 2:
+        raise RuntimeError("expected output directory")
     generated_directory = Path(sys.argv[1]).resolve()
-    source_directory = Path(sys.argv[2]).resolve() if len(sys.argv) == 3 else None
     catalog = load_catalog()
 
     schemes = sorted(
@@ -363,9 +357,7 @@ def main() -> None:
     for scheme in schemes:
         path = generated_directory / f"{scheme.identifier}.hpp"
         generated_headers.add(path)
-        write_file(path, render_scheme_header(
-            scheme, generated_directory if source_directory else None, source_directory
-        ))
+        write_file(path, render_scheme_header(scheme))
 
     catalog_header = generated_directory / "scheme_catalog.hpp"
     generated_headers.add(catalog_header)

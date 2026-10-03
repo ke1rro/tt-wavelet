@@ -19,7 +19,7 @@
 #include "ttwt/device/protocol/lwt_config.hpp"
 #include "ttwt/planner/plan.hpp"
 
-namespace ttnn::operations::wavelet {
+namespace ttwt::operations::wavelet {
 
 struct IndexInterval {
     size_t begin{0};
@@ -590,4 +590,4 @@ inline void validate_interval(const IndexInterval interval, const size_t stream_
     };
 }
 
-}  // namespace ttnn::operations::wavelet
+}  // namespace ttwt::operations::wavelet

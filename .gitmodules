@@ -1,3 +1,3 @@
 [submodule "tt-metal"]
 	path = third_party/tt-metal
-	url = https://github.com/ke1rro/tt-metal.git
+	url = https://github.com/tenstorrent/tt-metal.git

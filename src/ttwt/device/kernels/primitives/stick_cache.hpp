@@ -28,7 +28,7 @@
 #error "TTNN wavelet stick cache supports only Wormhole and Blackhole"
 #endif
 
-namespace ttnn::operations::wavelet::kernels::primitives {
+namespace ttwt::operations::wavelet::kernels::primitives {
 
 constexpr uint32_t kInvalidStick = 0xFFFFFFFFU;
 
@@ -142,7 +142,7 @@ struct CachedSourceReader {
     }
 };
 
-template <ttnn::operations::wavelet::BoundaryMode Mode, typename SrcAccessor>
+template <ttwt::operations::wavelet::BoundaryMode Mode, typename SrcAccessor>
 LWT_BOUNDARY_CALLABLE float read_extended_value(
     const SrcAccessor& src,
     StickReadCache& cache,
@@ -150,11 +150,11 @@ LWT_BOUNDARY_CALLABLE float read_extended_value(
     const uint32_t left_pad,
     const uint32_t out_idx) {
     static_assert(
-        ttnn::operations::wavelet::is_supported_lwt_boundary_mode(Mode), "Unsupported compile-time boundary mode");
+        ttwt::operations::wavelet::is_supported_lwt_boundary_mode(Mode), "Unsupported compile-time boundary mode");
     const int32_t logical = static_cast<int32_t>(out_idx) - static_cast<int32_t>(left_pad);
-    if constexpr (Mode == ttnn::operations::wavelet::BoundaryMode::kAntireflect) {
-        const auto extended = ttnn::operations::wavelet::make_antireflect_index_i32(logical, input_length);
-        return ttnn::operations::wavelet::evaluate_antireflect_index_i32(
+    if constexpr (Mode == ttwt::operations::wavelet::BoundaryMode::kAntireflect) {
+        const auto extended = ttwt::operations::wavelet::make_antireflect_index_i32(logical, input_length);
+        return ttwt::operations::wavelet::evaluate_antireflect_index_i32(
             extended,
             input_length,
             CachedSourceReader<SrcAccessor>{
@@ -163,9 +163,9 @@ LWT_BOUNDARY_CALLABLE float read_extended_value(
                 .source_length = input_length,
             });
     } else {
-        const ttnn::operations::wavelet::ExtendedIndexI32 extended =
-            ttnn::operations::wavelet::make_extended_index_i32<Mode>(logical, input_length);
-        return ttnn::operations::wavelet::evaluate_extended_index_i32<Mode>(
+        const ttwt::operations::wavelet::ExtendedIndexI32 extended =
+            ttwt::operations::wavelet::make_extended_index_i32<Mode>(logical, input_length);
+        return ttwt::operations::wavelet::evaluate_extended_index_i32<Mode>(
             extended,
             input_length,
             CachedSourceReader<SrcAccessor>{
@@ -176,7 +176,7 @@ LWT_BOUNDARY_CALLABLE float read_extended_value(
     }
 }
 
-template <ttnn::operations::wavelet::BoundaryMode Mode, typename SrcAccessor>
+template <ttwt::operations::wavelet::BoundaryMode Mode, typename SrcAccessor>
 ALWI float read_padded_value(
     const SrcAccessor& src,
     StickReadCache& cache,
@@ -184,7 +184,7 @@ ALWI float read_padded_value(
     const uint32_t left_pad,
     const uint32_t out_idx) {
     static_assert(
-        ttnn::operations::wavelet::is_supported_lwt_boundary_mode(Mode), "Unsupported compile-time boundary mode");
+        ttwt::operations::wavelet::is_supported_lwt_boundary_mode(Mode), "Unsupported compile-time boundary mode");
 
     if (out_idx >= left_pad) {
         const uint32_t source_index = out_idx - left_pad;
@@ -207,7 +207,7 @@ ALWI void release_cache(StickReadCache& cache) {
     cache.valid = false;
 }
 
-}  // namespace ttnn::operations::wavelet::kernels::primitives
+}  // namespace ttwt::operations::wavelet::kernels::primitives
 
 #undef LWT_BOUNDARY_CALLABLE
 #undef LWT_CACHE_REFILL_CALLABLE

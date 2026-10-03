@@ -13,7 +13,7 @@
 #include "tt-metalium/math.hpp"
 #include "tt-metalium/mesh_device.hpp"
 
-namespace ttnn::prim::detail {
+namespace ttwt::prim::detail {
 
 inline constexpr uint32_t kWaveletL1BudgetQuantumBytes = 16U * 1024U;
 
@@ -32,4 +32,4 @@ inline constexpr uint32_t kWaveletL1BudgetQuantumBytes = 16U * 1024U;
     return static_cast<uint32_t>(tt::round_down(available, uint64_t{kWaveletL1BudgetQuantumBytes}));
 }
 
-}  // namespace ttnn::prim::detail
+}  // namespace ttwt::prim::detail

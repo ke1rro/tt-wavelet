@@ -24,7 +24,7 @@
 #include "ttwt/planner/execution_plan.hpp"
 #include "ttwt/planner/plan.hpp"
 
-namespace ttnn::operations::wavelet {
+namespace ttwt::operations::wavelet {
 
 struct IndexRectangle {
     IndexInterval y{};
@@ -1239,4 +1239,4 @@ inline void write_protocol_rectangle(
     return words;
 }
 
-}  // namespace ttnn::operations::wavelet
+}  // namespace ttwt::operations::wavelet
