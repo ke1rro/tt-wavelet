@@ -160,6 +160,7 @@ def test_public_contract_and_ownership():
             print(f"SYMBOL_OWNER ttnn.{name}={info.filename.decode()}")
 
 
+@pytest.mark.hardware
 def test_blackhole_db1_tensor_config_and_cache(tmp_path):
     import torch
     import ttnn

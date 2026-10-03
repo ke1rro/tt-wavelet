@@ -42,3 +42,6 @@ line-length = 100
 target-version = ["py310"]
 include = '(python/.*|tests/python/.*|src/ttwt/schemes/generate_wavelet_scheme_headers)\.py$'
 force-exclude = '/(third_party|build[^/]*|generated|\.git)/'
+
+[tool.pytest.ini_options]
+markers = ["hardware: requires a physical Tenstorrent accelerator"]

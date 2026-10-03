@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    env:
+      CC: clang-20
+      CXX: clang++-20
+      CMAKE_BUILD_PARALLEL_LEVEL: '2'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.10'
+      - name: Verify dependency pin
+        run: test "$(git -C third_party/tt-metal rev-parse HEAD)" = de546d3b146758714d900f11b218c8f9c805f410
+      - name: Install build prerequisites
+        run: |
+          curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key | gpg --dearmor | sudo tee /usr/share/keyrings/llvm.gpg >/dev/null
+          echo 'deb [signed-by=/usr/share/keyrings/llvm.gpg] https://apt.llvm.org/jammy/ llvm-toolchain-jammy-20 main' | sudo tee /etc/apt/sources.list.d/llvm-20.list
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang-20 g++-12 ninja-build pkg-config libhwloc-dev libnuma-dev libcapstone-dev
+          python -m pip install build cmake==4.2.3 pytest packaging clang-format==19.1.4 cmakelang==0.6.13 black==26.3.1 mdformat==0.7.22
+      - name: Check owned source formatting
+        run: |
+          git ls-files -z -- 'bindings/*.cpp' 'src/ttwt/*.cpp' 'src/ttwt/*.hpp' 'src/ttwt/*.h' 'tests/cpp/*.cpp' 'tests/cpp/*.hpp' 'tests/cpp/*.h' | xargs -0 clang-format --dry-run --Werror
+          git ls-files -z -- CMakeLists.txt 'cmake/*.cmake' bindings/CMakeLists.txt src/ttwt/CMakeLists.txt src/ttwt/resources.cmake src/ttwt/sources.cmake | xargs -0 -n 1 cmake-format --check --line-width 100 --tab-size 2
+          black --check .
+          mdformat --check --wrap 100 README.md
+      - name: Configure CMake and build the wheel
+        run: python -m build --wheel -Ccmake.define.TT_WAVELET_TT_METAL_MODE=SUBMODULE -Cbuild-dir=build
+      - name: Install candidate and check dependencies
+        run: |
+          python -m pip install dist/*.whl
+          python -m pip check
+      - name: Validate installed package without hardware
+        env:
+          TT_WAVELET_EXPECT_RELOCATABLE: '1'
+        run: |
+          TT_WAVELET_WHEEL="$(realpath dist/*.whl)"
+          export TT_WAVELET_WHEEL
+          cd /tmp
+          unset PYTHONPATH LD_LIBRARY_PATH TT_METAL_RUNTIME_ROOT
+          python -c 'from pathlib import Path; import sysconfig, ttnn, ttwt; assert Path(ttwt.__file__).resolve().is_relative_to(Path(sysconfig.get_path("platlib"))); print(ttwt.__file__)'
+          python -m pytest "$GITHUB_WORKSPACE/tests/python/test_installed_wheel.py" "$GITHUB_WORKSPACE/tests/python/test_runtime_resources.py" "$GITHUB_WORKSPACE/tests/python/test_wheel_package.py" -m 'not hardware' --strict-markers -q

@@ -8,6 +8,8 @@ import torch
 
 import ttnn
 
+pytestmark = pytest.mark.hardware
+
 BOUNDARY_MODES: list[str] = [
     "zero",
     "constant",

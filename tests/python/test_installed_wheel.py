@@ -119,6 +119,7 @@ def test_installed_metadata_types_and_ownership():
         print(f"SYMBOL_OWNER ttwt.{name}={info.filename.decode()}")
 
 
+@pytest.mark.hardware
 def test_blackhole_db1_tensor_config_and_cache(tmp_path):
     import torch
     import ttnn
@@ -203,6 +204,7 @@ def test_blackhole_db1_tensor_config_and_cache(tmp_path):
         ttnn.close_mesh_device(device)
 
 
+@pytest.mark.hardware
 def test_upstream_wavelet_control():
     """Provider qualification, separate from standalone wheel correctness."""
     import torch

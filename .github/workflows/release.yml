@@ -1,0 +1,83 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*.*.*']
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    env:
+      CC: clang-20
+      CXX: clang++-20
+      CMAKE_BUILD_PARALLEL_LEVEL: '2'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          submodules: recursive
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.10'
+      - name: Verify release identity
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          test "$RELEASE_TAG" = "v$(cat VERSION)"
+          test "$(git -C third_party/tt-metal rev-parse HEAD)" = de546d3b146758714d900f11b218c8f9c805f410
+      - name: Install build prerequisites
+        run: |
+          curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key | gpg --dearmor | sudo tee /usr/share/keyrings/llvm.gpg >/dev/null
+          echo 'deb [signed-by=/usr/share/keyrings/llvm.gpg] https://apt.llvm.org/jammy/ llvm-toolchain-jammy-20 main' | sudo tee /etc/apt/sources.list.d/llvm-20.list
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang-20 g++-12 ninja-build pkg-config libhwloc-dev libnuma-dev libcapstone-dev
+          python -m pip install build cmake==4.2.3 pytest packaging
+      - name: Build release wheel
+        run: python -m build --wheel -Ccmake.define.TT_WAVELET_TT_METAL_MODE=SUBMODULE -Cbuild-dir=build
+      - name: Check wheel and installed extension
+        run: |
+          python -m pip install dist/*.whl
+          python -m pip check
+          TT_WAVELET_WHEEL="$(realpath dist/*.whl)"
+          export TT_WAVELET_WHEEL
+          cd /tmp
+          unset PYTHONPATH LD_LIBRARY_PATH TT_METAL_RUNTIME_ROOT
+          python -m pytest "$GITHUB_WORKSPACE/tests/python/test_wheel_package.py" --strict-markers -q
+      - name: Require a PyPI-supported wheel tag
+        run: |
+          python - <<'PYPI_CHECK'
+          from pathlib import Path
+          import re
+          from packaging.utils import parse_wheel_filename
+          wheel, = Path("dist").glob("*.whl")
+          tags = parse_wheel_filename(wheel.name)[3]
+          assert all(re.fullmatch(r"manylinux_2_\d+_x86_64", tag.platform) for tag in tags), (
+              f"{wheel.name} is not PyPI-ready. Qualify a supported manylinux tag before publishing; "
+              "do not rename or retag the local wheel without compatibility qualification."
+          )
+          PYPI_CHECK
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-wheel
+          path: dist/*.whl
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-22.04
+    environment:
+      name: pypi
+      url: https://pypi.org/p/tt-wavelet
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-wheel
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@release/v1

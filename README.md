@@ -18,7 +18,8 @@ Ubuntu 22.04 x86_64, CPython 3.10 and Blackhole p150b. Other platforms and Wormh
 Installed-wheel integration and representative db1 transforms have passed hardware validation.
 Full-scheme qualification found numerical failures, including `dmey` and boundary extrapolation
 cases. The catalog is not a guarantee of uniform numerical accuracy; release qualification remains
-open.
+open. Local wheels currently use `linux_x86_64`, which PyPI does not accept; a qualified
+PyPI-supported wheel is also required before publication.
 
 ## Requirements
 
@@ -72,9 +73,14 @@ Metalium, UMD, STL or SFPI.
 
 ## Hardware validation
 
-Regular CI is intended to be hardware-free; accelerator validation is performed separately.
-Published releases must be manually qualified on the advertised hardware. Every commit is not
-hardware-tested. No release CI is configured yet.
+Regular CI validates builds, packaging, host-side behavior and non-device tests without requiring
+Tenstorrent hardware. Accelerator validation is performed separately when hardware is available and
+is required before a public release is tagged. Hardware validation is not guaranteed for every
+commit or pull request.
+
+Release eligibility requires green CI and manual hardware qualification of the exact commit SHA,
+then a version tag on that SHA. The release workflow builds that tag and publishes its wheel through
+PyPI Trusted Publishing.
 
 ## Development
 
