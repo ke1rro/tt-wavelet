@@ -44,4 +44,8 @@ include = '(python/.*|tests/python/.*|src/ttwt/schemes/generate_wavelet_scheme_h
 force-exclude = '/(third_party|build[^/]*|generated|\.git)/'
 
 [tool.pytest.ini_options]
-markers = ["hardware: requires a physical Tenstorrent accelerator"]
+markers = [
+    "hardware: requires a physical Tenstorrent accelerator",
+    "slow: complete wavelet scheme sweeps",
+    "timeout(seconds): per-test time limit when pytest-timeout is installed",
+]

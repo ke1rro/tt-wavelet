@@ -7,6 +7,7 @@ import pywt
 import torch
 
 import ttnn
+import ttwt
 
 pytestmark = pytest.mark.hardware
 
@@ -99,10 +100,10 @@ def test_representative_schemes_jit_execute_all_operations(
 ) -> None:
     boundary_mode = "antireflect"
     signal_1d = torch.sin(torch.arange(257, dtype=torch.float32) * 0.113)
-    approximation, detail = ttnn.dwt(
+    approximation, detail = ttwt.dwt(
         to_device_1d(device, signal_1d), wavelet, boundary_mode=boundary_mode
     )
-    reconstructed_1d = ttnn.idwt(
+    reconstructed_1d = ttwt.idwt(
         approximation,
         detail,
         wavelet,
@@ -114,8 +115,8 @@ def test_representative_schemes_jit_execute_all_operations(
     y = torch.arange(shape_2d[0], dtype=torch.float32).reshape(-1, 1)
     x = torch.arange(shape_2d[1], dtype=torch.float32).reshape(1, -1)
     signal_2d = torch.sin(0.17 * x) + torch.cos(0.11 * y)
-    bands = ttnn.dwt_2d(to_device_2d(device, signal_2d), wavelet, boundary_mode=boundary_mode)
-    reconstructed_2d = ttnn.idwt_2d(
+    bands = ttwt.dwt_2d(to_device_2d(device, signal_2d), wavelet, boundary_mode=boundary_mode)
+    reconstructed_2d = ttwt.idwt_2d(
         *bands,
         wavelet,
         shape_2d,
@@ -147,10 +148,10 @@ def test_batched_1d_matches_independent_samples(device: ttnn.MeshDevice, length:
     index = torch.arange(batch * length, dtype=torch.float32).reshape(batch, 1, 1, length)
     signal = torch.sin(index * 0.071) + 0.01 * index
 
-    approximation, detail = ttnn.dwt(
+    approximation, detail = ttwt.dwt(
         to_device_1d(device, signal), wavelet, boundary_mode="antireflect"
     )
-    reconstructed = ttnn.idwt(approximation, detail, wavelet, length, boundary_mode="antireflect")
+    reconstructed = ttwt.idwt(approximation, detail, wavelet, length, boundary_mode="antireflect")
     approximation_host = ttnn.to_torch(approximation)
     detail_host = ttnn.to_torch(detail)
     reconstructed_host = ttnn.to_torch(reconstructed)
@@ -159,13 +160,13 @@ def test_batched_1d_matches_independent_samples(device: ttnn.MeshDevice, length:
     assert detail_host.shape == approximation_host.shape
     assert reconstructed_host.shape[:2] == (batch, 1)
     assert reconstructed_host.shape[3] == 32
-    coefficient_length = ttnn.dwt_coeff_len(length, wavelet)
+    coefficient_length = ttwt.dwt_coeff_len(length, wavelet)
     for batch_index in range(batch):
         sample = signal[batch_index, 0, 0]
-        sample_approximation, sample_detail = ttnn.dwt(
+        sample_approximation, sample_detail = ttwt.dwt(
             to_device_1d(device, sample), wavelet, boundary_mode="antireflect"
         )
-        sample_reconstructed = ttnn.idwt(
+        sample_reconstructed = ttwt.idwt(
             sample_approximation,
             sample_detail,
             wavelet,
@@ -200,8 +201,8 @@ def test_batched_2d_matches_independent_samples(
     )
     signal = torch.sin(values * 0.017) + torch.cos(values * 0.003)
 
-    bands = ttnn.dwt_2d(to_device_2d(device, signal), "db7", boundary_mode="antireflect")
-    reconstructed = ttnn.idwt_2d(*bands, "db7", shape, boundary_mode="antireflect")
+    bands = ttwt.dwt_2d(to_device_2d(device, signal), "db7", boundary_mode="antireflect")
+    reconstructed = ttwt.idwt_2d(*bands, "db7", shape, boundary_mode="antireflect")
     band_hosts = [ttnn.to_torch(band) for band in bands]
     reconstructed_host = ttnn.to_torch(reconstructed)
     assert all(band.shape[:2] == (batch, 1) for band in band_hosts)
@@ -209,8 +210,8 @@ def test_batched_2d_matches_independent_samples(
 
     for batch_index in range(batch):
         sample = signal[batch_index, 0]
-        sample_bands = ttnn.dwt_2d(to_device_2d(device, sample), "db7", boundary_mode="antireflect")
-        sample_reconstructed = ttnn.idwt_2d(
+        sample_bands = ttwt.dwt_2d(to_device_2d(device, sample), "db7", boundary_mode="antireflect")
+        sample_reconstructed = ttwt.idwt_2d(
             *sample_bands, "db7", shape, boundary_mode="antireflect"
         )
         for batch_band, sample_band in zip(band_hosts, sample_bands):
@@ -226,8 +227,8 @@ def test_batch_larger_than_worker_count_and_coif17_execution(
     batch = 113
     length = 17
     signal = torch.arange(batch * length, dtype=torch.float32).reshape(batch, 1, 1, length)
-    approximation, detail = ttnn.dwt(to_device_1d(device, signal), "coif17")
-    reconstructed = ttnn.idwt(approximation, detail, "coif17", length)
+    approximation, detail = ttwt.dwt(to_device_1d(device, signal), "coif17")
+    reconstructed = ttwt.idwt(approximation, detail, "coif17", length)
     assert tuple(reconstructed.shape) == stick_shape(length, batch)
     assert torch.isfinite(ttnn.to_torch(reconstructed)).all()
 
@@ -239,8 +240,8 @@ def test_very_large_batch_compute_runtime_args_are_bounded(device: ttnn.MeshDevi
         torch.sin(positions * 0.071)[None, :]
         + torch.arange(batch, dtype=torch.float32)[:, None] * 0.001
     ).reshape(batch, 1, 1, length)
-    approximation, detail = ttnn.dwt(to_device_1d(device, signal), "coif17")
-    reconstructed = ttnn.idwt(approximation, detail, "coif17", length)
+    approximation, detail = ttwt.dwt(to_device_1d(device, signal), "coif17")
+    reconstructed = ttwt.idwt(approximation, detail, "coif17", length)
     reconstructed_host = ttnn.to_torch(reconstructed)
     assert tuple(reconstructed.shape) == stick_shape(length, batch)
     assert torch.isfinite(reconstructed_host).all()
@@ -254,17 +255,17 @@ def test_large_batch_multiple_chunks_forward_inverse(device: ttnn.MeshDevice, wa
         torch.sin(positions * 0.013)[None, :]
         + torch.arange(batch, dtype=torch.float32)[:, None] * 0.01
     ).reshape(batch, 1, 1, length)
-    approximation, detail = ttnn.dwt(to_device_1d(device, signal), wavelet)
-    reconstructed = ttnn.idwt(approximation, detail, wavelet, length)
+    approximation, detail = ttwt.dwt(to_device_1d(device, signal), wavelet)
+    reconstructed = ttwt.idwt(approximation, detail, wavelet, length)
     for sample in (0, batch - 1):
-        reference = ttnn.dwt(to_device_1d(device, signal[sample, 0, 0]), wavelet)
+        reference = ttwt.dwt(to_device_1d(device, signal[sample, 0, 0]), wavelet)
         for batched, independent in zip((approximation, detail), reference):
             assert_fp32_identical_1d(
                 ttnn.to_torch(batched)[sample, 0],
                 ttnn.to_torch(independent),
-                ttnn.dwt_coeff_len(length, wavelet),
+                ttwt.dwt_coeff_len(length, wavelet),
             )
-        reconstructed_reference = ttnn.idwt(*reference, wavelet, length)
+        reconstructed_reference = ttwt.idwt(*reference, wavelet, length)
         assert_fp32_identical_1d(
             ttnn.to_torch(reconstructed)[sample, 0], ttnn.to_torch(reconstructed_reference), length
         )
@@ -272,13 +273,13 @@ def test_large_batch_multiple_chunks_forward_inverse(device: ttnn.MeshDevice, wa
 
 def test_rank_four_batch_one_preserves_shapes(device: ttnn.MeshDevice) -> None:
     signal_1d = torch.arange(33, dtype=torch.float32).reshape(1, 1, 1, 33)
-    coefficients = ttnn.dwt(to_device_1d(device, signal_1d), "db1")
-    reconstructed_1d = ttnn.idwt(*coefficients, "db1", 33)
+    coefficients = ttwt.dwt(to_device_1d(device, signal_1d), "db1")
+    reconstructed_1d = ttwt.idwt(*coefficients, "db1", 33)
     assert tuple(reconstructed_1d.shape) == (1, 1, 2, 32)
 
     signal_2d = torch.arange(33 * 35, dtype=torch.float32).reshape(1, 1, 33, 35)
-    bands = ttnn.dwt_2d(to_device_2d(device, signal_2d), "db1")
-    reconstructed_2d = ttnn.idwt_2d(*bands, "db1", (33, 35))
+    bands = ttwt.dwt_2d(to_device_2d(device, signal_2d), "db1")
+    reconstructed_2d = ttwt.idwt_2d(*bands, "db1", (33, 35))
     assert tuple(reconstructed_2d.shape) == (1, 1, 33, 35)
 
 
@@ -289,28 +290,28 @@ def test_batched_preallocated_outputs_and_program_cache(
     device.enable_program_cache()
     try:
         signal_1d = torch.arange(2 * 33, dtype=torch.float32).reshape(2, 1, 1, 33)
-        coefficients = ttnn.dwt(to_device_1d(device, signal_1d), "db1")
-        reconstructed_1d = ttnn.idwt(*coefficients, "db1", 33)
+        coefficients = ttwt.dwt(to_device_1d(device, signal_1d), "db1")
+        reconstructed_1d = ttwt.idwt(*coefficients, "db1", 33)
 
         signal_2d = torch.arange(2 * 33 * 35, dtype=torch.float32).reshape(2, 1, 33, 35)
-        bands = ttnn.dwt_2d(to_device_2d(device, signal_2d), "db1")
-        reconstructed_2d = ttnn.idwt_2d(*bands, "db1", (33, 35))
+        bands = ttwt.dwt_2d(to_device_2d(device, signal_2d), "db1")
+        reconstructed_2d = ttwt.idwt_2d(*bands, "db1", (33, 35))
 
         device.disable_and_clear_program_cache()
         device.enable_program_cache()
         for scale in (-0.5, 0.25):
             next_1d = signal_1d * scale + 3.0
-            next_coefficients = ttnn.dwt(
+            next_coefficients = ttwt.dwt(
                 to_device_1d(device, next_1d), "db1", output_tensors=coefficients
             )
-            next_reconstructed_1d = ttnn.idwt(
+            next_reconstructed_1d = ttwt.idwt(
                 *next_coefficients, "db1", 33, output_tensor=reconstructed_1d
             )
             assert_fp32_close_1d(next_reconstructed_1d, next_1d)
 
             next_2d = signal_2d * scale + 3.0
-            next_bands = ttnn.dwt_2d(to_device_2d(device, next_2d), "db1", output_tensors=bands)
-            next_reconstructed_2d = ttnn.idwt_2d(
+            next_bands = ttwt.dwt_2d(to_device_2d(device, next_2d), "db1", output_tensors=bands)
+            next_reconstructed_2d = ttwt.idwt_2d(
                 *next_bands, "db1", (33, 35), output_tensor=reconstructed_2d
             )
             assert_fp32_close(ttnn.to_torch(next_reconstructed_2d), next_2d)
@@ -326,7 +327,7 @@ def test_lwt_ilwt_1d_stick_padding_regression(device: ttnn.MeshDevice, length: i
     signal = 0.125 * indices + torch.sin(0.7 * indices)
     approximation_ref, detail_ref = pywt.dwt(signal.numpy(), "bior1.3", mode="symmetric")
 
-    approximation, detail = ttnn.dwt(
+    approximation, detail = ttwt.dwt(
         to_device_1d(device, signal), "bior1.3", boundary_mode="symmetric"
     )
 
@@ -336,7 +337,7 @@ def test_lwt_ilwt_1d_stick_padding_regression(device: ttnn.MeshDevice, length: i
     assert_fp32_close_1d(approximation, torch.from_numpy(approximation_ref))
     assert_fp32_close_1d(detail, torch.from_numpy(detail_ref))
 
-    reconstructed = ttnn.idwt(
+    reconstructed = ttwt.idwt(
         approximation,
         detail,
         "bior1.3",
@@ -355,10 +356,10 @@ def test_1d_explicit_valid_length_and_page_contract(
 ) -> None:
     signal = torch.sin(torch.arange(signal_length, dtype=torch.float32) * 0.071)
     input_tensor = to_device_1d(device, signal)
-    approximation, detail = ttnn.dwt(input_tensor, "db1")
-    reconstructed = ttnn.idwt(approximation, detail, "db1", signal_length)
+    approximation, detail = ttwt.dwt(input_tensor, "db1")
+    reconstructed = ttwt.idwt(approximation, detail, "db1", signal_length)
 
-    assert ttnn.dwt_coeff_len(signal_length, "db1") == coefficient_length
+    assert ttwt.dwt_coeff_len(signal_length, "db1") == coefficient_length
     assert tuple(approximation.shape) == stick_shape(coefficient_length)
     assert tuple(detail.shape) == stick_shape(coefficient_length)
     assert tuple(reconstructed.shape) == stick_shape(signal_length)
@@ -379,10 +380,10 @@ def test_batched_1d_explicit_valid_length_and_page_contract(
     signal = torch.arange(batch * signal_length, dtype=torch.float32).reshape(
         batch, 1, 1, signal_length
     )
-    approximation, detail = ttnn.dwt(to_device_1d(device, signal), "db1")
-    reconstructed = ttnn.idwt(approximation, detail, "db1", signal_length)
+    approximation, detail = ttwt.dwt(to_device_1d(device, signal), "db1")
+    reconstructed = ttwt.idwt(approximation, detail, "db1", signal_length)
 
-    coefficient_length = ttnn.dwt_coeff_len(signal_length, "db1")
+    coefficient_length = ttwt.dwt_coeff_len(signal_length, "db1")
     assert tuple(approximation.shape) == stick_shape(coefficient_length, batch)
     assert tuple(detail.shape) == stick_shape(coefficient_length, batch)
     assert tuple(reconstructed.shape) == stick_shape(signal_length, batch)
@@ -399,7 +400,7 @@ def test_lwt_ilwt_1d_boundary_modes(device: ttnn.MeshDevice, boundary_mode: str)
     signal = torch.linspace(-1.25, 2.75, 33, dtype=torch.float32)
     approximation_ref, detail_ref = pywt.dwt(signal.numpy(), "bior1.3", mode=boundary_mode)
 
-    approximation, detail = ttnn.dwt(
+    approximation, detail = ttwt.dwt(
         to_device_1d(device, signal),
         "bior1.3",
         boundary_mode=boundary_mode,
@@ -407,7 +408,7 @@ def test_lwt_ilwt_1d_boundary_modes(device: ttnn.MeshDevice, boundary_mode: str)
     assert_fp32_close_1d(approximation, torch.from_numpy(approximation_ref))
     assert_fp32_close_1d(detail, torch.from_numpy(detail_ref))
 
-    reconstructed = ttnn.idwt(
+    reconstructed = ttwt.idwt(
         approximation,
         detail,
         "bior1.3",
@@ -428,7 +429,7 @@ def test_ilwt_1d_external_coefficients_shorter_than_one_stick(
     assert approximation.size < 32
     assert detail.size < 32
 
-    reconstructed = ttnn.idwt(
+    reconstructed = ttwt.idwt(
         to_device_1d(device, torch.from_numpy(approximation)),
         to_device_1d(device, torch.from_numpy(detail)),
         "bior1.3",
@@ -466,7 +467,7 @@ def test_ilwt_1d_batched_external_canonical_coefficients_more_than_one_stick(
         reconstruction_references.append(torch.from_numpy(reconstructed))
 
     coefficient_length = approximation_references[0].numel()
-    assert coefficient_length == ttnn.dwt_coeff_len(original_length, wavelet)
+    assert coefficient_length == ttwt.dwt_coeff_len(original_length, wavelet)
     assert coefficient_length > 32
 
     approximation_values = torch.stack(approximation_references).reshape(
@@ -476,7 +477,7 @@ def test_ilwt_1d_batched_external_canonical_coefficients_more_than_one_stick(
     assert tuple(approximation_values.shape) == (batch, 1, 1, coefficient_length)
     assert tuple(detail_values.shape) == (batch, 1, 1, coefficient_length)
 
-    reconstructed = ttnn.idwt(
+    reconstructed = ttwt.idwt(
         to_device_1d(device, approximation_values),
         to_device_1d(device, detail_values),
         wavelet,
@@ -496,28 +497,28 @@ def test_wavelet_1d_interleaved_l1_input_matches_dram_multichunk(
     indices = torch.arange(length, dtype=torch.float32)
     signal = torch.sin(indices * 0.013) + indices * 1.0e-5
 
-    dram_outputs = ttnn.dwt(to_device_1d(device, signal), "bior1.3", boundary_mode="antireflect")
+    dram_outputs = ttwt.dwt(to_device_1d(device, signal), "bior1.3", boundary_mode="antireflect")
     l1_input = to_device_1d(device, signal, ttnn.L1_MEMORY_CONFIG)
-    l1_outputs = ttnn.dwt(l1_input, "bior1.3", boundary_mode="antireflect")
-    coefficient_length = ttnn.dwt_coeff_len(length, "bior1.3")
+    l1_outputs = ttwt.dwt(l1_input, "bior1.3", boundary_mode="antireflect")
+    coefficient_length = ttwt.dwt_coeff_len(length, "bior1.3")
     for actual, expected in zip(l1_outputs, dram_outputs):
         assert actual.memory_config() == ttnn.DRAM_MEMORY_CONFIG
         assert_fp32_identical_1d(ttnn.to_torch(actual), ttnn.to_torch(expected), coefficient_length)
     ttnn.deallocate(l1_input)
 
-    dram_reconstructed = ttnn.idwt(*dram_outputs, "bior1.3", length, boundary_mode="antireflect")
+    dram_reconstructed = ttwt.idwt(*dram_outputs, "bior1.3", length, boundary_mode="antireflect")
     approximation_host, detail_host = (ttnn.to_torch(tensor) for tensor in dram_outputs)
     approximation_l1 = to_device_1d(device, approximation_host, ttnn.L1_MEMORY_CONFIG)
     detail_l1 = to_device_1d(device, detail_host, ttnn.L1_MEMORY_CONFIG)
 
-    l1_reconstructed = ttnn.idwt(
+    l1_reconstructed = ttwt.idwt(
         approximation_l1,
         detail_l1,
         "bior1.3",
         length,
         boundary_mode="antireflect",
     )
-    mixed_reconstructed = ttnn.idwt(
+    mixed_reconstructed = ttwt.idwt(
         approximation_l1,
         dram_outputs[1],
         "bior1.3",
@@ -548,7 +549,7 @@ def test_lwt_ilwt_2d_shapes_and_boundary_modes(
     signal = torch.sin(0.17 * x) + torch.cos(0.11 * y) + 0.01 * x - 0.02 * y
 
     ll_ref, (hl_ref, lh_ref, hh_ref) = pywt.dwt2(signal.numpy(), "bior1.3", mode=boundary_mode)
-    ll, lh, hl, hh = ttnn.dwt_2d(
+    ll, lh, hl, hh = ttwt.dwt_2d(
         to_device_2d(device, signal),
         "bior1.3",
         boundary_mode=boundary_mode,
@@ -561,7 +562,7 @@ def test_lwt_ilwt_2d_shapes_and_boundary_modes(
         assert tuple(result.shape) == reference.shape
         assert_fp32_close(ttnn.to_torch(result), torch.from_numpy(reference))
 
-    reconstructed = ttnn.idwt_2d(
+    reconstructed = ttwt.idwt_2d(
         ll,
         lh,
         hl,
@@ -581,15 +582,15 @@ def test_wavelet_2d_interleaved_l1_input_matches_dram_multichunk(
     x = torch.arange(shape[1], dtype=torch.float32).reshape(1, -1)
     signal = torch.sin(0.017 * x) + torch.cos(0.019 * y) + 1.0e-4 * x * y
 
-    dram_outputs = ttnn.dwt_2d(to_device_2d(device, signal), "bior1.3", boundary_mode="antireflect")
+    dram_outputs = ttwt.dwt_2d(to_device_2d(device, signal), "bior1.3", boundary_mode="antireflect")
     l1_input = to_device_2d(device, signal, ttnn.L1_MEMORY_CONFIG)
-    l1_outputs = ttnn.dwt_2d(l1_input, "bior1.3", boundary_mode="antireflect")
+    l1_outputs = ttwt.dwt_2d(l1_input, "bior1.3", boundary_mode="antireflect")
     for actual, expected in zip(l1_outputs, dram_outputs):
         assert actual.memory_config() == ttnn.DRAM_MEMORY_CONFIG
         assert_fp32_identical(ttnn.to_torch(actual), ttnn.to_torch(expected))
     ttnn.deallocate(l1_input)
 
-    dram_reconstructed = ttnn.idwt_2d(
+    dram_reconstructed = ttwt.idwt_2d(
         *dram_outputs,
         "bior1.3",
         shape,
@@ -599,13 +600,13 @@ def test_wavelet_2d_interleaved_l1_input_matches_dram_multichunk(
         to_device_2d(device, ttnn.to_torch(tensor), ttnn.L1_MEMORY_CONFIG)
         for tensor in dram_outputs
     )
-    l1_reconstructed = ttnn.idwt_2d(
+    l1_reconstructed = ttwt.idwt_2d(
         *l1_bands,
         "bior1.3",
         shape,
         boundary_mode="antireflect",
     )
-    mixed_reconstructed = ttnn.idwt_2d(
+    mixed_reconstructed = ttwt.idwt_2d(
         l1_bands[0],
         dram_outputs[1],
         l1_bands[2],
@@ -628,8 +629,8 @@ def test_wavelet_preallocated_outputs_and_program_cache(
     try:
         signal = torch.arange(20, dtype=torch.float32)
         input_tensor = to_device_1d(device, signal)
-        approximation, detail = ttnn.dwt(input_tensor, "bior1.3")
-        reconstructed = ttnn.idwt(approximation, detail, "bior1.3", signal.numel())
+        approximation, detail = ttwt.dwt(input_tensor, "bior1.3")
+        reconstructed = ttwt.idwt(approximation, detail, "bior1.3", signal.numel())
 
         # Retain correctly specified output tensors, then isolate the two
         # preallocated operation cache entries from the allocation run above.
@@ -637,12 +638,12 @@ def test_wavelet_preallocated_outputs_and_program_cache(
         device.enable_program_cache()
         for scale in (-2.5, 0.375):
             next_signal = signal * scale + 7.0
-            approximation_out, detail_out = ttnn.dwt(
+            approximation_out, detail_out = ttwt.dwt(
                 to_device_1d(device, next_signal),
                 "bior1.3",
                 output_tensors=(approximation, detail),
             )
-            reconstructed_out = ttnn.idwt(
+            reconstructed_out = ttwt.idwt(
                 approximation_out,
                 detail_out,
                 "bior1.3",
@@ -668,17 +669,17 @@ def test_python_allocated_1d_preallocated_outputs(
     element_count = length if batch is None else batch * length
     signal = torch.sin(torch.arange(element_count, dtype=torch.float32).reshape(shape) * 0.071)
     input_tensor = to_device_1d(device, signal)
-    expected_approximation, expected_detail = ttnn.dwt(
+    expected_approximation, expected_detail = ttwt.dwt(
         input_tensor, "db4", boundary_mode="symmetric"
     )
-    coefficient_length = ttnn.dwt_coeff_len(length, "db4")
+    coefficient_length = ttwt.dwt_coeff_len(length, "db4")
 
     coefficient_spec = ttnn.TensorSpec(
         expected_approximation.shape, ttnn.float32, ttnn.ROW_MAJOR_LAYOUT
     )
     approximation = ttnn.allocate_tensor_on_device(coefficient_spec, device)
     detail = ttnn.allocate_tensor_on_device(coefficient_spec, device)
-    actual_approximation, actual_detail = ttnn.dwt(
+    actual_approximation, actual_detail = ttwt.dwt(
         input_tensor,
         "db4",
         boundary_mode="symmetric",
@@ -697,7 +698,7 @@ def test_python_allocated_1d_preallocated_outputs(
         coefficient_length,
     )
 
-    expected_reconstructed = ttnn.idwt(
+    expected_reconstructed = ttwt.idwt(
         expected_approximation,
         expected_detail,
         "db4",
@@ -706,7 +707,7 @@ def test_python_allocated_1d_preallocated_outputs(
     )
     output_spec = ttnn.TensorSpec(expected_reconstructed.shape, ttnn.float32, ttnn.ROW_MAJOR_LAYOUT)
     output = ttnn.allocate_tensor_on_device(output_spec, device)
-    actual_reconstructed = ttnn.idwt(
+    actual_reconstructed = ttwt.idwt(
         actual_approximation,
         actual_detail,
         "db4",
@@ -731,19 +732,19 @@ def test_wavelet_2d_preallocated_outputs_and_program_cache(
         shape = (35, 37)
         signal = torch.arange(shape[0] * shape[1], dtype=torch.float32).reshape(shape) * 0.001
         input_tensor = to_device_2d(device, signal)
-        outputs = ttnn.dwt_2d(input_tensor, "bior1.3")
-        reconstructed = ttnn.idwt_2d(*outputs, "bior1.3", shape)
+        outputs = ttwt.dwt_2d(input_tensor, "bior1.3")
+        reconstructed = ttwt.idwt_2d(*outputs, "bior1.3", shape)
 
         device.disable_and_clear_program_cache()
         device.enable_program_cache()
         for scale in (-0.25, 0.5):
             next_signal = 1.0 + signal * scale
-            next_outputs = ttnn.dwt_2d(
+            next_outputs = ttwt.dwt_2d(
                 to_device_2d(device, next_signal),
                 "bior1.3",
                 output_tensors=outputs,
             )
-            reconstructed_out = ttnn.idwt_2d(
+            reconstructed_out = ttwt.idwt_2d(
                 *next_outputs,
                 "bior1.3",
                 shape,
@@ -767,13 +768,13 @@ def test_wavelet_operations_with_program_cache_disabled(
     device.disable_and_clear_program_cache()
     try:
         signal_1d = torch.linspace(-1.0, 1.0, 33, dtype=torch.float32)
-        approximation, detail = ttnn.dwt(to_device_1d(device, signal_1d), "bior1.3")
-        reconstructed_1d = ttnn.idwt(approximation, detail, "bior1.3", signal_1d.numel())
+        approximation, detail = ttwt.dwt(to_device_1d(device, signal_1d), "bior1.3")
+        reconstructed_1d = ttwt.idwt(approximation, detail, "bior1.3", signal_1d.numel())
         assert_fp32_close_1d(reconstructed_1d, signal_1d)
 
         signal_2d = signal_1d.reshape(3, 11)
-        bands = ttnn.dwt_2d(to_device_2d(device, signal_2d), "bior1.3")
-        reconstructed_2d = ttnn.idwt_2d(*bands, "bior1.3", signal_2d.shape)
+        bands = ttwt.dwt_2d(to_device_2d(device, signal_2d), "bior1.3")
+        reconstructed_2d = ttwt.idwt_2d(*bands, "bior1.3", signal_2d.shape)
         assert_fp32_close(ttnn.to_torch(reconstructed_2d), signal_2d)
         assert device.num_program_cache_entries() == 0
     finally:
@@ -788,26 +789,26 @@ def test_wavelet_1d_program_cache_keys_and_address_override(
     try:
         signal = torch.sin(torch.arange(33, dtype=torch.float32) * 0.17)
         first_input = to_device_1d(device, signal)
-        first_outputs = ttnn.dwt(first_input, "db7")
+        first_outputs = ttwt.dwt(first_input, "db7")
         assert device.num_program_cache_entries() == 1
 
         # Identical tensors and new buffers with identical specs both reuse the
         # program. Tensor addresses are runtime arguments, not cache-key data.
-        ttnn.dwt(first_input, "db7")
+        ttwt.dwt(first_input, "db7")
         second_input = to_device_1d(device, signal + 0.25)
-        second_outputs = ttnn.dwt(second_input, "db7")
+        second_outputs = ttwt.dwt(second_input, "db7")
         assert device.num_program_cache_entries() == 1
 
-        db8_outputs = ttnn.dwt(second_input, "db8")
+        db8_outputs = ttwt.dwt(second_input, "db8")
         assert device.num_program_cache_entries() == 2
 
-        reconstructed = ttnn.idwt(*first_outputs, "db7", signal.numel())
-        ttnn.idwt(*first_outputs, "db7", signal.numel())
-        ttnn.idwt(*second_outputs, "db7", signal.numel())
+        reconstructed = ttwt.idwt(*first_outputs, "db7", signal.numel())
+        ttwt.idwt(*first_outputs, "db7", signal.numel())
+        ttwt.idwt(*second_outputs, "db7", signal.numel())
         assert device.num_program_cache_entries() == 3
         assert_fp32_close_1d(reconstructed, signal, atol=2e-4)
 
-        ttnn.idwt(*db8_outputs, "db8", signal.numel())
+        ttwt.idwt(*db8_outputs, "db8", signal.numel())
         assert device.num_program_cache_entries() == 4
     finally:
         device.disable_and_clear_program_cache()
@@ -824,24 +825,24 @@ def test_wavelet_2d_program_cache_keys_and_address_override(
             torch.arange(shape[0] * shape[1], dtype=torch.float32).reshape(shape) * 0.013
         )
         first_input = to_device_2d(device, signal)
-        first_outputs = ttnn.dwt_2d(first_input, "db7")
+        first_outputs = ttwt.dwt_2d(first_input, "db7")
         assert device.num_program_cache_entries() == 1
 
-        ttnn.dwt_2d(first_input, "db7")
+        ttwt.dwt_2d(first_input, "db7")
         second_input = to_device_2d(device, signal + 0.25)
-        second_outputs = ttnn.dwt_2d(second_input, "db7")
+        second_outputs = ttwt.dwt_2d(second_input, "db7")
         assert device.num_program_cache_entries() == 1
 
-        db8_outputs = ttnn.dwt_2d(second_input, "db8")
+        db8_outputs = ttwt.dwt_2d(second_input, "db8")
         assert device.num_program_cache_entries() == 2
 
-        reconstructed = ttnn.idwt_2d(*first_outputs, "db7", shape)
-        ttnn.idwt_2d(*first_outputs, "db7", shape)
-        ttnn.idwt_2d(*second_outputs, "db7", shape)
+        reconstructed = ttwt.idwt_2d(*first_outputs, "db7", shape)
+        ttwt.idwt_2d(*first_outputs, "db7", shape)
+        ttwt.idwt_2d(*second_outputs, "db7", shape)
         assert device.num_program_cache_entries() == 3
         assert_fp32_close(ttnn.to_torch(reconstructed), signal, atol=2e-4)
 
-        ttnn.idwt_2d(*db8_outputs, "db8", shape)
+        ttwt.idwt_2d(*db8_outputs, "db8", shape)
         assert device.num_program_cache_entries() == 4
     finally:
         device.disable_and_clear_program_cache()
@@ -855,16 +856,16 @@ def test_wavelet_1d_interleaved_l1_program_cache_keys_and_address_override(
     try:
         signal = torch.sin(torch.arange(33, dtype=torch.float32) * 0.17)
         dram_input_a = to_device_1d(device, signal)
-        dram_outputs = ttnn.dwt(dram_input_a, "bior1.3")
-        ttnn.dwt(to_device_1d(device, signal + 0.25), "bior1.3")
+        dram_outputs = ttwt.dwt(dram_input_a, "bior1.3")
+        ttwt.dwt(to_device_1d(device, signal + 0.25), "bior1.3")
         assert device.num_program_cache_entries() == 1
 
         l1_input_a = to_device_1d(device, signal, ttnn.L1_MEMORY_CONFIG)
         l1_input_b = to_device_1d(device, signal + 0.25, ttnn.L1_MEMORY_CONFIG)
-        l1_outputs = ttnn.dwt(l1_input_a, "bior1.3")
-        ttnn.dwt(l1_input_b, "bior1.3")
+        l1_outputs = ttwt.dwt(l1_input_a, "bior1.3")
+        ttwt.dwt(l1_input_b, "bior1.3")
         assert device.num_program_cache_entries() == 2
-        coefficient_length = ttnn.dwt_coeff_len(signal.numel(), "bior1.3")
+        coefficient_length = ttwt.dwt_coeff_len(signal.numel(), "bior1.3")
         for actual, expected in zip(l1_outputs, dram_outputs):
             assert_fp32_identical_1d(
                 ttnn.to_torch(actual), ttnn.to_torch(expected), coefficient_length
@@ -878,8 +879,8 @@ def test_wavelet_1d_interleaved_l1_program_cache_keys_and_address_override(
         dram_coefficients_b = tuple(
             to_device_1d(device, tensor + 0.125) for tensor in coefficient_values
         )
-        dram_reconstructed = ttnn.idwt(*dram_coefficients_a, "bior1.3", signal.numel())
-        ttnn.idwt(*dram_coefficients_b, "bior1.3", signal.numel())
+        dram_reconstructed = ttwt.idwt(*dram_coefficients_a, "bior1.3", signal.numel())
+        ttwt.idwt(*dram_coefficients_b, "bior1.3", signal.numel())
         assert device.num_program_cache_entries() == 1
 
         l1_coefficients_a = tuple(
@@ -889,14 +890,14 @@ def test_wavelet_1d_interleaved_l1_program_cache_keys_and_address_override(
             to_device_1d(device, tensor + 0.125, ttnn.L1_MEMORY_CONFIG)
             for tensor in coefficient_values
         )
-        l1_reconstructed = ttnn.idwt(*l1_coefficients_a, "bior1.3", signal.numel())
-        ttnn.idwt(*l1_coefficients_b, "bior1.3", signal.numel())
+        l1_reconstructed = ttwt.idwt(*l1_coefficients_a, "bior1.3", signal.numel())
+        ttwt.idwt(*l1_coefficients_b, "bior1.3", signal.numel())
         assert device.num_program_cache_entries() == 2
 
-        mixed_reconstructed = ttnn.idwt(
+        mixed_reconstructed = ttwt.idwt(
             l1_coefficients_a[0], dram_coefficients_a[1], "bior1.3", signal.numel()
         )
-        ttnn.idwt(l1_coefficients_b[0], dram_coefficients_b[1], "bior1.3", signal.numel())
+        ttwt.idwt(l1_coefficients_b[0], dram_coefficients_b[1], "bior1.3", signal.numel())
         assert device.num_program_cache_entries() == 3
         assert_fp32_identical_1d(
             ttnn.to_torch(l1_reconstructed),
@@ -923,14 +924,14 @@ def test_wavelet_2d_interleaved_l1_program_cache_keys_and_address_override(
             torch.arange(shape[0] * shape[1], dtype=torch.float32).reshape(shape) * 0.013
         )
         dram_input_a = to_device_2d(device, signal)
-        dram_outputs = ttnn.dwt_2d(dram_input_a, "bior1.3")
-        ttnn.dwt_2d(to_device_2d(device, signal + 0.25), "bior1.3")
+        dram_outputs = ttwt.dwt_2d(dram_input_a, "bior1.3")
+        ttwt.dwt_2d(to_device_2d(device, signal + 0.25), "bior1.3")
         assert device.num_program_cache_entries() == 1
 
         l1_input_a = to_device_2d(device, signal, ttnn.L1_MEMORY_CONFIG)
         l1_input_b = to_device_2d(device, signal + 0.25, ttnn.L1_MEMORY_CONFIG)
-        l1_outputs = ttnn.dwt_2d(l1_input_a, "bior1.3")
-        ttnn.dwt_2d(l1_input_b, "bior1.3")
+        l1_outputs = ttwt.dwt_2d(l1_input_a, "bior1.3")
+        ttwt.dwt_2d(l1_input_b, "bior1.3")
         assert device.num_program_cache_entries() == 2
         for actual, expected in zip(l1_outputs, dram_outputs):
             assert_fp32_identical(ttnn.to_torch(actual), ttnn.to_torch(expected))
@@ -941,8 +942,8 @@ def test_wavelet_2d_interleaved_l1_program_cache_keys_and_address_override(
 
         dram_bands_a = tuple(to_device_2d(device, tensor) for tensor in band_values)
         dram_bands_b = tuple(to_device_2d(device, tensor + 0.125) for tensor in band_values)
-        dram_reconstructed = ttnn.idwt_2d(*dram_bands_a, "bior1.3", shape)
-        ttnn.idwt_2d(*dram_bands_b, "bior1.3", shape)
+        dram_reconstructed = ttwt.idwt_2d(*dram_bands_a, "bior1.3", shape)
+        ttwt.idwt_2d(*dram_bands_b, "bior1.3", shape)
         assert device.num_program_cache_entries() == 1
 
         l1_bands_a = tuple(
@@ -951,11 +952,11 @@ def test_wavelet_2d_interleaved_l1_program_cache_keys_and_address_override(
         l1_bands_b = tuple(
             to_device_2d(device, tensor + 0.125, ttnn.L1_MEMORY_CONFIG) for tensor in band_values
         )
-        l1_reconstructed = ttnn.idwt_2d(*l1_bands_a, "bior1.3", shape)
-        ttnn.idwt_2d(*l1_bands_b, "bior1.3", shape)
+        l1_reconstructed = ttwt.idwt_2d(*l1_bands_a, "bior1.3", shape)
+        ttwt.idwt_2d(*l1_bands_b, "bior1.3", shape)
         assert device.num_program_cache_entries() == 2
 
-        mixed_reconstructed = ttnn.idwt_2d(
+        mixed_reconstructed = ttwt.idwt_2d(
             l1_bands_a[0],
             dram_bands_a[1],
             l1_bands_a[2],
@@ -963,7 +964,7 @@ def test_wavelet_2d_interleaved_l1_program_cache_keys_and_address_override(
             "bior1.3",
             shape,
         )
-        ttnn.idwt_2d(
+        ttwt.idwt_2d(
             l1_bands_b[0],
             dram_bands_b[1],
             l1_bands_b[2],
@@ -984,16 +985,16 @@ def test_wavelet_program_cache_specializes_for_available_l1_budget(device: ttnn.
     try:
         signal_1d = torch.sin(torch.arange(257, dtype=torch.float32) * 0.017)
         input_1d = to_device_1d(device, signal_1d)
-        coefficients = ttnn.dwt(input_1d, "db1")
-        reconstructed_1d = ttnn.idwt(*coefficients, "db1", signal_1d.numel())
+        coefficients = ttwt.dwt(input_1d, "db1")
+        reconstructed_1d = ttwt.idwt(*coefficients, "db1", signal_1d.numel())
 
         shape_2d = (65, 67)
         signal_2d = torch.sin(
             torch.arange(shape_2d[0] * shape_2d[1], dtype=torch.float32).reshape(shape_2d) * 0.013
         )
         input_2d = to_device_2d(device, signal_2d)
-        bands = ttnn.dwt_2d(input_2d, "db1")
-        reconstructed_2d = ttnn.idwt_2d(*bands, "db1", shape_2d)
+        bands = ttwt.dwt_2d(input_2d, "db1")
+        reconstructed_2d = ttwt.idwt_2d(*bands, "db1", shape_2d)
         assert device.num_program_cache_entries() == 4
 
         pressure = ttnn.allocate_tensor_on_device(
@@ -1005,19 +1006,19 @@ def test_wavelet_program_cache_specializes_for_available_l1_budget(device: ttnn.
         )
         assert pressure.buffer_address() != 0
 
-        pressured_coefficients = ttnn.dwt(input_1d, "db1")
-        pressured_reconstructed_1d = ttnn.idwt(*coefficients, "db1", signal_1d.numel())
-        pressured_bands = ttnn.dwt_2d(input_2d, "db1")
-        pressured_reconstructed_2d = ttnn.idwt_2d(*bands, "db1", shape_2d)
+        pressured_coefficients = ttwt.dwt(input_1d, "db1")
+        pressured_reconstructed_1d = ttwt.idwt(*coefficients, "db1", signal_1d.numel())
+        pressured_bands = ttwt.dwt_2d(input_2d, "db1")
+        pressured_reconstructed_2d = ttwt.idwt_2d(*bands, "db1", shape_2d)
         assert device.num_program_cache_entries() == 8
 
-        ttnn.dwt(input_1d, "db1")
-        ttnn.idwt(*coefficients, "db1", signal_1d.numel())
-        ttnn.dwt_2d(input_2d, "db1")
-        ttnn.idwt_2d(*bands, "db1", shape_2d)
+        ttwt.dwt(input_1d, "db1")
+        ttwt.idwt(*coefficients, "db1", signal_1d.numel())
+        ttwt.dwt_2d(input_2d, "db1")
+        ttwt.idwt_2d(*bands, "db1", shape_2d)
         assert device.num_program_cache_entries() == 8
 
-        coefficient_length = ttnn.dwt_coeff_len(signal_1d.numel(), "db1")
+        coefficient_length = ttwt.dwt_coeff_len(signal_1d.numel(), "db1")
         for actual, expected in zip(pressured_coefficients, coefficients):
             assert_fp32_identical_1d(
                 ttnn.to_torch(actual), ttnn.to_torch(expected), coefficient_length
@@ -1041,46 +1042,46 @@ def test_wavelet_1d_validation_errors(device: ttnn.MeshDevice, expect_error) -> 
     input_tensor = to_device_1d(device, signal)
 
     with expect_error(RuntimeError, "wavelet"):
-        ttnn.dwt(input_tensor, "not-a-wavelet")
+        ttwt.dwt(input_tensor, "not-a-wavelet")
     with expect_error(RuntimeError, "boundary"):
-        ttnn.dwt(input_tensor, "bior1.3", boundary_mode="not-a-mode")
+        ttwt.dwt(input_tensor, "bior1.3", boundary_mode="not-a-mode")
     with expect_error(RuntimeError, "device tensor"):
-        ttnn.dwt(ttnn.from_torch(signal, layout=ttnn.ROW_MAJOR_LAYOUT), "bior1.3")
+        ttwt.dwt(ttnn.from_torch(signal, layout=ttnn.ROW_MAJOR_LAYOUT), "bior1.3")
     with expect_error(RuntimeError, "FLOAT32"):
-        ttnn.dwt(
+        ttwt.dwt(
             ttnn.from_torch(
                 signal, dtype=ttnn.bfloat16, layout=ttnn.ROW_MAJOR_LAYOUT, device=device
             ),
             "bior1.3",
         )
     with expect_error(RuntimeError, "got rank 2"):
-        ttnn.dwt(to_device_1d(device, torch.zeros((2, 32), dtype=torch.float32)), "bior1.3")
+        ttwt.dwt(to_device_1d(device, torch.zeros((2, 32), dtype=torch.float32)), "bior1.3")
     with expect_error(RuntimeError, "requires H == 1"):
-        ttnn.dwt(to_device_1d(device, torch.zeros((2, 1, 2, 32), dtype=torch.float32)), "bior1.3")
+        ttwt.dwt(to_device_1d(device, torch.zeros((2, 1, 2, 32), dtype=torch.float32)), "bior1.3")
     with expect_error(RuntimeError, "C == 1"):
-        ttnn.dwt(to_device_1d(device, torch.zeros((2, 2, 1, 33), dtype=torch.float32)), "db1")
+        ttwt.dwt(to_device_1d(device, torch.zeros((2, 2, 1, 33), dtype=torch.float32)), "db1")
     with expect_error(RuntimeError, "DRAM-interleaved outputs"):
-        ttnn.dwt(input_tensor, "bior1.3", memory_config=ttnn.L1_MEMORY_CONFIG)
+        ttwt.dwt(input_tensor, "bior1.3", memory_config=ttnn.L1_MEMORY_CONFIG)
     with expect_error(RuntimeError, "greater than one"):
-        ttnn.dwt(to_device_1d(device, torch.ones(1)), "bior1.3", boundary_mode="reflect")
+        ttwt.dwt(to_device_1d(device, torch.ones(1)), "bior1.3", boundary_mode="reflect")
 
-    approximation, detail = ttnn.dwt(input_tensor, "bior1.3")
+    approximation, detail = ttwt.dwt(input_tensor, "bior1.3")
     wrong_detail = to_device_1d(device, torch.zeros(detail.shape[0] + 1))
     with expect_error(RuntimeError, "identical shapes"):
-        ttnn.idwt(approximation, wrong_detail, "bior1.3", signal.numel())
+        ttwt.idwt(approximation, wrong_detail, "bior1.3", signal.numel())
     with expect_error(RuntimeError, "greater than zero"):
-        ttnn.idwt(approximation, detail, "bior1.3", 0)
+        ttwt.idwt(approximation, detail, "bior1.3", 0)
 
     wrong_output = to_device_1d(device, torch.empty(approximation.shape[0] + 1))
     with expect_error(RuntimeError, "does not match"):
-        ttnn.dwt(input_tensor, "bior1.3", output_tensors=(wrong_output, wrong_output))
+        ttwt.dwt(input_tensor, "bior1.3", output_tensors=(wrong_output, wrong_output))
     with expect_error(RuntimeError, "must not alias"):
-        ttnn.dwt(input_tensor, "bior1.3", output_tensors=(approximation, approximation))
+        ttwt.dwt(input_tensor, "bior1.3", output_tensors=(approximation, approximation))
 
     alias_input = to_device_1d(device, torch.arange(32, dtype=torch.float32).reshape(1, 1, 1, 32))
-    _, alias_detail = ttnn.dwt(alias_input, "db1")
+    _, alias_detail = ttwt.dwt(alias_input, "db1")
     with expect_error(RuntimeError, "must not alias the input"):
-        ttnn.dwt(alias_input, "db1", output_tensors=(alias_input, alias_detail))
+        ttwt.dwt(alias_input, "db1", output_tensors=(alias_input, alias_detail))
 
     sharded_memory_config = ttnn.create_sharded_memory_config(
         shape=(2, 32),
@@ -1094,7 +1095,7 @@ def test_wavelet_1d_validation_errors(device: ttnn.MeshDevice, expect_error) -> 
     )
 
     with expect_error(RuntimeError, "sharded inputs are unsupported"):
-        ttnn.dwt(sharded_input, "bior1.3")
+        ttwt.dwt(sharded_input, "bior1.3")
 
 
 def test_wavelet_2d_validation_errors(device: ttnn.MeshDevice, expect_error) -> None:
@@ -1102,11 +1103,11 @@ def test_wavelet_2d_validation_errors(device: ttnn.MeshDevice, expect_error) -> 
     input_tensor = to_device_2d(device, signal)
 
     with expect_error(RuntimeError, "TILE layout"):
-        ttnn.dwt_2d(to_device_1d(device, signal), "bior1.3")
+        ttwt.dwt_2d(to_device_1d(device, signal), "bior1.3")
     with expect_error(RuntimeError, "C == 1"):
-        ttnn.dwt_2d(to_device_2d(device, torch.zeros((2, 2, 33, 35), dtype=torch.float32)), "db1")
+        ttwt.dwt_2d(to_device_2d(device, torch.zeros((2, 2, 33, 35), dtype=torch.float32)), "db1")
     with expect_error(RuntimeError, "both dimensions greater than one"):
-        ttnn.dwt_2d(
+        ttwt.dwt_2d(
             to_device_2d(device, torch.ones(1, 8)),
             "bior1.3",
             boundary_mode="antireflect",
@@ -1123,15 +1124,15 @@ def test_wavelet_2d_validation_errors(device: ttnn.MeshDevice, expect_error) -> 
         sharded_memory_config,
     )
     with expect_error(RuntimeError, "sharded inputs are unsupported"):
-        ttnn.dwt_2d(sharded_input, "bior1.3")
+        ttwt.dwt_2d(sharded_input, "bior1.3")
 
-    bands = ttnn.dwt_2d(input_tensor, "bior1.3")
+    bands = ttwt.dwt_2d(input_tensor, "bior1.3")
     wrong_band = to_device_2d(device, torch.zeros(bands[0].shape[0] + 1, bands[0].shape[1]))
     with expect_error(RuntimeError, "identical shapes"):
-        ttnn.idwt_2d(bands[0], wrong_band, bands[2], bands[3], "bior1.3", signal.shape)
+        ttwt.idwt_2d(bands[0], wrong_band, bands[2], bands[3], "bior1.3", signal.shape)
     with expect_error(RuntimeError, "must be positive"):
-        ttnn.idwt_2d(*bands, "bior1.3", (0, signal.shape[1]))
+        ttwt.idwt_2d(*bands, "bior1.3", (0, signal.shape[1]))
     with expect_error(RuntimeError, "does not match expected shape"):
-        ttnn.idwt_2d(*bands, "bior1.3", (signal.shape[0] + 2, signal.shape[1]))
+        ttwt.idwt_2d(*bands, "bior1.3", (signal.shape[0] + 2, signal.shape[1]))
     with expect_error(RuntimeError, "must not alias"):
-        ttnn.dwt_2d(input_tensor, "bior1.3", output_tensors=(bands[0],) * 4)
+        ttwt.dwt_2d(input_tensor, "bior1.3", output_tensors=(bands[0],) * 4)

@@ -10,6 +10,7 @@ import pywt
 import torch
 
 import ttnn
+import ttwt
 
 pytestmark = pytest.mark.hardware
 
@@ -179,8 +180,8 @@ def test_all_discrete_schemes_forward_inverse_precision_1d(
     )
     precision_results: list[PrecisionResult] = []
     for scheme in SCHEMES:
-        approximation, detail = ttnn.dwt(input_tensor, scheme, boundary_mode=boundary_mode)
-        reconstructed = ttnn.idwt(
+        approximation, detail = ttwt.dwt(input_tensor, scheme, boundary_mode=boundary_mode)
+        reconstructed = ttwt.idwt(
             approximation,
             detail,
             scheme,
@@ -225,7 +226,7 @@ def test_all_discrete_schemes_forward_inverse_precision_1d(
             if result is not None:
                 precision_results.append(result)
 
-        assert ttnn.dwt_coeff_len(signal.numel(), scheme) == coefficient_length
+        assert ttwt.dwt_coeff_len(signal.numel(), scheme) == coefficient_length
         coefficient_sticks = (coefficient_length + 31) // 32
         signal_sticks = (signal.numel() + 31) // 32
         assert tuple(approximation.shape) == (coefficient_sticks, 32)
@@ -262,8 +263,8 @@ def test_all_discrete_schemes_forward_inverse_precision_2d(
 
     precision_results: list[PrecisionResult] = []
     for scheme in SCHEMES:
-        outputs = ttnn.dwt_2d(input_tensor, scheme, boundary_mode=boundary_mode)
-        reconstructed = ttnn.idwt_2d(
+        outputs = ttwt.dwt_2d(input_tensor, scheme, boundary_mode=boundary_mode)
+        reconstructed = ttwt.idwt_2d(
             *outputs,
             scheme,
             shape,
