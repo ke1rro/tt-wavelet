@@ -1,28 +1,27 @@
-cmake_minimum_required(VERSION 3.20)
-project(tt-wavelet LANGUAGES CXX C)
-
+cmake_minimum_required(VERSION 3.24)
+project(tt-wavelet VERSION 0.1.0 LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+endif()
+option(TT_WAVELET_BUILD_PYTHON "Build the ttwt Python companion" OFF)
+include(cmake/Dependencies.cmake)
+add_subdirectory(src/ttwt)
 
-# Build TT-Metal natively in this build tree.  TT-Metal exports
-# Metalium::Metal directly, so no local CMake replacement files are needed.
-option(BUILD_TT_WAVELET "Build TT-Metal, TTNN, and tt-wavelet" ON)
-
-if(BUILD_TT_WAVELET)
-  if(NOT EXISTS "${CMAKE_SOURCE_DIR}/tt-metal/CMakeLists.txt")
-    message(
-      FATAL_ERROR
-        "BUILD_TT_WAVELET is ON but tt-metal not found at ${CMAKE_SOURCE_DIR}/tt-metal"
-    )
-  endif()
-
-  set(CMAKE_DISABLE_PRECOMPILE_HEADERS TRUE CACHE BOOL "Disable PCH in the unified build")
-  set(ENABLE_CCACHE TRUE CACHE BOOL "Enable ccache for TT-Metal")
-  set(TT_UNITY_BUILDS ON CACHE BOOL "Enable TT-Metal unity builds")
-  set(WITH_PYTHON_BINDINGS ON CACHE BOOL "Build TTNN Python bindings")
-  set(CPM_SOURCE_CACHE "${CMAKE_SOURCE_DIR}/tt-metal/.cpmcache" CACHE PATH "TT-Metal CPM cache")
-
-  add_subdirectory(tt-metal "${CMAKE_BINARY_DIR}/tt-metal")
+option(TT_WAVELET_BUILD_SMOKE "Build the native hardware smoke test" ON)
+if(TT_WAVELET_BUILD_SMOKE)
+    add_executable(smoke_wavelet tools/smoke_wavelet.cpp)
+    target_link_libraries(smoke_wavelet PRIVATE TTWavelet::Native ${CMAKE_DL_LIBS})
+    target_link_options(smoke_wavelet PRIVATE -Wl,-Map,${CMAKE_BINARY_DIR}/smoke_wavelet.map -rdynamic)
+    if(TT_WAVELET_TT_METAL_MODE STREQUAL "SUBMODULE")
+        target_compile_definitions(smoke_wavelet PRIVATE
+            TT_WAVELET_METAL_RUNTIME_ROOT="${TT_WAVELET_METAL_SOURCE_DIR}")
+    endif()
 endif()
 
-add_subdirectory(tt-wavelet)
+if(TT_WAVELET_BUILD_PYTHON)
+    add_subdirectory(bindings)
+endif()
