@@ -1,8 +1,4 @@
-set(TT_WAVELET_HEADERS
-    wavelet.hpp
-    wavelet_types.hpp
-    runtime_resources.hpp
-)
+set(TT_WAVELET_HEADERS wavelet.hpp wavelet_types.hpp runtime_resources.hpp)
 
 set(TT_WAVELET_SRCS
     common/wavelet_host.cpp
@@ -19,5 +15,4 @@ set(TT_WAVELET_SRCS
     device/wavelet_program_utils.cpp
     device/wavelet_tensor_validation.cpp
     wavelet.cpp
-    runtime_resources.cpp
-)
+    runtime_resources.cpp)

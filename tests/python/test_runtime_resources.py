@@ -1,4 +1,8 @@
-"""Private resource initialization and relocatable-package failure checks."""
+# SPDX-FileCopyrightText: © 2026 Nikita Lenyk
+#
+# SPDX-License-Identifier: MIT
+
+"""TT-Wavelet resource initialization and incomplete-package regression tests."""
 
 from concurrent.futures import ThreadPoolExecutor
 import os
@@ -12,6 +16,7 @@ import pytest
 
 def package_root():
     import ttwt
+
     return Path(ttwt.__file__).resolve().parent
 
 
@@ -19,8 +24,9 @@ def run_python(code, cwd, package_parent=None):
     env = os.environ.copy()
     if package_parent:
         env["PYTHONPATH"] = str(package_parent) + os.pathsep + env.get("PYTHONPATH", "")
-    result = subprocess.run([sys.executable, "-c", code], cwd=cwd, env=env,
-                            text=True, capture_output=True)
+    result = subprocess.run(
+        [sys.executable, "-c", code], cwd=cwd, env=env, text=True, capture_output=True
+    )
     assert result.returncode == 0, result.stdout + result.stderr
 
 
@@ -38,19 +44,25 @@ def test_package_initializes_root_and_canonical_reinitialization(tmp_path):
     with ThreadPoolExecutor(max_workers=8) as pool:
         list(pool.map(lambda _: native._set_resource_root(str(alias)), range(32)))
     assert Path(native._get_resource_root()) == root
-    assert len(list(root.rglob("*.hpp"))) == 121  # Generated and shared/primitives/protocol/planner headers
+    assert (
+        len(list(root.rglob("*.hpp"))) == 121
+    )  # Generated and shared/primitives/protocol/planner headers
     # Other resources are four SFPI .h files, the internal 32x16 .h facade and two LLK bodies,
     # and six kernel .cpp files.
     assert (root / "ttwt/device/kernels/primitives/tile_move_copy_32x16.h").is_file()
 
 
-@pytest.mark.parametrize("removed", [
-    "resources", "resources/ttwt/device/kernels/compute/lwt_compute.cpp",
-    "resources/ttwt/device/kernels/primitives/tile_move_copy_32x16.h",
-    "resources/ttwt/device/kernels/primitives/blackhole/llk_math_unary_datacopy_32x16_api.h",
-    "resources/ttwt/device/kernels/primitives/wormhole/llk_math_unary_datacopy_32x16_api.h",
-    "resources/ttwt/generated/wavelet_schemes/db1.hpp",
-])
+@pytest.mark.parametrize(
+    "removed",
+    [
+        "resources",
+        "resources/ttwt/device/kernels/compute/lwt_compute.cpp",
+        "resources/ttwt/device/kernels/primitives/tile_move_copy_32x16.h",
+        "resources/ttwt/device/kernels/primitives/blackhole/llk_math_unary_datacopy_32x16_api.h",
+        "resources/ttwt/device/kernels/primitives/wormhole/llk_math_unary_datacopy_32x16_api.h",
+        "resources/ttwt/generated/wavelet_schemes/db1.hpp",
+    ],
+)
 def test_incomplete_package_fails_at_import(tmp_path, removed):
     original = package_root()
     copy = tmp_path / "ttwt"
@@ -74,6 +86,7 @@ else:
 
 def test_invalid_and_empty_resources_are_rejected(tmp_path):
     from ttwt import _ttwt as native
+
     with pytest.raises(RuntimeError, match="expected a runtime resource directory"):
         native._set_resource_root(str(tmp_path / "absent"))
     with pytest.raises(RuntimeError, match="runtime resource is missing or empty"):

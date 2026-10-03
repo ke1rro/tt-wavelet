@@ -144,9 +144,13 @@ def assert_precision_results(results: list[PrecisionResult]) -> None:
     if failures:
         diagnostics = [f"{len(failures)} precision regressions"]
         for precision_class in FACTORIZATION_ALLOWANCE:
-            class_failures = [result for result in failures if result.precision_class == precision_class]
+            class_failures = [
+                result for result in failures if result.precision_class == precision_class
+            ]
             if class_failures:
-                worst = max(class_failures, key=lambda result: result.score / result.allowed_tolerance)
+                worst = max(
+                    class_failures, key=lambda result: result.score / result.allowed_tolerance
+                )
                 diagnostics.append(
                     f"{precision_class}: {len(class_failures)} failures; worst case:\n{format_precision_result(worst)}"
                 )
@@ -156,7 +160,9 @@ def assert_precision_results(results: list[PrecisionResult]) -> None:
 @pytest.mark.slow
 @pytest.mark.timeout(1800)
 @pytest.mark.parametrize("boundary_mode", BOUNDARY_MODES)
-def test_all_discrete_schemes_forward_inverse_precision_1d(device: ttnn.MeshDevice, boundary_mode: str) -> None:
+def test_all_discrete_schemes_forward_inverse_precision_1d(
+    device: ttnn.MeshDevice, boundary_mode: str
+) -> None:
     assert len(SCHEMES) == 106
 
     signal = torch.sin(torch.arange(257, dtype=torch.float32) * 0.113)
@@ -180,13 +186,17 @@ def test_all_discrete_schemes_forward_inverse_precision_1d(device: ttnn.MeshDevi
             boundary_mode=boundary_mode,
         )
 
-        coefficient_length = pywt.dwt_coeff_len(signal.numel(), pywt.Wavelet(scheme).dec_len, mode=boundary_mode)
+        coefficient_length = pywt.dwt_coeff_len(
+            signal.numel(), pywt.Wavelet(scheme).dec_len, mode=boundary_mode
+        )
         approximation_ref64, detail_ref64 = pywt.dwt(signal_fp64, scheme, mode=boundary_mode)
         approximation_pywt32, detail_pywt32 = pywt.dwt(signal_fp32, scheme, mode=boundary_mode)
-        reconstructed_ref64 = pywt.idwt(approximation_ref64, detail_ref64, scheme, mode=boundary_mode)[: signal.numel()]
-        reconstructed_pywt32 = pywt.idwt(approximation_pywt32, detail_pywt32, scheme, mode=boundary_mode)[
-            : signal.numel()
-        ]
+        reconstructed_ref64 = pywt.idwt(
+            approximation_ref64, detail_ref64, scheme, mode=boundary_mode
+        )[: signal.numel()]
+        reconstructed_pywt32 = pywt.idwt(
+            approximation_pywt32, detail_pywt32, scheme, mode=boundary_mode
+        )[: signal.numel()]
         approximation_host = ttnn.to_torch(approximation)
         detail_host = ttnn.to_torch(detail)
         reconstructed_host = ttnn.to_torch(reconstructed)
@@ -263,14 +273,18 @@ def test_all_discrete_schemes_forward_inverse_precision_2d(
             pywt.dwt_coeff_len(shape[0], wavelet.dec_len, mode=boundary_mode),
             pywt.dwt_coeff_len(shape[1], wavelet.dec_len, mode=boundary_mode),
         )
-        ll_ref64, (hl_ref64, lh_ref64, hh_ref64) = pywt.dwt2(signal_fp64, scheme, mode=boundary_mode)
-        ll_pywt32, (hl_pywt32, lh_pywt32, hh_pywt32) = pywt.dwt2(signal_fp32, scheme, mode=boundary_mode)
-        reconstructed_ref64 = pywt.idwt2((ll_ref64, (hl_ref64, lh_ref64, hh_ref64)), scheme, mode=boundary_mode)[
-            : shape[0], : shape[1]
-        ]
-        reconstructed_pywt32 = pywt.idwt2((ll_pywt32, (hl_pywt32, lh_pywt32, hh_pywt32)), scheme, mode=boundary_mode)[
-            : shape[0], : shape[1]
-        ]
+        ll_ref64, (hl_ref64, lh_ref64, hh_ref64) = pywt.dwt2(
+            signal_fp64, scheme, mode=boundary_mode
+        )
+        ll_pywt32, (hl_pywt32, lh_pywt32, hh_pywt32) = pywt.dwt2(
+            signal_fp32, scheme, mode=boundary_mode
+        )
+        reconstructed_ref64 = pywt.idwt2(
+            (ll_ref64, (hl_ref64, lh_ref64, hh_ref64)), scheme, mode=boundary_mode
+        )[: shape[0], : shape[1]]
+        reconstructed_pywt32 = pywt.idwt2(
+            (ll_pywt32, (hl_pywt32, lh_pywt32, hh_pywt32)), scheme, mode=boundary_mode
+        )[: shape[0], : shape[1]]
         output_hosts = tuple(ttnn.to_torch(output) for output in outputs)
         tt_outputs = tuple(output.numpy() for output in output_hosts)
         reconstructed_host = ttnn.to_torch(reconstructed)

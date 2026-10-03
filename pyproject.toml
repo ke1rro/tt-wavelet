@@ -37,3 +37,9 @@ TT_WAVELET_RELOCATABLE_RESOURCES = "ON"
 provider = "scikit_build_core.metadata.regex"
 input = "VERSION"
 regex = '^(?P<value>\d+\.\d+\.\d+)\s*$'
+
+[tool.black]
+line-length = 100
+target-version = ["py310"]
+include = '(python/.*|tests/python/.*|src/ttwt/schemes/generate_wavelet_scheme_headers)\.py$'
+force-exclude = '/(third_party|build[^/]*|generated|\.git)/'

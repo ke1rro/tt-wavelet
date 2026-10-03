@@ -1,3 +1,6 @@
-file(COPY "${TT_WAVELET_METAL_SOURCE_DIR}/ttnn/ttnn" DESTINATION "${CMAKE_BINARY_DIR}/python"
-    PATTERN "*.so" EXCLUDE PATTERN "__pycache__" EXCLUDE)
+file(
+  COPY "${TT_WAVELET_METAL_SOURCE_DIR}/ttnn/ttnn"
+  DESTINATION "${CMAKE_BINARY_DIR}/python"
+  PATTERN "*.so" EXCLUDE
+  PATTERN "__pycache__" EXCLUDE)
 set_target_properties(ttnn PROPERTIES LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/python/ttnn")

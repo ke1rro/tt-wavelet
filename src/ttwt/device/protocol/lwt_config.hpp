@@ -21,26 +21,27 @@ constexpr uint32_t kLwtHalfStickElements = 16;
 constexpr uint32_t kLwtHalfStickBytes = kLwtHalfStickElements * sizeof(float);
 constexpr uint32_t kLwtNarrowTileElements = kLwtRowsPerGroup * kLwtHalfStickElements;
 constexpr uint32_t kLwtNarrowTileBytes = kLwtNarrowTileElements * sizeof(float);
-constexpr uint32_t kLwtGroupOutputElements = kLwtRowsPerGroup * kLwtOutputBlocksPerRow * kLwtHalfStickElements;
+constexpr uint32_t kLwtGroupOutputElements =
+    kLwtRowsPerGroup * kLwtOutputBlocksPerRow * kLwtHalfStickElements;
 constexpr uint32_t kIlwtGroupOutputElements = 2 * kLwtGroupOutputElements;
 
 constexpr uint32_t kRouteConfigWordCount = 16;
 constexpr uint32_t kRouteConfigPageBytes = kRouteConfigWordCount * sizeof(uint32_t);
 
 enum class RouteConfigWord : uint32_t {
-    kRouteType = 0,
-    kRouteSourceAddr = 1,
-    kRouteSourceLength = 2,
-    kRouteBaseAddr = 3,
-    kRouteBaseLength = 4,
-    kRouteOutputAddr = 5,
-    kRouteOutputLength = 6,
-    kRouteSourceOffset = 7,
-    kRouteBaseOffset = 8,
-    kRouteSourceLeftPad = 9,
-    kRouteOutputOffset = 10,
-    kRouteGroupCount = 11,
-    kRouteFlags = 12,
+  kRouteType = 0,
+  kRouteSourceAddr = 1,
+  kRouteSourceLength = 2,
+  kRouteBaseAddr = 3,
+  kRouteBaseLength = 4,
+  kRouteOutputAddr = 5,
+  kRouteOutputLength = 6,
+  kRouteSourceOffset = 7,
+  kRouteBaseOffset = 8,
+  kRouteSourceLeftPad = 9,
+  kRouteOutputOffset = 10,
+  kRouteGroupCount = 11,
+  kRouteFlags = 12,
 };
 
 constexpr uint32_t kRouteFlagFinalDram = 1U << 0;
@@ -53,37 +54,36 @@ constexpr uint32_t kRouteFlagOutputTileMirror = 1U << 6;
 
 constexpr uint32_t kLwtChunkConfigWordCount = 16;
 constexpr uint32_t kLwtChunkConfigPageBytes = kLwtChunkConfigWordCount * sizeof(uint32_t);
-static_assert(
-    kLwtChunkConfigPageBytes == kRouteConfigPageBytes,
-    "The shared 1D config-page loader requires identical chunk and route page sizes");
+static_assert(kLwtChunkConfigPageBytes == kRouteConfigPageBytes,
+              "The shared 1D config-page loader requires identical chunk and route page sizes");
 
 enum class LwtChunkConfigWord : uint32_t {
-    kLwtInitialEvenBegin = 0,
-    kLwtInitialEvenLength = 1,
-    kLwtInitialOddBegin = 2,
-    kLwtInitialOddLength = 3,
-    kIlwtApproximationBegin = 0,
-    kIlwtApproximationLength = 1,
-    kIlwtDetailBegin = 2,
-    kIlwtDetailLength = 3,
-    kIlwtFinalEvenAddr = 4,
-    kIlwtFinalEvenStorageLength = 5,
-    kIlwtFinalEvenOffset = 6,
-    kIlwtFinalEvenBegin = 7,
-    kIlwtFinalOddAddr = 8,
-    kIlwtFinalOddStorageLength = 9,
-    kIlwtFinalOddOffset = 10,
-    kIlwtFinalOddBegin = 11,
-    kIlwtOutputBegin = 12,
-    kIlwtOutputLength = 13,
+  kLwtInitialEvenBegin = 0,
+  kLwtInitialEvenLength = 1,
+  kLwtInitialOddBegin = 2,
+  kLwtInitialOddLength = 3,
+  kIlwtApproximationBegin = 0,
+  kIlwtApproximationLength = 1,
+  kIlwtDetailBegin = 2,
+  kIlwtDetailLength = 3,
+  kIlwtFinalEvenAddr = 4,
+  kIlwtFinalEvenStorageLength = 5,
+  kIlwtFinalEvenOffset = 6,
+  kIlwtFinalEvenBegin = 7,
+  kIlwtFinalOddAddr = 8,
+  kIlwtFinalOddStorageLength = 9,
+  kIlwtFinalOddOffset = 10,
+  kIlwtFinalOddBegin = 11,
+  kIlwtOutputBegin = 12,
+  kIlwtOutputLength = 13,
 };
 
 [[nodiscard]] constexpr uint32_t config_word_index(const RouteConfigWord word) noexcept {
-    return static_cast<uint32_t>(word);
+  return static_cast<uint32_t>(word);
 }
 
 [[nodiscard]] constexpr uint32_t config_word_index(const LwtChunkConfigWord word) noexcept {
-    return static_cast<uint32_t>(word);
+  return static_cast<uint32_t>(word);
 }
 
-}  // namespace ttwt::operations::wavelet::device_protocol
+} // namespace ttwt::operations::wavelet::device_protocol

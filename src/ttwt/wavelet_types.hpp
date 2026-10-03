@@ -11,4 +11,4 @@ namespace ttwt {
 
 using WaveletOutputShape2D = std::array<uint32_t, 2>;
 
-}  // namespace ttwt
+} // namespace ttwt

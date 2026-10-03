@@ -2,7 +2,6 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-
 #include <nanobind/nanobind.h>
 #include <nanobind/stl/array.h>
 #include <nanobind/stl/optional.h>
@@ -16,24 +15,18 @@
 namespace nb = nanobind;
 
 NB_MODULE(_ttwt, mod) {
-    nb::module_::import_("ttnn");
-    mod.def("_set_resource_root", &ttwt::detail::runtime_resources::set_root,
-            nb::call_guard<nb::gil_scoped_release>());
-    mod.def("_get_resource_root", &ttwt::detail::runtime_resources::get_root);
-    mod.def(
-        "dwt_coeff_len",
-        &ttwt::dwt_coeff_len,
-        R"doc(
+  nb::module_::import_("ttnn");
+  mod.def("_set_resource_root", &ttwt::detail::runtime_resources::set_root,
+          nb::call_guard<nb::gil_scoped_release>());
+  mod.def("_get_resource_root", &ttwt::detail::runtime_resources::get_root);
+  mod.def("dwt_coeff_len", &ttwt::dwt_coeff_len,
+          R"doc(
 Return the valid coefficient count for one level of ``ttwt.dwt``.
 )doc",
-        nb::arg("input_length"),
-        nb::arg("wavelet"),
-        nb::call_guard<nb::gil_scoped_release>());
+          nb::arg("input_length"), nb::arg("wavelet"), nb::call_guard<nb::gil_scoped_release>());
 
-    mod.def(
-        "dwt",
-        &ttwt::dwt,
-        R"doc(
+  mod.def("dwt", &ttwt::dwt,
+          R"doc(
 Compute one level of the FP32 1D Discrete Wavelet Transform.
 
 ``input`` must be a row-major INTERLEAVED FLOAT32 tensor with shape ``[W]`` or
@@ -55,18 +48,12 @@ batch item are valid; unused final-stick lanes are unspecified. When supplied,
 ``output_tensors`` must contain two non-aliasing tensors with the exact inferred
 specification.
 )doc",
-        nb::arg("input").noconvert(),
-        nb::arg("wavelet"),
-        nb::kw_only(),
-        nb::arg("boundary_mode") = "symmetric",
-        nb::arg("memory_config") = nb::none(),
-        nb::arg("output_tensors") = nb::none(),
-        nb::call_guard<nb::gil_scoped_release>());
+          nb::arg("input").noconvert(), nb::arg("wavelet"), nb::kw_only(),
+          nb::arg("boundary_mode") = "symmetric", nb::arg("memory_config") = nb::none(),
+          nb::arg("output_tensors") = nb::none(), nb::call_guard<nb::gil_scoped_release>());
 
-    mod.def(
-        "idwt",
-        &ttwt::idwt,
-        R"doc(
+  mod.def("idwt", &ttwt::idwt,
+          R"doc(
 Compute one level of the FP32 1D Inverse Discrete Wavelet Transform.
 
 ``approximation`` and ``detail`` must be non-aliasing, equal-shaped row-major
@@ -84,20 +71,13 @@ or ``[B,1,ceil(original_length/32),32]``. Only the first
 are unspecified. ``output_tensor`` may provide exact-spec preallocated
 storage and must not alias either input.
 )doc",
-        nb::arg("approximation").noconvert(),
-        nb::arg("detail").noconvert(),
-        nb::arg("wavelet"),
-        nb::arg("original_length"),
-        nb::kw_only(),
-        nb::arg("boundary_mode") = "symmetric",
-        nb::arg("memory_config") = nb::none(),
-        nb::arg("output_tensor") = nb::none(),
-        nb::call_guard<nb::gil_scoped_release>());
+          nb::arg("approximation").noconvert(), nb::arg("detail").noconvert(), nb::arg("wavelet"),
+          nb::arg("original_length"), nb::kw_only(), nb::arg("boundary_mode") = "symmetric",
+          nb::arg("memory_config") = nb::none(), nb::arg("output_tensor") = nb::none(),
+          nb::call_guard<nb::gil_scoped_release>());
 
-    mod.def(
-        "dwt_2d",
-        &ttwt::dwt_2d,
-        R"doc(
+  mod.def("dwt_2d", &ttwt::dwt_2d,
+          R"doc(
 Compute one level of the FP32 separable 2D discrete wavelet transform.
 
 ``input`` must be a standard 32x32 tile-layout INTERLEAVED FLOAT32 tensor with
@@ -113,18 +93,12 @@ generated lifting factorization has a known error.
 ``output_tensors`` may provide four pairwise non-aliasing tensors with the exact
 inferred specifications.
 )doc",
-        nb::arg("input").noconvert(),
-        nb::arg("wavelet"),
-        nb::kw_only(),
-        nb::arg("boundary_mode") = "symmetric",
-        nb::arg("memory_config") = nb::none(),
-        nb::arg("output_tensors") = nb::none(),
-        nb::call_guard<nb::gil_scoped_release>());
+          nb::arg("input").noconvert(), nb::arg("wavelet"), nb::kw_only(),
+          nb::arg("boundary_mode") = "symmetric", nb::arg("memory_config") = nb::none(),
+          nb::arg("output_tensors") = nb::none(), nb::call_guard<nb::gil_scoped_release>());
 
-    mod.def(
-        "idwt_2d",
-        &ttwt::idwt_2d,
-        R"doc(
+  mod.def("idwt_2d", &ttwt::idwt_2d,
+          R"doc(
 Compute one level of the FP32 separable 2D inverse discrete wavelet transform.
 
 ``ll``, ``lh``, ``hl``, and ``hh`` must be pairwise non-aliasing, equal-shaped,
@@ -140,16 +114,8 @@ supported modes. ``periodization`` is unsupported.
 Returns one tensor matching the input rank and batch. ``output_tensor`` may provide exact-spec
 preallocated storage and must not alias an input band.
 )doc",
-        nb::arg("ll").noconvert(),
-        nb::arg("lh").noconvert(),
-        nb::arg("hl").noconvert(),
-        nb::arg("hh").noconvert(),
-        nb::arg("wavelet"),
-        nb::arg("output_shape"),
-        nb::kw_only(),
-        nb::arg("boundary_mode") = "symmetric",
-        nb::arg("memory_config") = nb::none(),
-        nb::arg("output_tensor") = nb::none(),
-        nb::call_guard<nb::gil_scoped_release>());
+          nb::arg("ll").noconvert(), nb::arg("lh").noconvert(), nb::arg("hl").noconvert(),
+          nb::arg("hh").noconvert(), nb::arg("wavelet"), nb::arg("output_shape"), nb::kw_only(),
+          nb::arg("boundary_mode") = "symmetric", nb::arg("memory_config") = nb::none(),
+          nb::arg("output_tensor") = nb::none(), nb::call_guard<nb::gil_scoped_release>());
 }
-

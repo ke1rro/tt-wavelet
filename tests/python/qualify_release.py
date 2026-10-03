@@ -1,8 +1,12 @@
-"""Installed-wheel correctness qualification; no source package or private runtime.
+# SPDX-FileCopyrightText: © 2026 Nikita Lenyk
+#
+# SPDX-License-Identifier: MIT
 
-Run from /tmp with --phase host/matrix1d/matrix2d/edges/preallocated/cache.
-Results are append-only JSONL, including every failed operation. No exclusions.
-"""
+"""TT-Wavelet installed-wheel numerical release qualification.
+
+Run from an unrelated directory with --phase to select a qualification sweep.
+Structured JSONL results record every attempted operation, including failures."""
+
 import argparse
 import hashlib
 import importlib.metadata
@@ -53,7 +57,10 @@ def classify(exc):
     text = str(exc).lower()
     if any(word in text for word in ("compilation", "failed to compile", "fatal error", "sfpi")):
         return "JIT compile"
-    if any(word in text for word in ("must", "require", "invalid", "unsupported", "expected", "l1", "geometry")):
+    if any(
+        word in text
+        for word in ("must", "require", "invalid", "unsupported", "expected", "l1", "geometry")
+    ):
         return "planner/validation"
     if isinstance(exc, (ValueError, AssertionError)):
         return "reference-comparison issue"
@@ -93,27 +100,44 @@ class Sweep:
             diagnostic = None
             if not passed:
                 diagnostic = self.phase + "-failure-" + str(self.count + 1) + ".npz"
-                np.savez_compressed(self.output / diagnostic,
+                np.savez_compressed(
+                    self.output / diagnostic,
                     **{f"actual_{i}": v for i, v in enumerate(actuals)},
-                    **{f"reference_{i}": v for i, v in enumerate(references)})
-            return self.write(**metadata, diagnostic=diagnostic, passed=bool(passed),
+                    **{f"reference_{i}": v for i, v in enumerate(references)},
+                )
+            return self.write(
+                **metadata,
+                diagnostic=diagnostic,
+                passed=bool(passed),
                 classification=None if passed else "numerical mismatch",
                 max_error=max(errors) if finite else None,
                 tolerance_ratio=max(scores) if finite else None,
-                band_errors=errors if finite else None, output_shapes=shapes,
-                atol=ATOL, rtol=RTOL)
+                band_errors=errors if finite else None,
+                output_shapes=shapes,
+                atol=ATOL,
+                rtol=RTOL,
+            )
         except Exception as exc:
             return self.error(exc, **metadata)
 
     def error(self, exc, **metadata):
-        return self.write(**metadata, passed=False, classification=classify(exc),
-                          max_error=None, exception=str(exc))
+        return self.write(
+            **metadata,
+            passed=False,
+            classification=classify(exc),
+            max_error=None,
+            exception=str(exc),
+        )
 
 
 def upload(data, device, dim):
-    return ttnn.from_torch(torch.from_numpy(np.ascontiguousarray(data, dtype=np.float32)),
-        dtype=ttnn.float32, layout=ttnn.ROW_MAJOR_LAYOUT if dim == 1 else ttnn.TILE_LAYOUT,
-        device=device, memory_config=ttnn.DRAM_MEMORY_CONFIG)
+    return ttnn.from_torch(
+        torch.from_numpy(np.ascontiguousarray(data, dtype=np.float32)),
+        dtype=ttnn.float32,
+        layout=ttnn.ROW_MAJOR_LAYOUT if dim == 1 else ttnn.TILE_LAYOUT,
+        device=device,
+        memory_config=ttnn.DRAM_MEMORY_CONFIG,
+    )
 
 
 def host_data(tensor, shape, dim):
@@ -122,7 +146,7 @@ def host_data(tensor, shape, dim):
         expected = (math.ceil(shape[0] / 32), 32)
         assert tuple(tensor.shape) == expected, (tuple(tensor.shape), expected)
         # Defined stick-native representation: only logical prefix is valid.
-        return ttnn.to_torch(tensor).flatten()[:shape[0]].numpy().copy()
+        return ttnn.to_torch(tensor).flatten()[: shape[0]].numpy().copy()
     assert tuple(tensor.shape) == tuple(shape), (tuple(tensor.shape), shape)
     return ttnn.to_torch(tensor).numpy().copy()
 
@@ -136,22 +160,29 @@ def coefficients(data, name, mode, dim):
 
 def reference_inverse(bands, name, mode, shape, dim):
     if dim == 1:
-        return pywt.idwt(*bands, name, mode=mode)[:shape[0]]
+        return pywt.idwt(*bands, name, mode=mode)[: shape[0]]
     ll, lh, hl, hh = bands
-    return pywt.idwt2((ll, (hl, lh, hh)), name, mode=mode)[:shape[0], :shape[1]]
+    return pywt.idwt2((ll, (hl, lh, hh)), name, mode=mode)[: shape[0], : shape[1]]
 
 
 def forward(x, name, mode, dim, outputs=None):
     fn = ttwt.dwt if dim == 1 else ttwt.dwt_2d
-    return fn(x, name, boundary_mode=mode, memory_config=ttnn.DRAM_MEMORY_CONFIG,
-              output_tensors=outputs)
+    return fn(
+        x, name, boundary_mode=mode, memory_config=ttnn.DRAM_MEMORY_CONFIG, output_tensors=outputs
+    )
 
 
 def inverse(bands, name, mode, shape, dim, output=None):
     fn = ttwt.idwt if dim == 1 else ttwt.idwt_2d
     original = shape[0] if dim == 1 else shape
-    return fn(*bands, name, original, boundary_mode=mode,
-              memory_config=ttnn.DRAM_MEMORY_CONFIG, output_tensor=output)
+    return fn(
+        *bands,
+        name,
+        original,
+        boundary_mode=mode,
+        memory_config=ttnn.DRAM_MEMORY_CONFIG,
+        output_tensor=output,
+    )
 
 
 def combination(sweep, device, name, mode, shape, dim, kind="random"):
@@ -164,17 +195,27 @@ def combination(sweep, device, name, mode, shape, dim, kind="random"):
         x = upload(data, device, dim)
         outputs = forward(x, name, mode, dim)
         if expected_invalid:
-            sweep.write(**meta, operation=fop, passed=False, classification="unsupported input",
-                        exception="Expected rejection for singleton reflect/antireflect input")
+            sweep.write(
+                **meta,
+                operation=fop,
+                passed=False,
+                classification="unsupported input",
+                exception="Expected rejection for singleton reflect/antireflect input",
+            )
             return
         coeff_shape = refs[0].shape
         actuals = tuple(host_data(t, coeff_shape, dim) for t in outputs)
-        sweep.compare(actuals, refs, **meta, operation=fop,
-                      coefficient_shape=list(coeff_shape))
+        sweep.compare(actuals, refs, **meta, operation=fop, coefficient_shape=list(coeff_shape))
     except Exception as exc:
         if expected_invalid and "greater than one" in str(exc):
-            sweep.write(**meta, operation=fop, passed=True, classification="unsupported input",
-                        expected_exception=str(exc), max_error=None)
+            sweep.write(
+                **meta,
+                operation=fop,
+                passed=True,
+                classification="unsupported input",
+                expected_exception=str(exc),
+                max_error=None,
+            )
         else:
             sweep.error(exc, **meta, operation=fop)
         outputs = None
@@ -185,22 +226,37 @@ def combination(sweep, device, name, mode, shape, dim, kind="random"):
                 valid_bands = coefficients(data, name, "symmetric", dim)
                 buffers = tuple(upload(a, device, dim) for a in valid_bands)
                 inverse(buffers, name, mode, shape, dim)
-                sweep.write(**meta, operation=iop, passed=False, classification="unsupported input",
-                            exception="Expected singleton inverse rejection")
+                sweep.write(
+                    **meta,
+                    operation=iop,
+                    passed=False,
+                    classification="unsupported input",
+                    exception="Expected singleton inverse rejection",
+                )
             except RuntimeError as inverse_exc:
-                sweep.write(**meta, operation=iop,
-                            passed="greater than one" in str(inverse_exc),
-                            classification="unsupported input", expected_exception=str(inverse_exc))
+                sweep.write(
+                    **meta,
+                    operation=iop,
+                    passed="greater than one" in str(inverse_exc),
+                    classification="unsupported input",
+                    expected_exception=str(inverse_exc),
+                )
             return
     # Independent inverse uses reference coefficients, not TTWT-produced coefficients.
     try:
         rounded = tuple(np.asarray(a, dtype=np.float32) for a in refs)
         ref_bands = tuple(upload(a, device, dim) for a in rounded)
         recon = inverse(ref_bands, name, mode, shape, dim)
-        expected = reference_inverse(tuple(a.astype(np.float64) for a in rounded),
-                                     name, mode, shape, dim)
-        sweep.compare((host_data(recon, shape, dim),), (expected,), **meta,
-                      operation=iop, coefficient_source="PyWavelets")
+        expected = reference_inverse(
+            tuple(a.astype(np.float64) for a in rounded), name, mode, shape, dim
+        )
+        sweep.compare(
+            (host_data(recon, shape, dim),),
+            (expected,),
+            **meta,
+            operation=iop,
+            coefficient_source="PyWavelets",
+        )
     except Exception as exc:
         sweep.error(exc, **meta, operation=iop, coefficient_source="PyWavelets")
     if outputs is not None:
@@ -208,14 +264,23 @@ def combination(sweep, device, name, mode, shape, dim, kind="random"):
             recon = inverse(outputs, name, mode, shape, dim)
             baseline = reference_inverse(refs, name, mode, shape, dim)
             reference_roundtrip_error = float(np.max(np.abs(baseline - data)))
-            sweep.compare((host_data(recon, shape, dim),), (data.astype(np.float64),),
-                          **meta, operation=iop + "_roundtrip",
-                          reference_roundtrip_error=reference_roundtrip_error)
+            sweep.compare(
+                (host_data(recon, shape, dim),),
+                (data.astype(np.float64),),
+                **meta,
+                operation=iop + "_roundtrip",
+                reference_roundtrip_error=reference_roundtrip_error,
+            )
         except Exception as exc:
             sweep.error(exc, **meta, operation=iop + "_roundtrip")
     else:
-        sweep.write(**meta, operation=iop + "_roundtrip", passed=False,
-                    classification="planner/validation", exception="Forward did not produce coefficients")
+        sweep.write(
+            **meta,
+            operation=iop + "_roundtrip",
+            passed=False,
+            classification="planner/validation",
+            exception="Forward did not produce coefficients",
+        )
 
 
 def preallocated(sweep, device, name, dim):
@@ -230,16 +295,24 @@ def preallocated(sweep, device, name, dim):
         ordinary = tuple(host_data(t, refs[0].shape, dim) for t in outs)
         reused = forward(x, name, mode, dim, outs)
         assert all(a.buffer_address() == b.buffer_address() for a, b in zip(outs, reused))
-        sweep.compare(tuple(host_data(t, refs[0].shape, dim) for t in reused), ordinary,
-                      **meta, operation=("dwt" if dim == 1 else "dwt_2d") + "_preallocated",
-                      buffers_reused=True)
+        sweep.compare(
+            tuple(host_data(t, refs[0].shape, dim) for t in reused),
+            ordinary,
+            **meta,
+            operation=("dwt" if dim == 1 else "dwt_2d") + "_preallocated",
+            buffers_reused=True,
+        )
         xr = inverse(outs, name, mode, shape, dim)
         ordinary = host_data(xr, shape, dim)
         rr = inverse(outs, name, mode, shape, dim, xr)
         assert rr.buffer_address() == xr.buffer_address()
-        sweep.compare((host_data(rr, shape, dim),), (ordinary,), **meta,
-                      operation=("idwt" if dim == 1 else "idwt_2d") + "_preallocated",
-                      buffers_reused=True)
+        sweep.compare(
+            (host_data(rr, shape, dim),),
+            (ordinary,),
+            **meta,
+            operation=("idwt" if dim == 1 else "idwt_2d") + "_preallocated",
+            buffers_reused=True,
+        )
     except Exception as exc:
         sweep.error(exc, **meta, operation="preallocated_" + str(dim) + "d")
 
@@ -247,17 +320,29 @@ def preallocated(sweep, device, name, dim):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--phase", choices=("host", "matrix1d", "matrix2d", "edges", "preallocated", "cache", "smooth_shapes"), required=True)
+    parser.add_argument(
+        "--phase",
+        choices=("host", "matrix1d", "matrix2d", "edges", "preallocated", "cache", "smooth_shapes"),
+        required=True,
+    )
     parser.add_argument("--schemes", nargs="*")
     args = parser.parse_args()
     names, modes, root, catalog = inventory()
     assert importlib.metadata.version("tt-wavelet") == "0.1.0"
     assert importlib.metadata.version("ttnn") == "0.79.0"
     assert Path(ttwt.__file__).resolve().is_relative_to(Path(__import__("sys").prefix))
-    info = dict(schemes=list(names), tap_sizes=names, modes=modes, package=ttwt.__file__,
-                resource_root=str(root), catalog=str(catalog),
-                catalog_sha256=hashlib.sha256(catalog.read_bytes()).hexdigest(),
-                reference_version=pywt.__version__, atol=ATOL, rtol=RTOL)
+    info = dict(
+        schemes=list(names),
+        tap_sizes=names,
+        modes=modes,
+        package=ttwt.__file__,
+        resource_root=str(root),
+        catalog=str(catalog),
+        catalog_sha256=hashlib.sha256(catalog.read_bytes()).hexdigest(),
+        reference_version=pywt.__version__,
+        atol=ATOL,
+        rtol=RTOL,
+    )
     args.output.mkdir(parents=True, exist_ok=True)
     (args.output / "inventory.json").write_text(json.dumps(info, indent=2))
     sweep = Sweep(args.output, args.phase)
@@ -265,32 +350,52 @@ def main():
     if args.phase == "host":
         for name, taps in names.items():
             taps = int(taps)
-            lengths = sorted(set(range(1, 513)) | {taps-1, taps, taps+1, 1023, 1024, 1025, 4095, 4096, 4097})
+            lengths = sorted(
+                set(range(1, 513)) | {taps - 1, taps, taps + 1, 1023, 1024, 1025, 4095, 4096, 4097}
+            )
             for mode in modes:
                 for length in lengths:
                     try:
                         actual = ttwt.dwt_coeff_len(length, name)
                         expected = pywt.dwt_coeff_len(length, pywt.Wavelet(name).dec_len, mode)
-                        sweep.write(scheme=name, boundary_mode=mode, operation="dwt_coeff_len",
-                                    input_shape=[length], passed=actual == expected,
-                                    classification=None if actual == expected else "reference-comparison issue",
-                                    actual=actual, expected=expected, max_error=abs(actual-expected))
+                        sweep.write(
+                            scheme=name,
+                            boundary_mode=mode,
+                            operation="dwt_coeff_len",
+                            input_shape=[length],
+                            passed=actual == expected,
+                            classification=(
+                                None if actual == expected else "reference-comparison issue"
+                            ),
+                            actual=actual,
+                            expected=expected,
+                            max_error=abs(actual - expected),
+                        )
                     except Exception as exc:
-                        sweep.error(exc, scheme=name, boundary_mode=mode,
-                                    operation="dwt_coeff_len", input_shape=[length])
+                        sweep.error(
+                            exc,
+                            scheme=name,
+                            boundary_mode=mode,
+                            operation="dwt_coeff_len",
+                            input_shape=[length],
+                        )
         for bad in ("DB1", "db01", "not_a_wavelet"):
             try:
                 ttwt.dwt_coeff_len(64, bad)
                 sweep.write(scheme=bad, operation="unknown_scheme", passed=False)
             except RuntimeError as exc:
-                sweep.write(scheme=bad, operation="unknown_scheme", passed=True, expected_exception=str(exc))
+                sweep.write(
+                    scheme=bad, operation="unknown_scheme", passed=True, expected_exception=str(exc)
+                )
         try:
             ttwt.dwt_coeff_len(0, "db1")
             sweep.write(scheme="db1", operation="zero_length", passed=False)
         except RuntimeError as exc:
-            sweep.write(scheme="db1", operation="zero_length", passed=True, expected_exception=str(exc))
+            sweep.write(
+                scheme="db1", operation="zero_length", passed=True, expected_exception=str(exc)
+            )
     else:
-        device = ttnn.open_mesh_device(mesh_shape=ttnn.MeshShape(1,1), physical_device_ids=[0])
+        device = ttnn.open_mesh_device(mesh_shape=ttnn.MeshShape(1, 1), physical_device_ids=[0])
         device.enable_program_cache()
         try:
             if args.phase in ("matrix1d", "matrix2d"):
@@ -299,91 +404,175 @@ def main():
                 for index, name in enumerate(selected):
                     for mode in modes:
                         combination(sweep, device, name, mode, shape, dim)
-                    print(json.dumps(dict(scheme=name, completed=index+1, total=len(selected),
-                        records=sweep.count, elapsed=time.monotonic()-sweep.started,
-                        cache_entries=device.num_program_cache_entries())), flush=True)
+                    print(
+                        json.dumps(
+                            dict(
+                                scheme=name,
+                                completed=index + 1,
+                                total=len(selected),
+                                records=sweep.count,
+                                elapsed=time.monotonic() - sweep.started,
+                                cache_entries=device.num_program_cache_entries(),
+                            )
+                        ),
+                        flush=True,
+                    )
             elif args.phase == "edges":
                 # Multiple lengths for every scheme, without repeating the entire mode Cartesian product.
                 for name in selected:
                     taps = pywt.Wavelet(name).dec_len
-                    for i, length in enumerate(sorted({2, taps-1, taps, taps+1, 258, 1024})):
-                        combination(sweep, device, name, "symmetric", (length,), 1,
-                                    ("random", "impulse", "ramp")[i % 3])
+                    for i, length in enumerate(sorted({2, taps - 1, taps, taps + 1, 258, 1024})):
+                        combination(
+                            sweep,
+                            device,
+                            name,
+                            "symmetric",
+                            (length,),
+                            1,
+                            ("random", "impulse", "ramp")[i % 3],
+                        )
                     print("LENGTHS " + name, flush=True)
                 for name in REPRESENTATIVES:
                     taps = pywt.Wavelet(name).dec_len
-                    for i, length in enumerate(sorted({1,2,3,7,31,32,33,taps-1,taps,taps+1,511,1024})):
+                    for i, length in enumerate(
+                        sorted({1, 2, 3, 7, 31, 32, 33, taps - 1, taps, taps + 1, 511, 1024})
+                    ):
                         for mode in modes:
-                            combination(sweep, device, name, mode, (length,), 1,
-                                        ("random","impulse","ramp")[i % 3])
-                    for i, shape in enumerate(((1,1),(2,3),(16,32),(32,32),(65,97),(127,130))):
-                        for mode in ("symmetric","antireflect"):
-                            combination(sweep, device, name, mode, shape, 2,
-                                        ("random","impulse","ramp")[i % 3])
+                            combination(
+                                sweep,
+                                device,
+                                name,
+                                mode,
+                                (length,),
+                                1,
+                                ("random", "impulse", "ramp")[i % 3],
+                            )
+                    for i, shape in enumerate(
+                        ((1, 1), (2, 3), (16, 32), (32, 32), (65, 97), (127, 130))
+                    ):
+                        for mode in ("symmetric", "antireflect"):
+                            combination(
+                                sweep,
+                                device,
+                                name,
+                                mode,
+                                shape,
+                                2,
+                                ("random", "impulse", "ramp")[i % 3],
+                            )
                     print("EDGE " + name, flush=True)
             elif args.phase == "smooth_shapes":
                 # Diagnose extrapolation precision without changing acceptance criteria.
                 for name in REPRESENTATIVES:
-                    for shape in ((16,32),(32,32),(65,97),(127,130)):
-                        for kind in ("random","impulse","ramp"):
+                    for shape in ((16, 32), (32, 32), (65, 97), (127, 130)):
+                        for kind in ("random", "impulse", "ramp"):
                             combination(sweep, device, name, "smooth", shape, 2, kind)
                     print("SMOOTH_SHAPES " + name, flush=True)
             elif args.phase == "preallocated":
                 for name in REPRESENTATIVES:
-                    for dim in (1,2): preallocated(sweep, device, name, dim)
+                    for dim in (1, 2):
+                        preallocated(sweep, device, name, dim)
             else:
-                for expected_count, (name, length, mode) in zip((1,1,2,2,3,4), (("db1",257,"symmetric"),("db1",257,"symmetric"),
-                                          ("db2",257,"symmetric"),("db2",257,"symmetric"),
-                                          ("db1",258,"symmetric"),("db1",257,"zero"))):
+                for expected_count, (name, length, mode) in zip(
+                    (1, 1, 2, 2, 3, 4),
+                    (
+                        ("db1", 257, "symmetric"),
+                        ("db1", 257, "symmetric"),
+                        ("db2", 257, "symmetric"),
+                        ("db2", 257, "symmetric"),
+                        ("db1", 258, "symmetric"),
+                        ("db1", 257, "zero"),
+                    ),
+                ):
                     x = upload(signal((length,), "random", "cache"), device, 1)
                     before = device.num_program_cache_entries()
-                    outs = forward(x,name,mode,1)
+                    outs = forward(x, name, mode, 1)
                     ttnn.to_torch(outs[0])
                     after = device.num_program_cache_entries()
-                    sweep.write(scheme=name,boundary_mode=mode,operation="cache",
-                                input_shape=[length],passed=after == expected_count,
-                                classification=None if after == expected_count else "runtime/device",
-                                before=before,after=after,expected=expected_count)
+                    sweep.write(
+                        scheme=name,
+                        boundary_mode=mode,
+                        operation="cache",
+                        input_shape=[length],
+                        passed=after == expected_count,
+                        classification=None if after == expected_count else "runtime/device",
+                        before=before,
+                        after=after,
+                        expected=expected_count,
+                    )
                 x_alias = upload(signal((257,), "random", "alias"), device, 1)
                 db_bands = forward(x_alias, "db1", "symmetric", 1)
                 haar_bands = forward(x_alias, "haar", "symmetric", 1)
-                sweep.compare(tuple(host_data(t, (129,), 1) for t in haar_bands),
-                              tuple(host_data(t, (129,), 1) for t in db_bands),
-                              scheme="haar", boundary_mode="symmetric", input_shape=[257],
-                              operation="haar_db1_alias")
+                sweep.compare(
+                    tuple(host_data(t, (129,), 1) for t in haar_bands),
+                    tuple(host_data(t, (129,), 1) for t in db_bands),
+                    scheme="haar",
+                    boundary_mode="symmetric",
+                    input_shape=[257],
+                    operation="haar_db1_alias",
+                )
                 try:
                     forward(x_alias, "db1", "periodization", 1)
-                    sweep.write(scheme="db1",operation="unsupported_boundary",passed=False)
+                    sweep.write(scheme="db1", operation="unsupported_boundary", passed=False)
                 except RuntimeError as exc:
-                    sweep.write(scheme="db1",operation="unsupported_boundary",
-                                passed="Unsupported wavelet boundary" in str(exc),
-                                expected_exception=str(exc))
-                x = ttnn.from_torch(torch.ones(32),dtype=ttnn.float32,layout=ttnn.TILE_LAYOUT,device=device)
+                    sweep.write(
+                        scheme="db1",
+                        operation="unsupported_boundary",
+                        passed="Unsupported wavelet boundary" in str(exc),
+                        expected_exception=str(exc),
+                    )
+                x = ttnn.from_torch(
+                    torch.ones(32), dtype=ttnn.float32, layout=ttnn.TILE_LAYOUT, device=device
+                )
                 try:
-                    ttwt.dwt(x,"db1")
-                    sweep.write(scheme="db1",operation="unsupported_layout",passed=False)
+                    ttwt.dwt(x, "db1")
+                    sweep.write(scheme="db1", operation="unsupported_layout", passed=False)
                 except RuntimeError as exc:
-                    sweep.write(scheme="db1",operation="unsupported_layout",
-                                passed="ROW_MAJOR" in str(exc) or "row-major" in str(exc), expected_exception=str(exc))
-                x_bf16 = ttnn.from_torch(torch.ones(32), dtype=ttnn.bfloat16,
-                                         layout=ttnn.ROW_MAJOR_LAYOUT, device=device)
+                    sweep.write(
+                        scheme="db1",
+                        operation="unsupported_layout",
+                        passed="ROW_MAJOR" in str(exc) or "row-major" in str(exc),
+                        expected_exception=str(exc),
+                    )
+                x_bf16 = ttnn.from_torch(
+                    torch.ones(32), dtype=ttnn.bfloat16, layout=ttnn.ROW_MAJOR_LAYOUT, device=device
+                )
                 try:
                     ttwt.dwt(x_bf16, "db1")
-                    sweep.write(scheme="db1",operation="unsupported_dtype",passed=False)
+                    sweep.write(scheme="db1", operation="unsupported_dtype", passed=False)
                 except RuntimeError as exc:
-                    sweep.write(scheme="db1",operation="unsupported_dtype",
-                                passed="FLOAT32" in str(exc) or "fp32" in str(exc),
-                                expected_exception=str(exc))
+                    sweep.write(
+                        scheme="db1",
+                        operation="unsupported_dtype",
+                        passed="FLOAT32" in str(exc) or "fp32" in str(exc),
+                        expected_exception=str(exc),
+                    )
         finally:
             # Record loaded runtime identities while the exercised process is still alive.
-            mapped = sorted({line.split()[-1] for line in Path("/proc/self/maps").read_text().splitlines()
-                             if line.split()[-1].startswith("/") and any(token in line.split()[-1]
-                             for token in ("_ttnn", "_ttwt", "libtt_metal", "libtt_stl", "libtt-umd"))})
+            mapped = sorted(
+                {
+                    line.split()[-1]
+                    for line in Path("/proc/self/maps").read_text().splitlines()
+                    if line.split()[-1].startswith("/")
+                    and any(
+                        token in line.split()[-1]
+                        for token in ("_ttnn", "_ttwt", "libtt_metal", "libtt_stl", "libtt-umd")
+                    )
+                }
+            )
             (args.output / (args.phase + "-maps.json")).write_text(json.dumps(mapped, indent=2))
             ttnn.close_mesh_device(device)
     sweep.file.close()
-    (args.output / (args.phase + "-duration.json")).write_text(json.dumps(
-        dict(seconds=time.monotonic()-sweep.started, records=sweep.count, failures=sweep.failures), indent=2))
+    (args.output / (args.phase + "-duration.json")).write_text(
+        json.dumps(
+            dict(
+                seconds=time.monotonic() - sweep.started,
+                records=sweep.count,
+                failures=sweep.failures,
+            ),
+            indent=2,
+        )
+    )
     raise SystemExit(1 if sweep.failures else 0)
 
 

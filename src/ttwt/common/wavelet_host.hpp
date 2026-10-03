@@ -16,8 +16,8 @@ namespace ttwt::operations::wavelet {
 
 [[nodiscard]] SchemeId scheme_id_from_string(std::string_view name);
 
-[[nodiscard]] const SchemeInfo& scheme_info(SchemeId id);
+[[nodiscard]] const SchemeInfo &scheme_info(SchemeId id);
 
 [[nodiscard]] uint32_t dwt_coefficient_length(uint32_t input_length, SchemeId id);
 
-}  // namespace ttwt::operations::wavelet
+} // namespace ttwt::operations::wavelet

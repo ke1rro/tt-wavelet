@@ -1,5 +1,5 @@
-# Runtime JIT closure verified by source traversal and Phase 4A dependency manifests.
-# Paths are relative to src/ttwt; these are runtime resources, not a C++ SDK.
+# Runtime JIT closure verified by source traversal and Phase 4A dependency manifests. Paths are
+# relative to src/ttwt; these are runtime resources, not a C++ SDK.
 set(TT_WAVELET_RUNTIME_FILES
     common/boundary.hpp
     common/signal_extension.hpp
@@ -26,43 +26,48 @@ set(TT_WAVELET_RUNTIME_FILES
     device/protocol/lwt_2d_config.hpp
     device/protocol/lwt_config.hpp
     planner/static_scheme.hpp
-    planner/step.hpp
-)
+    planner/step.hpp)
 set(TT_WAVELET_RESOURCE_ROOT "${PROJECT_BINARY_DIR}/python/ttwt/resources")
 set(TT_WAVELET_RESOURCE_INPUTS)
 set(TT_WAVELET_RESOURCE_OUTPUTS)
 set(TT_WAVELET_RESOURCE_NAMES)
 foreach(_file IN LISTS TT_WAVELET_RUNTIME_FILES)
-    list(APPEND TT_WAVELET_RESOURCE_INPUTS "${CMAKE_CURRENT_SOURCE_DIR}/${_file}")
-    list(APPEND TT_WAVELET_RESOURCE_NAMES "ttwt/${_file}")
+  list(APPEND TT_WAVELET_RESOURCE_INPUTS "${CMAKE_CURRENT_SOURCE_DIR}/${_file}")
+  list(APPEND TT_WAVELET_RESOURCE_NAMES "ttwt/${_file}")
 endforeach()
 foreach(_file IN LISTS TT_WAVELET_GENERATED_SCHEME_HEADERS)
-    get_filename_component(_name "${_file}" NAME)
-    list(APPEND TT_WAVELET_RESOURCE_INPUTS "${_file}")
-    list(APPEND TT_WAVELET_RESOURCE_NAMES "ttwt/generated/wavelet_schemes/${_name}")
+  get_filename_component(_name "${_file}" NAME)
+  list(APPEND TT_WAVELET_RESOURCE_INPUTS "${_file}")
+  list(APPEND TT_WAVELET_RESOURCE_NAMES "ttwt/generated/wavelet_schemes/${_name}")
 endforeach()
-set(_manifest "#pragma once\n#include <array>\n#include <string_view>\nnamespace ttwt::detail::runtime_resources {\ninline constexpr auto required_files = std::to_array<std::string_view>({\n")
+set(_manifest
+    "#pragma once\n#include <array>\n#include <string_view>\nnamespace ttwt::detail::runtime_resources {\ninline constexpr auto required_files = std::to_array<std::string_view>({\n"
+)
 list(LENGTH TT_WAVELET_RESOURCE_INPUTS _count)
 math(EXPR _last "${_count} - 1")
 foreach(_index RANGE 0 ${_last})
-    list(GET TT_WAVELET_RESOURCE_INPUTS ${_index} _input)
-    list(GET TT_WAVELET_RESOURCE_NAMES ${_index} _relative)
-    set(_output "${TT_WAVELET_RESOURCE_ROOT}/${_relative}")
-    get_filename_component(_directory "${_output}" DIRECTORY)
-    add_custom_command(OUTPUT "${_output}"
-        COMMAND ${CMAKE_COMMAND} -E make_directory "${_directory}"
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_input}" "${_output}"
-        DEPENDS "${_input}" VERBATIM)
-    list(APPEND TT_WAVELET_RESOURCE_OUTPUTS "${_output}")
-    if(TT_WAVELET_BUILD_PYTHON)
-        get_filename_component(_install_directory "${_relative}" DIRECTORY)
-        install(FILES "${_output}" DESTINATION "ttwt/resources/${_install_directory}"
-            COMPONENT ttwt-python)
-    endif()
-    string(APPEND _manifest "    \"${_relative}\",\n")
+  list(GET TT_WAVELET_RESOURCE_INPUTS ${_index} _input)
+  list(GET TT_WAVELET_RESOURCE_NAMES ${_index} _relative)
+  set(_output "${TT_WAVELET_RESOURCE_ROOT}/${_relative}")
+  get_filename_component(_directory "${_output}" DIRECTORY)
+  add_custom_command(
+    OUTPUT "${_output}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${_directory}"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_input}" "${_output}"
+    DEPENDS "${_input}"
+    VERBATIM)
+  list(APPEND TT_WAVELET_RESOURCE_OUTPUTS "${_output}")
+  if(TT_WAVELET_BUILD_PYTHON)
+    get_filename_component(_install_directory "${_relative}" DIRECTORY)
+    install(
+      FILES "${_output}"
+      DESTINATION "ttwt/resources/${_install_directory}"
+      COMPONENT ttwt-python)
+  endif()
+  string(APPEND _manifest "    \"${_relative}\",\n")
 endforeach()
 string(APPEND _manifest "});\n}\n")
-file(CONFIGURE OUTPUT "${PROJECT_BINARY_DIR}/generated/ttwt/runtime_resource_manifest.hpp"
-    CONTENT "${_manifest}" @ONLY)
+file(CONFIGURE OUTPUT "${PROJECT_BINARY_DIR}/generated/ttwt/runtime_resource_manifest.hpp" CONTENT
+     "${_manifest}" @ONLY)
 add_custom_target(tt_wavelet_resources DEPENDS ${TT_WAVELET_RESOURCE_OUTPUTS})
 add_dependencies(tt_wavelet_resources tt_wavelet_schemes)

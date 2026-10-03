@@ -18,8 +18,10 @@ inline constexpr uint32_t kLwt2DBandCount = 4;
 inline constexpr uint32_t kLwt2DWorkspaceCb = 10;
 inline constexpr uint32_t kLwt2DSplitScratchTileRows = 5;
 inline constexpr uint32_t kLwt2DSplitScratchTileColumns = 5;
-inline constexpr uint32_t kLwt2DSplitScratchTileCount = kLwt2DSplitScratchTileRows * kLwt2DSplitScratchTileColumns;
-inline constexpr uint32_t kLwt2DSplitScratchBytes = kLwt2DSplitScratchTileCount * kLwt2DFullTileBytes;
+inline constexpr uint32_t kLwt2DSplitScratchTileCount =
+    kLwt2DSplitScratchTileRows * kLwt2DSplitScratchTileColumns;
+inline constexpr uint32_t kLwt2DSplitScratchBytes =
+    kLwt2DSplitScratchTileCount * kLwt2DFullTileBytes;
 inline constexpr uint32_t kLwt2DSymmetricSplitScratchTileRows = 3;
 inline constexpr uint32_t kLwt2DSymmetricSplitScratchTileColumns = 3;
 inline constexpr uint32_t kLwt2DSymmetricSplitScratchTileCount =
@@ -33,7 +35,8 @@ inline constexpr uint32_t kLwt2DRectYLength = 1;
 inline constexpr uint32_t kLwt2DRectXBegin = 2;
 inline constexpr uint32_t kLwt2DRectXLength = 3;
 inline constexpr uint32_t kLwt2DChunkConfigWordCount = 32;
-inline constexpr uint32_t kLwt2DChunkConfigPageBytes = kLwt2DChunkConfigWordCount * sizeof(uint32_t);
+inline constexpr uint32_t kLwt2DChunkConfigPageBytes =
+    kLwt2DChunkConfigWordCount * sizeof(uint32_t);
 
 inline constexpr uint32_t kLwt2DRouteAxis = 0;
 inline constexpr uint32_t kLwt2DRouteSourceSlot = 2;
@@ -44,7 +47,8 @@ inline constexpr uint32_t kLwt2DRouteBaseRect = 9;
 inline constexpr uint32_t kLwt2DRouteOutputRect = 13;
 inline constexpr uint32_t kLwt2DRouteFlags = 17;
 inline constexpr uint32_t kLwt2DRouteConfigWordCount = 32;
-inline constexpr uint32_t kLwt2DRouteConfigPageBytes = kLwt2DRouteConfigWordCount * sizeof(uint32_t);
+inline constexpr uint32_t kLwt2DRouteConfigPageBytes =
+    kLwt2DRouteConfigWordCount * sizeof(uint32_t);
 
 inline constexpr uint32_t kLwt2DRouteFlagMetadataOnly = 1U << 0;
 inline constexpr uint32_t kLwt2DRouteFlagScale = 1U << 1;
@@ -70,4 +74,4 @@ static_assert(kLwt2DRouteConfigPageBytes % 64 == 0);
 static_assert(kLwt2DBandConfigPageBytes % 64 == 0);
 static_assert(kLwt2DInitialPlaneCount + 1 == kLwt2DPlaneCount);
 
-}  // namespace ttwt::operations::wavelet::device_protocol
+} // namespace ttwt::operations::wavelet::device_protocol

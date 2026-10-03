@@ -11,25 +11,26 @@
 
 namespace ttwt::prim::detail {
 
-tt::tt_metal::WorkloadDescriptor create_lwt_2d_workload(
-    const Lwt2DParams& operation_attributes,
-    const Lwt2DInputs& tensor_args,
-    Lwt2DOutputs& tensor_return_value,
-    const ttnn::MeshCoordinateRangeSet& tensor_coords);
+tt::tt_metal::WorkloadDescriptor
+create_lwt_2d_workload(const Lwt2DParams &operation_attributes, const Lwt2DInputs &tensor_args,
+                       Lwt2DOutputs &tensor_return_value,
+                       const ttnn::MeshCoordinateRangeSet &tensor_coords);
 
-void validate_lwt_2d(const Lwt2DParams& operation_attributes, const Lwt2DInputs& tensor_args);
-Lwt2DOutputSpecs compute_lwt_2d_output_specs(const Lwt2DParams& operation_attributes, const Lwt2DInputs& tensor_args);
-Lwt2DOutputs create_lwt_2d_output_tensors(const Lwt2DParams& operation_attributes, const Lwt2DInputs& tensor_args);
+void validate_lwt_2d(const Lwt2DParams &operation_attributes, const Lwt2DInputs &tensor_args);
+Lwt2DOutputSpecs compute_lwt_2d_output_specs(const Lwt2DParams &operation_attributes,
+                                             const Lwt2DInputs &tensor_args);
+Lwt2DOutputs create_lwt_2d_output_tensors(const Lwt2DParams &operation_attributes,
+                                          const Lwt2DInputs &tensor_args);
 
-tt::tt_metal::WorkloadDescriptor create_ilwt_2d_workload(
-    const Ilwt2DParams& operation_attributes,
-    const Ilwt2DInputs& tensor_args,
-    ttnn::Tensor& tensor_return_value,
-    const ttnn::MeshCoordinateRangeSet& tensor_coords);
+tt::tt_metal::WorkloadDescriptor
+create_ilwt_2d_workload(const Ilwt2DParams &operation_attributes, const Ilwt2DInputs &tensor_args,
+                        ttnn::Tensor &tensor_return_value,
+                        const ttnn::MeshCoordinateRangeSet &tensor_coords);
 
-void validate_ilwt_2d(const Ilwt2DParams& operation_attributes, const Ilwt2DInputs& tensor_args);
-tt::tt_metal::TensorSpec compute_ilwt_2d_output_spec(
-    const Ilwt2DParams& operation_attributes, const Ilwt2DInputs& tensor_args);
-ttnn::Tensor create_ilwt_2d_output_tensor(const Ilwt2DParams& operation_attributes, const Ilwt2DInputs& tensor_args);
+void validate_ilwt_2d(const Ilwt2DParams &operation_attributes, const Ilwt2DInputs &tensor_args);
+tt::tt_metal::TensorSpec compute_ilwt_2d_output_spec(const Ilwt2DParams &operation_attributes,
+                                                     const Ilwt2DInputs &tensor_args);
+ttnn::Tensor create_ilwt_2d_output_tensor(const Ilwt2DParams &operation_attributes,
+                                          const Ilwt2DInputs &tensor_args);
 
-}  // namespace ttwt::prim::detail
+} // namespace ttwt::prim::detail

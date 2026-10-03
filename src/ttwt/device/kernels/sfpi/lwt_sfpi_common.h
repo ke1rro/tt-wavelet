@@ -18,21 +18,22 @@
 namespace ckernel::sfpu {
 
 inline uint32_t _lwt_dst_base(const std::uint32_t tile_index, const std::uint32_t face_index) {
-    return (tile_index << 6) + (face_index << 4);
+  return (tile_index << 6) + (face_index << 4);
 }
 
-inline uint32_t _lwt_narrow_dst_base(const std::uint32_t tile_index, const std::uint32_t face_index) {
-    return (tile_index << 5) + (face_index << 4);
+inline uint32_t _lwt_narrow_dst_base(const std::uint32_t tile_index,
+                                     const std::uint32_t face_index) {
+  return (tile_index << 5) + (face_index << 4);
 }
 
 inline void _lwt_clear_addr_mod_base_() {
 #if defined(ARCH_WORMHOLE)
-    ckernel::math::clear_addr_mod_base();
+  ckernel::math::clear_addr_mod_base();
 #elif defined(ARCH_BLACKHOLE)
-    // Blackhole has no alternate address-modifier bank or base selector.
+  // Blackhole has no alternate address-modifier bank or base selector.
 #else
 #error "Unsupported Tensix architecture"
 #endif
 }
 
-}  // namespace ckernel::sfpu
+} // namespace ckernel::sfpu

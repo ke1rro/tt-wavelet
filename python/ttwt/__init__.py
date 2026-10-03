@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: © 2026 Nikita Lenyk
+#
+# SPDX-License-Identifier: MIT
+
 """TT-Wavelet operations on existing TTNN tensors."""
 
 from pathlib import Path as _Path

@@ -95,7 +95,8 @@ def load_scheme(name: str, payload: dict) -> Scheme:
         if kind not in STEP_TYPES:
             raise ValueError(f"{name}: unsupported step type {kind!r}")
         coefficient_bits = tuple(
-            float32_bits(parse_coefficient(coefficient)) for coefficient in raw_step.get("coefficients", [])
+            float32_bits(parse_coefficient(coefficient))
+            for coefficient in raw_step.get("coefficients", [])
         )
         if kind in {"scale-even", "scale-odd"} and len(coefficient_bits) != 1:
             raise ValueError(f"{name}: {kind} must have exactly one coefficient")
@@ -335,7 +336,10 @@ def load_catalog() -> dict[str, dict]:
         raise TypeError("wavelet scheme catalog must be a JSON object")
     if len(catalog) != SCHEME_COUNT:
         raise RuntimeError(f"expected {SCHEME_COUNT} wavelet schemes, found {len(catalog)}")
-    if any(not isinstance(name, str) or not isinstance(payload, dict) for name, payload in catalog.items()):
+    if any(
+        not isinstance(name, str) or not isinstance(payload, dict)
+        for name, payload in catalog.items()
+    ):
         raise TypeError("wavelet scheme catalog entries must be JSON objects")
     return catalog
 

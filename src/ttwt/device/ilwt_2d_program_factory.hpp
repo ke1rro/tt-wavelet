@@ -12,11 +12,10 @@
 namespace ttwt::prim {
 
 struct Ilwt2DProgramFactory {
-    static tt::tt_metal::WorkloadDescriptor create_workload_descriptor(
-        const Ilwt2DParams& operation_attributes,
-        const Ilwt2DInputs& tensor_args,
-        ttnn::Tensor& tensor_return_value,
-        const ttnn::MeshCoordinateRangeSet& tensor_coords);
+  static tt::tt_metal::WorkloadDescriptor
+  create_workload_descriptor(const Ilwt2DParams &operation_attributes,
+                             const Ilwt2DInputs &tensor_args, ttnn::Tensor &tensor_return_value,
+                             const ttnn::MeshCoordinateRangeSet &tensor_coords);
 };
 
-}  // namespace ttwt::prim
+} // namespace ttwt::prim
