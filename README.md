@@ -10,7 +10,7 @@ TT-Wavelet provides standalone lifting wavelet transforms for Tenstorrent TTNN t
 - Direct TTNN Tensor and MemoryConfig interoperability.
 - Package-local runtime JIT resources.
 
-п## Requirements
+## Requirements
 
 - Ubuntu 22.04 LTS, x86_64.
 - CPython 3.10.
