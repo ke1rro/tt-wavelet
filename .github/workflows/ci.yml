@@ -32,7 +32,7 @@ jobs:
           echo 'deb [signed-by=/usr/share/keyrings/llvm.gpg] https://apt.llvm.org/jammy/ llvm-toolchain-jammy-20 main' | sudo tee /etc/apt/sources.list.d/llvm-20.list
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends clang-20 g++-12 ninja-build pkg-config libhwloc-dev libnuma-dev libcapstone-dev
-          python -m pip install build cmake==4.2.3 pytest packaging clang-format==19.1.4 cmakelang==0.6.13 black==26.3.1 mdformat==0.7.22
+          python -m pip install build wheel cmake==4.2.3 pytest packaging clang-format==19.1.4 cmakelang==0.6.13 black==26.3.1 mdformat==0.7.22
       - name: Check owned source formatting
         run: |
           git ls-files -z -- 'bindings/*.cpp' 'src/ttwt/*.cpp' 'src/ttwt/*.hpp' 'src/ttwt/*.h' 'tests/cpp/*.cpp' 'tests/cpp/*.hpp' 'tests/cpp/*.h' | xargs -0 clang-format --dry-run --Werror
@@ -41,15 +41,28 @@ jobs:
           mdformat --check --wrap 100 README.md
       - name: Configure CMake and build the wheel
         run: python -m build --wheel -Ccmake.define.TT_WAVELET_TT_METAL_MODE=SUBMODULE -Cbuild-dir=build
+      - name: Retag the Linux wheel for PyPI
+        run: |
+          shopt -s nullglob
+          candidates=(dist/*-cp310-cp310-linux_x86_64.whl)
+          test "${#candidates[@]}" -eq 1
+          python -m wheel tags --platform-tag=manylinux_2_34_x86_64 --remove "${candidates[0]}"
+          test ! -e "${candidates[0]}"
+          generic=(dist/*-linux_x86_64.whl)
+          test "${#generic[@]}" -eq 0
+          final=(dist/*-cp310-cp310-manylinux_2_34_x86_64.whl)
+          test "${#final[@]}" -eq 1
+          wheels=(dist/*.whl)
+          test "${#wheels[@]}" -eq 1
       - name: Install candidate and check dependencies
         run: |
-          python -m pip install dist/*.whl
+          python -m pip install dist/*-cp310-cp310-manylinux_2_34_x86_64.whl
           python -m pip check
       - name: Validate installed package without hardware
         env:
           TT_WAVELET_EXPECT_RELOCATABLE: '1'
         run: |
-          TT_WAVELET_WHEEL="$(realpath dist/*.whl)"
+          TT_WAVELET_WHEEL="$(realpath dist/*-cp310-cp310-manylinux_2_34_x86_64.whl)"
           export TT_WAVELET_WHEEL
           cd /tmp
           unset PYTHONPATH LD_LIBRARY_PATH TT_METAL_RUNTIME_ROOT

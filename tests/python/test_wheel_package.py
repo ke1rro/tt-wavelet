@@ -58,6 +58,8 @@ def test_wheel_metadata_and_runtime_closure(wheel):
     assert resources - generated == expected_sources
     assert all(wheel.read(n) for n in resources)
     dist_info = metadata_paths[0].split("/")[0] + "/"
+    wheel_metadata = Parser().parsestr(wheel.read(dist_info + "WHEEL").decode())
+    assert wheel_metadata.get_all("Tag") == ["cp310-cp310-manylinux_2_34_x86_64"]
     allowed = resources | extensions | {"ttwt/__init__.py"}
     assert all(n in allowed or n.startswith(dist_info) for n in names)
 
