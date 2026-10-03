@@ -165,20 +165,3 @@ Testing
 .auto_triage/output
 .github/actions/*/node_modules/
 models/experimental/petr/resources/*.pth
-
-.claude
-tt-artifacts/tt-isa-documentation/
-tt-artifacts/
-
-bior39_2d_boundary_timings_wormhole_b0/
-db7_2d_boundary_timings_wormhole_b0/
-tt-isa-documentation/
-CONTEXT.md
-COMMANDS.md
-artifacts/*
-COMMAND.md
-docs/overnight_boundary_timings_20260802_194320
-AGENTS.md
-
-# Benchmark and precision test output directory
-benchmarks/
