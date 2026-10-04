@@ -1,12 +1,13 @@
 # TT-Wavelet
 
-TT-Wavelet implements discrete wavelet transforms on Tenstorrent accelerators using lifting-scheme
-factorizations. It provides one-level forward and inverse 1D and 2D DWT operations for TTNN tensors
-through the `ttwt` Python package.
+TT-Wavelet implements the Lifting Wavelet Transform (LWT) on Tenstorrent accelerators as an
+efficient realization of the Discrete Wavelet Transform (DWT). It provides one-level forward and
+inverse 1D and 2D transforms for TTNN tensors through the `ttwt` Python package.
 
 Wavelet FIR filter banks are represented as sequences of lifting steps derived from
 [Lifting Factorization of PyWavelets filter banks](https://github.com/draklowell/lifting-factorization).
-TT-Wavelet consumes the resulting decompositions; its runtime does not embed that project's
+
+TT-Wavelet consumes the resulting decompositions. Its runtime does not embed that project's
 Python/SageMath factorization pipeline.
 
 ## Features
@@ -15,14 +16,16 @@ Python/SageMath factorization pipeline.
 - 106 discrete wavelet schemes from the [PyWavelets](https://github.com/PyWavelets/pywt) catalog.
 - Eight boundary modes: `zero`, `constant`, `symmetric`, `reflect`, `periodic`, `smooth`,
   `antisymmetric`, and `antireflect`.
-- Ordinary TTNN tensors as inputs and outputs; direct `MemoryConfig` interoperability.
-- Package-local Wavelet JIT resources; TTNN / Metalium remain external dependencies.
+- Ordinary TTNN tensors as inputs and outputs with direct `MemoryConfig` interoperability.
+- Package-local Wavelet JIT resources. TTNN / Metalium remain external dependencies.
 
 TT-Wavelet is numerically compatible with PyWavelets for the supported one-level 1D and 2D DWT/IDWT
-operations, with the `dmey` limitation below. The project catalog covers all 106 discrete wavelets
-and all eight supported boundary modes. Compatibility refers to numerical transform behavior,
-wavelet definitions, and boundary handling, not the full PyWavelets Python API. `periodic` is not
-PyWavelets' `periodization`, which is unsupported.
+operations, with the `dmey` limitation below.
+
+The project catalog covers all 106 discrete wavelets and all eight supported boundary modes.
+Compatibility refers to numerical transform behavior, wavelet definitions, and boundary handling,
+not the full PyWavelets Python API. `periodic` is not PyWavelets' `periodization`, which is
+unsupported.
 
 **`dmey` is numerically unstable:** its lifting factorization has a known error and it is excluded
 from numerical validation. See the
@@ -36,8 +39,7 @@ because its accuracy is very low.
 ## Requirements
 
 - Ubuntu 22.04 LTS, x86_64, CPython 3.10.
-- `ttnn==0.79.0`; software baseline: TTNN / TT-Metal v0.79.0.
-- Tenstorrent hardware with compatible driver and firmware.
+- `ttnn==0.79.0`.
 - **SFPI 7.78.0 [935]**, available from the
   [official compiler release](https://github.com/tenstorrent/sfpi/releases/tag/7.78.0).
 
@@ -47,15 +49,13 @@ download or bundle it.
 
 ## Installation
 
-### PyPI (available after the first release)
-
-The package has not yet been published. After publication:
+### PyPI
 
 ```bash
 pip install tt-wavelet
 ```
 
-The package declares `ttnn==0.79.0` as a dependency; pip installs that runtime provider. Driver,
+The package declares `ttnn==0.79.0` as a dependency. Pip installs that runtime provider. Driver,
 firmware, and SFPI provisioning remain separate prerequisites.
 
 ### Development
@@ -67,13 +67,6 @@ prerequisites include clang-20, the GCC 12 C++ development toolchain, Ninja, pkg
 ```bash
 git clone --recurse-submodules https://github.com/ke1rro/tt-wavelet.git
 cd tt-wavelet
-```
-
-For an existing clone:
-
-```bash
-git submodule sync --recursive
-git submodule update --init --recursive
 ```
 
 Build and install a local wheel:
@@ -96,7 +89,7 @@ python -m pip install dist/*.whl
 
 ## Quick start
 
-The example also requires PyTorch. The 1D API returns stick-padded tensors; only the requested
+The example also requires PyTorch. The 1D API returns stick-padded tensors. Only the requested
 logical length of the reconstruction is valid.
 
 ```python
@@ -116,7 +109,7 @@ try:
     reconstructed = ttwt.idwt(cA, cD, "db4", original_length=signal.numel())
     result = ttnn.to_torch(reconstructed).flatten()[: signal.numel()]
 
-    # 2D inputs use tile layout; the inverse takes the original logical shape.
+    # 2D inputs use tile layout. The inverse takes the original logical shape.
     image = torch.arange(32 * 32, dtype=torch.float32).reshape(32, 32)
     x2d = ttnn.from_torch(
         image, dtype=ttnn.float32, layout=ttnn.TILE_LAYOUT, device=device
@@ -139,10 +132,6 @@ finally:
 
 TT-Wavelet has been validated across all currently supported Wormhole and Blackhole SKUs targeted by
 TTNN 0.79.0.
-
-Regular CI checks builds, packaging, and host-side tests without an accelerator. Hardware
-qualification is performed separately and is required before a public release is tagged; it is not
-guaranteed for every commit or pull request.
 
 ## Acknowledgements
 
@@ -167,4 +156,4 @@ Andrii Kryvyi. The references above credit the separate factorization and PyWave
 ## License
 
 TT-Wavelet is licensed under the [Apache License 2.0](LICENSE). Third-party and derived material
-retains its applicable licenses and notices; see [licenses/](licenses/) and [NOTICE](NOTICE).
+retains its applicable licenses and notices. See [licenses/](licenses/) and [NOTICE](NOTICE).
