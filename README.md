@@ -19,20 +19,18 @@ Python/SageMath factorization pipeline.
 - Ordinary TTNN tensors as inputs and outputs with direct `MemoryConfig` interoperability.
 - Package-local Wavelet JIT resources. TTNN / Metalium remain external dependencies.
 
-TT-Wavelet is numerically compatible with PyWavelets for the supported one-level 1D and 2D DWT/IDWT
-operations, with the `dmey` limitation below.
+The project catalog covers all 106 discrete wavelets from PyWavelets and all eight supported
+boundary modes. Numerical compatibility with PyWavelets has been validated for the supported
+one-level 1D and 2D DWT/IDWT operations, excluding `dmey` as described below.
 
-The project catalog covers all 106 discrete wavelets and all eight supported boundary modes.
 Compatibility refers to numerical transform behavior, wavelet definitions, and boundary handling,
-not the full PyWavelets Python API. `periodic` is not PyWavelets' `periodization`, which is
-unsupported.
+not compatibility with the full PyWavelets Python API. `periodic` corresponds to periodic boundary
+extension and is distinct from PyWavelets' `periodization`, which is not supported.
 
-**`dmey` is numerically unstable:** its lifting factorization has a known error and it is excluded
-from numerical validation. See the
+**`dmey` is excluded from numerical compatibility claims.** Its lifting factorization has a large
+residual. See the
 [factorization results](https://github.com/draklowell/lifting-factorization#3-factoring-results).
-PyWavelets describes `dmey` as a
-[discrete FIR approximation of Meyer](https://pywavelets.readthedocs.io/en/latest/ref/wavelets.html)
-and also omits it from its
+PyWavelets also omits `dmey` from its
 [multilevel accuracy tests](https://github.com/PyWavelets/pywt/blob/main/pywt/tests/test_multilevel.py#L42-L46)
 because its accuracy is very low.
 
@@ -135,9 +133,10 @@ TTNN 0.79.0.
 
 ## Acknowledgements
 
-The original implementation of TT-Wavelet was developed through the
-[Tenstorrent Bounty Program](https://github.com/tenstorrent/tt-metal/issues/40494). We thank
-Tenstorrent for sponsoring the work and supporting its development and hardware validation.
+TT-Wavelet originated from
+[Tenstorrent bounty #40494](https://github.com/tenstorrent/tt-metal/issues/40494). We thank
+Tenstorrent for sponsoring the work and providing the hardware used during development and
+validation.
 
 ## References
 
