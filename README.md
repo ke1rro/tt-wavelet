@@ -1,8 +1,8 @@
 # TT-Wavelet
 
-TT-Wavelet implements the Lifting Wavelet Transform (LWT) on Tenstorrent accelerators as an
-efficient realization of the Discrete Wavelet Transform (DWT). It provides one-level forward and
-inverse 1D and 2D transforms for TTNN tensors through the `ttwt` Python package.
+TT-Wavelet implements Discrete Wavelet Transforms (DWT) on Tenstorrent accelerators through the
+Lifting Wavelet Transform (LWT). It provides one-level forward and inverse 1D and 2D transforms for
+TTNN tensors through the `ttwt` Python package.
 
 Wavelet FIR filter banks are represented as sequences of lifting steps derived from
 [Lifting Factorization of PyWavelets filter banks](https://github.com/draklowell/lifting-factorization).
