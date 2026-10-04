@@ -87,8 +87,9 @@ python -m pip install dist/*.whl
 
 ## Quick start
 
-The example also requires PyTorch. The 1D API returns stick-padded tensors. Only the requested
-logical length of the reconstruction is valid.
+The example also requires PyTorch. The 1D API returns stick-padded tensors. Use `dwt_coeff_len` to
+read valid coefficients and the original signal length to read the reconstruction. Pass the TTNN
+coefficient tensors directly to `idwt`.
 
 ```python
 import torch
@@ -104,6 +105,9 @@ try:
         signal, dtype=ttnn.float32, layout=ttnn.ROW_MAJOR_LAYOUT, device=device
     )
     cA, cD = ttwt.dwt(x, "db4")
+    coeff_len = ttwt.dwt_coeff_len(signal.numel(), "db4")
+    approximation = ttnn.to_torch(cA).flatten()[:coeff_len]
+    detail = ttnn.to_torch(cD).flatten()[:coeff_len]
     reconstructed = ttwt.idwt(cA, cD, "db4", original_length=signal.numel())
     result = ttnn.to_torch(reconstructed).flatten()[: signal.numel()]
 
