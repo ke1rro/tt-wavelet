@@ -9,7 +9,7 @@ description = "Standalone lifting wavelet transforms for Tenstorrent TTNN tensor
 readme = "README.md"
 requires-python = ">=3.10,<3.11"
 dependencies = ["ttnn==0.79.0"]
-license = "MIT AND Apache-2.0 AND BSD-3-Clause"
+license = "Apache-2.0"
 license-files = ["LICENSE", "licenses/TT-Metal-LICENSE", "licenses/TT-Metal-NOTICE", "licenses/nanobind-LICENSE", "licenses/robin-map-LICENSE"]
 classifiers = [
     "Programming Language :: Python :: 3.10",

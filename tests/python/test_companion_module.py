@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: © 2026 Nikita Lenyk
 #
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: Apache-2.0
 
 """TT-Wavelet development interoperability and native ownership regression tests."""
 

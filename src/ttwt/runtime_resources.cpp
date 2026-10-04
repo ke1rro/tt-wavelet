@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: © 2026 Nikita Lenyk
+//
 // SPDX-License-Identifier: Apache-2.0
 #include "ttwt/runtime_resources.hpp"
 #include "ttwt/runtime_resource_manifest.hpp"

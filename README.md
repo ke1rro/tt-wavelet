@@ -50,6 +50,5 @@ cA, cD = ttwt.dwt(x, "db1")
 
 ## License
 
-Imported TT-Metal sources retain Apache-2.0 notices; legacy MIT attribution and bundled third-party
-license notices are preserved. See [LICENSE](LICENSE) and [licenses/](licenses/). The root MIT
-license does not relicense imported code.
+TT-Wavelet is licensed under the [Apache License 2.0](LICENSE). Third-party components retain their
+respective licenses; see [licenses/](licenses/).
