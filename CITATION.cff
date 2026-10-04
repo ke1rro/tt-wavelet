@@ -1,0 +1,12 @@
+cff-version: 1.2.0
+message: "If you use TT-Wavelet in your work, please cite this software."
+title: "TT-Wavelet"
+type: software
+authors:
+  - family-names: "Lenyk"
+    given-names: "Nikita"
+  - family-names: "Kryvyi"
+    given-names: "Andrii"
+version: "0.1.0"
+repository-code: "https://github.com/ke1rro/tt-wavelet"
+license: "Apache-2.0"

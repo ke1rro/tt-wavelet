@@ -1,0 +1,13 @@
+TT-Wavelet
+
+TT-Wavelet uses lifting factorizations derived from
+Lifting Factorization of PyWavelets filter banks:
+https://github.com/draklowell/lifting-factorization
+
+The derived lifting decompositions originate from that project; TT-Wavelet
+does not embed its Python/SageMath factorization pipeline.
+The project's MIT license and copyright notice are preserved verbatim in
+licenses/lifting-factorization-LICENSE.
+
+TT-Metal / TTNN provenance and third-party notices are preserved in
+licenses/TT-Metal-LICENSE and licenses/TT-Metal-NOTICE.

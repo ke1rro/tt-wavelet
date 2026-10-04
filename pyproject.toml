@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.10,<3.11"
 dependencies = ["ttnn==0.79.0"]
 license = "Apache-2.0"
-license-files = ["LICENSE", "licenses/TT-Metal-LICENSE", "licenses/TT-Metal-NOTICE", "licenses/nanobind-LICENSE", "licenses/robin-map-LICENSE"]
+license-files = ["LICENSE", "NOTICE", "licenses/lifting-factorization-LICENSE", "licenses/TT-Metal-LICENSE", "licenses/TT-Metal-NOTICE", "licenses/nanobind-LICENSE", "licenses/robin-map-LICENSE"]
 classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: Implementation :: CPython",
