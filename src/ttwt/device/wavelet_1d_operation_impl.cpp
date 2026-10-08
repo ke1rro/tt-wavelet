@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "ttwt/device/wavelet_1d_operation_impl.hpp"
+#include "ttwt/device/execution_observation.hpp"
 
 #include <algorithm>
 #include <array>
@@ -1127,6 +1128,8 @@ build_forward_workload(const Lwt1DParams &operation_attributes, const Lwt1DInput
       hybrid_tile_mirror, row_major_noc_staging, operation_attributes.boundary_mode,
       Scheme::compute_scheme_header, Scheme::compute_scheme_type, work, chunks_per_sample,
       input_pages_per_sample, output_pages_per_sample, l1_alignment_bytes);
+  ttwt::detail::execution_observation = {static_cast<uint32_t>(buffers.cores.size()),
+                                         static_cast<uint32_t>(tensor_coords.ranges().size())};
   wavelet_program_utils::append_program_to_mesh_ranges(
       workload, std::move(descriptor), tensor_coords,
       "Wavelet workload has no mesh coordinate range");
@@ -1226,6 +1229,8 @@ build_inverse_workload(const Ilwt1DParams &operation_attributes, const Ilwt1DInp
       plan.workspace_layout, hybrid_tile_mirror, row_major_noc_staging, interleave_batch_sticks,
       InverseScheme::compute_scheme_header, InverseScheme::compute_scheme_type, work,
       chunks_per_sample, input_pages_per_sample, output_pages_per_sample, l1_alignment_bytes);
+  ttwt::detail::execution_observation = {static_cast<uint32_t>(buffers.cores.size()),
+                                         static_cast<uint32_t>(tensor_coords.ranges().size())};
   wavelet_program_utils::append_program_to_mesh_ranges(
       workload, std::move(descriptor), tensor_coords,
       "Wavelet workload has no mesh coordinate range");

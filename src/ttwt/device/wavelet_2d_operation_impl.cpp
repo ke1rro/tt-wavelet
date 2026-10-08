@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "ttwt/device/wavelet_2d_operation_impl.hpp"
+#include "ttwt/device/execution_observation.hpp"
 
 #include <algorithm>
 #include <array>
@@ -628,6 +629,8 @@ template <typename Scheme>
         core_work.core,
         writer_args(plan, buffers, core_work, chunks_per_sample, output_tiles_per_sample));
   }
+  ttwt::detail::execution_observation = {static_cast<uint32_t>(buffers.cores.size()),
+                                         static_cast<uint32_t>(tensor_coords.ranges().size())};
   wavelet_program_utils::append_program_to_mesh_ranges(
       workload, std::move(descriptor), tensor_coords,
       "2D wavelet workload has no mesh coordinate range");
@@ -730,6 +733,8 @@ build_inverse_workload_2d(const Ilwt2DParams &operation_attributes, const Ilwt2D
         core_work.core,
         inverse_writer_args(plan, buffers, core_work, chunks_per_sample, output_tiles_per_sample));
   }
+  ttwt::detail::execution_observation = {static_cast<uint32_t>(buffers.cores.size()),
+                                         static_cast<uint32_t>(tensor_coords.ranges().size())};
   wavelet_program_utils::append_program_to_mesh_ranges(
       workload, std::move(descriptor), tensor_coords,
       "2D wavelet workload has no mesh coordinate range");

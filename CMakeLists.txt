@@ -8,6 +8,7 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE
       Release
@@ -25,4 +26,12 @@ add_subdirectory(src/ttwt)
 
 if(TT_WAVELET_BUILD_PYTHON)
   add_subdirectory(bindings)
+endif()
+
+option(TT_WAVELET_BUILD_BENCHMARKS "Build native performance runner" OFF)
+if(TT_WAVELET_BUILD_BENCHMARKS)
+  if(NOT CMAKE_BUILD_TYPE STREQUAL "Release")
+    message(FATAL_ERROR "TT-Wavelet performance benchmarks require Release")
+  endif()
+  add_subdirectory(benchmarks)
 endif()

@@ -1,7 +1,12 @@
-get_filename_component(TT_WAVELET_METAL_SOURCE_DIR
-                       "${CMAKE_CURRENT_LIST_DIR}/../third_party/tt-metal" ABSOLUTE)
-if(NOT EXISTS "${TT_WAVELET_METAL_SOURCE_DIR}/tt_metal/third_party/umd/CMakeLists.txt")
-  message(FATAL_ERROR "Initialize the pinned dependency: git submodule update --init --recursive")
+get_filename_component(
+  TT_WAVELET_METAL_SOURCE_DIR
+  "${CMAKE_CURRENT_LIST_DIR}/../third_party/tt-metal" ABSOLUTE)
+if(NOT EXISTS
+   "${TT_WAVELET_METAL_SOURCE_DIR}/tt_metal/third_party/umd/CMakeLists.txt")
+  message(
+    FATAL_ERROR
+      "Initialize the pinned dependency: git submodule update --init --recursive"
+  )
 endif()
 find_package(Git REQUIRED)
 execute_process(
@@ -39,7 +44,17 @@ set(ENABLE_TRACY
 set(TT_INSTALL
     OFF
     CACHE BOOL "Enable dependency installation rules")
-add_subdirectory("${TT_WAVELET_METAL_SOURCE_DIR}" "${CMAKE_BINARY_DIR}/tt-metal" EXCLUDE_FROM_ALL)
+# The pinned build writes linker scripts into its source runtime tree. Some
+# commands create their directory relative to the build tree instead.
+foreach(_arch wormhole blackhole quasar)
+  file(MAKE_DIRECTORY
+       "${TT_WAVELET_METAL_SOURCE_DIR}/runtime/hw/toolchain/${_arch}")
+endforeach()
+add_subdirectory("${TT_WAVELET_METAL_SOURCE_DIR}"
+                 "${CMAKE_BINARY_DIR}/tt-metal" EXCLUDE_FROM_ALL)
+# Keep object-library production ahead of archiving with Makefile generators.
+add_dependencies(hal_1xx wh_hal bh_hal)
+add_dependencies(hal_2xx qa_hal)
 if(TT_WAVELET_BUILD_PYTHON)
   include(${CMAKE_CURRENT_LIST_DIR}/TTNNPython.cmake)
 endif()
